@@ -98,8 +98,14 @@ interface ChunkSource {
   label: string;
   totalLabel(): string;
   initialItems(): Promise<LoadedItem[]>;
-  loadTop(currentItems: readonly LoadedItem[]): Promise<LoadedItem[]>;
-  loadBottom(currentItems: readonly LoadedItem[]): Promise<LoadedItem[]>;
+  loadTop(
+    currentItems: readonly LoadedItem[],
+    controller: AbortController,
+  ): Promise<LoadedItem[]>;
+  loadBottom(
+    currentItems: readonly LoadedItem[],
+    controller: AbortController,
+  ): Promise<LoadedItem[]>;
   canLoadTop(currentItems: readonly LoadedItem[]): boolean;
   canLoadBottom(currentItems: readonly LoadedItem[]): boolean;
   statusLabel(currentItems: readonly LoadedItem[]): string;
@@ -114,7 +120,13 @@ interface BoundarySlotState {
   kind: BoundarySlotKind;
 }
 
-interface PendingChunkLoad {
+interface BoundaryLoadToken {
+  boundary: DynamicVirtualizerBoundary;
+  sequence: number;
+  controller: AbortController;
+}
+
+interface PendingChunkLoad extends BoundaryLoadToken {
   version: number;
   items: LoadedItem[] | null;
   error: unknown;
@@ -256,8 +268,14 @@ let loadingBottom = false;
 let pendingTrimSide: "top" | "bottom" | null = null;
 let topChunkLoad: PendingChunkLoad | null = null;
 let bottomChunkLoad: PendingChunkLoad | null = null;
+let topLoadController: AbortController | null = null;
+let bottomLoadController: AbortController | null = null;
+let topLoadSequence = 0;
+let bottomLoadSequence = 0;
+let loadSequence = 0;
 let virtualizer: DynamicVirtualizer | undefined;
 let virtualizerScrollActive = false;
+let measuredViewportWidth = viewport.clientWidth;
 let renderedWindowStatus = "";
 let renderedRangeStatus = "";
 
@@ -403,17 +421,32 @@ function createMastodonSource(): ChunkSource {
     initialItems() {
       return fetchMastodonOlder(undefined, retainedCount, new Set());
     },
-    loadTop(currentItems) {
+    loadTop(currentItems, controller) {
       const first = firstMastodonItem(currentItems);
       const excluded = itemKeySet(currentItems);
       return first
-        ? fetchMastodonNewer(first.remoteId, chunkSize, excluded)
-        : fetchMastodonOlder(undefined, retainedCount, excluded);
+        ? fetchMastodonNewer(
+            first.remoteId,
+            chunkSize,
+            excluded,
+            controller.signal,
+          )
+        : fetchMastodonOlder(
+            undefined,
+            retainedCount,
+            excluded,
+            controller.signal,
+          );
     },
-    loadBottom(currentItems) {
+    loadBottom(currentItems, controller) {
       const last = lastMastodonItem(currentItems);
       const excluded = itemKeySet(currentItems);
-      return fetchMastodonOlder(last?.remoteId, chunkSize, excluded);
+      return fetchMastodonOlder(
+        last?.remoteId,
+        chunkSize,
+        excluded,
+        controller.signal,
+      );
     },
     canLoadTop() {
       return true;
@@ -458,22 +491,25 @@ function createBskySource(): ChunkSource {
       bottomCursor = page.cursor;
       return page.items;
     },
-    loadTop(currentItems) {
+    loadTop(currentItems, controller) {
       return fetchBskyItems(
         undefined,
         chunkSize,
         itemKeySet(currentItems),
         false,
+        controller.signal,
       ).then((page) => page.items);
     },
-    async loadBottom(currentItems) {
+    async loadBottom(currentItems, controller) {
       if (!bottomCursor) return [];
       const page = await fetchBskyItems(
         bottomCursor,
         chunkSize,
         itemKeySet(currentItems),
         true,
+        controller.signal,
       );
+      throwIfAborted(controller.signal);
       bottomCursor = page.cursor;
       return page.items;
     },
@@ -520,22 +556,25 @@ function createLemmySource(): ChunkSource {
       bottomCursor = page.cursor;
       return page.items;
     },
-    loadTop(currentItems) {
+    loadTop(currentItems, controller) {
       return fetchLemmyItems(
         undefined,
         chunkSize,
         itemKeySet(currentItems),
         false,
+        controller.signal,
       ).then((page) => page.items);
     },
-    async loadBottom(currentItems) {
+    async loadBottom(currentItems, controller) {
       if (!bottomCursor) return [];
       const page = await fetchLemmyItems(
         bottomCursor,
         chunkSize,
         itemKeySet(currentItems),
         true,
+        controller.signal,
       );
+      throwIfAborted(controller.signal);
       bottomCursor = page.cursor;
       return page.items;
     },
@@ -749,6 +788,13 @@ function measureItems(nextItems: readonly LoadedItem[]): void {
   } finally {
     measurer.dispose();
   }
+}
+
+function remeasureForViewportWidth(): void {
+  if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
+  measuredViewportWidth = viewport.clientWidth;
+  measureItems(items);
+  virtualizer?.invalidateMeasurements();
 }
 
 function pruneMeasuredHeights(): void {
@@ -994,6 +1040,93 @@ function createVirtualizer(): DynamicVirtualizer {
   });
 }
 
+function oppositeBoundary(
+  boundary: DynamicVirtualizerBoundary,
+): DynamicVirtualizerBoundary {
+  return boundary === "top" ? "bottom" : "top";
+}
+
+function controllerForBoundary(
+  boundary: DynamicVirtualizerBoundary,
+): AbortController | null {
+  return boundary === "top" ? topLoadController : bottomLoadController;
+}
+
+function sequenceForBoundary(boundary: DynamicVirtualizerBoundary): number {
+  return boundary === "top" ? topLoadSequence : bottomLoadSequence;
+}
+
+function setBoundaryLoadToken(token: BoundaryLoadToken): void {
+  if (token.boundary === "top") {
+    topLoadController = token.controller;
+    topLoadSequence = token.sequence;
+  } else {
+    bottomLoadController = token.controller;
+    bottomLoadSequence = token.sequence;
+  }
+}
+
+function clearBoundaryLoadToken(token: BoundaryLoadToken): void {
+  if (!isCurrentBoundaryLoad(token)) return;
+  if (token.boundary === "top") {
+    topLoadController = null;
+    topLoadSequence = 0;
+  } else {
+    bottomLoadController = null;
+    bottomLoadSequence = 0;
+  }
+}
+
+function clearBoundaryLoadState(boundary: DynamicVirtualizerBoundary): void {
+  if (boundary === "top") {
+    topLoadController = null;
+    topLoadSequence = 0;
+    topChunkLoad = null;
+    pendingTopLoad = false;
+    loadingTop = false;
+  } else {
+    bottomLoadController = null;
+    bottomLoadSequence = 0;
+    bottomChunkLoad = null;
+    pendingBottomLoad = false;
+    loadingBottom = false;
+  }
+}
+
+function isCurrentBoundaryLoad(token: BoundaryLoadToken): boolean {
+  return (
+    controllerForBoundary(token.boundary) === token.controller &&
+    sequenceForBoundary(token.boundary) === token.sequence
+  );
+}
+
+function beginBoundaryLoad(
+  boundary: DynamicVirtualizerBoundary,
+): BoundaryLoadToken {
+  cancelBoundaryLoad(oppositeBoundary(boundary));
+  const token: BoundaryLoadToken = {
+    boundary,
+    sequence: ++loadSequence,
+    controller: new AbortController(),
+  };
+  setBoundaryLoadToken(token);
+  return token;
+}
+
+function cancelBoundaryLoad(boundary: DynamicVirtualizerBoundary): void {
+  const hasLoad =
+    controllerForBoundary(boundary) !== null ||
+    (boundary === "top"
+      ? loadingTop || pendingTopLoad || topChunkLoad !== null
+      : loadingBottom || pendingBottomLoad || bottomChunkLoad !== null);
+  if (!hasLoad) return;
+
+  controllerForBoundary(boundary)?.abort();
+  clearBoundaryLoadState(boundary);
+  clearBoundarySlotState(boundary);
+  syncBoundarySlot(boundary);
+}
+
 function loadTopChunk(): void {
   if (sourceLoading || loadingTop || pendingTopLoad) return;
 
@@ -1029,6 +1162,7 @@ async function commitTopChunk(): Promise<void> {
   }
 
   const version = sourceVersion;
+  const token = beginBoundaryLoad("top");
   pendingTopLoad = false;
   loadingTop = true;
   sourceError = "";
@@ -1037,16 +1171,26 @@ async function commitTopChunk(): Promise<void> {
   syncStatus();
 
   try {
-    const addedItems = await activeSource.loadTop(items);
-    if (version !== sourceVersion) return;
+    const addedItems = await activeSource.loadTop(items, token.controller);
+    if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
     applyTopChunk(addedItems);
   } catch (error) {
+    if (
+      version !== sourceVersion ||
+      !isCurrentBoundaryLoad(token) ||
+      isAbortError(error)
+    ) {
+      return;
+    }
     setBoundarySlotState("top", "error");
     syncBoundarySlot("top");
     console.error(error);
   } finally {
-    loadingTop = false;
-    syncStatus();
+    if (isCurrentBoundaryLoad(token)) {
+      loadingTop = false;
+      clearBoundaryLoadToken(token);
+      syncStatus();
+    }
   }
 }
 
@@ -1087,6 +1231,7 @@ async function commitBottomChunk(): Promise<void> {
   }
 
   const version = sourceVersion;
+  const token = beginBoundaryLoad("bottom");
   pendingBottomLoad = false;
   loadingBottom = true;
   sourceError = "";
@@ -1095,16 +1240,26 @@ async function commitBottomChunk(): Promise<void> {
   syncStatus();
 
   try {
-    const addedItems = await activeSource.loadBottom(items);
-    if (version !== sourceVersion) return;
+    const addedItems = await activeSource.loadBottom(items, token.controller);
+    if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
     applyBottomChunk(addedItems);
   } catch (error) {
+    if (
+      version !== sourceVersion ||
+      !isCurrentBoundaryLoad(token) ||
+      isAbortError(error)
+    ) {
+      return;
+    }
     setBoundarySlotState("bottom", "error");
     syncBoundarySlot("bottom");
     console.error(error);
   } finally {
-    loadingBottom = false;
-    syncStatus();
+    if (isCurrentBoundaryLoad(token)) {
+      loadingBottom = false;
+      clearBoundaryLoadToken(token);
+      syncStatus();
+    }
   }
 }
 
@@ -1152,7 +1307,9 @@ function applyBottomChunk(addedItems: readonly LoadedItem[]): void {
 function startDeferredTopChunk(): void {
   if (!virtualizer || !activeSource.canLoadTop(items)) return;
 
+  const token = beginBoundaryLoad("top");
   const load: PendingChunkLoad = {
+    ...token,
     version: sourceVersion,
     items: null,
     error: null,
@@ -1167,17 +1324,40 @@ function startDeferredTopChunk(): void {
   syncStatus();
 
   activeSource
-    .loadTop(items)
+    .loadTop(items, token.controller)
     .then((addedItems) => {
-      if (topChunkLoad !== load || load.version !== sourceVersion) return;
+      if (
+        topChunkLoad !== load ||
+        load.version !== sourceVersion ||
+        !isCurrentBoundaryLoad(load)
+      ) {
+        return;
+      }
       load.items = addedItems;
     })
     .catch((error: unknown) => {
-      if (topChunkLoad !== load || load.version !== sourceVersion) return;
+      if (
+        topChunkLoad !== load ||
+        load.version !== sourceVersion ||
+        !isCurrentBoundaryLoad(load)
+      ) {
+        return;
+      }
+      if (isAbortError(error)) {
+        cancelBoundaryLoad("top");
+        syncStatus();
+        return;
+      }
       load.error = error;
     })
     .finally(() => {
-      if (topChunkLoad !== load || load.version !== sourceVersion) return;
+      if (
+        topChunkLoad !== load ||
+        load.version !== sourceVersion ||
+        !isCurrentBoundaryLoad(load)
+      ) {
+        return;
+      }
       loadingTop = false;
       if (load.scrollEnded || loadMode === "instant") flushPendingLoads();
       syncStatus();
@@ -1187,7 +1367,9 @@ function startDeferredTopChunk(): void {
 function startDeferredBottomChunk(): void {
   if (!virtualizer || !activeSource.canLoadBottom(items)) return;
 
+  const token = beginBoundaryLoad("bottom");
   const load: PendingChunkLoad = {
+    ...token,
     version: sourceVersion,
     items: null,
     error: null,
@@ -1202,17 +1384,40 @@ function startDeferredBottomChunk(): void {
   syncStatus();
 
   activeSource
-    .loadBottom(items)
+    .loadBottom(items, token.controller)
     .then((addedItems) => {
-      if (bottomChunkLoad !== load || load.version !== sourceVersion) return;
+      if (
+        bottomChunkLoad !== load ||
+        load.version !== sourceVersion ||
+        !isCurrentBoundaryLoad(load)
+      ) {
+        return;
+      }
       load.items = addedItems;
     })
     .catch((error: unknown) => {
-      if (bottomChunkLoad !== load || load.version !== sourceVersion) return;
+      if (
+        bottomChunkLoad !== load ||
+        load.version !== sourceVersion ||
+        !isCurrentBoundaryLoad(load)
+      ) {
+        return;
+      }
+      if (isAbortError(error)) {
+        cancelBoundaryLoad("bottom");
+        syncStatus();
+        return;
+      }
       load.error = error;
     })
     .finally(() => {
-      if (bottomChunkLoad !== load || load.version !== sourceVersion) return;
+      if (
+        bottomChunkLoad !== load ||
+        load.version !== sourceVersion ||
+        !isCurrentBoundaryLoad(load)
+      ) {
+        return;
+      }
       loadingBottom = false;
       if (load.scrollEnded || loadMode === "instant") flushPendingLoads();
       syncStatus();
@@ -1226,7 +1431,8 @@ function flushPendingTopLoad(): void {
 
   topChunkLoad = null;
   pendingTopLoad = false;
-  if (load.version !== sourceVersion) return;
+  if (load.version !== sourceVersion || !isCurrentBoundaryLoad(load)) return;
+  clearBoundaryLoadToken(load);
 
   if (load.error !== null) {
     setBoundarySlotState("top", "error");
@@ -1244,7 +1450,8 @@ function flushPendingBottomLoad(): void {
 
   bottomChunkLoad = null;
   pendingBottomLoad = false;
-  if (load.version !== sourceVersion) return;
+  if (load.version !== sourceVersion || !isCurrentBoundaryLoad(load)) return;
+  clearBoundaryLoadToken(load);
 
   if (load.error !== null) {
     setBoundarySlotState("bottom", "error");
@@ -1320,6 +1527,9 @@ function handleVirtualizerScrollEnd(): void {
 async function resetSource(nextSourceId: SourceId): Promise<void> {
   const version = ++sourceVersion;
   const nextSource = createChunkSource(nextSourceId);
+  cancelBoundaryLoad("top");
+  cancelBoundaryLoad("bottom");
+  loadSequence++;
   sourceLoading = true;
   sourceId = nextSourceId;
   pendingSourceId = nextSourceId;
@@ -1328,13 +1538,7 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
   virtualizer = undefined;
   items = [];
   sourceError = "";
-  pendingTopLoad = false;
-  pendingBottomLoad = false;
-  loadingTop = false;
-  loadingBottom = false;
   pendingTrimSide = null;
-  topChunkLoad = null;
-  bottomChunkLoad = null;
   virtualizerScrollActive = false;
   topLoads = 0;
   bottomLoads = 0;
@@ -1389,6 +1593,17 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function isAbortError(error: unknown): boolean {
+  return isRecord(error) && error.name === "AbortError";
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) throw reason;
+  throw new DOMException("Aborted", "AbortError");
+}
+
 function shortDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value.slice(0, 10);
@@ -1411,13 +1626,15 @@ async function fetchBskyItems(
   targetCount: number,
   excludedKeys: Set<string>,
   paginate: boolean,
+  signal?: AbortSignal,
 ): Promise<{ items: LoadedItem[]; cursor: string }> {
   const items: LoadedItem[] = [];
   let nextCursor = cursor;
 
   while (items.length < targetCount) {
+    throwIfAborted(signal);
     const limit = Math.min(100, targetCount - items.length);
-    const page = await fetchBskyPage({ cursor: nextCursor, limit });
+    const page = await fetchBskyPage({ cursor: nextCursor, limit }, signal);
     addUniqueBskyPosts(items, page.feed, excludedKeys);
 
     if (!page.cursor || page.cursor === nextCursor) {
@@ -1432,10 +1649,13 @@ async function fetchBskyItems(
   return { items, cursor: nextCursor ?? "" };
 }
 
-async function fetchBskyPage(config: {
-  cursor?: string;
-  limit: number;
-}): Promise<BskyFeedPage> {
+async function fetchBskyPage(
+  config: {
+    cursor?: string;
+    limit: number;
+  },
+  signal?: AbortSignal,
+): Promise<BskyFeedPage> {
   const url = new URL("/xrpc/app.bsky.feed.getFeed", BSKY_PUBLIC_API);
   url.searchParams.set("feed", BSKY_DISCOVER_FEED);
   url.searchParams.set("limit", String(config.limit));
@@ -1446,6 +1666,7 @@ async function fetchBskyPage(config: {
       Accept: "application/json",
       "Accept-Language": navigator.language || "en",
     },
+    signal,
   });
   if (!response.ok) {
     throw new Error(
@@ -1569,13 +1790,15 @@ async function fetchLemmyItems(
   targetCount: number,
   excludedKeys: Set<string>,
   paginate: boolean,
+  signal?: AbortSignal,
 ): Promise<{ items: LoadedItem[]; cursor: string }> {
   const items: LoadedItem[] = [];
   let nextCursor = cursor;
 
   while (items.length < targetCount) {
+    throwIfAborted(signal);
     const limit = Math.min(50, targetCount - items.length);
-    const page = await fetchLemmyPage({ cursor: nextCursor, limit });
+    const page = await fetchLemmyPage({ cursor: nextCursor, limit }, signal);
     addUniqueLemmyPosts(items, lemmyPostViews(page), excludedKeys);
 
     if (!page.next_page || page.next_page === nextCursor) {
@@ -1590,10 +1813,13 @@ async function fetchLemmyItems(
   return { items, cursor: nextCursor ?? "" };
 }
 
-async function fetchLemmyPage(config: {
-  cursor?: string;
-  limit: number;
-}): Promise<LemmyPostPage> {
+async function fetchLemmyPage(
+  config: {
+    cursor?: string;
+    limit: number;
+  },
+  signal?: AbortSignal,
+): Promise<LemmyPostPage> {
   const attempts = lemmyOriginAttempts(Boolean(config.cursor));
   let lastError = "";
 
@@ -1602,10 +1828,12 @@ async function fetchLemmyPage(config: {
       const page = await fetchLemmyPageFromOrigin(
         LEMMY_ORIGINS[originIndex]!,
         config,
+        signal,
       );
       lemmyOriginIndex = originIndex;
       return page;
     } catch (error) {
+      if (isAbortError(error)) throw error;
       lastError = errorMessage(error);
     }
   }
@@ -1629,13 +1857,15 @@ async function fetchLemmyPageFromOrigin(
     cursor?: string;
     limit: number;
   },
+  signal?: AbortSignal,
 ): Promise<LemmyPostPage> {
   let lastError = "";
 
   for (const path of LEMMY_POST_LIST_PATHS) {
     try {
-      return await fetchLemmyPageFromPath(origin, path, config);
+      return await fetchLemmyPageFromPath(origin, path, config, signal);
     } catch (error) {
+      if (isAbortError(error)) throw error;
       lastError = errorMessage(error);
     }
   }
@@ -1650,6 +1880,7 @@ async function fetchLemmyPageFromPath(
     cursor?: string;
     limit: number;
   },
+  signal?: AbortSignal,
 ): Promise<LemmyPostPage> {
   const url = new URL(path, origin);
   const isV4 = path.includes("/v4/");
@@ -1664,6 +1895,7 @@ async function fetchLemmyPageFromPath(
       Accept: "application/json",
       "Accept-Language": navigator.language || "en",
     },
+    signal,
   });
   if (!response.ok) {
     throw new Error(
@@ -1799,14 +2031,16 @@ async function fetchMastodonOlder(
   maxId: string | undefined,
   targetCount: number,
   excludedKeys: Set<string>,
+  signal?: AbortSignal,
 ): Promise<LoadedItem[]> {
   const statuses: MastodonStatus[] = [];
   let nextMaxId = maxId;
 
   while (statuses.length < targetCount) {
+    throwIfAborted(signal);
     const limit = Math.min(MASTODON_PAGE_LIMIT, targetCount - statuses.length);
     const batch = sortStatusesNewestFirst(
-      await fetchMastodonPage({ limit, maxId: nextMaxId }),
+      await fetchMastodonPage({ limit, maxId: nextMaxId }, signal),
     );
     if (batch.length === 0) break;
 
@@ -1823,12 +2057,16 @@ async function fetchMastodonNewer(
   minId: string,
   targetCount: number,
   excludedKeys: Set<string>,
+  signal?: AbortSignal,
 ): Promise<LoadedItem[]> {
   const batch = sortStatusesNewestFirst(
-    await fetchMastodonPage({
-      limit: Math.min(MASTODON_PAGE_LIMIT, targetCount),
-      minId,
-    }),
+    await fetchMastodonPage(
+      {
+        limit: Math.min(MASTODON_PAGE_LIMIT, targetCount),
+        minId,
+      },
+      signal,
+    ),
   );
   const statuses: MastodonStatus[] = [];
   addUniqueStatuses(statuses, batch, excludedKeys);
@@ -1849,11 +2087,14 @@ function addUniqueStatuses(
   }
 }
 
-async function fetchMastodonPage(config: {
-  limit: number;
-  maxId?: string;
-  minId?: string;
-}): Promise<MastodonStatus[]> {
+async function fetchMastodonPage(
+  config: {
+    limit: number;
+    maxId?: string;
+    minId?: string;
+  },
+  signal?: AbortSignal,
+): Promise<MastodonStatus[]> {
   const attempts = mastodonOriginAttempts(
     Boolean(config.maxId || config.minId),
   );
@@ -1864,10 +2105,12 @@ async function fetchMastodonPage(config: {
       const statuses = await fetchMastodonPageFromOrigin(
         MASTODON_ORIGINS[originIndex]!,
         config,
+        signal,
       );
       mastodonOriginIndex = originIndex;
       return statuses;
     } catch (error) {
+      if (isAbortError(error)) throw error;
       lastError = errorMessage(error);
     }
   }
@@ -1892,6 +2135,7 @@ async function fetchMastodonPageFromOrigin(
     maxId?: string;
     minId?: string;
   },
+  signal?: AbortSignal,
 ): Promise<MastodonStatus[]> {
   const url = new URL("/api/v1/timelines/public", origin);
   url.searchParams.set("limit", String(config.limit));
@@ -1900,6 +2144,7 @@ async function fetchMastodonPageFromOrigin(
 
   const response = await fetch(url, {
     headers: { Accept: "application/json" },
+    signal,
   });
   if (!response.ok) {
     throw new Error(
@@ -2143,6 +2388,9 @@ sourceSelect.addEventListener("change", () => {
   const nextSourceId = sourceSelect.value;
   if (isSourceId(nextSourceId)) void switchSource(nextSourceId);
 });
+
+const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
+viewportResizeObserver.observe(viewport);
 
 document.getElementById("top-btn")?.addEventListener("click", () => {
   void virtualizer?.scrollToIndex(0, "top");

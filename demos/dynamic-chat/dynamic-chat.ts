@@ -23,6 +23,7 @@ const viewport = mustGet("viewport");
 
 let total = TOTAL_INITIAL;
 let virtualizer: DynamicVirtualizer;
+let measuredViewportWidth = viewport.clientWidth;
 
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
@@ -54,6 +55,7 @@ function buildItem(index: number): HTMLElement {
 }
 
 function measureTemplateHeights(): void {
+  measuredViewportWidth = viewport.clientWidth;
   for (let templateId = 0; templateId < conversation.length; templateId++) {
     templateHeights[templateId] = measureDynamicVirtualizerItem({
       viewport,
@@ -62,6 +64,12 @@ function measureTemplateHeights(): void {
       buildItem,
     });
   }
+}
+
+function remeasureForViewportWidth(): void {
+  if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
+  measureTemplateHeights();
+  virtualizer.invalidateMeasurements();
 }
 
 function nextFrame(): Promise<void> {
@@ -113,6 +121,8 @@ virtualizer = createDynamicVirtualizer({
   buildItem,
   overscanPx: 900,
 });
+const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
+viewportResizeObserver.observe(viewport);
 
 await scrollToSettledBottom();
 document.documentElement.classList.remove("booting");

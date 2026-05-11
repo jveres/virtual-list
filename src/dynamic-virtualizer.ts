@@ -11,6 +11,8 @@ const CSS = `
   overflow-y: auto;
   overscroll-behavior-y: auto;
   overflow-anchor: none;
+  scrollbar-width: thin;
+  scrollbar-color: gray transparent;
   -webkit-overflow-scrolling: touch;
 }
 .dv-content {
@@ -147,6 +149,7 @@ interface MountedPlaceholderSlot extends DynamicVirtualizerPlaceholderSlot {
 export interface DynamicVirtualizer {
   readonly state: DynamicVirtualizerState;
 
+  invalidateMeasurements(): void;
   setCount(options?: DynamicVirtualizerSetCountOptions): void;
   syncLayout(update?: DynamicVirtualizerLayoutUpdate): void;
   setBoundarySlot(
@@ -428,6 +431,7 @@ export function createDynamicVirtualizer(
   let emittedTotalSize = -1;
   let emittedAtTop = false;
   let emittedAtBottom = false;
+  let lastViewportWidth = viewport.clientWidth;
   let lastViewportHeight = viewport.clientHeight;
   let stickyIndex: number | null = null;
   let tailGap = 0;
@@ -436,6 +440,7 @@ export function createDynamicVirtualizer(
   let placeholderSlot: MountedPlaceholderSlot | null = null;
   let userScrollActive = false;
   let userScrollMoved = false;
+  let scrollEndBlockedByInput = false;
   const activePointers = new Set<number>();
   let touchInputActive = false;
   let reachTopArmed = true;
@@ -890,6 +895,24 @@ export function createDynamicVirtualizer(
     return beforeHeightDelta;
   }
 
+  function refillModeledSizes(): void {
+    const nextSizes = new Float64Array(count);
+    for (let index = 0; index < count; index++) {
+      nextSizes[index] = modeledItemHeight(index);
+    }
+
+    if (measurementFrame) {
+      cancelAnimationFrame(measurementFrame);
+      measurementFrame = 0;
+    }
+    pendingMeasurements.clear();
+    sizes = nextSizes;
+    measured = new Uint8Array(count);
+    measuredCount = 0;
+    sizeTree = new FenwickTree(sizes);
+    layoutVersion++;
+  }
+
   function computeRange(
     scrollTop: number,
     viewportHeight = lastViewportHeight,
@@ -1063,6 +1086,16 @@ export function createDynamicVirtualizer(
     measurementFrame = requestAnimationFrame(flushMeasurements);
   }
 
+  function flushMeasurementsNow(): boolean {
+    if (pendingMeasurements.size === 0 || userScrollActive) return false;
+    if (measurementFrame) {
+      cancelAnimationFrame(measurementFrame);
+      measurementFrame = 0;
+    }
+    flushMeasurements();
+    return true;
+  }
+
   function commitMeasurement(
     index: number,
     height: number,
@@ -1233,12 +1266,29 @@ export function createDynamicVirtualizer(
     for (const index of indexes) refreshIndex(index);
   }
 
-  function clearMounted(): void {
-    for (const element of mounted.values()) {
-      itemResizeObserver.unobserve(element);
-      element.remove();
+  function reindexMounted(addedBefore: number, removedBefore: number): void {
+    if (mounted.size === 0) return;
+
+    const nextMounted = new Map<number, HTMLElement>();
+    for (const [index, element] of mounted) {
+      if (index < removedBefore) {
+        itemResizeObserver.unobserve(element);
+        element.remove();
+        continue;
+      }
+
+      const nextIndex = index - removedBefore + addedBefore;
+      if (nextIndex < 0 || nextIndex >= count) {
+        itemResizeObserver.unobserve(element);
+        element.remove();
+        continue;
+      }
+
+      element.dataset.index = String(nextIndex);
+      nextMounted.set(nextIndex, element);
     }
-    mounted.clear();
+
+    mounted = nextMounted;
   }
 
   function removePendingMeasurementsOutsideCount(): void {
@@ -1275,7 +1325,7 @@ export function createDynamicVirtualizer(
 
     if (addedBefore > 0 || removedBefore > 0) {
       pendingMeasurements.clear();
-      clearMounted();
+      reindexMounted(addedBefore, removedBefore);
       if (stickyIndex !== null) {
         const nextStickyIndex = stickyIndex + addedBefore - removedBefore;
         stickyIndex =
@@ -1345,6 +1395,37 @@ export function createDynamicVirtualizer(
     return placeholderSlot?.element ?? null;
   }
 
+  function invalidateMeasurements(): void {
+    lastViewportWidth = viewport.clientWidth;
+    lastViewportHeight = viewport.clientHeight;
+    const previousScrollTop = viewport.scrollTop;
+    const previousTopSlotHeight = topSlotHeight();
+    const previousItemOffset = Math.max(
+      0,
+      previousScrollTop - previousTopSlotHeight,
+    );
+    const anchorIndex =
+      count > 0 ? clamp(sizeTree.indexAt(previousItemOffset), 0, count - 1) : 0;
+    const anchorOffset =
+      count > 0
+        ? Math.max(0, previousItemOffset - sizeTree.prefix(anchorIndex))
+        : 0;
+    const wasAtBottom = atBottom();
+
+    refillModeledSizes();
+    recomputeTailGap();
+    const totalSize = syncContentHeight();
+
+    if (count > 0) {
+      const nextScrollTop = wasAtBottom
+        ? Math.max(0, totalSize - lastViewportHeight)
+        : topSlotHeight() + sizeTree.prefix(anchorIndex) + anchorOffset;
+      setScrollTop(nextScrollTop);
+    }
+
+    renderNow(viewport.scrollTop);
+  }
+
   function handleScroll(): void {
     if (userScrollActive) userScrollMoved = true;
     scheduleRender();
@@ -1355,17 +1436,18 @@ export function createDynamicVirtualizer(
   }
 
   function finishUserScroll(): void {
+    scrollEndBlockedByInput = false;
     userScrollActive = false;
     userScrollMoved = false;
-    if (pendingMeasurements.size > 0) {
-      scheduleMeasurementFlush();
+    if (!flushMeasurementsNow()) {
+      renderNow(viewport.scrollTop);
     }
-    renderNow(viewport.scrollTop);
     onScrollEnd?.(getState());
   }
 
   function handleScrollEnd(): void {
     if (hasActiveTouchOrPointerInput()) {
+      scrollEndBlockedByInput = true;
       scheduleRender();
       return;
     }
@@ -1374,13 +1456,20 @@ export function createDynamicVirtualizer(
 
   function handleViewportResize(): void {
     if (disposed) return;
+    const nextWidth = viewport.clientWidth;
     const nextHeight = viewport.clientHeight;
-    if (Math.abs(nextHeight - lastViewportHeight) <= 0.5) return;
+    if (
+      Math.abs(nextWidth - lastViewportWidth) <= 0.5 &&
+      Math.abs(nextHeight - lastViewportHeight) <= 0.5
+    ) {
+      return;
+    }
+    lastViewportWidth = nextWidth;
     lastViewportHeight = nextHeight;
     recomputeTailGap();
     syncContentHeight();
     setScrollTop(viewport.scrollTop);
-    renderNow(viewport.scrollTop);
+    scheduleRender();
   }
 
   function handleUserScrollStart(): void {
@@ -1391,7 +1480,12 @@ export function createDynamicVirtualizer(
   }
 
   function handleUserScrollMaybeEnd(): void {
-    if (hasActiveTouchOrPointerInput() || userScrollMoved) return;
+    if (hasActiveTouchOrPointerInput()) return;
+    if (scrollEndBlockedByInput) {
+      finishUserScroll();
+      return;
+    }
+    if (userScrollMoved) return;
     userScrollActive = false;
     if (pendingMeasurements.size > 0) {
       scheduleMeasurementFlush();
@@ -1452,6 +1546,7 @@ export function createDynamicVirtualizer(
     get state() {
       return getState();
     },
+    invalidateMeasurements,
     setCount,
     syncLayout,
     setBoundarySlot,

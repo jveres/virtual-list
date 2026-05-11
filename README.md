@@ -38,7 +38,8 @@ the viewport plus pixel overscan.
 
 The runtime uses these pieces:
 
-- A native `overflow-y: auto` viewport with `-webkit-overflow-scrolling: touch`.
+- A native `overflow-y: auto` viewport with `-webkit-overflow-scrolling: touch`
+  and thin gray scrollbars on transparent tracks.
 - A single relative content layer whose height is the current total modeled
   height.
 - Absolutely positioned rows placed at their modeled prefix offset with `top`.
@@ -150,6 +151,8 @@ The returned object exposes:
 
 - `state` for the latest count, mounted range, measured count, scroll position,
   total modeled size, and top or bottom state.
+- `invalidateMeasurements()` after the host remeasures rows for a width, theme,
+  font, or orientation change.
 - `setCount()` after append, remove, or replace operations.
 - `syncLayout(update)` after count changes that need to be applied atomically
   with boundary slot changes.
@@ -227,6 +230,13 @@ before calling `syncLayout()` to prepend, append, or trim. This keeps native
 rubber-band overscroll owned by the browser while still overlapping network
 latency with the user's boundary gesture.
 
+Only one boundary load must own the visible loading state at a time. If a new
+top load starts while a bottom load is still running or waiting for
+`onScrollEnd`, cancel the bottom load and ignore its late result. Do the same in
+the opposite direction. For network-backed sources, pass an `AbortController`
+into the source loader and use `controller.signal` in `fetch()` so cancellation
+stops the request instead of only discarding the response.
+
 `onRangeChange` is also edge-aware rather than frame-aware. The callback fires
 when the mounted range, mounted count, measured count, modeled total size, or
 true top or bottom state changes. It doesn't fire for every scroll frame when
@@ -303,6 +313,11 @@ soon as the viewport reaches the configured threshold. In deferred mode, the
 host displays a boundary spinner as a scrollable row, starts the fetch from the
 reach callback, and commits any ready chunk from the virtualizer's
 `onScrollEnd` callback. Instant mode doesn't render boundary spinners.
+
+When a boundary load starts, the demo cancels the opposite boundary's in-flight
+or pending load with an `AbortController`. This prevents stale loading spinners
+and stops network requests when momentum carries the viewport from one edge to
+the other before the first load commits.
 
 Top loading uses `syncLayout({ addedBefore, topSlot })`, because that prepend
 path must write `scrollTop` to preserve the currently visible anchor while

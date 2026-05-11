@@ -67,6 +67,7 @@ const composerMinHeight = Math.max(
 );
 
 let virtualizer: DynamicVirtualizer;
+let measuredViewportWidth = viewport.clientWidth;
 let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
 let scrollTurnInProgress = false;
@@ -291,6 +292,7 @@ function htmlForMessage(message: Message): string {
 }
 
 function measureTemplateHeights(): void {
+  measuredViewportWidth = viewport.clientWidth;
   for (let templateId = 0; templateId < conversation.length; templateId++) {
     templateHeights[templateId] = measureDynamicVirtualizerItem({
       viewport,
@@ -299,6 +301,13 @@ function measureTemplateHeights(): void {
       buildItem: buildTemplateItem,
     });
   }
+}
+
+function remeasureForViewportWidth(): void {
+  if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
+  measureTemplateHeights();
+  measureExistingMessages();
+  virtualizer.invalidateMeasurements();
 }
 
 function buildTemplateItem(index: number): HTMLElement {
@@ -639,6 +648,8 @@ virtualizer = createDynamicVirtualizer({
   overscanPx: 700,
   onRangeChange: scheduleScrollButtons,
 });
+const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
+viewportResizeObserver.observe(viewport);
 
 await virtualizer.scrollToBottom();
 syncScrollButtons();

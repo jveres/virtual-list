@@ -283,7 +283,9 @@ select.source-select:disabled {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-code-block);
-  contain: layout paint;
+  contain: style layout paint;
+  content-visibility: auto;
+  contain-intrinsic-size: auto;
 }
 
 .post-media.count-2 .post-image,
