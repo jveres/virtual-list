@@ -1481,7 +1481,7 @@ export function createDynamicVirtualizer(
 
   function handleUserScrollMaybeEnd(): void {
     if (hasActiveTouchOrPointerInput()) return;
-    if (scrollEndBlockedByInput) {
+    if (scrollEndBlockedByInput && !userScrollMoved) {
       finishUserScroll();
       return;
     }
@@ -1503,11 +1503,13 @@ export function createDynamicVirtualizer(
   }
 
   function handlePointerScrollStart(event: PointerEvent): void {
+    if (event.pointerType === "touch" && supportsTouchEvents) return;
     activePointers.add(event.pointerId);
     handleUserScrollStart();
   }
 
   function handlePointerScrollEnd(event: PointerEvent): void {
+    if (event.pointerType === "touch" && supportsTouchEvents) return;
     activePointers.delete(event.pointerId);
     handleUserScrollMaybeEnd();
   }
@@ -1516,6 +1518,7 @@ export function createDynamicVirtualizer(
   viewport.addEventListener("scrollend", handleScrollEnd, { passive: true });
   viewport.addEventListener("wheel", handleUserScrollStart, { passive: true });
   const supportsPointerEvents = "PointerEvent" in window;
+  const supportsTouchEvents = "TouchEvent" in window;
   if (supportsPointerEvents) {
     viewport.addEventListener("pointerdown", handlePointerScrollStart, {
       passive: true,
@@ -1526,7 +1529,8 @@ export function createDynamicVirtualizer(
     viewport.addEventListener("pointercancel", handlePointerScrollEnd, {
       passive: true,
     });
-  } else {
+  }
+  if (supportsTouchEvents) {
     viewport.addEventListener("touchstart", handleTouchScrollStart, {
       passive: true,
     });
@@ -1573,7 +1577,8 @@ export function createDynamicVirtualizer(
         viewport.removeEventListener("pointerdown", handlePointerScrollStart);
         viewport.removeEventListener("pointerup", handlePointerScrollEnd);
         viewport.removeEventListener("pointercancel", handlePointerScrollEnd);
-      } else {
+      }
+      if (supportsTouchEvents) {
         viewport.removeEventListener("touchstart", handleTouchScrollStart);
         viewport.removeEventListener("touchend", handleTouchScrollEnd);
         viewport.removeEventListener("touchcancel", handleTouchScrollEnd);
