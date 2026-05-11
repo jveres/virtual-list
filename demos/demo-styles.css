@@ -284,7 +284,6 @@ select.source-select:disabled {
   border-radius: 8px;
   background: var(--bg-code-block);
   contain: layout paint;
-  content-visibility: auto;
 }
 
 .post-media.count-2 .post-image,

@@ -19,7 +19,7 @@ import {
   watchSystemTheme,
 } from "../../src/markdown.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
-import "../../src/styles.css";
+import "../demo-styles.css";
 
 const TOTAL_AVAILABLE = 10_000;
 const DEFAULT_RETAINED_COUNT = 100;

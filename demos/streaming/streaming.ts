@@ -19,7 +19,7 @@ import {
   watchSystemTheme,
 } from "../../src/markdown.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
-import "../../src/styles.css";
+import "../demo-styles.css";
 
 interface Message {
   id: number;
