@@ -1,0 +1,50 @@
+import {
+  getThemeChoice,
+  isThemeChoice,
+  setThemeChoice,
+} from "../src/markdown.js";
+
+type HTMLElementConstructor<T extends HTMLElement> = {
+  new (): T;
+};
+
+export function mustGet(id: string): HTMLElement;
+export function mustGet<T extends HTMLElement>(
+  id: string,
+  elementType: HTMLElementConstructor<T>,
+): T;
+export function mustGet<T extends HTMLElement>(
+  id: string,
+  elementType?: HTMLElementConstructor<T>,
+): HTMLElement | T {
+  const element = document.getElementById(id);
+  if (!element) throw new Error(`missing #${id}`);
+  if (elementType && !(element instanceof elementType)) {
+    throw new Error(`unexpected element type for #${id}`);
+  }
+  return element;
+}
+
+export function syncThemeButtons(): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    ".theme-btn[data-theme-choice]",
+  )) {
+    button.classList.toggle(
+      "active",
+      button.dataset.themeChoice === getThemeChoice(),
+    );
+  }
+}
+
+export function bindThemeButtons(onChange: () => void): void {
+  for (const button of document.querySelectorAll<HTMLButtonElement>(
+    ".theme-btn[data-theme-choice]",
+  )) {
+    button.addEventListener("click", () => {
+      const choice = button.dataset.themeChoice;
+      if (!isThemeChoice(choice)) return;
+      setThemeChoice(choice);
+      onChange();
+    });
+  }
+}

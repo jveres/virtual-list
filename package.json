@@ -1,0 +1,26 @@
+{
+  "name": "virtual-list4",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.0.9",
+  "scripts": {
+    "dev": "vite",
+    "build": "pnpm run check && vite build",
+    "preview": "vite preview",
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome check . && tsc --noEmit"
+  },
+  "dependencies": {
+    "@typefm/comrak-wasm": "file:../../typefm/packages/comrak-wasm"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.4.15",
+    "@shikijs/engine-oniguruma": "4.0.2",
+    "@shikijs/langs": "4.0.2",
+    "@shikijs/themes": "4.0.2",
+    "shiki": "^4.0.2",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.11"
+  }
+}
