@@ -38,8 +38,9 @@ the viewport plus pixel overscan.
 
 The runtime uses these pieces:
 
-- A native `overflow-y: auto` viewport with `-webkit-overflow-scrolling: touch`
-  and thin gray scrollbars on transparent tracks.
+- A native `overflow-y: auto` viewport with `overscroll-behavior-y: contain`,
+  `-webkit-overflow-scrolling: touch`, and thin gray scrollbars on transparent
+  tracks.
 - A single relative content layer whose height is the current total modeled
   height.
 - Absolutely positioned rows placed at their modeled prefix offset with `top`.
@@ -131,7 +132,6 @@ const virtualizer = createDynamicVirtualizer({
   getItemHeight: (index) => measuredMessageHeights[index],
   buildItem: (index) => buildMessageElement(index),
   overscanPx: 700,
-  reachThresholdPx: 24,
   onRangeChange: (state) => {
     updateControls(state.atTop, state.atBottom);
   },
@@ -178,8 +178,8 @@ The config also accepts host callbacks:
 
 - `onRangeChange(state)` for mounted range, measured count, total size, and
   true top or bottom changes.
-- `onReachTop(state)` and `onReachBottom(state)` when the native viewport
-  reaches a configured boundary threshold.
+- `onReachTop(state)` and `onReachBottom(state)` when a stable top or bottom
+  boundary slot enters the native viewport.
 - `onScrollStart(state)` and `onScrollEnd(state)` for native scroll lifecycle
   boundaries.
 
@@ -215,12 +215,12 @@ debug path.
 
 Hosts can keep only part of a data set in memory and load more rows when the
 native viewport reaches either boundary. Use `onReachTop` and `onReachBottom`
-for boundary notifications, and use `reachThresholdPx` when the host needs to
-start loading before the exact native edge.
+for boundary notifications. The runtime detects those boundaries with stable
+top and bottom boundary slots observed by `IntersectionObserver`.
 
-The reach callbacks fire once per boundary contact. They re-arm after the
-viewport leaves the configured threshold, so the host can keep a simple loading
-guard without receiving a callback on every scroll frame.
+The reach callbacks fire once per visible boundary-slot entry. They re-arm after
+the slot leaves the viewport, so the host doesn't receive a callback on every
+scroll frame while the slot remains visible.
 
 If loading happens asynchronously, the host can set a boundary slot from the
 reach callback. A loading spinner, a no-more state, and an error state are all
@@ -228,24 +228,24 @@ ordinary slot DOM nodes from the runtime's perspective. The runtime doesn't own
 loading semantics; it only makes the host-provided node part of the scrollable
 content.
 
-Deferred loading can split network and DOM work across these callbacks. Use
-`onReachTop` or `onReachBottom` to start the network request as soon as the
-user reaches a boundary. Store the loaded rows, but wait for `onScrollEnd`
-before calling `syncLayout()` to prepend, append, or trim. This keeps native
-rubber-band overscroll owned by the browser while still overlapping network
-latency with the user's boundary gesture.
+Deferred loading can split network and DOM work without host scroll-state
+bookkeeping. Use `onReachTop` or `onReachBottom` to start the network request
+as soon as the user reaches a boundary. When the rows are ready, call
+`syncLayout({ deferDuringScroll: true, ... })`. The runtime queues that layout
+update while native scrolling is active and applies it from its `scrollend`
+path.
 
 The runtime treats `scrollend` as blocked while touch or pointer input is still
-active. In that case, it waits for a later native `scrollend` before emitting
-the host `onScrollEnd` callback. This avoids committing deferred boundary rows
-while Safari is still settling a rubber-band edge gesture.
+active. In that case, it waits for a later native `scrollend` before flushing
+deferred layout updates. This avoids committing deferred boundary rows while
+Safari is still settling a rubber-band edge gesture.
 
 Only one boundary load must own the visible loading state at a time. If a new
-top load starts while a bottom load is still running or waiting for
-`onScrollEnd`, cancel the bottom load and ignore its late result. Do the same in
-the opposite direction. For network-backed sources, pass an `AbortController`
-into the source loader and use `controller.signal` in `fetch()` so cancellation
-stops the request instead of only discarding the response.
+top or bottom load starts while any boundary load is still running or waiting
+for deferred layout, cancel the active load and ignore its late result. For
+network-backed sources, pass an `AbortController` into the source loader and
+use `controller.signal` in `fetch()` so cancellation stops the request instead
+of only discarding the response.
 
 `onRangeChange` is also edge-aware rather than frame-aware. The callback fires
 when the mounted range, mounted count, measured count, modeled total size, or
@@ -318,27 +318,25 @@ directions have data immediately. All sources pre-measure every loaded row
 before exposing it to the virtualizer.
 
 The load mode button switches the host between instant and deferred boundary
-loading. In instant mode, top and bottom reach callbacks load the next chunk as
-soon as the viewport reaches the configured threshold. In deferred mode, the
-host displays a boundary spinner as a scrollable row, starts the fetch from the
-reach callback, and commits any ready chunk from the virtualizer's
-`onScrollEnd` callback. Instant mode doesn't render boundary spinners.
+loading. In instant mode, top and bottom reach callbacks load and commit the
+next chunk as soon as the boundary slot enters the viewport. In deferred mode,
+the host displays a boundary spinner as a scrollable row, starts the fetch from
+the reach callback, and passes `deferDuringScroll: true` to `syncLayout()` so
+the runtime applies the ready chunk after native scrolling ends.
 
-When a boundary load starts, the demo cancels the opposite boundary's in-flight
-or pending load with an `AbortController`. This prevents stale loading spinners
-and stops network requests when momentum carries the viewport from one edge to
-the other before the first load commits.
+When a boundary load starts, the demo cancels any in-flight or pending boundary
+load with an `AbortController`. This prevents stale loading spinners and stops
+network requests when momentum carries the viewport from one edge to the other
+before the first load commits.
 
 Top loading uses `syncLayout({ addedBefore, topSlot })`, because that prepend
 path must write `scrollTop` to preserve the currently visible anchor while
 replacing any top boundary slot. Bottom loading uses
 `syncLayout({ bottomSlot })`, because extending the range below the viewport
 doesn't need an anchor correction. If the loaded window exceeds the retained
-target, the host trims rows from the opposite end on `scrollend`, and only when
-the rows to trim are outside the mounted range. Deferred loads skip trimming in
-the same flush that commits newly loaded rows, so Safari doesn't receive a
-prepend or append correction and a retention trim correction in one edge
-settle.
+target, the host trims rows from the opposite end only when the rows to trim
+are outside the mounted range. The trim uses the same runtime layout path as
+the load operation, so retention changes remain anchored to the current view.
 
 The status bar shows the loaded global index window and mounted global index
 range. The host still provides near-exact row heights through
@@ -398,6 +396,13 @@ instead of accumulating stale cache entries.
 The runtime uses normal browser scrolling instead of emulating momentum. That is
 intentional: touch, wheel, native scrollbar, and rubber-band behavior stay owned
 by the platform.
+
+The viewport contains overscroll chaining with `overscroll-behavior-y: contain`.
+Safari can emit transient internal `scrollTop` values while a scrollable element
+is rubber-banding at an edge. Letting that gesture chain to the page can produce
+visible repaint flicker around the virtualized content. Containing overscroll
+keeps the bounce on the list, preserves native rubber-band momentum, and avoids
+that page-level repaint path.
 
 When measurements change during scroll, the runtime writes `scrollTop` only for
 the correction that preserves the active anchor or bottom state. On browsers that

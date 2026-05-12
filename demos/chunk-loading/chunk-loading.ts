@@ -118,13 +118,6 @@ interface BoundaryLoadToken {
   controller: AbortController;
 }
 
-interface PendingChunkLoad extends BoundaryLoadToken {
-  version: number;
-  items: LoadedItem[] | null;
-  error: unknown;
-  scrollEnded: boolean;
-}
-
 interface BskyActor {
   handle: string;
   displayName?: string;
@@ -226,16 +219,12 @@ let pendingBottomLoad = false;
 let loadingTop = false;
 let loadingBottom = false;
 let pendingTrimSide: "top" | "bottom" | null = null;
-let topChunkLoad: PendingChunkLoad | null = null;
-let bottomChunkLoad: PendingChunkLoad | null = null;
-let skipTrimAfterDeferredCommit = false;
 let topLoadController: AbortController | null = null;
 let bottomLoadController: AbortController | null = null;
 let topLoadSequence = 0;
 let bottomLoadSequence = 0;
 let loadSequence = 0;
 let virtualizer: DynamicVirtualizer | undefined;
-let virtualizerScrollActive = false;
 let measuredViewportWidth = viewport.clientWidth;
 let renderedWindowStatus = "";
 let renderedRangeStatus = "";
@@ -738,27 +727,22 @@ function buildBoundarySlot(
   return element;
 }
 
+function visibleBoundarySlotKind(
+  boundary: DynamicVirtualizerBoundary,
+): Exclude<BoundarySlotKind, "none"> {
+  const kind = boundarySlotStates[boundary].kind;
+  return kind === "none" ? "idle" : kind;
+}
+
 function boundarySlotFor(
   boundary: DynamicVirtualizerBoundary,
 ): DynamicVirtualizerBoundarySlot | null {
   if (items.length === 0) return null;
-  if (loadMode !== "deferred") return null;
-
-  const state = boundarySlotStates[boundary];
-  let kind = state.kind;
-  if (kind === "none") {
-    const canLoad =
-      boundary === "top"
-        ? activeSource.canLoadTop(items)
-        : activeSource.canLoadBottom(items);
-    if (!canLoad) return null;
-    kind = "idle";
-  }
 
   return {
-    key: `${boundary}:${kind}`,
+    key: `${boundary}:slot`,
     height: BOUNDARY_SLOT_HEIGHT,
-    build: () => buildBoundarySlot(boundary, kind),
+    build: () => buildBoundarySlot(boundary, visibleBoundarySlotKind(boundary)),
   };
 }
 
@@ -910,20 +894,11 @@ function createVirtualizer(): DynamicVirtualizer {
       activeSource.id === "synthetic"
         ? SYNTHETIC_OVERSCAN_PX
         : NETWORK_OVERSCAN_PX,
-    reachThresholdPx: () => (loadMode === "deferred" ? 1 : 48),
     debugRenderDrift: renderDriftDebug ? reportRenderDrift : false,
     onRangeChange: syncStatus,
     onReachTop: loadTopChunk,
     onReachBottom: loadBottomChunk,
-    onScrollStart: handleVirtualizerScrollStart,
-    onScrollEnd: handleVirtualizerScrollEnd,
   });
-}
-
-function oppositeBoundary(
-  boundary: DynamicVirtualizerBoundary,
-): DynamicVirtualizerBoundary {
-  return boundary === "top" ? "bottom" : "top";
 }
 
 function controllerForBoundary(
@@ -961,13 +936,11 @@ function clearBoundaryLoadState(boundary: DynamicVirtualizerBoundary): void {
   if (boundary === "top") {
     topLoadController = null;
     topLoadSequence = 0;
-    topChunkLoad = null;
     pendingTopLoad = false;
     loadingTop = false;
   } else {
     bottomLoadController = null;
     bottomLoadSequence = 0;
-    bottomChunkLoad = null;
     pendingBottomLoad = false;
     loadingBottom = false;
   }
@@ -983,7 +956,6 @@ function isCurrentBoundaryLoad(token: BoundaryLoadToken): boolean {
 function beginBoundaryLoad(
   boundary: DynamicVirtualizerBoundary,
 ): BoundaryLoadToken {
-  cancelBoundaryLoad(oppositeBoundary(boundary));
   const token: BoundaryLoadToken = {
     boundary,
     sequence: ++loadSequence,
@@ -997,8 +969,8 @@ function cancelBoundaryLoad(boundary: DynamicVirtualizerBoundary): void {
   const hasLoad =
     controllerForBoundary(boundary) !== null ||
     (boundary === "top"
-      ? loadingTop || pendingTopLoad || topChunkLoad !== null
-      : loadingBottom || pendingBottomLoad || bottomChunkLoad !== null);
+      ? loadingTop || pendingTopLoad
+      : loadingBottom || pendingBottomLoad);
   if (!hasLoad) return;
 
   controllerForBoundary(boundary)?.abort();
@@ -1008,7 +980,9 @@ function cancelBoundaryLoad(boundary: DynamicVirtualizerBoundary): void {
 }
 
 function loadTopChunk(): void {
-  if (sourceLoading || loadingTop || pendingTopLoad) return;
+  if (sourceLoading) return;
+  cancelBoundaryLoad("top");
+  cancelBoundaryLoad("bottom");
 
   if (!activeSource.canLoadTop(items)) {
     setBoundarySlotState("top", "no-more");
@@ -1017,21 +991,11 @@ function loadTopChunk(): void {
     return;
   }
 
-  if (loadMode === "instant") {
-    void commitTopChunk();
-    return;
-  }
-
-  startDeferredTopChunk();
+  void commitTopChunk(loadMode === "deferred");
 }
 
-async function commitTopChunk(): Promise<void> {
-  if (
-    sourceLoading ||
-    loadingTop ||
-    !virtualizer ||
-    !activeSource.canLoadTop(items)
-  ) {
+async function commitTopChunk(deferDuringScroll: boolean): Promise<void> {
+  if (sourceLoading || !virtualizer || !activeSource.canLoadTop(items)) {
     pendingTopLoad = false;
     if (virtualizer && !activeSource.canLoadTop(items)) {
       setBoundarySlotState("top", "no-more");
@@ -1043,7 +1007,7 @@ async function commitTopChunk(): Promise<void> {
 
   const version = sourceVersion;
   const token = beginBoundaryLoad("top");
-  pendingTopLoad = false;
+  pendingTopLoad = deferDuringScroll;
   loadingTop = true;
   sourceError = "";
   setBoundarySlotState("top", "loading");
@@ -1053,7 +1017,8 @@ async function commitTopChunk(): Promise<void> {
   try {
     const addedItems = await activeSource.loadTop(items, token.controller);
     if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    applyTopChunk(addedItems);
+    loadingTop = false;
+    applyTopChunk(addedItems, token, deferDuringScroll);
   } catch (error) {
     if (
       version !== sourceVersion ||
@@ -1065,19 +1030,17 @@ async function commitTopChunk(): Promise<void> {
     setBoundarySlotState("top", "error");
     syncBoundarySlot("top");
     console.error(error);
-  } finally {
-    if (isCurrentBoundaryLoad(token)) {
-      loadingTop = false;
-      clearBoundaryLoadToken(token);
-      syncStatus();
-    }
+    loadingTop = false;
+    pendingTopLoad = false;
+    clearBoundaryLoadToken(token);
   }
+  syncStatus();
 }
 
 function loadBottomChunk(): void {
-  if (sourceLoading || loadingBottom || pendingBottomLoad) {
-    return;
-  }
+  if (sourceLoading) return;
+  cancelBoundaryLoad("top");
+  cancelBoundaryLoad("bottom");
 
   if (!activeSource.canLoadBottom(items)) {
     setBoundarySlotState("bottom", "no-more");
@@ -1086,21 +1049,11 @@ function loadBottomChunk(): void {
     return;
   }
 
-  if (loadMode === "instant") {
-    void commitBottomChunk();
-    return;
-  }
-
-  startDeferredBottomChunk();
+  void commitBottomChunk(loadMode === "deferred");
 }
 
-async function commitBottomChunk(): Promise<void> {
-  if (
-    sourceLoading ||
-    loadingBottom ||
-    !virtualizer ||
-    !activeSource.canLoadBottom(items)
-  ) {
+async function commitBottomChunk(deferDuringScroll: boolean): Promise<void> {
+  if (sourceLoading || !virtualizer || !activeSource.canLoadBottom(items)) {
     pendingBottomLoad = false;
     if (virtualizer && !activeSource.canLoadBottom(items)) {
       setBoundarySlotState("bottom", "no-more");
@@ -1112,7 +1065,7 @@ async function commitBottomChunk(): Promise<void> {
 
   const version = sourceVersion;
   const token = beginBoundaryLoad("bottom");
-  pendingBottomLoad = false;
+  pendingBottomLoad = deferDuringScroll;
   loadingBottom = true;
   sourceError = "";
   setBoundarySlotState("bottom", "loading");
@@ -1122,7 +1075,8 @@ async function commitBottomChunk(): Promise<void> {
   try {
     const addedItems = await activeSource.loadBottom(items, token.controller);
     if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    applyBottomChunk(addedItems);
+    loadingBottom = false;
+    applyBottomChunk(addedItems, token, deferDuringScroll);
   } catch (error) {
     if (
       version !== sourceVersion ||
@@ -1134,224 +1088,98 @@ async function commitBottomChunk(): Promise<void> {
     setBoundarySlotState("bottom", "error");
     syncBoundarySlot("bottom");
     console.error(error);
-  } finally {
-    if (isCurrentBoundaryLoad(token)) {
-      loadingBottom = false;
-      clearBoundaryLoadToken(token);
-      syncStatus();
-    }
+    loadingBottom = false;
+    pendingBottomLoad = false;
+    clearBoundaryLoadToken(token);
+  }
+  syncStatus();
+}
+
+function finishBoundaryLoad(token: BoundaryLoadToken): void {
+  if (!isCurrentBoundaryLoad(token)) return;
+  clearBoundaryLoadToken(token);
+  if (token.boundary === "top") {
+    loadingTop = false;
+    pendingTopLoad = false;
+  } else {
+    loadingBottom = false;
+    pendingBottomLoad = false;
   }
 }
 
-function applyTopChunk(addedItems: readonly LoadedItem[]): void {
+function applyTopChunk(
+  addedItems: readonly LoadedItem[],
+  token: BoundaryLoadToken,
+  deferDuringScroll: boolean,
+): void {
   if (!virtualizer) return;
 
   if (addedItems.length === 0) {
+    finishBoundaryLoad(token);
     setBoundarySlotState("top", "no-more");
     syncBoundarySlot("top");
     return;
   }
 
   measureItems(addedItems);
-  items = [...addedItems, ...items];
-  pendingTrimSide = "bottom";
-  topLoads++;
-  clearBoundarySlotState("top");
   virtualizer.syncLayout({
     addedBefore: addedItems.length,
+    deferDuringScroll,
     topSlot: boundarySlotFor("top"),
+    apply: () => {
+      if (!isCurrentBoundaryLoad(token)) {
+        return false;
+      }
+      items = [...addedItems, ...items];
+      pendingTrimSide = "bottom";
+      topLoads++;
+      finishBoundaryLoad(token);
+      clearBoundarySlotState("top");
+      return true;
+    },
+    after: () => {
+      pruneMeasuredHeights();
+      trimRetainedWindow();
+      syncStatus();
+    },
   });
-  if (loadMode === "deferred") skipTrimAfterDeferredCommit = true;
-  pruneMeasuredHeights();
 }
 
-function applyBottomChunk(addedItems: readonly LoadedItem[]): void {
+function applyBottomChunk(
+  addedItems: readonly LoadedItem[],
+  token: BoundaryLoadToken,
+  deferDuringScroll: boolean,
+): void {
   if (!virtualizer) return;
 
   if (addedItems.length === 0) {
+    finishBoundaryLoad(token);
     setBoundarySlotState("bottom", "no-more");
     syncBoundarySlot("bottom");
     return;
   }
 
   measureItems(addedItems);
-  items = [...items, ...addedItems];
-  pendingTrimSide = "top";
-  bottomLoads++;
-  clearBoundarySlotState("bottom");
   virtualizer.syncLayout({
+    deferDuringScroll,
     bottomSlot: boundarySlotFor("bottom"),
+    apply: () => {
+      if (!isCurrentBoundaryLoad(token)) {
+        return false;
+      }
+      items = [...items, ...addedItems];
+      pendingTrimSide = "top";
+      bottomLoads++;
+      finishBoundaryLoad(token);
+      clearBoundarySlotState("bottom");
+      return true;
+    },
+    after: () => {
+      pruneMeasuredHeights();
+      trimRetainedWindow();
+      syncStatus();
+    },
   });
-  if (loadMode === "deferred") skipTrimAfterDeferredCommit = true;
-  pruneMeasuredHeights();
-}
-
-function startDeferredTopChunk(): void {
-  if (!virtualizer || !activeSource.canLoadTop(items)) return;
-
-  const token = beginBoundaryLoad("top");
-  const load: PendingChunkLoad = {
-    ...token,
-    version: sourceVersion,
-    items: null,
-    error: null,
-    scrollEnded: !virtualizerScrollActive,
-  };
-  topChunkLoad = load;
-  pendingTopLoad = true;
-  loadingTop = true;
-  sourceError = "";
-  setBoundarySlotState("top", "loading");
-  syncBoundarySlot("top");
-  syncStatus();
-
-  activeSource
-    .loadTop(items, token.controller)
-    .then((addedItems) => {
-      if (
-        topChunkLoad !== load ||
-        load.version !== sourceVersion ||
-        !isCurrentBoundaryLoad(load)
-      ) {
-        return;
-      }
-      load.items = addedItems;
-    })
-    .catch((error: unknown) => {
-      if (
-        topChunkLoad !== load ||
-        load.version !== sourceVersion ||
-        !isCurrentBoundaryLoad(load)
-      ) {
-        return;
-      }
-      if (isAbortError(error)) {
-        cancelBoundaryLoad("top");
-        syncStatus();
-        return;
-      }
-      load.error = error;
-    })
-    .finally(() => {
-      if (
-        topChunkLoad !== load ||
-        load.version !== sourceVersion ||
-        !isCurrentBoundaryLoad(load)
-      ) {
-        return;
-      }
-      loadingTop = false;
-      if (load.scrollEnded || loadMode === "instant") flushPendingLoads();
-      syncStatus();
-    });
-}
-
-function startDeferredBottomChunk(): void {
-  if (!virtualizer || !activeSource.canLoadBottom(items)) return;
-
-  const token = beginBoundaryLoad("bottom");
-  const load: PendingChunkLoad = {
-    ...token,
-    version: sourceVersion,
-    items: null,
-    error: null,
-    scrollEnded: !virtualizerScrollActive,
-  };
-  bottomChunkLoad = load;
-  pendingBottomLoad = true;
-  loadingBottom = true;
-  sourceError = "";
-  setBoundarySlotState("bottom", "loading");
-  syncBoundarySlot("bottom");
-  syncStatus();
-
-  activeSource
-    .loadBottom(items, token.controller)
-    .then((addedItems) => {
-      if (
-        bottomChunkLoad !== load ||
-        load.version !== sourceVersion ||
-        !isCurrentBoundaryLoad(load)
-      ) {
-        return;
-      }
-      load.items = addedItems;
-    })
-    .catch((error: unknown) => {
-      if (
-        bottomChunkLoad !== load ||
-        load.version !== sourceVersion ||
-        !isCurrentBoundaryLoad(load)
-      ) {
-        return;
-      }
-      if (isAbortError(error)) {
-        cancelBoundaryLoad("bottom");
-        syncStatus();
-        return;
-      }
-      load.error = error;
-    })
-    .finally(() => {
-      if (
-        bottomChunkLoad !== load ||
-        load.version !== sourceVersion ||
-        !isCurrentBoundaryLoad(load)
-      ) {
-        return;
-      }
-      loadingBottom = false;
-      if (load.scrollEnded || loadMode === "instant") flushPendingLoads();
-      syncStatus();
-    });
-}
-
-function flushPendingTopLoad(): void {
-  const load = topChunkLoad;
-  if (!load || (loadMode === "deferred" && !load.scrollEnded)) return;
-  if (load.error === null && load.items === null) return;
-
-  topChunkLoad = null;
-  pendingTopLoad = false;
-  if (load.version !== sourceVersion || !isCurrentBoundaryLoad(load)) return;
-  clearBoundaryLoadToken(load);
-
-  if (load.error !== null) {
-    setBoundarySlotState("top", "error");
-    syncBoundarySlot("top");
-    console.error(load.error);
-  } else {
-    applyTopChunk(load.items ?? []);
-  }
-}
-
-function flushPendingBottomLoad(): void {
-  const load = bottomChunkLoad;
-  if (!load || (loadMode === "deferred" && !load.scrollEnded)) return;
-  if (load.error === null && load.items === null) return;
-
-  bottomChunkLoad = null;
-  pendingBottomLoad = false;
-  if (load.version !== sourceVersion || !isCurrentBoundaryLoad(load)) return;
-  clearBoundaryLoadToken(load);
-
-  if (load.error !== null) {
-    setBoundarySlotState("bottom", "error");
-    syncBoundarySlot("bottom");
-    console.error(load.error);
-  } else {
-    applyBottomChunk(load.items ?? []);
-  }
-}
-
-function flushPendingLoads(): void {
-  flushPendingTopLoad();
-  flushPendingBottomLoad();
-  if (skipTrimAfterDeferredCommit) {
-    skipTrimAfterDeferredCommit = false;
-    return;
-  }
-  trimRetainedWindow();
 }
 
 function setLoadMode(nextLoadMode: LoadMode): void {
@@ -1362,7 +1190,6 @@ function setLoadMode(nextLoadMode: LoadMode): void {
   if (loadMode === "instant") {
     clearBoundarySlotStates();
     syncBoundarySlots();
-    flushPendingLoads();
   } else {
     syncBoundarySlots();
   }
@@ -1397,19 +1224,6 @@ function trimRetainedWindow(): void {
   if (items.length <= retainedCount) pendingTrimSide = null;
 }
 
-function handleVirtualizerScrollStart(): void {
-  virtualizerScrollActive = true;
-  if (topChunkLoad) topChunkLoad.scrollEnded = false;
-  if (bottomChunkLoad) bottomChunkLoad.scrollEnded = false;
-}
-
-function handleVirtualizerScrollEnd(): void {
-  virtualizerScrollActive = false;
-  if (topChunkLoad) topChunkLoad.scrollEnded = true;
-  if (bottomChunkLoad) bottomChunkLoad.scrollEnded = true;
-  flushPendingLoads();
-}
-
 async function resetSource(nextSourceId: SourceId): Promise<void> {
   const version = ++sourceVersion;
   const nextSource = createChunkSource(nextSourceId);
@@ -1425,8 +1239,6 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
   items = [];
   sourceError = "";
   pendingTrimSide = null;
-  skipTrimAfterDeferredCommit = false;
-  virtualizerScrollActive = false;
   topLoads = 0;
   bottomLoads = 0;
   measuredItemHeights.clear();

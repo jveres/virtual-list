@@ -212,6 +212,7 @@ select.source-select:disabled {
   justify-content: center;
   gap: 8px;
   width: min(100%, 860px);
+  height: 100%;
   margin: 0 auto;
   padding: 0 24px;
   color: var(--fg-dim);

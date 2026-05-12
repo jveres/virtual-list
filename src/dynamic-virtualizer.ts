@@ -3,13 +3,14 @@ const DEFAULT_OVERSCAN_PX = 900;
 const FIREFOX_OVERSCAN_VIEWPORTS = 2;
 const DEFAULT_MEASURE_EPSILON = 0.5;
 const SCROLL_SNAP_THRESHOLD = 1;
-const DEFAULT_REACH_THRESHOLD_PX = 1;
+const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
+const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_RENDER_DRIFT_EPSILON = 1;
 
 const CSS = `
 .dv-viewport {
   overflow-y: auto;
-  overscroll-behavior-y: auto;
+  overscroll-behavior-y: contain;
   overflow-anchor: none;
   scrollbar-width: thin;
   scrollbar-color: gray transparent;
@@ -49,7 +50,6 @@ export interface DynamicVirtualizerConfig {
   getItemHeight: (index: number) => number;
   buildItem: (index: number) => HTMLElement;
   overscanPx?: number | (() => number);
-  reachThresholdPx?: number | (() => number);
   measureEpsilon?: number;
   debugRenderDrift?: boolean | DynamicVirtualizerRenderDriftReporter;
   onRangeChange?: (state: DynamicVirtualizerState) => void;
@@ -102,6 +102,9 @@ export interface DynamicVirtualizerLayoutUpdate
   topSlot?: DynamicVirtualizerBoundarySlot | null;
   bottomSlot?: DynamicVirtualizerBoundarySlot | null;
   placeholderSlot?: DynamicVirtualizerPlaceholderSlot | null;
+  deferDuringScroll?: boolean;
+  apply?: () => boolean | undefined;
+  after?: () => void;
 }
 
 export interface DynamicVirtualizerState {
@@ -135,10 +138,14 @@ interface ScrollTopWriteOptions {
   allowDuringScroll?: boolean;
 }
 
-interface MountedBoundarySlot extends DynamicVirtualizerBoundarySlot {
-  element: HTMLElement | null;
+interface MountedBoundarySlot {
+  key: string | null;
+  build: (() => HTMLElement) | null;
+  element: HTMLElement;
+  height: number;
   renderedHeight: number;
   renderedTop: number;
+  observed: boolean;
 }
 
 interface MountedPlaceholderSlot extends DynamicVirtualizerPlaceholderSlot {
@@ -395,11 +402,6 @@ export function createDynamicVirtualizer(
     typeof overscanPx === "function"
       ? overscanPx
       : () => overscanPx ?? DEFAULT_OVERSCAN_PX;
-  const reachThresholdPx = config.reachThresholdPx;
-  const getReachThresholdPx: () => number =
-    typeof reachThresholdPx === "function"
-      ? reachThresholdPx
-      : () => reachThresholdPx ?? DEFAULT_REACH_THRESHOLD_PX;
   const useFirefoxOverscanFloor = isFirefox();
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
   const renderDriftReporter =
@@ -443,14 +445,16 @@ export function createDynamicVirtualizer(
   let scrollEndBlockedByInput = false;
   const activePointers = new Set<number>();
   let touchInputActive = false;
-  let reachTopArmed = true;
-  let reachBottomArmed = true;
+  let reachTopArmed = false;
+  let reachBottomArmed = false;
   let reachCallbacksEnabled = false;
   let emittingChangeCallback = false;
   let emittingReachCallback = false;
+  let boundaryIntersectionObserver: IntersectionObserver | null = null;
   let disposed = false;
 
   const pendingMeasurements = new Map<number, number>();
+  const deferredLayoutUpdates: DynamicVirtualizerLayoutUpdate[] = [];
   const content = document.createElement("div");
 
   const itemResizeObserver = new ResizeObserver((entries) => {
@@ -506,7 +510,11 @@ export function createDynamicVirtualizer(
   }
 
   function contentTotalSize(): number {
-    return topSlotHeight() + itemTotalSize() + bottomSlotHeight() + tailGap;
+    const itemSize =
+      topSlotHeight() + itemTotalSize() + bottomSlotHeight() + tailGap;
+    return count === 0 && placeholderSlot
+      ? Math.max(itemSize, viewport.clientHeight)
+      : itemSize;
   }
 
   function getState(
@@ -576,56 +584,64 @@ export function createDynamicVirtualizer(
     scrollTop = viewport.scrollTop,
     viewportHeight = lastViewportHeight,
   ): void {
-    const canReach =
-      reachCallbacksEnabled &&
-      !emittingReachCallback &&
-      count > 0 &&
-      (onReachTop || onReachBottom);
-    if (!onRangeChange && !canReach) return;
+    if (!onRangeChange) return;
 
     const scrollMax = Math.max(0, totalSize - viewportHeight);
     const atTop = scrollTop <= 1;
     const atBottom = scrollMax - scrollTop <= 1;
-    const threshold = Math.max(0, getReachThresholdPx());
-    const nearTop = scrollTop <= threshold;
-    const nearBottom = scrollMax - scrollTop <= threshold;
-
-    if (!nearTop) reachTopArmed = true;
-    if (!nearBottom) reachBottomArmed = true;
-
-    const emitTopReach =
-      canReach && Boolean(onReachTop) && nearTop && reachTopArmed;
-    const emitBottomReach =
-      canReach && Boolean(onReachBottom) && nearBottom && reachBottomArmed;
     const emitRange = shouldEmitRangeChange(totalSize, atTop, atBottom);
 
-    if (!emitRange && !emitTopReach && !emitBottomReach) return;
+    if (!emitRange) return;
 
     const state = getState(totalSize, scrollTop, viewportHeight);
     emittingChangeCallback = true;
     try {
-      if (emitRange) {
-        rememberEmittedRange(state);
-        onRangeChange?.(state);
-      }
-      if (emitTopReach) {
-        reachTopArmed = false;
-        callReachCallback(onReachTop, state);
-      }
-      if (emitBottomReach) {
-        reachBottomArmed = false;
-        callReachCallback(onReachBottom, state);
-      }
+      rememberEmittedRange(state);
+      onRangeChange?.(state);
     } finally {
       emittingChangeCallback = false;
     }
   }
 
-  function disarmCurrentReachBoundaries(): void {
-    const threshold = Math.max(0, getReachThresholdPx());
-    if (viewport.scrollTop <= threshold) reachTopArmed = false;
-    if (nativeMaxScrollTop() - viewport.scrollTop <= threshold) {
-      reachBottomArmed = false;
+  function canEmitBoundaryReach(boundary: DynamicVirtualizerBoundary): boolean {
+    return (
+      reachCallbacksEnabled &&
+      !emittingReachCallback &&
+      count > 0 &&
+      (boundary === "top" ? Boolean(onReachTop) : Boolean(onReachBottom))
+    );
+  }
+
+  function armedForBoundary(boundary: DynamicVirtualizerBoundary): boolean {
+    return boundary === "top" ? reachTopArmed : reachBottomArmed;
+  }
+
+  function setBoundaryArmed(
+    boundary: DynamicVirtualizerBoundary,
+    armed: boolean,
+  ): void {
+    const wasArmed = armedForBoundary(boundary);
+    if (wasArmed === armed) return;
+    if (boundary === "top") {
+      reachTopArmed = armed;
+    } else {
+      reachBottomArmed = armed;
+    }
+  }
+
+  function emitBoundaryReach(boundary: DynamicVirtualizerBoundary): void {
+    if (!canEmitBoundaryReach(boundary)) return;
+    if (!armedForBoundary(boundary)) return;
+
+    setBoundaryArmed(boundary, false);
+    emittingChangeCallback = true;
+    try {
+      callReachCallback(
+        boundary === "top" ? onReachTop : onReachBottom,
+        getState(),
+      );
+    } finally {
+      emittingChangeCallback = false;
     }
   }
 
@@ -636,19 +652,6 @@ export function createDynamicVirtualizer(
       renderedTotalSize = totalSize;
     }
     return totalSize;
-  }
-
-  function normalizeBoundarySlot(
-    slot: DynamicVirtualizerBoundarySlot,
-  ): MountedBoundarySlot {
-    return {
-      key: String(slot.key),
-      height: positiveSize(slot.height),
-      build: slot.build,
-      element: null,
-      renderedHeight: -1,
-      renderedTop: -1,
-    };
   }
 
   function normalizePlaceholderSlot(
@@ -679,32 +682,85 @@ export function createDynamicVirtualizer(
     }
   }
 
+  function shouldKeepBoundarySlot(
+    boundary: DynamicVirtualizerBoundary,
+  ): boolean {
+    return boundary === "top" ? Boolean(onReachTop) : Boolean(onReachBottom);
+  }
+
+  function emptyBoundarySlotHeight(
+    boundary: DynamicVirtualizerBoundary,
+  ): number {
+    return shouldKeepBoundarySlot(boundary)
+      ? DEFAULT_BOUNDARY_SENTINEL_HEIGHT
+      : 0;
+  }
+
+  function ensureBoundarySlot(
+    boundary: DynamicVirtualizerBoundary,
+  ): MountedBoundarySlot {
+    const current = currentBoundarySlot(boundary);
+    if (current) return current;
+
+    const element = document.createElement("div");
+    element.classList.add("dv-boundary-slot", `dv-boundary-${boundary}`);
+    element.dataset.boundary = boundary;
+
+    const next: MountedBoundarySlot = {
+      key: null,
+      build: null,
+      element,
+      height: emptyBoundarySlotHeight(boundary),
+      renderedHeight: -1,
+      renderedTop: -1,
+      observed: false,
+    };
+    setCurrentBoundarySlot(boundary, next);
+    layoutVersion++;
+    return next;
+  }
+
+  function removeBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
+    const current = currentBoundarySlot(boundary);
+    if (!current) return;
+    boundaryIntersectionObserver?.unobserve(current.element);
+    current.element.remove();
+    setCurrentBoundarySlot(boundary, null);
+    layoutVersion++;
+  }
+
   function applyBoundarySlotUpdate(
     boundary: DynamicVirtualizerBoundary,
     slot: DynamicVirtualizerBoundarySlot | null | undefined,
   ): boolean {
     if (slot === undefined) return false;
 
-    const current = currentBoundarySlot(boundary);
     if (slot === null) {
-      current?.element?.remove();
+      const current = currentBoundarySlot(boundary);
       if (!current) return false;
-      setCurrentBoundarySlot(boundary, null);
+      current.key = null;
+      current.build = null;
+      current.element.replaceChildren();
+      const nextHeight = emptyBoundarySlotHeight(boundary);
+      if (nextHeight <= 0 && !shouldKeepBoundarySlot(boundary)) {
+        removeBoundarySlot(boundary);
+        return true;
+      }
+      if (Math.abs(current.height - nextHeight) <= 0.01) return false;
+      current.height = nextHeight;
       layoutVersion++;
       return true;
     }
 
-    const next = normalizeBoundarySlot(slot);
-    if (current && current.key === next.key) {
-      current.build = next.build;
-      if (Math.abs(current.height - next.height) <= 0.01) return false;
-      current.height = next.height;
-      layoutVersion++;
-      return true;
-    }
+    const current = ensureBoundarySlot(boundary);
+    const nextKey = String(slot.key);
+    const nextHeight = positiveSize(slot.height);
+    current.key = nextKey;
+    current.build = slot.build;
+    current.element.replaceChildren(slot.build());
 
-    current?.element?.remove();
-    setCurrentBoundarySlot(boundary, next);
+    if (Math.abs(current.height - nextHeight) <= 0.01) return false;
+    current.height = nextHeight;
     layoutVersion++;
     return true;
   }
@@ -738,25 +794,12 @@ export function createDynamicVirtualizer(
     return boundary === "top" ? 0 : topSlotHeight() + itemTotalSize();
   }
 
-  function prepareBoundarySlot(
-    boundary: DynamicVirtualizerBoundary,
-    slot: MountedBoundarySlot,
-  ): HTMLElement {
-    const element = slot.build();
-    element.classList.add("dv-boundary-slot", `dv-boundary-${boundary}`);
-    element.dataset.boundary = boundary;
-    element.style.height = px(slot.height);
-    return element;
-  }
-
   function renderBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
     const slot = currentBoundarySlot(boundary);
     if (!slot) return;
 
-    let element = slot.element;
-    if (!element) {
-      element = prepareBoundarySlot(boundary, slot);
-      slot.element = element;
+    const { element } = slot;
+    if (!element.isConnected) {
       content.appendChild(element);
     }
     const top = boundarySlotTop(boundary);
@@ -770,9 +813,68 @@ export function createDynamicVirtualizer(
     }
   }
 
+  function ensureReachBoundarySlots(): void {
+    if (count <= 0) return;
+    if (shouldKeepBoundarySlot("top")) ensureBoundarySlot("top");
+    if (shouldKeepBoundarySlot("bottom")) ensureBoundarySlot("bottom");
+  }
+
   function renderBoundarySlots(): void {
     renderBoundarySlot("top");
     renderBoundarySlot("bottom");
+    syncBoundaryIntersectionObserver();
+  }
+
+  function boundaryForElement(
+    element: Element,
+  ): DynamicVirtualizerBoundary | null {
+    const boundary = (element as HTMLElement).dataset.boundary;
+    return boundary === "top" || boundary === "bottom" ? boundary : null;
+  }
+
+  function handleBoundaryIntersections(
+    entries: readonly IntersectionObserverEntry[],
+  ): void {
+    for (const entry of entries) {
+      const boundary = boundaryForElement(entry.target);
+      if (!boundary) continue;
+
+      if (
+        !entry.isIntersecting ||
+        entry.intersectionRatio < BOUNDARY_INTERSECTION_THRESHOLD
+      ) {
+        setBoundaryArmed(boundary, true);
+        continue;
+      }
+
+      emitBoundaryReach(boundary);
+    }
+  }
+
+  function recreateBoundaryIntersectionObserver(): void {
+    boundaryIntersectionObserver?.disconnect();
+    boundaryIntersectionObserver = new IntersectionObserver(
+      handleBoundaryIntersections,
+      {
+        root: viewport,
+        rootMargin: "0px",
+        threshold: BOUNDARY_INTERSECTION_THRESHOLD,
+      },
+    );
+    if (topSlot) topSlot.observed = false;
+    if (bottomSlot) bottomSlot.observed = false;
+  }
+
+  function syncBoundaryIntersectionObserver(): void {
+    if (count <= 0 || (!onReachTop && !onReachBottom)) return;
+
+    if (!boundaryIntersectionObserver) recreateBoundaryIntersectionObserver();
+
+    for (const slot of [topSlot, bottomSlot]) {
+      if (!slot || slot.observed || !slot.element.isConnected) continue;
+      boundaryIntersectionObserver?.observe(slot.element);
+      slot.observed = true;
+    }
   }
 
   function preparePlaceholderSlot(slot: MountedPlaceholderSlot): HTMLElement {
@@ -981,6 +1083,7 @@ export function createDynamicVirtualizer(
   function render(explicitScrollTop = viewport.scrollTop): void {
     if (disposed) return;
 
+    ensureReachBoundarySlots();
     const totalSize = syncContentHeight();
     renderBoundarySlots();
     renderPlaceholderSlot();
@@ -1297,7 +1400,25 @@ export function createDynamicVirtualizer(
     }
   }
 
-  function syncLayout(update: DynamicVirtualizerLayoutUpdate = {}): void {
+  function flushDeferredLayoutUpdates(): boolean {
+    if (deferredLayoutUpdates.length === 0) return false;
+
+    const updates = deferredLayoutUpdates.splice(0);
+    for (const update of updates) {
+      applyLayoutUpdate({
+        ...update,
+        deferDuringScroll: false,
+      });
+    }
+    return true;
+  }
+
+  function applyLayoutUpdate(
+    update: DynamicVirtualizerLayoutUpdate = {},
+  ): void {
+    if (update.apply?.() === false) return;
+
+    ensureReachBoundarySlots();
     const nextCount = nonNegativeInteger(getCount());
     const addedBefore = normalizedCountShift(update.addedBefore, nextCount);
     const removedBefore = normalizedCountShift(
@@ -1357,12 +1478,27 @@ export function createDynamicVirtualizer(
         allowDuringScroll: true,
       });
     }
-    disarmCurrentReachBoundaries();
+    if (
+      addedBefore > 0 &&
+      previousScrollTop <= previousTopSlotHeight + 1 &&
+      viewport.scrollTop > topSlotHeight() + 1
+    ) {
+      setBoundaryArmed("top", true);
+    }
     if (emittingChangeCallback) {
       scheduleRender();
     } else {
       renderNow();
     }
+    update.after?.();
+  }
+
+  function syncLayout(update: DynamicVirtualizerLayoutUpdate = {}): void {
+    if (update.deferDuringScroll && userScrollActive) {
+      deferredLayoutUpdates.push(update);
+      return;
+    }
+    applyLayoutUpdate(update);
   }
 
   function setCount(options?: DynamicVirtualizerSetCountOptions): void {
@@ -1438,7 +1574,9 @@ export function createDynamicVirtualizer(
     scrollEndBlockedByInput = false;
     userScrollActive = false;
     userScrollMoved = false;
-    if (!flushMeasurementsNow()) {
+    if (flushDeferredLayoutUpdates()) {
+      flushMeasurementsNow();
+    } else if (!flushMeasurementsNow()) {
       renderNow(viewport.scrollTop);
     }
     onScrollEnd?.(getState());
@@ -1475,7 +1613,9 @@ export function createDynamicVirtualizer(
     const wasActive = userScrollActive;
     userScrollActive = true;
     if (!wasActive) userScrollMoved = false;
-    if (!wasActive) onScrollStart?.(getState());
+    if (!wasActive) {
+      onScrollStart?.(getState());
+    }
   }
 
   function handleUserScrollMaybeEnd(): void {
@@ -1564,8 +1704,10 @@ export function createDynamicVirtualizer(
       disposed = true;
       if (renderFrame) cancelAnimationFrame(renderFrame);
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
+      deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();
+      boundaryIntersectionObserver?.disconnect();
       viewport.removeEventListener("scroll", handleScroll);
       viewport.removeEventListener("scrollend", handleScrollEnd);
       viewport.removeEventListener("wheel", handleUserScrollStart);
