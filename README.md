@@ -196,6 +196,11 @@ keeps normal item indexes unchanged. Use `syncLayout({ addedBefore, topSlot:
 null })` when a loading slot is replaced by prepended rows, so the slot removal
 and count shift happen in one anchor-preserving update.
 
+Top boundary slot changes by themselves don't move `scrollTop`. This lets the
+host reveal a loading spinner at the native top edge without immediately
+scrolling past it. Real prepends still preserve the existing visual anchor when
+the host passes `addedBefore`.
+
 Placeholder slots are optional host-owned rows for the `count === 0` state.
 They don't affect indexes or the modeled item size. Use them for initial
 loading, empty, and error states before rows are available.
@@ -229,6 +234,11 @@ user reaches a boundary. Store the loaded rows, but wait for `onScrollEnd`
 before calling `syncLayout()` to prepend, append, or trim. This keeps native
 rubber-band overscroll owned by the browser while still overlapping network
 latency with the user's boundary gesture.
+
+The runtime treats `scrollend` as blocked while touch or pointer input is still
+active. In that case, it waits for a later native `scrollend` before emitting
+the host `onScrollEnd` callback. This avoids committing deferred boundary rows
+while Safari is still settling a rubber-band edge gesture.
 
 Only one boundary load must own the visible loading state at a time. If a new
 top load starts while a bottom load is still running or waiting for
@@ -304,8 +314,8 @@ change those values with `?retain=300&chunk=50`. The header source selector can
 switch between the local synthetic transcript, Bluesky's public Discover feed,
 and Lemmy public post lists. Network sources start at the natural top of the
 loaded feed, while the synthetic transcript starts near the middle so both
-directions have data immediately. All sources
-pre-measure every loaded row before exposing it to the virtualizer.
+directions have data immediately. All sources pre-measure every loaded row
+before exposing it to the virtualizer.
 
 The load mode button switches the host between instant and deferred boundary
 loading. In instant mode, top and bottom reach callbacks load the next chunk as
@@ -325,7 +335,10 @@ replacing any top boundary slot. Bottom loading uses
 `syncLayout({ bottomSlot })`, because extending the range below the viewport
 doesn't need an anchor correction. If the loaded window exceeds the retained
 target, the host trims rows from the opposite end on `scrollend`, and only when
-the rows to trim are outside the mounted range.
+the rows to trim are outside the mounted range. Deferred loads skip trimming in
+the same flush that commits newly loaded rows, so Safari doesn't receive a
+prepend or append correction and a retention trim correction in one edge
+settle.
 
 The status bar shows the loaded global index window and mounted global index
 range. The host still provides near-exact row heights through

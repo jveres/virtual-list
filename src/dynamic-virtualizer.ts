@@ -1347,9 +1347,8 @@ export function createDynamicVirtualizer(
 
     recomputeTailGap();
     syncContentHeight();
-    const wasAtTop = previousScrollTop <= previousTopSlotHeight + 1;
     const topSlotDelta =
-      addedBefore > 0 || removedBefore > 0 || wasAtTop
+      addedBefore > 0 || removedBefore > 0
         ? topSlotHeight() - previousTopSlotHeight
         : 0;
     const scrollCorrection = beforeHeightDelta + topSlotDelta;
@@ -1481,10 +1480,7 @@ export function createDynamicVirtualizer(
 
   function handleUserScrollMaybeEnd(): void {
     if (hasActiveTouchOrPointerInput()) return;
-    if (scrollEndBlockedByInput && !userScrollMoved) {
-      finishUserScroll();
-      return;
-    }
+    if (scrollEndBlockedByInput) return;
     if (userScrollMoved) return;
     userScrollActive = false;
     if (pendingMeasurements.size > 0) {

@@ -228,6 +228,7 @@ let loadingBottom = false;
 let pendingTrimSide: "top" | "bottom" | null = null;
 let topChunkLoad: PendingChunkLoad | null = null;
 let bottomChunkLoad: PendingChunkLoad | null = null;
+let skipTrimAfterDeferredCommit = false;
 let topLoadController: AbortController | null = null;
 let bottomLoadController: AbortController | null = null;
 let topLoadSequence = 0;
@@ -1160,6 +1161,7 @@ function applyTopChunk(addedItems: readonly LoadedItem[]): void {
     addedBefore: addedItems.length,
     topSlot: boundarySlotFor("top"),
   });
+  if (loadMode === "deferred") skipTrimAfterDeferredCommit = true;
   pruneMeasuredHeights();
 }
 
@@ -1180,6 +1182,7 @@ function applyBottomChunk(addedItems: readonly LoadedItem[]): void {
   virtualizer.syncLayout({
     bottomSlot: boundarySlotFor("bottom"),
   });
+  if (loadMode === "deferred") skipTrimAfterDeferredCommit = true;
   pruneMeasuredHeights();
 }
 
@@ -1344,6 +1347,10 @@ function flushPendingBottomLoad(): void {
 function flushPendingLoads(): void {
   flushPendingTopLoad();
   flushPendingBottomLoad();
+  if (skipTrimAfterDeferredCommit) {
+    skipTrimAfterDeferredCommit = false;
+    return;
+  }
   trimRetainedWindow();
 }
 
@@ -1418,6 +1425,7 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
   items = [];
   sourceError = "";
   pendingTrimSide = null;
+  skipTrimAfterDeferredCommit = false;
   virtualizerScrollActive = false;
   topLoads = 0;
   bottomLoads = 0;
