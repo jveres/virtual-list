@@ -39,17 +39,9 @@ const LEMMY_ORIGINS = [
   "https://programming.dev",
   "https://sh.itjust.works",
 ];
-const MASTODON_PAGE_LIMIT = 40;
-const MASTODON_ORIGINS = [
-  "https://mastodon.online",
-  "https://mstdn.social",
-  "https://fosstodon.org",
-  "https://techhub.social",
-  "https://mastodon.social",
-];
 
 type LoadMode = "instant" | "deferred";
-type SourceId = "synthetic" | "bsky" | "lemmy" | "mastodon";
+type SourceId = "synthetic" | "bsky" | "lemmy";
 type BoundarySlotKind = "none" | "idle" | "loading" | "no-more" | "error";
 type PlaceholderSlotKind = "loading" | "empty" | "error";
 type MediaRenderMode = "load" | "placeholder";
@@ -131,37 +123,6 @@ interface PendingChunkLoad extends BoundaryLoadToken {
   items: LoadedItem[] | null;
   error: unknown;
   scrollEnded: boolean;
-}
-
-interface MastodonAccount {
-  acct: string;
-  display_name?: string;
-}
-
-interface MastodonStatus {
-  id: string;
-  created_at: string;
-  content: string;
-  media_attachments?: MastodonMediaAttachment[];
-  spoiler_text?: string;
-  account: MastodonAccount;
-  reblog?: MastodonStatus | null;
-}
-
-interface MastodonMediaAttachment {
-  type: string;
-  url?: string | null;
-  preview_url?: string | null;
-  description?: string | null;
-  meta?: {
-    original?: MastodonMediaMeta | null;
-    small?: MastodonMediaMeta | null;
-  } | null;
-}
-
-interface MastodonMediaMeta {
-  width?: number;
-  height?: number;
 }
 
 interface BskyActor {
@@ -259,7 +220,6 @@ let sourceVersion = 0;
 let sourceLoading = false;
 let pendingSourceId: SourceId | null = null;
 let sourceError = "";
-let mastodonOriginIndex = 0;
 let lemmyOriginIndex = 0;
 let pendingTopLoad = false;
 let pendingBottomLoad = false;
@@ -306,12 +266,7 @@ function isLoadMode(value: string | null | undefined): value is LoadMode {
 }
 
 function isSourceId(value: string | null | undefined): value is SourceId {
-  return (
-    value === "synthetic" ||
-    value === "bsky" ||
-    value === "lemmy" ||
-    value === "mastodon"
-  );
+  return value === "synthetic" || value === "bsky" || value === "lemmy";
 }
 
 function templateIdForGlobalIndex(index: number): number {
@@ -409,67 +364,6 @@ function lastSyntheticItem(
 ): SyntheticLoadedItem | undefined {
   const last = currentItems[currentItems.length - 1];
   return last?.source === "synthetic" ? last : undefined;
-}
-
-function createMastodonSource(): ChunkSource {
-  return {
-    id: "mastodon",
-    label: "Mastodon",
-    totalLabel() {
-      return mastodonHostLabel();
-    },
-    initialItems() {
-      return fetchMastodonOlder(undefined, retainedCount, new Set());
-    },
-    loadTop(currentItems, controller) {
-      const first = firstMastodonItem(currentItems);
-      const excluded = itemKeySet(currentItems);
-      return first
-        ? fetchMastodonNewer(
-            first.remoteId,
-            chunkSize,
-            excluded,
-            controller.signal,
-          )
-        : fetchMastodonOlder(
-            undefined,
-            retainedCount,
-            excluded,
-            controller.signal,
-          );
-    },
-    loadBottom(currentItems, controller) {
-      const last = lastMastodonItem(currentItems);
-      const excluded = itemKeySet(currentItems);
-      return fetchMastodonOlder(
-        last?.remoteId,
-        chunkSize,
-        excluded,
-        controller.signal,
-      );
-    },
-    canLoadTop() {
-      return true;
-    },
-    canLoadBottom() {
-      return true;
-    },
-    statusLabel(currentItems) {
-      const first = firstMastodonItem(currentItems);
-      const last = lastMastodonItem(currentItems);
-      if (!first || !last) return "loaded empty";
-      return `loaded ${currentItems.length} posts ${shortDate(first.createdAt)}-${shortDate(last.createdAt)}`;
-    },
-    rangeLabel(item) {
-      return item.source === "html" ? item.remoteId.slice(-6) : item.key;
-    },
-    boundaryLabel(boundary, kind) {
-      const direction = boundary === "top" ? "newer" : "older";
-      if (kind === "loading") return `Loading ${direction} posts`;
-      if (kind === "no-more") return `No more ${direction} posts`;
-      return `Error loading ${direction} posts`;
-    },
-  };
 }
 
 function createBskySource(): ChunkSource {
@@ -602,20 +496,6 @@ function createLemmySource(): ChunkSource {
   };
 }
 
-function firstMastodonItem(
-  currentItems: readonly LoadedItem[],
-): HtmlLoadedItem | undefined {
-  const first = currentItems[0];
-  return first?.source === "html" ? first : undefined;
-}
-
-function lastMastodonItem(
-  currentItems: readonly LoadedItem[],
-): HtmlLoadedItem | undefined {
-  const last = currentItems[currentItems.length - 1];
-  return last?.source === "html" ? last : undefined;
-}
-
 function firstBskyItem(
   currentItems: readonly LoadedItem[],
 ): HtmlLoadedItem | undefined {
@@ -663,7 +543,6 @@ function itemKeySet(currentItems: readonly LoadedItem[]): Set<string> {
 function createChunkSource(nextSourceId: SourceId): ChunkSource {
   if (nextSourceId === "bsky") return createBskySource();
   if (nextSourceId === "lemmy") return createLemmySource();
-  if (nextSourceId === "mastodon") return createMastodonSource();
   return createSyntheticSource();
 }
 
@@ -2025,223 +1904,6 @@ function isLemmyPostView(value: unknown): value is LemmyPostView {
     isRecord(value.community) &&
     typeof value.community.name === "string"
   );
-}
-
-async function fetchMastodonOlder(
-  maxId: string | undefined,
-  targetCount: number,
-  excludedKeys: Set<string>,
-  signal?: AbortSignal,
-): Promise<LoadedItem[]> {
-  const statuses: MastodonStatus[] = [];
-  let nextMaxId = maxId;
-
-  while (statuses.length < targetCount) {
-    throwIfAborted(signal);
-    const limit = Math.min(MASTODON_PAGE_LIMIT, targetCount - statuses.length);
-    const batch = sortStatusesNewestFirst(
-      await fetchMastodonPage({ limit, maxId: nextMaxId }, signal),
-    );
-    if (batch.length === 0) break;
-
-    addUniqueStatuses(statuses, batch, excludedKeys);
-    const oldest = batch[batch.length - 1];
-    if (!oldest || oldest.id === nextMaxId) break;
-    nextMaxId = oldest.id;
-  }
-
-  return statuses.map(statusToItem);
-}
-
-async function fetchMastodonNewer(
-  minId: string,
-  targetCount: number,
-  excludedKeys: Set<string>,
-  signal?: AbortSignal,
-): Promise<LoadedItem[]> {
-  const batch = sortStatusesNewestFirst(
-    await fetchMastodonPage(
-      {
-        limit: Math.min(MASTODON_PAGE_LIMIT, targetCount),
-        minId,
-      },
-      signal,
-    ),
-  );
-  const statuses: MastodonStatus[] = [];
-  addUniqueStatuses(statuses, batch, excludedKeys);
-  return statuses.map(statusToItem);
-}
-
-function addUniqueStatuses(
-  target: MastodonStatus[],
-  batch: readonly MastodonStatus[],
-  excludedKeys: Set<string>,
-): void {
-  for (const status of batch) {
-    const actual = status.reblog ?? status;
-    const key = `mastodon:${actual.id}`;
-    if (excludedKeys.has(key)) continue;
-    excludedKeys.add(key);
-    target.push(actual);
-  }
-}
-
-async function fetchMastodonPage(
-  config: {
-    limit: number;
-    maxId?: string;
-    minId?: string;
-  },
-  signal?: AbortSignal,
-): Promise<MastodonStatus[]> {
-  const attempts = mastodonOriginAttempts(
-    Boolean(config.maxId || config.minId),
-  );
-  let lastError = "";
-
-  for (const originIndex of attempts) {
-    try {
-      const statuses = await fetchMastodonPageFromOrigin(
-        MASTODON_ORIGINS[originIndex]!,
-        config,
-        signal,
-      );
-      mastodonOriginIndex = originIndex;
-      return statuses;
-    } catch (error) {
-      if (isAbortError(error)) throw error;
-      lastError = errorMessage(error);
-    }
-  }
-
-  throw new Error(lastError || "no public Mastodon source responded");
-}
-
-function mastodonOriginAttempts(cursorRequest: boolean): number[] {
-  if (cursorRequest) return [mastodonOriginIndex];
-
-  const attempts: number[] = [];
-  for (let offset = 0; offset < MASTODON_ORIGINS.length; offset++) {
-    attempts.push((mastodonOriginIndex + offset) % MASTODON_ORIGINS.length);
-  }
-  return attempts;
-}
-
-async function fetchMastodonPageFromOrigin(
-  origin: string,
-  config: {
-    limit: number;
-    maxId?: string;
-    minId?: string;
-  },
-  signal?: AbortSignal,
-): Promise<MastodonStatus[]> {
-  const url = new URL("/api/v1/timelines/public", origin);
-  url.searchParams.set("limit", String(config.limit));
-  if (config.maxId) url.searchParams.set("max_id", config.maxId);
-  if (config.minId) url.searchParams.set("min_id", config.minId);
-
-  const response = await fetch(url, {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw new Error(
-      `${new URL(origin).host} failed: ${response.status} ${(
-        await response.text()
-      ).slice(0, 160)}`,
-    );
-  }
-
-  const value: unknown = await response.json();
-  if (!Array.isArray(value)) {
-    throw new Error("Mastodon response was not a status array");
-  }
-  return value.filter(isMastodonStatus);
-}
-
-function mastodonHostLabel(): string {
-  return new URL(MASTODON_ORIGINS[mastodonOriginIndex]!).host;
-}
-
-function isMastodonStatus(value: unknown): value is MastodonStatus {
-  if (!value || typeof value !== "object") return false;
-  const status = value as Partial<MastodonStatus>;
-  return (
-    typeof status.id === "string" &&
-    typeof status.created_at === "string" &&
-    typeof status.content === "string" &&
-    status.account !== undefined &&
-    typeof status.account === "object" &&
-    typeof status.account.acct === "string"
-  );
-}
-
-function sortStatusesNewestFirst(
-  statuses: readonly MastodonStatus[],
-): MastodonStatus[] {
-  return [...statuses].sort((left, right) => {
-    const timeDelta =
-      Date.parse(right.created_at) - Date.parse(left.created_at);
-    return timeDelta || compareStatusIdsDescending(left.id, right.id);
-  });
-}
-
-function compareStatusIdsDescending(left: string, right: string): number {
-  try {
-    const leftId = BigInt(left);
-    const rightId = BigInt(right);
-    if (leftId > rightId) return -1;
-    if (leftId < rightId) return 1;
-    return 0;
-  } catch {
-    return right.localeCompare(left);
-  }
-}
-
-function statusToItem(status: MastodonStatus): LoadedItem {
-  const displayName = status.account.display_name?.trim();
-  const account = displayName || `@${status.account.acct}`;
-  const content = sanitizeStatusHtml(status.content);
-  const spoiler = status.spoiler_text?.trim();
-  const media = mastodonStatusMedia(status);
-  const html = spoiler
-    ? `<p><strong>${escapeHtml(spoiler)}</strong></p>${content}`
-    : content || (media.length > 0 ? "<p><em>Media post.</em></p>" : "");
-  return {
-    source: "html",
-    key: `mastodon:${status.id}`,
-    role: "assistant",
-    label: `${account} - ${shortDate(status.created_at)}`,
-    html,
-    media,
-    remoteId: status.id,
-    createdAt: status.created_at,
-  };
-}
-
-function mastodonStatusMedia(status: MastodonStatus): LoadedMedia[] {
-  const mediaItems: LoadedMedia[] = [];
-  for (const attachment of status.media_attachments ?? []) {
-    if (attachment.type !== "image") continue;
-
-    const previewUrl =
-      readSafeUrl(attachment.preview_url) ?? readSafeUrl(attachment.url) ?? "";
-    const url = readSafeUrl(attachment.url) ?? previewUrl;
-    if (!previewUrl || !url) continue;
-
-    const dimensions =
-      attachment.meta?.original ?? attachment.meta?.small ?? undefined;
-    mediaItems.push({
-      previewUrl,
-      url,
-      alt: attachment.description ?? "",
-      width: positiveNumber(Number(dimensions?.width), 16),
-      height: positiveNumber(Number(dimensions?.height), 9),
-    });
-  }
-  return mediaItems;
 }
 
 const allowedStatusTags = new Set([

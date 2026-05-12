@@ -302,9 +302,9 @@ The chunk loading demo keeps a target window of rows loaded in the virtualizer.
 It defaults to a retained target of 100 rows and 50-row load chunks. You can
 change those values with `?retain=300&chunk=50`. The header source selector can
 switch between the local synthetic transcript, Bluesky's public Discover feed,
-Lemmy public post lists, and a Mastodon public timeline. Network sources start
-at the natural top of the loaded feed, while the synthetic transcript starts
-near the middle so both directions have data immediately. All sources
+and Lemmy public post lists. Network sources start at the natural top of the
+loaded feed, while the synthetic transcript starts near the middle so both
+directions have data immediately. All sources
 pre-measure every loaded row before exposing it to the virtualizer.
 
 The load mode button switches the host between instant and deferred boundary
