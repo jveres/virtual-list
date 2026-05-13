@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <style>
+      html {
+        background: #ffffff;
+        color: #1a1d23;
+        color-scheme: light;
+      }
+
+      body {
+        background: inherit;
+        color: inherit;
+      }
+
+      html.booting .shell {
+        visibility: hidden;
+      }
+
+      @media (prefers-color-scheme: dark) {
+        html {
+          background: #1a1d23;
+          color: #d5d9e1;
+          color-scheme: dark;
+        }
+      }
+
+      html[data-theme="light"] {
+        background: #ffffff;
+        color: #1a1d23;
+        color-scheme: light;
+      }
+
+      html[data-theme="dark"] {
+        background: #1a1d23;
+        color: #d5d9e1;
+        color-scheme: dark;
+      }
+    </style>
+    <script>
+      document.documentElement.classList.add("booting");
+      document.documentElement.setAttribute(
+        "data-theme",
+        matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
+      );
+    </script>
+    <title>virtual-list4 · masonry</title>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="header">
+        <span class="header-title">
+          <a href="/" title="Back to demos">virtual-list4</a>
+          <span class="sep">·</span>masonry
+        </span>
+        <div class="header-actions">
+          <div class="masonry-control-group" aria-label="Columns">
+            <button type="button" data-columns="3">3</button>
+            <button type="button" data-columns="4">4</button>
+            <button type="button" data-columns="5">5</button>
+            <button type="button" data-columns="6">6</button>
+          </div>
+          <div class="theme-group" aria-label="Theme">
+            <button
+              type="button"
+              class="theme-btn icon-btn"
+              data-theme-choice="light"
+              title="Light"
+              aria-label="Light theme"
+            >
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle
+                  cx="8"
+                  cy="8"
+                  r="3.5"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                />
+                <path
+                  d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.17 3.17l1.06 1.06M11.77 11.77l1.06 1.06M3.17 12.83l1.06-1.06M11.77 4.23l1.06-1.06"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-width="1.5"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="theme-btn icon-btn"
+              data-theme-choice="system"
+              title="System"
+              aria-label="System theme"
+            >
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect
+                  x="2"
+                  y="3"
+                  width="12"
+                  height="9"
+                  rx="1.5"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                />
+                <path
+                  d="M5.5 14.5h5"
+                  stroke="currentColor"
+                  stroke-linecap="round"
+                  stroke-width="1.5"
+                />
+              </svg>
+            </button>
+            <button
+              type="button"
+              class="theme-btn icon-btn"
+              data-theme-choice="dark"
+              title="Dark"
+              aria-label="Dark theme"
+            >
+              <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M13.5 9.5a5.5 5.5 0 0 1-7-7 5.5 5.5 0 1 0 7 7z"
+                  stroke="currentColor"
+                  stroke-linejoin="round"
+                  stroke-width="1.5"
+                />
+              </svg>
+            </button>
+          </div>
+          <button
+            type="button"
+            class="icon-btn"
+            id="top-btn"
+            title="Scroll to top"
+            aria-label="Scroll to top"
+          >
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M8 13V3M3 7l5-4 5 4"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.5"
+              />
+            </svg>
+          </button>
+          <button
+            type="button"
+            class="icon-btn"
+            id="bottom-btn"
+            title="Scroll to bottom"
+            aria-label="Scroll to bottom"
+          >
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M8 3v10M3 9l5 4 5-4"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="1.5"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="viewport-wrap masonry-viewport-wrap">
+        <div class="viewport masonry-viewport" id="viewport"></div>
+      </div>
+      <div class="statusbar">
+        <div>
+          <span id="range-label">0-0</span>
+          <span class="sep">·</span>
+          <span id="mounted-label">0 mounted</span>
+          <span class="sep">·</span>
+          <span id="layout-label">0 columns</span>
+        </div>
+        <div id="load-label">idle</div>
+      </div>
+    </div>
+    <script type="module" src="./masonry.ts"></script>
+  </body>
+</html>

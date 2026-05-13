@@ -719,9 +719,6 @@ function appendLoadedMedia(
       image.src = media.previewUrl;
       image.alt = media.alt;
       image.loading = "lazy";
-      image.decoding = "async";
-      image.fetchPriority = "low";
-      image.draggable = false;
       image.width = Math.round(positiveNumber(media.width, 16));
       image.height = Math.round(positiveNumber(media.height, 9));
       link.appendChild(image);
@@ -817,30 +814,64 @@ function boundarySlotLabel(
     : activeSource.boundaryLabel(boundary, kind);
 }
 
-function buildBoundarySlot(
-  boundary: DynamicVirtualizerBoundary,
-  kind: BoundarySlotKind,
-): HTMLElement {
+function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
   const element = document.createElement("div");
-  element.className = `boundary-slot ${kind}`;
-  if (kind === "idle") {
-    element.setAttribute("aria-hidden", "true");
-    return element;
-  }
+  element.className = "boundary-slot idle";
+  element.dataset.boundaryContent = boundary;
 
-  element.setAttribute("role", kind === "error" ? "alert" : "status");
-
-  if (kind === "loading") {
-    const spinner = document.createElement("span");
-    spinner.className = "boundary-spinner";
-    spinner.setAttribute("aria-hidden", "true");
-    element.appendChild(spinner);
-  }
+  const spinner = document.createElement("span");
+  spinner.className = "boundary-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  spinner.hidden = true;
 
   const label = document.createElement("span");
-  label.textContent = boundarySlotLabel(boundary, kind);
-  element.appendChild(label);
+
+  element.append(spinner, label);
+  updateBoundarySlotElement(element, boundary);
   return element;
+}
+
+function updateBoundarySlotElement(
+  container: HTMLElement,
+  boundary: DynamicVirtualizerBoundary,
+): void {
+  const element = container.matches(".boundary-slot")
+    ? container
+    : container.querySelector<HTMLElement>(".boundary-slot");
+  if (!element) return;
+
+  const kind = visibleBoundarySlotKind(boundary);
+  const spinner = element.querySelector<HTMLElement>(".boundary-spinner");
+  const label = element.querySelector<HTMLElement>("span:last-child");
+
+  const nextClassName = `boundary-slot ${kind}`;
+  if (element.className !== nextClassName) {
+    element.className = nextClassName;
+  }
+  if (kind === "idle") {
+    if (element.getAttribute("aria-hidden") !== "true") {
+      element.setAttribute("aria-hidden", "true");
+    }
+    if (element.hasAttribute("role")) element.removeAttribute("role");
+  } else {
+    if (element.hasAttribute("aria-hidden")) {
+      element.removeAttribute("aria-hidden");
+    }
+    const nextRole = kind === "error" ? "alert" : "status";
+    if (element.getAttribute("role") !== nextRole) {
+      element.setAttribute("role", nextRole);
+    }
+  }
+
+  const shouldHideSpinner = kind !== "loading";
+  if (spinner && spinner.hidden !== shouldHideSpinner) {
+    spinner.hidden = shouldHideSpinner;
+  }
+  if (!label) return;
+  const nextLabel = boundarySlotLabel(boundary, kind);
+  if (label.textContent !== nextLabel) {
+    label.textContent = nextLabel;
+  }
 }
 
 function visibleBoundarySlotKind(
@@ -858,7 +889,7 @@ function boundarySlotFor(
   return {
     key: `${boundary}:slot`,
     height: BOUNDARY_SLOT_HEIGHT,
-    build: () => buildBoundarySlot(boundary, visibleBoundarySlotKind(boundary)),
+    build: () => buildBoundarySlot(boundary),
   };
 }
 
@@ -910,6 +941,8 @@ function placeholderSlotFor(): DynamicVirtualizerPlaceholderSlot | null {
 
 function syncBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
   virtualizer?.setBoundarySlot(boundary, boundarySlotFor(boundary));
+  const element = virtualizer?.getBoundaryElement(boundary);
+  if (element) updateBoundarySlotElement(element, boundary);
 }
 
 function syncBoundarySlots(): void {
@@ -917,7 +950,17 @@ function syncBoundarySlots(): void {
     topSlot: boundarySlotFor("top"),
     bottomSlot: boundarySlotFor("bottom"),
     placeholderSlot: placeholderSlotFor(),
+    after: () => {
+      refreshBoundarySlotElements();
+    },
   });
+}
+
+function refreshBoundarySlotElements(): void {
+  for (const boundary of ["top", "bottom"] as const) {
+    const element = virtualizer?.getBoundaryElement(boundary);
+    if (element) updateBoundarySlotElement(element, boundary);
+  }
 }
 
 function syncLoadModeButton(): void {
@@ -1123,8 +1166,9 @@ function cancelBoundaryLoad(boundary: DynamicVirtualizerBoundary): void {
 
 function loadTopChunk(): void {
   if (sourceLoading) return;
-  cancelBoundaryLoad("top");
+  if (loadingTop) return;
   cancelBoundaryLoad("bottom");
+  cancelBoundaryLoad("top");
 
   if (!activeSource.canLoadTop(items)) {
     setBoundarySlotState("top", "no-more");
@@ -1159,7 +1203,6 @@ async function commitTopChunk(deferDuringScroll: boolean): Promise<void> {
   try {
     const addedItems = await activeSource.loadTop(items, token.controller);
     if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    loadingTop = false;
     applyTopChunk(addedItems, token, deferDuringScroll);
   } catch (error) {
     if (
@@ -1181,6 +1224,7 @@ async function commitTopChunk(deferDuringScroll: boolean): Promise<void> {
 
 function loadBottomChunk(): void {
   if (sourceLoading) return;
+  if (loadingBottom) return;
   cancelBoundaryLoad("top");
   cancelBoundaryLoad("bottom");
 
@@ -1217,7 +1261,6 @@ async function commitBottomChunk(deferDuringScroll: boolean): Promise<void> {
   try {
     const addedItems = await activeSource.loadBottom(items, token.controller);
     if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    loadingBottom = false;
     applyBottomChunk(addedItems, token, deferDuringScroll);
   } catch (error) {
     if (
@@ -1280,6 +1323,7 @@ function applyTopChunk(
       return true;
     },
     after: () => {
+      refreshBoundarySlotElements();
       pruneMeasuredHeights();
       trimRetainedWindow();
       syncStatus();
@@ -1317,6 +1361,7 @@ function applyBottomChunk(
       return true;
     },
     after: () => {
+      refreshBoundarySlotElements();
       pruneMeasuredHeights();
       trimRetainedWindow();
       syncStatus();

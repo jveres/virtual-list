@@ -6,6 +6,7 @@ const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
 const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_RENDER_DRIFT_EPSILON = 1;
 const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
+const WHEEL_SCROLL_IDLE_MS = 3000;
 
 const CSS = `
 .dv-viewport {
@@ -456,8 +457,10 @@ export function createDynamicVirtualizer(
   let placeholderSlot: MountedPlaceholderSlot | null = null;
   let userScrollActive = false;
   let userScrollMoved = false;
+  let userInputMoved = false;
   let scrollEndBlockedByInput = false;
   let blockedScrollEndFrame = 0;
+  let wheelIdleTimer = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
   let reachTopArmed = false;
@@ -770,9 +773,11 @@ export function createDynamicVirtualizer(
     const current = ensureBoundarySlot(boundary);
     const nextKey = String(slot.key);
     const nextHeight = positiveSize(slot.height);
+    if (current.key !== nextKey || !current.element.firstChild) {
+      current.element.replaceChildren(slot.build());
+    }
     current.key = nextKey;
     current.build = slot.build;
-    current.element.replaceChildren(slot.build());
 
     if (Math.abs(current.height - nextHeight) <= 0.01) return false;
     current.height = nextHeight;
@@ -1441,14 +1446,7 @@ export function createDynamicVirtualizer(
   async function scrollToBottom(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
-    stopFollowBottom();
-    if (count <= 0 || options.signal?.aborted) return false;
-    syncContentHeight();
-    const target = nativeMaxScrollTop();
-    renderNow(target);
-    const ok = await scrollToNativeTop(target, options);
-    renderNow(viewport.scrollTop);
-    return ok;
+    return scrollToIndex(count - 1, "bottom", options);
   }
 
   function setStickyIndex(index: number | null): void {
@@ -1677,6 +1675,7 @@ export function createDynamicVirtualizer(
 
   function handleScroll(): void {
     if (userScrollActive) userScrollMoved = true;
+    if (wheelIdleTimer) scheduleWheelIdleFinish();
     scheduleRender();
   }
 
@@ -1690,11 +1689,19 @@ export function createDynamicVirtualizer(
     blockedScrollEndFrame = 0;
   }
 
+  function cancelWheelIdleTimer(): void {
+    if (!wheelIdleTimer) return;
+    window.clearTimeout(wheelIdleTimer);
+    wheelIdleTimer = 0;
+  }
+
   function finishUserScroll(): void {
     cancelBlockedScrollEndFrame();
+    cancelWheelIdleTimer();
     scrollEndBlockedByInput = false;
     userScrollActive = false;
     userScrollMoved = false;
+    userInputMoved = false;
     if (flushDeferredLayoutUpdates()) {
       flushMeasurementsNow();
     } else if (!flushMeasurementsNow()) {
@@ -1721,10 +1728,26 @@ export function createDynamicVirtualizer(
     });
   }
 
+  function scheduleWheelIdleFinish(): void {
+    if (hasActiveTouchOrPointerInput()) return;
+
+    cancelWheelIdleTimer();
+    wheelIdleTimer = window.setTimeout(() => {
+      wheelIdleTimer = 0;
+      if (disposed || !userScrollActive || hasActiveTouchOrPointerInput()) {
+        return;
+      }
+      finishUserScroll();
+    }, WHEEL_SCROLL_IDLE_MS);
+  }
+
   function handleScrollEnd(): void {
     if (hasActiveTouchOrPointerInput()) {
       scrollEndBlockedByInput = true;
       scheduleRender();
+      return;
+    }
+    if (wheelIdleTimer) {
       return;
     }
     finishUserScroll();
@@ -1753,10 +1776,19 @@ export function createDynamicVirtualizer(
     cancelBlockedScrollEndFrame();
     const wasActive = userScrollActive;
     userScrollActive = true;
-    if (!wasActive) userScrollMoved = false;
+    if (!wasActive) {
+      userScrollMoved = false;
+      userInputMoved = false;
+    }
     if (!wasActive) {
       onScrollStart?.(getState());
     }
+  }
+
+  function handleWheel(): void {
+    handleUserScrollStart();
+    userInputMoved = true;
+    scheduleWheelIdleFinish();
   }
 
   function handleUserScrollMaybeEnd(): void {
@@ -1765,7 +1797,7 @@ export function createDynamicVirtualizer(
       scheduleBlockedScrollEndFinish();
       return;
     }
-    if (userScrollMoved) return;
+    if (userScrollMoved || userInputMoved) return;
     userScrollActive = false;
     if (pendingMeasurements.size > 0) {
       scheduleMeasurementFlush();
@@ -1775,6 +1807,10 @@ export function createDynamicVirtualizer(
   function handleTouchScrollStart(): void {
     touchInputActive = true;
     handleUserScrollStart();
+  }
+
+  function handleTouchScrollMove(): void {
+    userInputMoved = true;
   }
 
   function handleTouchScrollEnd(event: TouchEvent): void {
@@ -1788,6 +1824,11 @@ export function createDynamicVirtualizer(
     handleUserScrollStart();
   }
 
+  function handlePointerScrollMove(event: PointerEvent): void {
+    if (!activePointers.has(event.pointerId)) return;
+    userInputMoved = true;
+  }
+
   function handlePointerScrollEnd(event: PointerEvent): void {
     if (event.pointerType === "touch" && supportsTouchEvents) return;
     activePointers.delete(event.pointerId);
@@ -1796,11 +1837,14 @@ export function createDynamicVirtualizer(
 
   viewport.addEventListener("scroll", handleScroll, { passive: true });
   viewport.addEventListener("scrollend", handleScrollEnd, { passive: true });
-  viewport.addEventListener("wheel", handleUserScrollStart, { passive: true });
+  viewport.addEventListener("wheel", handleWheel, { passive: true });
   const supportsPointerEvents = "PointerEvent" in window;
   const supportsTouchEvents = "TouchEvent" in window;
   if (supportsPointerEvents) {
     viewport.addEventListener("pointerdown", handlePointerScrollStart, {
+      passive: true,
+    });
+    viewport.addEventListener("pointermove", handlePointerScrollMove, {
       passive: true,
     });
     viewport.addEventListener("pointerup", handlePointerScrollEnd, {
@@ -1812,6 +1856,9 @@ export function createDynamicVirtualizer(
   }
   if (supportsTouchEvents) {
     viewport.addEventListener("touchstart", handleTouchScrollStart, {
+      passive: true,
+    });
+    viewport.addEventListener("touchmove", handleTouchScrollMove, {
       passive: true,
     });
     viewport.addEventListener("touchend", handleTouchScrollEnd, {
@@ -1852,20 +1899,23 @@ export function createDynamicVirtualizer(
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
       stopFollowBottom();
       cancelBlockedScrollEndFrame();
+      cancelWheelIdleTimer();
       deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();
       boundaryIntersectionObserver?.disconnect();
       viewport.removeEventListener("scroll", handleScroll);
       viewport.removeEventListener("scrollend", handleScrollEnd);
-      viewport.removeEventListener("wheel", handleUserScrollStart);
+      viewport.removeEventListener("wheel", handleWheel);
       if (supportsPointerEvents) {
         viewport.removeEventListener("pointerdown", handlePointerScrollStart);
+        viewport.removeEventListener("pointermove", handlePointerScrollMove);
         viewport.removeEventListener("pointerup", handlePointerScrollEnd);
         viewport.removeEventListener("pointercancel", handlePointerScrollEnd);
       }
       if (supportsTouchEvents) {
         viewport.removeEventListener("touchstart", handleTouchScrollStart);
+        viewport.removeEventListener("touchmove", handleTouchScrollMove);
         viewport.removeEventListener("touchend", handleTouchScrollEnd);
         viewport.removeEventListener("touchcancel", handleTouchScrollEnd);
       }
