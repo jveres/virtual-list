@@ -604,13 +604,13 @@ mustGet("bulk-btn", HTMLButtonElement).addEventListener("click", () => {
 });
 
 scrollTopBtn.addEventListener("click", () => {
-  void virtualizer.scrollToIndex(0, "top").then(() => {
+  void virtualizer.scrollToIndex(0, "top", { behavior: "smooth" }).then(() => {
     syncScrollButtons();
   });
 });
 
 scrollBottomBtn.addEventListener("click", () => {
-  void virtualizer.scrollToIndex(messages.length - 1, "bottom").then(() => {
+  void virtualizer.scrollToBottom({ behavior: "smooth" }).then(() => {
     syncScrollButtons();
   });
 });

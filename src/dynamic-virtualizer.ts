@@ -26,7 +26,6 @@ const CSS = `
   left: 0;
   right: 0;
   contain: layout paint;
-  will-change: transform;
 }
 .dv-boundary-slot {
   position: absolute;
