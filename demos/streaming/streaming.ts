@@ -74,6 +74,7 @@ let streamAbort: StreamAbort | null = null;
 let scrollTurnInProgress = false;
 let scrollButtonsFrame = 0;
 let nextResponse = 0;
+let bottomFollowArmed = false;
 let bottomFollowCleanup: (() => void) | null = null;
 
 const templateHeights = new Float64Array(conversation.length);
@@ -511,6 +512,7 @@ function startStreamingBottomFollow(abort: StreamAbort): void {
 
   bottomFollowCleanup?.();
   const followAbort = linkedAbortSignal(abort);
+  bottomFollowArmed = true;
   bottomFollowCleanup = followAbort.cleanup;
   virtualizer.followBottom({
     behavior: "smooth",
@@ -519,10 +521,20 @@ function startStreamingBottomFollow(abort: StreamAbort): void {
   });
 }
 
-function stopStreamingBottomFollow(): void {
-  virtualizer.stopFollowBottom();
+function dearmStreamingBottomFollow(): void {
+  bottomFollowArmed = false;
   bottomFollowCleanup?.();
   bottomFollowCleanup = null;
+}
+
+function stopStreamingBottomFollow(): void {
+  virtualizer.stopFollowBottom();
+  dearmStreamingBottomFollow();
+}
+
+function handleVirtualizerScrollStart(): void {
+  if (!bottomFollowArmed) return;
+  dearmStreamingBottomFollow();
 }
 
 async function scrollMessageToTop(
@@ -611,6 +623,9 @@ async function handleSend(): Promise<void> {
     }
     if (!abort.cancelled) {
       await settleVirtualizerFrames();
+      if (bottomFollowArmed) {
+        await virtualizer.scrollToBottom();
+      }
     }
     stopStreamingBottomFollow();
     streamAbort = null;
@@ -685,6 +700,7 @@ virtualizer = createDynamicVirtualizer({
   buildItem,
   overscanPx: 700,
   onRangeChange: scheduleScrollButtons,
+  onScrollStart: handleVirtualizerScrollStart,
 });
 const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
