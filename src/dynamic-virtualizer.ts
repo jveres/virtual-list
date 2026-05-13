@@ -443,6 +443,7 @@ export function createDynamicVirtualizer(
   let userScrollActive = false;
   let userScrollMoved = false;
   let scrollEndBlockedByInput = false;
+  let blockedScrollEndFrame = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
   let reachTopArmed = false;
@@ -1570,7 +1571,14 @@ export function createDynamicVirtualizer(
     return touchInputActive || activePointers.size > 0;
   }
 
+  function cancelBlockedScrollEndFrame(): void {
+    if (!blockedScrollEndFrame) return;
+    cancelAnimationFrame(blockedScrollEndFrame);
+    blockedScrollEndFrame = 0;
+  }
+
   function finishUserScroll(): void {
+    cancelBlockedScrollEndFrame();
     scrollEndBlockedByInput = false;
     userScrollActive = false;
     userScrollMoved = false;
@@ -1580,6 +1588,24 @@ export function createDynamicVirtualizer(
       renderNow(viewport.scrollTop);
     }
     onScrollEnd?.(getState());
+  }
+
+  function scheduleBlockedScrollEndFinish(): void {
+    if (blockedScrollEndFrame || !scrollEndBlockedByInput) return;
+
+    // Some browsers can report scrollend before the final touch/pointer release.
+    // If no second scrollend follows, this releases deferred layout work.
+    blockedScrollEndFrame = requestAnimationFrame(() => {
+      blockedScrollEndFrame = 0;
+      if (
+        disposed ||
+        hasActiveTouchOrPointerInput() ||
+        !scrollEndBlockedByInput
+      ) {
+        return;
+      }
+      finishUserScroll();
+    });
   }
 
   function handleScrollEnd(): void {
@@ -1610,6 +1636,7 @@ export function createDynamicVirtualizer(
   }
 
   function handleUserScrollStart(): void {
+    cancelBlockedScrollEndFrame();
     const wasActive = userScrollActive;
     userScrollActive = true;
     if (!wasActive) userScrollMoved = false;
@@ -1620,7 +1647,10 @@ export function createDynamicVirtualizer(
 
   function handleUserScrollMaybeEnd(): void {
     if (hasActiveTouchOrPointerInput()) return;
-    if (scrollEndBlockedByInput) return;
+    if (scrollEndBlockedByInput) {
+      scheduleBlockedScrollEndFinish();
+      return;
+    }
     if (userScrollMoved) return;
     userScrollActive = false;
     if (pendingMeasurements.size > 0) {
@@ -1704,6 +1734,7 @@ export function createDynamicVirtualizer(
       disposed = true;
       if (renderFrame) cancelAnimationFrame(renderFrame);
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
+      cancelBlockedScrollEndFrame();
       deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();

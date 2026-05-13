@@ -236,9 +236,12 @@ update while native scrolling is active and applies it from its `scrollend`
 path.
 
 The runtime treats `scrollend` as blocked while touch or pointer input is still
-active. In that case, it waits for a later native `scrollend` before flushing
-deferred layout updates. This avoids committing deferred boundary rows while
-Safari is still settling a rubber-band edge gesture.
+active. In that case, a later native `scrollend` flushes deferred layout
+updates. If the browser already emitted the final `scrollend` before the input
+ended, the runtime finalizes on the next animation frame after release. This
+avoids committing deferred boundary rows while Safari is still settling a
+rubber-band edge gesture without leaving a completed load stuck in its loading
+state.
 
 Only one boundary load must own the visible loading state at a time. If a new
 top or bottom load starts while any boundary load is still running or waiting
