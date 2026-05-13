@@ -148,6 +148,10 @@ const virtualizer = createDynamicVirtualizer({
 });
 ```
 
+Pass `renderMode: "full"` to mount every current row instead of only the
+virtual range. The default is `renderMode: "virtual"`. Full mode is useful for
+bounded retained windows when diagnosing mount and unmount churn.
+
 The returned object exposes:
 
 - `state` for the latest count, mounted range, measured count, scroll position,
@@ -208,9 +212,17 @@ loading, empty, and error states before rows are available.
 
 `debugRenderDrift` is an optional diagnostics flag. Pass `true` to log mounted
 row drift with `console.warn`, or pass a reporter function to collect drift
-records. The runtime skips all drift reads when the option is unset or `false`,
-so normal scroll rendering doesn't call `getBoundingClientRect()` for this
-debug path.
+records. The runtime compares each mounted row's actual DOM rect against its
+modeled `translateY()` position and measured height. The runtime skips all drift
+reads when the option is unset or `false`, so normal scroll rendering doesn't
+call `getBoundingClientRect()` for this debug path.
+
+In the chunk loading demo, add `?debugRenderDrift=1` to the URL. The console
+prints one activation line when the flag is enabled. It logs warnings only when
+at least one mounted row drifts beyond the runtime epsilon. The demo also keeps
+the last reports on `window.__vl4RenderDriftReports` and increments
+`window.__vl4RenderDriftCount`. Because drift checks read DOM rects, use this
+flag only for diagnostics; it is not a scroll performance mode.
 
 ## Chunk loading
 
@@ -320,6 +332,12 @@ and Lemmy public post lists. Network sources start at the natural top of the
 loaded feed, while the synthetic transcript starts near the middle so both
 directions have data immediately. All sources pre-measure every loaded row
 before exposing it to the virtualizer.
+
+The render mode button switches the runtime between virtual rows and full
+retained DOM rows. You can also use `?render=full`. Full mode keeps every row
+in the retained window mounted while preserving the same runtime scroll model,
+boundary slots, measurements, and scroll APIs. Use it to compare normal
+virtualization against mount-free retained-window rendering.
 
 The load mode button switches the host between instant and deferred boundary
 loading. In instant mode, top and bottom reach callbacks load and commit the

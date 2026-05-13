@@ -26,6 +26,7 @@ const CSS = `
   left: 0;
   right: 0;
   contain: layout paint;
+  will-change: transform;
 }
 .dv-boundary-slot {
   position: absolute;
@@ -40,10 +41,9 @@ const CSS = `
 }
 `;
 
-const renderedItemTops = new WeakMap<HTMLElement, number>();
-
 export type DynamicVirtualizerAlign = "top" | "center" | "bottom" | number;
 export type DynamicVirtualizerBoundary = "top" | "bottom";
+export type DynamicVirtualizerRenderMode = "virtual" | "full";
 
 export interface DynamicVirtualizerConfig {
   viewport: HTMLElement;
@@ -52,6 +52,7 @@ export interface DynamicVirtualizerConfig {
   getItemHeight: (index: number) => number;
   buildItem: (index: number) => HTMLElement;
   overscanPx?: number | (() => number);
+  renderMode?: DynamicVirtualizerRenderMode;
   measureEpsilon?: number;
   debugRenderDrift?: boolean | DynamicVirtualizerRenderDriftReporter;
   onRangeChange?: (state: DynamicVirtualizerState) => void;
@@ -293,7 +294,6 @@ function positionItem(
 ): void {
   const top = offset + tree.prefix(index);
   element.style.transform = `translateY(${px(top)})`;
-  renderedItemTops.set(element, top);
 }
 
 function prepareMeasuredItem(element: HTMLElement): HTMLElement {
@@ -402,6 +402,7 @@ export function createDynamicVirtualizer(
     typeof overscanPx === "function"
       ? overscanPx
       : () => overscanPx ?? DEFAULT_OVERSCAN_PX;
+  const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
   const renderDriftReporter =
     typeof config.debugRenderDrift === "function"
@@ -1018,9 +1019,11 @@ export function createDynamicVirtualizer(
   function computeRange(
     scrollTop: number,
     viewportHeight = lastViewportHeight,
+    overscanPx = Math.max(0, getOverscanPx()),
   ): { start: number; end: number } {
     if (count === 0) return { start: 0, end: 0 };
-    const overscanPx = Math.max(0, getOverscanPx());
+    if (renderMode === "full") return { start: 0, end: count };
+
     const itemScrollTop = scrollTop - topSlotHeight();
     const startTarget = Math.max(0, itemScrollTop - overscanPx);
     const endTarget = Math.min(
@@ -1049,12 +1052,14 @@ export function createDynamicVirtualizer(
 
     const drifts: DynamicVirtualizerRenderDrift[] = [];
     const slotHeight = topSlotHeight();
+    const contentTop = content.getBoundingClientRect().top;
 
     for (const [index, element] of mounted) {
       const expectedTop = slotHeight + sizeTree.prefix(index);
-      const actualTop = renderedItemTops.get(element) ?? 0;
+      const actualRect = element.getBoundingClientRect();
+      const actualTop = actualRect.top - contentTop;
       const expectedHeight = sizes[index] ?? modeledItemHeight(index);
-      const actualHeight = element.getBoundingClientRect().height;
+      const actualHeight = actualRect.height;
       const topDrift = actualTop - expectedTop;
       const heightDrift = actualHeight - expectedHeight;
 

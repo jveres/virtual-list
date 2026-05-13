@@ -8,6 +8,7 @@ import {
   type DynamicVirtualizerBoundarySlot,
   type DynamicVirtualizerPlaceholderSlot,
   type DynamicVirtualizerRenderDrift,
+  type DynamicVirtualizerRenderMode,
 } from "../../src/dynamic-virtualizer.js";
 import {
   applyDocumentTheme,
@@ -25,6 +26,7 @@ const TOTAL_AVAILABLE = 10_000;
 const DEFAULT_RETAINED_COUNT = 100;
 const DEFAULT_CHUNK_SIZE = 50;
 const DEFAULT_LOAD_MODE: LoadMode = "deferred";
+const DEFAULT_RENDER_MODE: DynamicVirtualizerRenderMode = "virtual";
 const DEFAULT_SOURCE: SourceId = "synthetic";
 const BOUNDARY_SLOT_HEIGHT = 52;
 const SYNTHETIC_OVERSCAN_PX = 900;
@@ -42,6 +44,7 @@ const LEMMY_ORIGINS = [
 
 type LoadMode = "instant" | "deferred";
 type SourceId = "synthetic" | "bsky" | "lemmy";
+type DemoRenderMode = DynamicVirtualizerRenderMode;
 type BoundarySlotKind = "none" | "idle" | "loading" | "no-more" | "error";
 type PlaceholderSlotKind = "loading" | "empty" | "error";
 type MediaRenderMode = "load" | "placeholder";
@@ -190,18 +193,29 @@ const params = new URLSearchParams(location.search);
 const retainedCount = readPositiveInt("retain", DEFAULT_RETAINED_COUNT);
 const chunkSize = readPositiveInt("chunk", DEFAULT_CHUNK_SIZE);
 const configuredLoadMode = params.get("mode");
+const configuredRenderMode = params.get("render");
 const configuredSource = params.get("source");
 const renderDriftDebug = readBooleanFlag("debugRenderDrift");
+if (renderDriftDebug) {
+  const debugWindow = window as RenderDriftDebugWindow;
+  debugWindow.__vl4RenderDriftCount = 0;
+  debugWindow.__vl4RenderDriftReports = [];
+  console.info("[chunk-loading] render drift debug enabled");
+}
 
 const viewport = mustGet("viewport");
 const windowStatus = mustGet("window-status");
 const rangeStatus = mustGet("range-status");
 const loadModeButton = mustGet("load-mode-btn", HTMLButtonElement);
+const renderModeButton = mustGet("render-mode-btn", HTMLButtonElement);
 const sourceSelect = mustGet("source-select", HTMLSelectElement);
 
 let loadMode: LoadMode = isLoadMode(configuredLoadMode)
   ? configuredLoadMode
   : DEFAULT_LOAD_MODE;
+let renderMode: DemoRenderMode = isRenderMode(configuredRenderMode)
+  ? configuredRenderMode
+  : DEFAULT_RENDER_MODE;
 let sourceId: SourceId = isSourceId(configuredSource)
   ? configuredSource
   : DEFAULT_SOURCE;
@@ -253,6 +267,12 @@ function readBooleanFlag(name: string): boolean {
 
 function isLoadMode(value: string | null | undefined): value is LoadMode {
   return value === "instant" || value === "deferred";
+}
+
+function isRenderMode(
+  value: string | null | undefined,
+): value is DemoRenderMode {
+  return value === "virtual" || value === "full";
 }
 
 function isSourceId(value: string | null | undefined): value is SourceId {
@@ -817,12 +837,25 @@ function syncLoadModeButton(): void {
   );
 }
 
+function syncRenderModeButton(): void {
+  const full = renderMode === "full";
+  renderModeButton.classList.toggle("active", full);
+  renderModeButton.setAttribute("aria-pressed", String(full));
+  renderModeButton.title = full ? "Full retained DOM" : "Virtualized rows";
+  renderModeButton.setAttribute(
+    "aria-label",
+    full ? "Full retained DOM" : "Virtualized rows",
+  );
+}
+
 function syncSourceSelect(): void {
   sourceSelect.value = pendingSourceId ?? sourceId;
   sourceSelect.disabled = sourceLoading;
+  renderModeButton.disabled = hasActiveBoundaryLoad();
 }
 
 function syncStatus(state = virtualizer?.state): void {
+  renderModeButton.disabled = hasActiveBoundaryLoad();
   const pending = [
     sourceLoading ? "source loading" : "",
     loadingTop ? "↑ loading" : "",
@@ -834,7 +867,7 @@ function syncStatus(state = virtualizer?.state): void {
     .join(" ");
   const nextWindowStatus = sourceError
     ? sourceError
-    : `${activeSource.label} · ${activeSource.statusLabel(items)} ${activeSource.totalLabel()} · retain ${retainedCount} · chunk ${chunkSize} · ${loadMode}${pending ? ` · ${pending}` : ""} · ↑${topLoads} ↓${bottomLoads}`;
+    : `${activeSource.label} · ${activeSource.statusLabel(items)} ${activeSource.totalLabel()} · retain ${retainedCount} · chunk ${chunkSize} · ${loadMode} · ${renderMode}${pending ? ` · ${pending}` : ""} · ↑${topLoads} ↓${bottomLoads}`;
   if (nextWindowStatus !== renderedWindowStatus) {
     renderedWindowStatus = nextWindowStatus;
     windowStatus.textContent = nextWindowStatus;
@@ -894,6 +927,7 @@ function createVirtualizer(): DynamicVirtualizer {
       activeSource.id === "synthetic"
         ? SYNTHETIC_OVERSCAN_PX
         : NETWORK_OVERSCAN_PX,
+    renderMode,
     debugRenderDrift: renderDriftDebug ? reportRenderDrift : false,
     onRangeChange: syncStatus,
     onReachTop: loadTopChunk,
@@ -944,6 +978,18 @@ function clearBoundaryLoadState(boundary: DynamicVirtualizerBoundary): void {
     pendingBottomLoad = false;
     loadingBottom = false;
   }
+}
+
+function hasActiveBoundaryLoad(): boolean {
+  return (
+    sourceLoading ||
+    topLoadController !== null ||
+    bottomLoadController !== null ||
+    pendingTopLoad ||
+    pendingBottomLoad ||
+    loadingTop ||
+    loadingBottom
+  );
 }
 
 function isCurrentBoundaryLoad(token: BoundaryLoadToken): boolean {
@@ -1196,6 +1242,23 @@ function setLoadMode(nextLoadMode: LoadMode): void {
   syncStatus();
 }
 
+function setRenderMode(nextRenderMode: DemoRenderMode): void {
+  if (nextRenderMode === renderMode || hasActiveBoundaryLoad()) return;
+
+  const keepScrollTop = viewport.scrollTop;
+  renderMode = nextRenderMode;
+  syncRenderModeButton();
+  virtualizer?.dispose();
+  virtualizer = createVirtualizer();
+  syncBoundarySlots();
+  virtualizer.setCount();
+  viewport.scrollTop = Math.min(
+    keepScrollTop,
+    Math.max(0, viewport.scrollHeight - viewport.clientHeight),
+  );
+  syncStatus();
+}
+
 function trimRetainedWindow(): void {
   if (!virtualizer || !pendingTrimSide) return;
 
@@ -1207,13 +1270,17 @@ function trimRetainedWindow(): void {
 
   const { range } = virtualizer.state;
   if (pendingTrimSide === "top") {
-    const removedBefore = Math.min(excess, range.start);
+    const removedBefore =
+      renderMode === "full" ? excess : Math.min(excess, range.start);
     if (removedBefore <= 0) return;
 
     items = items.slice(removedBefore);
     virtualizer.setCount({ removedBefore });
   } else {
-    const removedAfter = Math.min(excess, items.length - range.end);
+    const removedAfter =
+      renderMode === "full"
+        ? excess
+        : Math.min(excess, items.length - range.end);
     if (removedAfter <= 0) return;
 
     items = items.slice(0, items.length - removedAfter);
@@ -1866,6 +1933,10 @@ loadModeButton.addEventListener("click", () => {
   setLoadMode(loadMode === "deferred" ? "instant" : "deferred");
 });
 
+renderModeButton.addEventListener("click", () => {
+  setRenderMode(renderMode === "virtual" ? "full" : "virtual");
+});
+
 sourceSelect.addEventListener("change", () => {
   const nextSourceId = sourceSelect.value;
   if (isSourceId(nextSourceId)) void switchSource(nextSourceId);
@@ -1886,6 +1957,7 @@ await Promise.all([initMarkdown(), document.fonts.ready]);
 applyDocumentTheme();
 syncThemeButtons();
 syncLoadModeButton();
+syncRenderModeButton();
 syncSourceSelect();
 await resetSource(sourceId);
 
