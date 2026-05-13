@@ -49,6 +49,7 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
+const BOTTOM_FOLLOW_DURATION_MS = 300;
 
 const demoParams = new URLSearchParams(location.search);
 const instantReplies =
@@ -73,6 +74,7 @@ let streamAbort: StreamAbort | null = null;
 let scrollTurnInProgress = false;
 let scrollButtonsFrame = 0;
 let nextResponse = 0;
+let bottomFollowCleanup: (() => void) | null = null;
 
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
@@ -493,6 +495,36 @@ function linkedAbortSignal(abort: StreamAbort): {
   return { signal: controller.signal, cleanup };
 }
 
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+async function settleVirtualizerFrames(): Promise<void> {
+  await nextAnimationFrame();
+  await nextAnimationFrame();
+}
+
+function startStreamingBottomFollow(abort: StreamAbort): void {
+  if (abort.cancelled) return;
+
+  bottomFollowCleanup?.();
+  const followAbort = linkedAbortSignal(abort);
+  bottomFollowCleanup = followAbort.cleanup;
+  virtualizer.followBottom({
+    behavior: "smooth",
+    duration: BOTTOM_FOLLOW_DURATION_MS,
+    signal: followAbort.signal,
+  });
+}
+
+function stopStreamingBottomFollow(): void {
+  virtualizer.stopFollowBottom();
+  bottomFollowCleanup?.();
+  bottomFollowCleanup = null;
+}
+
 async function scrollMessageToTop(
   index: number,
   abort: StreamAbort,
@@ -560,6 +592,8 @@ async function handleSend(): Promise<void> {
     scheduleScrollButtons();
     if (abort.cancelled) return;
 
+    startStreamingBottomFollow(abort);
+
     const reply = pickResponse();
     await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
     if (abort.cancelled) return;
@@ -575,6 +609,10 @@ async function handleSend(): Promise<void> {
         refreshItem(assistantIndex);
       }
     }
+    if (!abort.cancelled) {
+      await settleVirtualizerFrames();
+    }
+    stopStreamingBottomFollow();
     streamAbort = null;
     setStreamingUI(false);
     scheduleScrollButtons();

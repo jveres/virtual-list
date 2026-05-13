@@ -5,6 +5,7 @@ const SCROLL_SNAP_THRESHOLD = 1;
 const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
 const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_RENDER_DRIFT_EPSILON = 1;
+const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
 
 const CSS = `
 .dv-viewport {
@@ -79,6 +80,7 @@ export interface DynamicVirtualizerItemMeasurer {
 
 export interface DynamicVirtualizerScrollOptions {
   behavior?: ScrollBehavior;
+  duration?: number;
   signal?: AbortSignal;
   snapThreshold?: number;
 }
@@ -175,6 +177,8 @@ export interface DynamicVirtualizer {
   ): Promise<boolean>;
   scrollToTop(options?: DynamicVirtualizerScrollOptions): Promise<boolean>;
   scrollToBottom(options?: DynamicVirtualizerScrollOptions): Promise<boolean>;
+  followBottom(options?: DynamicVirtualizerScrollOptions): void;
+  stopFollowBottom(): void;
   setStickyIndex(index: number | null): void;
   getMountedElement(index: number): HTMLElement | null;
   refreshIndex(index: number): void;
@@ -422,6 +426,12 @@ export function createDynamicVirtualizer(
   let rangeEnd = 0;
   let renderFrame = 0;
   let measurementFrame = 0;
+  let bottomFollowFrame = 0;
+  let bottomFollowLastFrameAt = 0;
+  let bottomFollowDuration = DEFAULT_SMOOTH_SCROLL_DURATION;
+  let bottomFollowSnapThreshold = SCROLL_SNAP_THRESHOLD;
+  let bottomFollowSignal: AbortSignal | null = null;
+  let bottomFollowAbortHandler: (() => void) | null = null;
   let layoutVersion = 0;
   let renderedLayoutVersion = -1;
   let renderedTotalSize = -1;
@@ -1306,11 +1316,105 @@ export function createDynamicVirtualizer(
     });
   }
 
+  function clearBottomFollowSignal(): void {
+    if (bottomFollowSignal && bottomFollowAbortHandler) {
+      bottomFollowSignal.removeEventListener("abort", bottomFollowAbortHandler);
+    }
+    bottomFollowSignal = null;
+    bottomFollowAbortHandler = null;
+  }
+
+  function stopFollowBottom(): void {
+    if (bottomFollowFrame) {
+      cancelAnimationFrame(bottomFollowFrame);
+      bottomFollowFrame = 0;
+    }
+    clearBottomFollowSignal();
+  }
+
+  function bottomFollowFrameProgress(now: number): number {
+    const previousFrameAt = bottomFollowLastFrameAt || now;
+    bottomFollowLastFrameAt = now;
+    const elapsed = Math.max(0, now - previousFrameAt);
+    const duration = Math.max(1, bottomFollowDuration);
+    if (duration <= 1) return 1;
+
+    return clamp(1 - 0.01 ** (elapsed / duration), 0, 1);
+  }
+
+  function scheduleBottomFollowFrame(): void {
+    if (bottomFollowFrame || disposed) return;
+    bottomFollowFrame = requestAnimationFrame(tickBottomFollow);
+  }
+
+  function tickBottomFollow(now: number): void {
+    bottomFollowFrame = 0;
+    if (
+      disposed ||
+      userScrollActive ||
+      bottomFollowSignal?.aborted ||
+      count <= 0
+    ) {
+      stopFollowBottom();
+      return;
+    }
+
+    const flushedMeasurements = flushMeasurementsNow();
+    syncContentHeight();
+
+    const target = nativeMaxScrollTop();
+
+    const distance = Math.abs(viewport.scrollTop - target);
+    if (distance <= bottomFollowSnapThreshold) {
+      const didScroll = setScrollTop(target, { allowDuringScroll: true });
+      if (didScroll || flushedMeasurements) {
+        renderNow(viewport.scrollTop);
+      }
+      bottomFollowLastFrameAt = now;
+      scheduleBottomFollowFrame();
+      return;
+    }
+
+    const progress = bottomFollowFrameProgress(now);
+    const nextTop =
+      viewport.scrollTop + (target - viewport.scrollTop) * progress;
+    if (setScrollTop(nextTop, { allowDuringScroll: true })) {
+      renderNow(viewport.scrollTop);
+    }
+    scheduleBottomFollowFrame();
+  }
+
+  function followBottom(options: DynamicVirtualizerScrollOptions = {}): void {
+    stopFollowBottom();
+    if (count <= 0 || options.signal?.aborted) return;
+
+    syncContentHeight();
+    const snapThreshold = options.snapThreshold ?? SCROLL_SNAP_THRESHOLD;
+
+    bottomFollowDuration = Math.max(
+      1,
+      options.behavior === "smooth"
+        ? (options.duration ?? DEFAULT_SMOOTH_SCROLL_DURATION)
+        : 1,
+    );
+    bottomFollowSnapThreshold = snapThreshold;
+    bottomFollowSignal = options.signal ?? null;
+    if (bottomFollowSignal) {
+      bottomFollowAbortHandler = stopFollowBottom;
+      bottomFollowSignal.addEventListener("abort", bottomFollowAbortHandler, {
+        once: true,
+      });
+    }
+    bottomFollowLastFrameAt = performance.now();
+    scheduleBottomFollowFrame();
+  }
+
   async function scrollToIndex(
     index: number,
     align: DynamicVirtualizerAlign = "top",
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
+    stopFollowBottom();
     if (count <= 0 || options.signal?.aborted) return false;
     const targetIndex = clamp(Math.floor(index), 0, count - 1);
     const target = scrollTopForIndex(targetIndex, align);
@@ -1329,6 +1433,7 @@ export function createDynamicVirtualizer(
   async function scrollToBottom(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
+    stopFollowBottom();
     if (count <= 0 || options.signal?.aborted) return false;
     syncContentHeight();
     const target = nativeMaxScrollTop();
@@ -1636,6 +1741,7 @@ export function createDynamicVirtualizer(
   }
 
   function handleUserScrollStart(): void {
+    stopFollowBottom();
     cancelBlockedScrollEndFrame();
     const wasActive = userScrollActive;
     userScrollActive = true;
@@ -1726,6 +1832,8 @@ export function createDynamicVirtualizer(
     scrollToIndex,
     scrollToTop,
     scrollToBottom,
+    followBottom,
+    stopFollowBottom,
     setStickyIndex,
     getMountedElement,
     refreshIndex,
@@ -1734,6 +1842,7 @@ export function createDynamicVirtualizer(
       disposed = true;
       if (renderFrame) cancelAnimationFrame(renderFrame);
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
+      stopFollowBottom();
       cancelBlockedScrollEndFrame();
       deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();

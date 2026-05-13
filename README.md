@@ -174,6 +174,9 @@ The returned object exposes:
 - `getPlaceholderElement()` for direct access to the mounted empty-list row.
 - `scrollToIndex(index, align, options)` for index navigation.
 - `scrollToTop(options)` and `scrollToBottom(options)` as convenience wrappers.
+- `followBottom(options)` to keep the viewport following the current bottom
+  while content grows. Wheel, touch, and pointer input stop the follow.
+- `stopFollowBottom()` to cancel an active bottom follow.
 - `setStickyIndex(index)` to reserve trailing space for top alignment.
 - `getMountedElement(index)` for direct mounted-row updates.
 - `refreshIndex(index)` and `refreshMounted()` for rebuilding row DOM.
