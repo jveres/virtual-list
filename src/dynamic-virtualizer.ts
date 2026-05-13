@@ -928,6 +928,7 @@ export function createDynamicVirtualizer(
     const baseTotalSize =
       topSlotHeight() + itemTotalSize() + bottomSlotHeight();
     if (baseTotalSize <= viewport.clientHeight + 0.5) {
+      stickyIndex = null;
       tailGap = 0;
       return;
     }
