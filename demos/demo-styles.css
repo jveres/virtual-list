@@ -327,6 +327,10 @@ select.source-select:disabled {
   min-width: 0;
 }
 
+.message.assistant .message-content {
+  width: 100%;
+}
+
 .message.user .message-content {
   max-width: 78%;
   border-radius: 18px;
