@@ -1,6 +1,5 @@
 const STYLE_ID = "dynamic-virtualizer-styles";
 const DEFAULT_OVERSCAN_PX = 900;
-const FIREFOX_OVERSCAN_VIEWPORTS = 2;
 const DEFAULT_MEASURE_EPSILON = 0.5;
 const SCROLL_SNAP_THRESHOLD = 1;
 const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
@@ -26,6 +25,7 @@ const CSS = `
   top: 0;
   left: 0;
   right: 0;
+  contain: layout paint;
 }
 .dv-boundary-slot {
   position: absolute;
@@ -39,6 +39,8 @@ const CSS = `
   right: 0;
 }
 `;
+
+const renderedItemTops = new WeakMap<HTMLElement, number>();
 
 export type DynamicVirtualizerAlign = "top" | "center" | "bottom" | number;
 export type DynamicVirtualizerBoundary = "top" | "bottom";
@@ -283,17 +285,15 @@ function resizeEntryHeight(entry: ResizeObserverEntry): number | null {
   return contentHeight > 0 ? contentHeight : null;
 }
 
-function isFirefox(): boolean {
-  return navigator.userAgent.includes("Firefox/");
-}
-
 function positionItem(
   index: number,
   element: HTMLElement,
   tree: FenwickTree,
   offset = 0,
 ): void {
-  element.style.top = px(offset + tree.prefix(index));
+  const top = offset + tree.prefix(index);
+  element.style.transform = `translateY(${px(top)})`;
+  renderedItemTops.set(element, top);
 }
 
 function prepareMeasuredItem(element: HTMLElement): HTMLElement {
@@ -402,7 +402,6 @@ export function createDynamicVirtualizer(
     typeof overscanPx === "function"
       ? overscanPx
       : () => overscanPx ?? DEFAULT_OVERSCAN_PX;
-  const useFirefoxOverscanFloor = isFirefox();
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
   const renderDriftReporter =
     typeof config.debugRenderDrift === "function"
@@ -1021,11 +1020,7 @@ export function createDynamicVirtualizer(
     viewportHeight = lastViewportHeight,
   ): { start: number; end: number } {
     if (count === 0) return { start: 0, end: 0 };
-    const overscanPx = Math.max(
-      0,
-      getOverscanPx(),
-      useFirefoxOverscanFloor ? viewportHeight * FIREFOX_OVERSCAN_VIEWPORTS : 0,
-    );
+    const overscanPx = Math.max(0, getOverscanPx());
     const itemScrollTop = scrollTop - topSlotHeight();
     const startTarget = Math.max(0, itemScrollTop - overscanPx);
     const endTarget = Math.min(
@@ -1038,11 +1033,14 @@ export function createDynamicVirtualizer(
     };
   }
 
-  function prepareItem(index: number, element: HTMLElement): HTMLElement {
+  function prepareItem(
+    index: number,
+    element: HTMLElement,
+    offset = topSlotHeight(),
+  ): HTMLElement {
     element.dataset.index = String(index);
     element.classList.add("dv-item");
-    element.style.transform = "";
-    positionItem(index, element, sizeTree, topSlotHeight());
+    positionItem(index, element, sizeTree, offset);
     return element;
   }
 
@@ -1054,7 +1052,7 @@ export function createDynamicVirtualizer(
 
     for (const [index, element] of mounted) {
       const expectedTop = slotHeight + sizeTree.prefix(index);
-      const actualTop = Number.parseFloat(element.style.top) || 0;
+      const actualTop = renderedItemTops.get(element) ?? 0;
       const expectedHeight = sizes[index] ?? modeledItemHeight(index);
       const actualHeight = element.getBoundingClientRect().height;
       const topDrift = actualTop - expectedTop;
@@ -1090,6 +1088,7 @@ export function createDynamicVirtualizer(
     renderPlaceholderSlot();
     const viewportHeight = lastViewportHeight;
     const actualScrollTop = viewport.scrollTop;
+    const itemOffset = topSlotHeight();
 
     const previousStart = rangeStart;
     const previousEnd = rangeEnd;
@@ -1117,7 +1116,7 @@ export function createDynamicVirtualizer(
           break;
         }
         if (layoutDirty) {
-          positionItem(index, element, sizeTree, topSlotHeight());
+          positionItem(index, element, sizeTree, itemOffset);
         }
       }
       if (complete) {
@@ -1128,28 +1127,25 @@ export function createDynamicVirtualizer(
       }
     }
 
-    const previousMounted = mounted;
-    const nextMounted = new Map<number, HTMLElement>();
-
-    for (const [index, element] of previousMounted) {
+    for (const [index, element] of mounted) {
       if (index >= start && index < end) continue;
       itemResizeObserver.unobserve(element);
       element.remove();
+      mounted.delete(index);
     }
 
     for (let index = start; index < end; index++) {
-      let element = previousMounted.get(index);
+      let element = mounted.get(index);
       if (!element) {
-        element = prepareItem(index, buildItem(index));
+        element = prepareItem(index, buildItem(index), itemOffset);
         itemResizeObserver.observe(element);
         content.appendChild(element);
+        mounted.set(index, element);
       } else if (layoutDirty) {
-        positionItem(index, element, sizeTree, topSlotHeight());
+        positionItem(index, element, sizeTree, itemOffset);
       }
-      nextMounted.set(index, element);
     }
 
-    mounted = nextMounted;
     renderedLayoutVersion = layoutVersion;
     inspectRenderDrift();
     emitViewportChange(totalSize, actualScrollTop, viewportHeight);

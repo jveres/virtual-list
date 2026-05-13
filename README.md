@@ -43,7 +43,8 @@ The runtime uses these pieces:
   tracks.
 - A single relative content layer whose height is the current total modeled
   height.
-- Absolutely positioned rows placed at their modeled prefix offset with `top`.
+- Absolutely positioned rows placed at their modeled prefix offset with
+  `translateY()`.
 - A `Float64Array` of row sizes backed by a Fenwick tree for prefix sums and
   index lookup.
 - A `ResizeObserver` on mounted rows to replace estimates with real border-box
@@ -412,11 +413,6 @@ the correction that preserves the active anchor or bottom state. On browsers tha
 accept those writes during momentum, corrections happen immediately. On browsers
 that defer or coalesce scroll writes during native momentum, the next render or
 measurement pass catches up from the current native scroll position.
-
-Firefox uses asynchronous pan and zoom, and high-DPI or external-display setups
-can make scroll-linked DOM churn visible. The runtime avoids wholesale child
-replacement during range changes and applies a Firefox-only overscan floor of
-two viewport heights to reduce range churn while the compositor is scrolling.
 
 ## Validation
 
