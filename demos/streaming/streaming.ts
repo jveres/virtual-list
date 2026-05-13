@@ -82,15 +82,7 @@ let bottomFollowCleanup: (() => void) | null = null;
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
 const htmlCache = new Map<string, string>();
-const messages: Message[] = [
-  createMessage({
-    role: "assistant",
-    status: "done",
-    markdown:
-      "Hi! I'm a **simulated** streaming assistant. Type a prompt below and I'll stream a response back. Try asking for *code*, a list, or a table.",
-    itemHeight: 180,
-  }),
-];
+const messages: Message[] = [];
 
 const BULK_RESPONSES = [
   `Sure — here's a quick rundown.
@@ -587,6 +579,69 @@ function stopStreamingBottomFollow(): void {
   dearmStreamingBottomFollow();
 }
 
+function getMountedMessageContent(index: number): HTMLElement | null {
+  const element = virtualizer.getMountedElement(index);
+  if (!element) return null;
+  return element.querySelector<HTMLElement>(".message-content") ?? element;
+}
+
+function animateMountedItemsClass(
+  indices: readonly number[],
+  className: string,
+  abort: StreamAbort,
+): Promise<void> {
+  const targets = indices
+    .map(getMountedMessageContent)
+    .filter((element): element is HTMLElement => element !== null);
+  if (targets.length === 0) return Promise.resolve();
+
+  return Promise.all(
+    targets.map(
+      (target) =>
+        new Promise<void>((resolve) => {
+          let done = false;
+          let cleanupTimer = 0;
+          const cleanup = () => {
+            if (done) return;
+            done = true;
+            target.classList.remove(className);
+            target.removeEventListener("animationend", cleanup);
+            target.removeEventListener("animationcancel", cleanup);
+            abort.onCancel.delete(cleanup);
+            window.clearTimeout(cleanupTimer);
+            resolve();
+          };
+
+          target.classList.add(className);
+          target.addEventListener("animationend", cleanup);
+          target.addEventListener("animationcancel", cleanup);
+          abort.onCancel.add(cleanup);
+          cleanupTimer = window.setTimeout(cleanup, 300);
+          if (abort.cancelled) cleanup();
+        }),
+    ),
+  ).then(() => undefined);
+}
+
+function flyInMountedItems(
+  indices: readonly number[],
+  abort: StreamAbort,
+): Promise<void> {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return Promise.resolve();
+  }
+
+  return animateMountedItemsClass(indices, "fly", abort);
+}
+
+function fadeInMountedItems(
+  indices: readonly number[],
+  abort: StreamAbort,
+): void {
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  void animateMountedItemsClass(indices, "fade", abort);
+}
+
 function handleVirtualizerScrollStart(): void {
   if (!bottomFollowArmed) return;
   dearmStreamingBottomFollow();
@@ -595,15 +650,18 @@ function handleVirtualizerScrollStart(): void {
 async function scrollMessageToTop(
   index: number,
   abort: StreamAbort,
+  afterTargetMount?: () => void,
 ): Promise<void> {
   const abortLink = linkedAbortSignal(abort);
   scrollTurnInProgress = true;
   scheduleScrollButtons();
   try {
-    await virtualizer.scrollToIndex(index, "top", {
+    const scroll = virtualizer.scrollToIndex(index, "top", {
       behavior: "smooth",
       signal: abortLink.signal,
     });
+    afterTargetMount?.();
+    await scroll;
   } finally {
     scrollTurnInProgress = false;
     abortLink.cleanup();
@@ -627,6 +685,7 @@ async function handleSend(): Promise<void> {
   streamAbort = abort;
   setStreamingUI(true);
   let assistantIndex: number | null = null;
+  const shouldFlyIn = messages.length === 0;
 
   try {
     const userIndex = messages.length;
@@ -639,9 +698,17 @@ async function handleSend(): Promise<void> {
     messages.push(userMessage);
     virtualizer.setCount();
     virtualizer.setStickyIndex(userIndex);
-    await scrollMessageToTop(userIndex, abort);
+    await scrollMessageToTop(
+      userIndex,
+      abort,
+      shouldFlyIn ? undefined : () => fadeInMountedItems([userIndex], abort),
+    );
     scheduleScrollButtons();
     if (abort.cancelled) return;
+    if (shouldFlyIn) {
+      await flyInMountedItems([userIndex], abort);
+      if (abort.cancelled) return;
+    }
 
     const assistantMessage = createMessage({
       role: "assistant",

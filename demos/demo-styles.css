@@ -24,7 +24,7 @@ body {
   --fg-muted: #6b7280;
   --fg-dim: #9ca3af;
   --accent: #4f6df5;
-  --border: rgba(0, 0, 0, 0.08);
+  --border: oklch(0.929 0.013 255.508);
   --alert-note-bg: #eff6ff;
   --alert-note-border: #3b82f6;
   --alert-tip-bg: #f0fdf4;
@@ -55,7 +55,7 @@ body {
   --fg-muted: #8b919d;
   --fg-dim: #5c6370;
   --accent: #7c9cff;
-  --border: rgba(255, 255, 255, 0.06);
+  --border: oklch(1 0 0 / 10%);
   --alert-note-bg: #121d2f;
   --alert-note-border: #4493f8;
   --alert-tip-bg: #12261e;
@@ -316,6 +316,29 @@ select.source-select:disabled {
   margin: 0 auto;
   padding: 12px 24px;
   contain: layout style paint;
+}
+
+@keyframes fly-in {
+  from {
+    opacity: 0;
+    transform: translateY(2em);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+
+.fly {
+  animation: fly-in 250ms;
+  will-change: transform, opacity;
+}
+
+.fade {
+  animation: fade-in 250ms;
+  will-change: opacity;
 }
 
 .message.user {

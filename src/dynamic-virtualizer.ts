@@ -12,9 +12,14 @@ const CSS = `
   overflow-y: auto;
   overscroll-behavior-y: contain;
   overflow-anchor: none;
-  scrollbar-width: thin;
-  scrollbar-color: gray transparent;
   -webkit-overflow-scrolling: touch;
+}
+.minimal-scrollbar {
+  isolation: isolate;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: thin;
+  will-change: scroll-position;
 }
 .dv-content {
   position: relative;
@@ -484,7 +489,7 @@ export function createDynamicVirtualizer(
 
   content.className = "dv-content";
   addClassNames(content, canvasClassName);
-  viewport.classList.add("dv-viewport");
+  viewport.classList.add("dv-viewport", "minimal-scrollbar");
   viewport.appendChild(content);
 
   function nativeMaxScrollTop(): number {
@@ -927,15 +932,17 @@ export function createDynamicVirtualizer(
 
     const baseTotalSize =
       topSlotHeight() + itemTotalSize() + bottomSlotHeight();
-    if (baseTotalSize <= viewport.clientHeight + 0.5) {
+    const stickyTop = topSlotHeight() + sizeTree.prefix(stickyIndex);
+    if (stickyTop <= 0.5) {
       stickyIndex = null;
       tailGap = 0;
       return;
     }
 
-    const stickyTop = topSlotHeight() + sizeTree.prefix(stickyIndex);
-    const baseMaxScrollTop = Math.max(0, baseTotalSize - viewport.clientHeight);
-    const nextTailGap = Math.max(0, stickyTop - baseMaxScrollTop);
+    const nextTailGap = Math.max(
+      0,
+      viewport.clientHeight + stickyTop - baseTotalSize,
+    );
 
     if (nextTailGap <= 0.5) {
       stickyIndex = null;
@@ -1862,7 +1869,7 @@ export function createDynamicVirtualizer(
         viewport.removeEventListener("touchend", handleTouchScrollEnd);
         viewport.removeEventListener("touchcancel", handleTouchScrollEnd);
       }
-      viewport.classList.remove("dv-viewport");
+      viewport.classList.remove("dv-viewport", "minimal-scrollbar");
       content.remove();
       mounted.clear();
     },
