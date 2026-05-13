@@ -1,10 +1,20 @@
 export type ChatRole = "user" | "assistant";
 export type AssistantStatus = "thinking" | "streaming" | "done" | "cancelled";
 
+export interface ChatToolCall {
+  name: string;
+  status: "running" | "done" | "error";
+  durationMs: number;
+  input: string;
+  output: string;
+  open?: boolean;
+}
+
 export interface ChatMessage {
   role: ChatRole;
   markdown: string;
   status?: AssistantStatus;
+  toolCalls?: ChatToolCall[];
 }
 
 export interface ChatItemOptions {
@@ -49,6 +59,53 @@ export function setRoleLabel(
   if (dot.className !== className) dot.className = className;
 }
 
+function buildToolCall(toolCall: ChatToolCall): HTMLElement {
+  const details = document.createElement("details");
+  details.className = "tool-call";
+  details.open = toolCall.open === true;
+  details.addEventListener("toggle", () => {
+    toolCall.open = details.open;
+  });
+
+  const summary = document.createElement("summary");
+  summary.className = "tool-call-summary";
+
+  const title = document.createElement("span");
+  title.className = "tool-call-title";
+  title.textContent = toolCall.name;
+
+  const meta = document.createElement("span");
+  meta.className = `tool-call-meta ${toolCall.status}`;
+  meta.textContent = `${toolCall.status} - ${toolCall.durationMs}ms`;
+
+  summary.append(title, meta);
+
+  const body = document.createElement("div");
+  body.className = "tool-call-body";
+
+  const input = document.createElement("pre");
+  input.className = "tool-call-code";
+  input.textContent = toolCall.input;
+
+  const output = document.createElement("p");
+  output.textContent = toolCall.output;
+
+  body.append(input, output);
+  details.append(summary, body);
+  return details;
+}
+
+function buildToolCalls(message: ChatMessage): HTMLElement | null {
+  if (message.role !== "assistant" || !message.toolCalls?.length) return null;
+
+  const tools = document.createElement("div");
+  tools.className = "tool-calls";
+  for (const toolCall of message.toolCalls) {
+    tools.appendChild(buildToolCall(toolCall));
+  }
+  return tools;
+}
+
 export function buildChatItem(
   index: number,
   message: ChatMessage,
@@ -66,6 +123,9 @@ export function buildChatItem(
   label.className = "role-label";
   setRoleLabel(label, message, index, options);
   content.appendChild(label);
+
+  const tools = buildToolCalls(message);
+  if (tools) content.appendChild(tools);
 
   const markdown = document.createElement("div");
   markdown.className = "md";

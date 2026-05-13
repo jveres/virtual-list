@@ -2,6 +2,7 @@ import { conversation } from "../../src/chat-data.js";
 import {
   type AssistantStatus,
   buildChatItem,
+  type ChatToolCall,
   setRoleLabel,
 } from "../../src/chat-ui.js";
 import {
@@ -27,6 +28,7 @@ interface Message {
   markdown: string;
   status?: AssistantStatus;
   itemHeight: number;
+  toolCalls?: ChatToolCall[];
 }
 
 interface StreamAbort {
@@ -133,6 +135,50 @@ refreshItem(idx);
 
 The virtualizer observes the row and maintains scroll geometry from browser
 measurements.`,
+];
+
+const TOOL_CALL_SETS: readonly (readonly ChatToolCall[])[] = [
+  [
+    {
+      name: "search_index",
+      status: "done",
+      durationMs: 42,
+      input: '{ "query": "streaming markdown resize observer" }',
+      output: "Found 4 matching notes in the local demo corpus.",
+    },
+    {
+      name: "read_snippet",
+      status: "done",
+      durationMs: 18,
+      input: '{ "id": "runtime-scroll-geometry" }',
+      output: "Loaded measurement guidance for rows that grow after mount.",
+    },
+  ],
+  [
+    {
+      name: "inspect_layout",
+      status: "done",
+      durationMs: 55,
+      input: '{ "target": "assistant-row", "include": ["height", "overflow"] }',
+      output: "The row is mounted and can report height changes interactively.",
+    },
+    {
+      name: "rank_options",
+      status: "done",
+      durationMs: 31,
+      input: '{ "criteria": ["latency", "stability", "complexity"] }',
+      output: "ResizeObserver-based correction remains the simplest path.",
+    },
+  ],
+  [
+    {
+      name: "run_formatter",
+      status: "done",
+      durationMs: 27,
+      input: '{ "scope": "markdown-sample" }',
+      output: "Normalized the generated markdown before streaming tokens.",
+    },
+  ],
 ];
 
 const FAST_LONG_RESPONSE = `${BULK_RESPONSES[0]}
@@ -277,6 +323,15 @@ miss with very short responses.`,
 
 function createMessage(message: Omit<Message, "id">): Message {
   return { id: nextMessageId++, ...message };
+}
+
+function cloneToolCalls(toolCalls: readonly ChatToolCall[]): ChatToolCall[] {
+  return toolCalls.map((toolCall) => ({ ...toolCall }));
+}
+
+function createSimulatedToolCalls(): ChatToolCall[] {
+  const toolCalls = TOOL_CALL_SETS[nextResponse % TOOL_CALL_SETS.length]!;
+  return cloneToolCalls(toolCalls);
 }
 
 function cacheKey(message: Message): string {
@@ -593,6 +648,7 @@ async function handleSend(): Promise<void> {
       markdown: "",
       status: "thinking",
       itemHeight: 180,
+      toolCalls: createSimulatedToolCalls(),
     });
     assistantIndex = messages.length;
     assistantMessage.itemHeight = measureMessageHeight(

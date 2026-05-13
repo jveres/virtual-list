@@ -31,6 +31,9 @@ const DEFAULT_SOURCE: SourceId = "synthetic";
 const BOUNDARY_SLOT_HEIGHT = 52;
 const SYNTHETIC_OVERSCAN_PX = 900;
 const NETWORK_OVERSCAN_PX = 1200;
+const COLLAPSIBLE_TEXT_MIN_CHARS = 520;
+const COLLAPSIBLE_TEXT_MIN_LINES = 13;
+const AVERAGE_TEXT_CHAR_WIDTH_PX = 7.2;
 const BSKY_PUBLIC_API = "https://public.api.bsky.app";
 const BSKY_DISCOVER_FEED =
   "at://did:plc:z72i7hdynmk6r22z27h6tvur/app.bsky.feed.generator/whats-hot";
@@ -246,6 +249,7 @@ let renderedRangeStatus = "";
 const measuredItemHeights = new Map<string, number>();
 const visibleItemCache = new Map<string, HTMLElement>();
 const htmlCache = new Map<string, string>();
+const expandedTextKeys = new Set<string>();
 const boundarySlotStates: Record<
   DynamicVirtualizerBoundary,
   BoundarySlotState
@@ -567,12 +571,14 @@ function buildLoadedItem(
   options: BuildLoadedItemOptions = {},
 ): HTMLElement {
   if (item.source === "synthetic") {
-    return buildChatItem(
+    const row = buildChatItem(
       item.globalIndex,
       conversation[item.templateId]!,
       htmlForTemplate(item.templateId),
       { indexLabel: true },
     );
+    applyCollapsibleText(row, item.key);
+    return row;
   }
 
   const row = document.createElement("article");
@@ -593,7 +599,94 @@ function buildLoadedItem(
   appendLoadedMedia(content, item.media, options.mediaMode ?? "load");
 
   row.appendChild(content);
+  applyCollapsibleText(row, item.key);
   return row;
+}
+
+function syncTextToggle(button: HTMLButtonElement, expanded: boolean): void {
+  button.textContent = expanded ? "Show less" : "Show more";
+  button.setAttribute("aria-expanded", String(expanded));
+}
+
+function estimatedLineCapacity(): number {
+  const messageWidth = Math.min(Math.max(0, viewport.clientWidth - 48), 860);
+  return Math.max(36, Math.floor(messageWidth / AVERAGE_TEXT_CHAR_WIDTH_PX));
+}
+
+function estimatedBlockLines(element: Element, lineCapacity: number): number {
+  const text = element.textContent?.trim() ?? "";
+  if (!text) return 0;
+
+  if (element.tagName === "PRE") {
+    return Math.max(1, text.split("\n").length);
+  }
+  if (element.tagName === "TABLE") {
+    return Math.max(3, element.querySelectorAll("tr").length + 1);
+  }
+  if (element.tagName === "UL" || element.tagName === "OL") {
+    const itemLines = Array.from(element.querySelectorAll("li")).reduce(
+      (sum, item) =>
+        sum +
+        Math.max(
+          1,
+          Math.ceil((item.textContent?.trim().length ?? 0) / lineCapacity),
+        ),
+      0,
+    );
+    return Math.max(1, itemLines);
+  }
+
+  return Math.max(1, Math.ceil(text.length / lineCapacity));
+}
+
+function estimatedMarkdownLines(markdown: HTMLElement): number {
+  const lineCapacity = estimatedLineCapacity();
+  const blocks = Array.from(markdown.children);
+  if (blocks.length === 0) {
+    const textLength = markdown.textContent?.trim().length ?? 0;
+    return Math.ceil(textLength / lineCapacity);
+  }
+
+  return blocks.reduce(
+    (sum, block) => sum + estimatedBlockLines(block, lineCapacity),
+    0,
+  );
+}
+
+function applyCollapsibleText(row: HTMLElement, itemKey: string): void {
+  const markdown = row.querySelector<HTMLElement>(".md");
+  const content = markdown?.parentElement;
+  if (!markdown || !content) return;
+
+  const text = markdown.textContent?.trim() ?? "";
+  if (text.length < COLLAPSIBLE_TEXT_MIN_CHARS) return;
+  if (estimatedMarkdownLines(markdown) < COLLAPSIBLE_TEXT_MIN_LINES) return;
+
+  const expanded = expandedTextKeys.has(itemKey);
+  const wrapper = document.createElement("div");
+  wrapper.className = expanded
+    ? "collapsible-text expanded"
+    : "collapsible-text collapsed";
+
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "text-toggle";
+  syncTextToggle(button, expanded);
+  button.addEventListener("click", () => {
+    const nextExpanded = !expandedTextKeys.has(itemKey);
+    if (nextExpanded) {
+      expandedTextKeys.add(itemKey);
+    } else {
+      expandedTextKeys.delete(itemKey);
+    }
+    wrapper.classList.toggle("expanded", nextExpanded);
+    wrapper.classList.toggle("collapsed", !nextExpanded);
+    syncTextToggle(button, nextExpanded);
+  });
+
+  markdown.replaceWith(wrapper);
+  wrapper.appendChild(markdown);
+  content.insertBefore(button, wrapper.nextSibling);
 }
 
 function appendLoadedMedia(
@@ -693,6 +786,9 @@ function pruneMeasuredHeights(): void {
   }
   for (const key of visibleItemCache.keys()) {
     if (!retainedKeys.has(key)) visibleItemCache.delete(key);
+  }
+  for (const key of expandedTextKeys.keys()) {
+    if (!retainedKeys.has(key)) expandedTextKeys.delete(key);
   }
 }
 
@@ -1310,6 +1406,7 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
   bottomLoads = 0;
   measuredItemHeights.clear();
   visibleItemCache.clear();
+  expandedTextKeys.clear();
   clearBoundarySlotStates();
   renderedWindowStatus = "";
   renderedRangeStatus = "";
@@ -1337,6 +1434,7 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
       items = [];
       measuredItemHeights.clear();
       visibleItemCache.clear();
+      expandedTextKeys.clear();
       sourceError = `${nextSource.label} failed: ${errorMessage(error)}`;
     }
   } finally {
