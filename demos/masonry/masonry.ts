@@ -738,6 +738,7 @@ async function closePhotoView(animate = true): Promise<void> {
     currentRect,
   );
   view.overlay.append(hero);
+  view.frame.style.visibility = "hidden";
   view.image.classList.remove("is-visible");
   view.highResolutionImage.classList.remove("is-loaded");
 

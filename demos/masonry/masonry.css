@@ -134,6 +134,7 @@ html.photo-view-open body {
 
 .photo-viewer-frame,
 .photo-viewer-hero {
+  box-sizing: border-box;
   display: block;
   border: 1px solid var(--border);
   border-radius: 10px;
