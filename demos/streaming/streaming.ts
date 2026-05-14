@@ -78,6 +78,8 @@ let scrollButtonsFrame = 0;
 let nextResponse = 0;
 let bottomFollowArmed = false;
 let bottomFollowCleanup: (() => void) | null = null;
+let virtualizerScrollActive = false;
+const virtualizerScrollEndWaiters = new Set<() => void>();
 
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
@@ -643,8 +645,34 @@ function fadeInMountedItems(
 }
 
 function handleVirtualizerScrollStart(): void {
+  virtualizerScrollActive = true;
   if (!bottomFollowArmed) return;
   dearmStreamingBottomFollow();
+}
+
+function handleVirtualizerScrollEnd(): void {
+  virtualizerScrollActive = false;
+  for (const resolve of virtualizerScrollEndWaiters) resolve();
+  virtualizerScrollEndWaiters.clear();
+}
+
+function waitForVirtualizerScrollEnd(abort: StreamAbort): Promise<void> {
+  if (!virtualizerScrollActive || abort.cancelled) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      virtualizerScrollEndWaiters.delete(finish);
+      abort.onCancel.delete(finish);
+      resolve();
+    };
+
+    virtualizerScrollEndWaiters.add(finish);
+    abort.onCancel.add(finish);
+    if (!virtualizerScrollActive || abort.cancelled) finish();
+  });
 }
 
 async function scrollMessageToTop(
@@ -662,6 +690,7 @@ async function scrollMessageToTop(
     });
     afterTargetMount?.();
     await scroll;
+    await waitForVirtualizerScrollEnd(abort);
   } finally {
     scrollTurnInProgress = false;
     abortLink.cleanup();
@@ -824,6 +853,7 @@ virtualizer = createDynamicVirtualizer({
   overscanPx: 700,
   onRangeChange: scheduleScrollButtons,
   onScrollStart: handleVirtualizerScrollStart,
+  onScrollEnd: handleVirtualizerScrollEnd,
 });
 const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
