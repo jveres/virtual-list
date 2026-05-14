@@ -1041,7 +1041,7 @@ function reportRenderDrift(
   const reports = debugWindow.__vl4RenderDriftReports ?? [];
   reports.push({
     source: sourceId,
-    scrollTop: viewport.scrollTop,
+    scrollTop: virtualizer?.state.scrollTop ?? 0,
     count: drifts.length,
     drifts,
   });
@@ -1380,17 +1380,14 @@ function setLoadMode(nextLoadMode: LoadMode): void {
 function setRenderMode(nextRenderMode: DemoRenderMode): void {
   if (nextRenderMode === renderMode || hasActiveBoundaryLoad()) return;
 
-  const keepScrollTop = viewport.scrollTop;
+  const keepScrollTop = virtualizer?.state.scrollTop ?? 0;
   renderMode = nextRenderMode;
   syncRenderModeButton();
   virtualizer?.dispose();
   virtualizer = createVirtualizer();
   syncBoundarySlots();
   virtualizer.setCount();
-  viewport.scrollTop = Math.min(
-    keepScrollTop,
-    Math.max(0, viewport.scrollHeight - viewport.clientHeight),
-  );
+  void virtualizer.scrollToOffset(keepScrollTop);
   syncStatus();
 }
 

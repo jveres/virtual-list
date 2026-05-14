@@ -173,6 +173,8 @@ The returned object exposes:
   loading, empty, and error states.
 - `getPlaceholderElement()` for direct access to the mounted empty-list row.
 - `scrollToIndex(index, align, options)` for index navigation.
+- `scrollToOffset(offset, options)` for absolute scroll-offset navigation
+  through the runtime.
 - `scrollToTop(options)` and `scrollToBottom(options)` as convenience wrappers.
 - `followBottom(options)` to keep the viewport following the current bottom
   while content grows. Wheel, touch, and pointer input stop the follow.
@@ -188,7 +190,7 @@ The config also accepts host callbacks:
   true top or bottom changes.
 - `onReachTop(state)` and `onReachBottom(state)` when a stable top or bottom
   boundary slot enters the native viewport.
-- `onScrollStart(state)` and `onScrollEnd(state)` for native scroll lifecycle
+- `onScrollStart(state)` and `onScrollEnd(state)` for runtime scroll lifecycle
   boundaries.
 
 The module also exports `measureDynamicVirtualizerItem(config)` as a one-shot

@@ -66,7 +66,6 @@ export interface DynamicVirtualizerConfig {
   onReachBottom?: (state: DynamicVirtualizerState) => void;
   onScrollStart?: (state: DynamicVirtualizerState) => void;
   onScrollEnd?: (state: DynamicVirtualizerState) => void;
-  onScrollSettled?: (state: DynamicVirtualizerState) => void;
 }
 
 export interface DynamicVirtualizerItemMeasurerConfig {
@@ -186,6 +185,10 @@ export interface DynamicVirtualizer {
   scrollToIndex(
     index: number,
     align?: DynamicVirtualizerAlign,
+    options?: DynamicVirtualizerScrollOptions,
+  ): Promise<boolean>;
+  scrollToOffset(
+    offset: number,
     options?: DynamicVirtualizerScrollOptions,
   ): Promise<boolean>;
   scrollToTop(options?: DynamicVirtualizerScrollOptions): Promise<boolean>;
@@ -421,7 +424,6 @@ export function createDynamicVirtualizer(
     onReachBottom,
     onScrollStart,
     onScrollEnd,
-    onScrollSettled,
   } = config;
 
   const overscanPx = config.overscanPx;
@@ -1494,6 +1496,18 @@ export function createDynamicVirtualizer(
     return ok;
   }
 
+  async function scrollToOffset(
+    offset: number,
+    options: DynamicVirtualizerScrollOptions = {},
+  ): Promise<boolean> {
+    stopFollowBottom();
+    if (options.signal?.aborted) return false;
+    syncScrollSurface();
+    const ok = await scrollToNativeTop(offset, options);
+    renderNow(viewport.scrollTop);
+    return ok;
+  }
+
   async function scrollToTop(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
@@ -1757,7 +1771,7 @@ export function createDynamicVirtualizer(
     );
   }
 
-  function debugScrollSettled(): void {
+  function debugScrollEnd(): void {
     if (!debugScrollSettle) return;
     console.info("[vl4-scroll-settle]", {
       event: "settled",
@@ -1853,7 +1867,7 @@ export function createDynamicVirtualizer(
     chromiumWheelSawNativeScrollEnd = false;
     chromiumWheelAwaitingFinalScrollEnd = false;
     chromiumEdgeWheelSuppressed = false;
-    debugScrollSettled();
+    debugScrollEnd();
     nativeScrollEndPending = false;
     userScrollActive = false;
     userScrollMoved = false;
@@ -1864,7 +1878,6 @@ export function createDynamicVirtualizer(
     }
     const state = getState();
     onScrollEnd?.(state);
-    onScrollSettled?.(state);
   }
 
   function maybeFinishUserScroll(): void {
@@ -2111,6 +2124,7 @@ export function createDynamicVirtualizer(
     setPlaceholderSlot,
     getPlaceholderElement,
     scrollToIndex,
+    scrollToOffset,
     scrollToTop,
     scrollToBottom,
     followBottom,

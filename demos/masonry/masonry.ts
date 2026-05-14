@@ -110,7 +110,7 @@ const boundaryStates: Record<Boundary, BoundarySlotState> = {
 let loadSequence = 0;
 let activeBoundaryLoad: ActiveBoundaryLoad | null = null;
 let pendingBoundaryApply: PendingBoundaryApply | null = null;
-let scrollSettled = true;
+let scrollEnded = true;
 let measuredViewportWidth = viewport.clientWidth;
 let virtualizer: DynamicVirtualizer;
 let renderedRangeText = "";
@@ -672,7 +672,7 @@ function prepareBottomApply(
 }
 
 function applyPendingBoundaryLoad(): void {
-  if (!scrollSettled || !pendingBoundaryApply) return;
+  if (!scrollEnded || !pendingBoundaryApply) return;
 
   const pending = pendingBoundaryApply;
   pendingBoundaryApply = null;
@@ -749,11 +749,11 @@ function startBoundaryLoad(boundary: Boundary): void {
 }
 
 function handleScrollStart(): void {
-  scrollSettled = false;
+  scrollEnded = false;
 }
 
-function handleScrollSettled(): void {
-  scrollSettled = true;
+function handleScrollEnd(): void {
+  scrollEnded = true;
   applyPendingBoundaryLoad();
 }
 
@@ -850,7 +850,7 @@ virtualizer = createDynamicVirtualizer({
     startBoundaryLoad("bottom");
   },
   onScrollStart: handleScrollStart,
-  onScrollSettled: handleScrollSettled,
+  onScrollEnd: handleScrollEnd,
   onRangeChange: updateInfo,
 });
 syncBoundarySlots();
