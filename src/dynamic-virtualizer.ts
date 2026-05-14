@@ -497,6 +497,7 @@ export function createDynamicVirtualizer(
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
   let nativeScrollEndPending = false;
+  let firefoxPendingNativeScrollEndTop: number | null = null;
   let settleFrame = 0;
   let settleTimer = 0;
   let wheelInputActive = false;
@@ -1869,11 +1870,30 @@ export function createDynamicVirtualizer(
   }
 
   function handleScroll(): void {
-    updateScrollVelocity();
+    const previousScrollTop = lastScrollSampleTop;
+    const nextScrollTop = viewport.scrollTop;
+    updateScrollVelocity(nextScrollTop);
+    if (
+      scrollSettleStrategy === "firefox-wheel" &&
+      nativeScrollEndPending &&
+      firefoxPendingNativeScrollEndTop !== null &&
+      Math.abs(nextScrollTop - firefoxPendingNativeScrollEndTop) >
+        measureEpsilon
+    ) {
+      nativeScrollEndPending = false;
+      firefoxPendingNativeScrollEndTop = null;
+      cancelSettleTimer();
+      cancelSettleFrame();
+    }
     if (nativeScrollEndPending) {
       scheduleSettleCooldown();
     }
-    if (userScrollActive) userScrollMoved = true;
+    if (
+      userScrollActive &&
+      Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon
+    ) {
+      userScrollMoved = true;
+    }
     scheduleRender();
   }
 
@@ -1889,10 +1909,17 @@ export function createDynamicVirtualizer(
     );
   }
 
-  function debugScrollEnd(): void {
+  function isStrictlyOutOfScrollRange(): boolean {
+    const scrollTop = viewport.scrollTop;
+    return scrollTop < 0 || scrollTop > nativeMaxScrollTop();
+  }
+
+  function debugScrollSettleEvent(
+    event: "native-scrollend" | "scrollend",
+  ): void {
     if (!debugScrollSettle) return;
     console.info("[vl-scroll-settle]", {
-      event: "settled",
+      event,
       strategy: scrollSettleStrategy,
       scrollTop: viewport.scrollTop,
       scrollMax: nativeMaxScrollTop(),
@@ -1901,7 +1928,9 @@ export function createDynamicVirtualizer(
       scrollVelocity,
       placeholderFastMode,
       inScrollRange: !isRubberBandOverscrolled(),
+      strictlyInScrollRange: !isStrictlyOutOfScrollRange(),
       nativeScrollEndPending,
+      firefoxPendingNativeScrollEndTop,
       wheelInputActive,
       chromiumEdgeWheelActive,
       chromiumEdgeWheelIdle,
@@ -1913,6 +1942,10 @@ export function createDynamicVirtualizer(
       activePointers: activePointers.size,
       rubberBandOverscrolled: isRubberBandOverscrolled(),
     });
+  }
+
+  function debugScrollEnd(): void {
+    debugScrollSettleEvent("scrollend");
   }
 
   function cancelSettleFrame(): void {
@@ -1983,23 +2016,36 @@ export function createDynamicVirtualizer(
     );
   }
 
-  function finishUserScroll(): void {
+  function cancelUserScrollTimers(): void {
     cancelSettleTimer();
     cancelSettleFrame();
     cancelWheelInputTimer();
     cancelChromiumEdgeSettleTimer();
+  }
+
+  function resetScrollSettleState(): void {
     wheelInputActive = false;
     chromiumEdgeWheelActive = null;
     chromiumEdgeWheelIdle = false;
     chromiumWheelSawNativeScrollEnd = false;
     chromiumWheelAwaitingFinalScrollEnd = false;
     chromiumEdgeWheelSuppressed = false;
-    debugScrollEnd();
+  }
+
+  function resetUserScrollState(): void {
     nativeScrollEndPending = false;
+    firefoxPendingNativeScrollEndTop = null;
     userScrollActive = false;
     userScrollMoved = false;
     resetScrollVelocity();
     placeholderFastMode = false;
+  }
+
+  function finishUserScroll(): void {
+    cancelUserScrollTimers();
+    resetScrollSettleState();
+    debugScrollEnd();
+    resetUserScrollState();
     const flushedLayout = flushDeferredLayoutUpdates();
     const flushedMeasurements = flushMeasurementsNow();
     const refreshedPlaceholders = refreshMountedPlaceholders();
@@ -2010,10 +2056,17 @@ export function createDynamicVirtualizer(
     onScrollEnd?.(state);
   }
 
+  function cancelUserScroll(): void {
+    cancelUserScrollTimers();
+    resetScrollSettleState();
+    resetUserScrollState();
+  }
+
   function maybeFinishUserScroll(): void {
     if (!userScrollActive || !nativeScrollEndPending) return;
     if (!canSettleUserScroll()) {
       if (
+        (scrollSettleStrategy === "firefox-wheel" && wheelInputActive) ||
         hasActiveChromiumEdgeWheel() ||
         (scrollSettleStrategy === "chromium-wheel" &&
           (chromiumWheelAwaitingFinalScrollEnd || chromiumEdgeWheelSuppressed))
@@ -2068,6 +2121,20 @@ export function createDynamicVirtualizer(
   }
 
   function handleScrollEnd(): void {
+    debugScrollSettleEvent("native-scrollend");
+
+    if (scrollSettleStrategy === "firefox-wheel") {
+      if (!userScrollActive) return;
+      if (!userScrollMoved) {
+        cancelUserScroll();
+        return;
+      }
+      nativeScrollEndPending = true;
+      firefoxPendingNativeScrollEndTop = viewport.scrollTop;
+      scheduleSettleCooldown();
+      return;
+    }
+
     nativeScrollEndPending = true;
     if (scrollSettleStrategy === "chromium-wheel" && userScrollActive) {
       chromiumWheelSawNativeScrollEnd = true;
@@ -2112,6 +2179,7 @@ export function createDynamicVirtualizer(
     userScrollActive = true;
     if (!wasActive) {
       nativeScrollEndPending = false;
+      firefoxPendingNativeScrollEndTop = null;
       userScrollMoved = false;
       resetScrollVelocity();
       chromiumWheelSawNativeScrollEnd = false;
