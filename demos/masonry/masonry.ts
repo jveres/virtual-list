@@ -467,6 +467,12 @@ function syncPhotoViewViewportVars(
   return imageBox;
 }
 
+function photoViewBackdropOpacity(view: ActivePhotoView): string {
+  return getComputedStyle(view.overlay)
+    .getPropertyValue("--photo-viewer-backdrop-opacity")
+    .trim();
+}
+
 function reducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -691,9 +697,10 @@ async function openPhotoView(
   hidePhotoSource(sourceElement);
   document.documentElement.classList.add("photo-view-open");
   overlay.classList.remove("is-preparing");
+  const backdropOpacity = photoViewBackdropOpacity(view);
 
   if (reducedMotion()) {
-    backdrop.style.opacity = "1";
+    backdrop.style.opacity = backdropOpacity;
     image.classList.add("is-visible");
     hero.remove();
     void revealHighResolutionImage(view);
@@ -718,18 +725,21 @@ async function openPhotoView(
       fill: "both",
     },
   );
-  const backdropAnimation = backdrop.animate([{ opacity: 0 }, { opacity: 1 }], {
-    duration: PHOTO_VIEW_DURATION_MS,
-    easing: PHOTO_VIEW_EASING,
-    fill: "both",
-  });
+  const backdropAnimation = backdrop.animate(
+    [{ opacity: 0 }, { opacity: backdropOpacity }],
+    {
+      duration: PHOTO_VIEW_DURATION_MS,
+      easing: PHOTO_VIEW_EASING,
+      fill: "both",
+    },
+  );
 
   await Promise.all([
     animationFinished(heroAnimation),
     animationFinished(backdropAnimation),
   ]);
   if (activePhotoView !== view || view.closing) return;
-  backdrop.style.opacity = "1";
+  backdrop.style.opacity = backdropOpacity;
   image.classList.add("is-visible");
   hero.remove();
   void revealHighResolutionImage(view);
@@ -788,7 +798,7 @@ async function closePhotoView(animate = true): Promise<void> {
     },
   );
   const backdropAnimation = view.backdrop.animate(
-    [{ opacity: 1 }, { opacity: 0 }],
+    [{ opacity: photoViewBackdropOpacity(view) }, { opacity: 0 }],
     {
       duration: PHOTO_VIEW_DURATION_MS,
       easing: PHOTO_VIEW_EASING,

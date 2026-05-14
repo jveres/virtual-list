@@ -29,9 +29,7 @@
   contain: layout paint;
   overflow: hidden;
   padding: 0;
-  border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg-surface);
   cursor: default;
   pointer-events: auto;
 }
@@ -77,6 +75,7 @@ html.photo-view-open body {
 
 .photo-viewer {
   --photo-viewer-block-padding: 0px;
+  --photo-viewer-backdrop-opacity: 0.9;
   --photo-viewer-image-height: 1px;
   --photo-viewer-image-width: 1px;
   --photo-viewer-inline-padding: 24px;
@@ -101,7 +100,7 @@ html.photo-view-open body {
 .photo-viewer-backdrop {
   position: absolute;
   inset: 0;
-  background: color-mix(in srgb, var(--bg) 94%, #000000);
+  background: var(--bg);
 }
 
 .photo-viewer-scroll {
@@ -136,9 +135,7 @@ html.photo-view-open body {
 .photo-viewer-hero {
   box-sizing: border-box;
   display: block;
-  border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--bg-surface);
   box-shadow: 0 18px 64px color-mix(in srgb, #000000 28%, transparent);
 }
 
