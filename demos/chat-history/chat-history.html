@@ -49,26 +49,16 @@
         matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
       );
     </script>
-    <title>virtual-list · chunk loading</title>
+    <title>virtual-list · chat history</title>
   </head>
   <body>
     <div class="shell">
       <div class="header">
         <span class="header-title">
           <a href="/" title="Back to demos">virtual-list</a>
-          <span class="sep">·</span>chunk-loading
+          <span class="sep">·</span>chat-history
         </span>
         <div class="header-actions">
-          <select
-            class="source-select"
-            id="source-select"
-            aria-label="Data source"
-            title="Data source"
-          >
-            <option value="synthetic">Synthetic</option>
-            <option value="bsky">Bluesky</option>
-            <option value="lemmy">Lemmy</option>
-          </select>
           <div class="theme-group" aria-label="Theme">
             <button
               type="button"
@@ -138,58 +128,9 @@
           <button
             type="button"
             class="icon-btn"
-            id="load-mode-btn"
-            title="Deferred chunk loading"
-            aria-label="Deferred chunk loading"
-          >
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle
-                cx="8"
-                cy="8"
-                r="5.75"
-                stroke="currentColor"
-                stroke-width="1.5"
-              />
-              <path
-                d="M8 4.75V8l2.25 1.5"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.5"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
-            id="render-mode-btn"
-            title="Virtualized rows"
-            aria-label="Virtualized rows"
-          >
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect
-                x="3"
-                y="2.5"
-                width="10"
-                height="11"
-                rx="1.5"
-                stroke="currentColor"
-                stroke-width="1.5"
-              />
-              <path
-                d="M5.5 5h5M5.5 8h5M5.5 11h5"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-width="1.5"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
             id="top-btn"
-            title="Scroll to loaded top"
-            aria-label="Scroll to loaded top"
+            title="Scroll to top"
+            aria-label="Scroll to top"
           >
             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
@@ -205,8 +146,8 @@
             type="button"
             class="icon-btn"
             id="bottom-btn"
-            title="Scroll to loaded bottom"
-            aria-label="Scroll to loaded bottom"
+            title="Scroll to bottom"
+            aria-label="Scroll to bottom"
           >
             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
@@ -218,16 +159,28 @@
               />
             </svg>
           </button>
+          <button
+            type="button"
+            class="icon-btn"
+            id="add-btn"
+            title="Append 100 messages"
+            aria-label="Append 100 messages"
+          >
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M8 3v10M3 8h10"
+                stroke="currentColor"
+                stroke-linecap="round"
+                stroke-width="1.5"
+              />
+            </svg>
+          </button>
         </div>
       </div>
       <div class="viewport-wrap">
         <div class="viewport" id="viewport"></div>
       </div>
-      <div class="statusbar">
-        <span id="window-status"></span>
-        <span id="range-status"></span>
-      </div>
     </div>
-    <script type="module" src="./chunk-loading.ts"></script>
+    <script type="module" src="./chat-history.ts"></script>
   </body>
 </html>

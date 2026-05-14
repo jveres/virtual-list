@@ -139,7 +139,7 @@ loadHighlighter()
 
 declare global {
   interface Window {
-    dynamicChat: {
+    chatHistory: {
       virtualizer: DynamicVirtualizer;
       append: (count?: number) => void;
       total: () => number;
@@ -147,7 +147,7 @@ declare global {
   }
 }
 
-window.dynamicChat = {
+window.chatHistory = {
   virtualizer,
   append: (count = 100) => {
     total += count;

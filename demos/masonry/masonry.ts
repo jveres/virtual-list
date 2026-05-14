@@ -125,6 +125,7 @@ interface ActivePhotoView {
   sourceElement: HTMLElement | null;
   sourceRect: PhotoRect;
   onKeyDown: (event: KeyboardEvent) => void;
+  onOverlayClick: (event: MouseEvent) => void;
   onViewportChange: () => void;
   closing: boolean;
 }
@@ -561,6 +562,7 @@ async function revealHighResolutionImage(view: ActivePhotoView): Promise<void> {
 
 function cleanupPhotoView(view: ActivePhotoView, source: HTMLElement | null) {
   document.removeEventListener("keydown", view.onKeyDown);
+  view.overlay.removeEventListener("click", view.onOverlayClick);
   window.removeEventListener("resize", view.onViewportChange);
   window.visualViewport?.removeEventListener("resize", view.onViewportChange);
   window.visualViewport?.removeEventListener("scroll", view.onViewportChange);
@@ -640,6 +642,16 @@ async function openPhotoView(
       void closePhotoView();
     }
   };
+  const onOverlayClick = (event: MouseEvent) => {
+    if (!(event.target instanceof Node)) return;
+    if (
+      view.frame.contains(event.target) ||
+      view.closeButton.contains(event.target)
+    ) {
+      return;
+    }
+    void closePhotoView();
+  };
   const onViewportChange = () => syncPhotoViewLayout(view);
 
   const view: ActivePhotoView = {
@@ -655,6 +667,7 @@ async function openPhotoView(
     sourceElement,
     sourceRect,
     onKeyDown,
+    onOverlayClick,
     onViewportChange,
     closing: false,
   };
@@ -662,6 +675,7 @@ async function openPhotoView(
   activePhotoView = view;
   document.body.append(overlay);
   document.addEventListener("keydown", onKeyDown);
+  overlay.addEventListener("click", onOverlayClick);
   window.addEventListener("resize", onViewportChange);
   window.visualViewport?.addEventListener("resize", onViewportChange);
   window.visualViewport?.addEventListener("scroll", onViewportChange);

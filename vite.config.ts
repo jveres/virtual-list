@@ -8,8 +8,12 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: new URL("index.html", import.meta.url).pathname,
-        dynamicChat: new URL(
-          "demos/dynamic-chat/dynamic-chat.html",
+        chatHistory: new URL(
+          "demos/chat-history/chat-history.html",
+          import.meta.url,
+        ).pathname,
+        dynamicLoading: new URL(
+          "demos/dynamic-loading/dynamic-loading.html",
           import.meta.url,
         ).pathname,
         streaming: new URL("demos/streaming/streaming.html", import.meta.url)

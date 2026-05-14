@@ -20,11 +20,11 @@ pnpm run dev
 
 Open these pages from the dev server:
 
-- `/demos/dynamic-chat/dynamic-chat.html` shows 10,000 dynamic chat rows.
-- `/demos/chunk-loading/chunk-loading.html` shows top and bottom chunk loading
-  over a 10,000-row transcript window.
-- `/demos/chunk-loading/chunk-loading.html?source=lemmy&debugRenderDrift=1`
-  enables render drift reports for the chunk loading demo.
+- `/demos/chat-history/chat-history.html` shows 10,000 chat history rows.
+- `/demos/dynamic-loading/dynamic-loading.html` shows top and bottom dynamic
+  loading over a 10,000-row transcript window.
+- `/demos/dynamic-loading/dynamic-loading.html?source=lemmy&debugRenderDrift=1`
+  enables render drift reports for the dynamic loading demo.
 - `/demos/streaming/streaming.html` shows append, streaming, cancel, and
   sticky user-message scroll behavior.
 - `/demos/streaming/streaming.html?instant` disables simulated token delays for
@@ -232,14 +232,14 @@ modeled `translateY()` position and measured height. The runtime skips all drift
 reads when the option is unset or `false`, so normal scroll rendering doesn't
 call `getBoundingClientRect()` for this debug path.
 
-In the chunk loading demo, add `?debugRenderDrift=1` to the URL. The console
+In the dynamic loading demo, add `?debugRenderDrift=1` to the URL. The console
 prints one activation line when the flag is enabled. It logs warnings only when
 at least one mounted row drifts beyond the runtime epsilon. The demo also keeps
 the last reports on `window.__vlRenderDriftReports` and increments
 `window.__vlRenderDriftCount`. Because drift checks read DOM rects, use this
 flag only for diagnostics; it is not a scroll performance mode.
 
-## Chunk loading
+## Dynamic loading
 
 Hosts can keep only part of a data set in memory and load more rows when the
 native viewport reaches either boundary. Use `onReachTop` and `onReachBottom`
@@ -305,9 +305,9 @@ Prepend and trim anchor corrections write `scrollTop` because there is no
 native CSS primitive for preserving the old visual anchor across inserted or
 removed rows.
 
-## Dynamic chat demo
+## Chat history demo
 
-The dynamic chat demo is the large-list baseline. It repeats the shared sample
+The chat history demo is the large-list baseline. It repeats the shared sample
 conversation to create 10,000 rows and pre-measures those templates once before
 initializing the virtualizer.
 
@@ -337,9 +337,9 @@ The shared helpers cover:
 Hidden row measurement is handled by the runtime module. Demo helpers remain
 demo-only plumbing and are not part of the virtualizer API.
 
-## Chunk loading demo
+## Dynamic loading demo
 
-The chunk loading demo keeps a target window of rows loaded in the virtualizer.
+The dynamic loading demo keeps a target window of rows loaded in the virtualizer.
 It defaults to a retained target of 100 rows and 50-row load chunks. You can
 change those values with `?retain=300&chunk=50`. The header source selector can
 switch between the local synthetic transcript, Bluesky's public Discover feed,
