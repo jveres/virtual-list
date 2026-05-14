@@ -550,10 +550,11 @@ function updateInfo(state: DynamicVirtualizerState = virtualizer.state): void {
 function initializeLoadedWindow(): void {
   const groupCount = layout.groups.length;
   const retained = Math.min(INITIAL_GROUPS, groupCount);
-  const middleStart = Math.floor((groupCount - retained) / 2);
-  loadedStartGroup = clamp(middleStart, 0, Math.max(0, groupCount - retained));
+  loadedStartGroup = 0;
   loadedEndGroup = Math.min(groupCount, loadedStartGroup + retained);
   recomputeLoadedBoundaryGeometry();
+  boundaryStates.top = idleStateForBoundary("top");
+  boundaryStates.bottom = idleStateForBoundary("bottom");
 }
 
 function idleStateForBoundary(boundary: Boundary): BoundaryResolvedState {
@@ -829,11 +830,6 @@ function handleViewportResize(): void {
   rebuildLayoutAroundCurrentGroup();
 }
 
-async function alignInitialViewport(): Promise<void> {
-  if (loadedStartGroup <= 0 || currentCount() === 0) return;
-  await virtualizer.scrollToIndex(0, "top");
-}
-
 initializeLoadedWindow();
 bindControls();
 bindThemeButtons(refreshTheme);
@@ -858,7 +854,6 @@ virtualizer = createDynamicVirtualizer({
   onRangeChange: updateInfo,
 });
 syncBoundarySlots();
-await alignInitialViewport();
 
 const viewportResizeObserver = new ResizeObserver(handleViewportResize);
 viewportResizeObserver.observe(viewport);

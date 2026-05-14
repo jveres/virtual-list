@@ -7,7 +7,8 @@ const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_RENDER_DRIFT_EPSILON = 1;
 const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
 const SCROLL_SETTLE_COOLDOWN_MS = 140;
-
+const CHROMIUM_WHEEL_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
+const CHROMIUM_EDGE_SETTLE_QUIET_MS = 450;
 const CSS = `
 .dv-viewport {
   overflow-y: auto;
@@ -151,6 +152,8 @@ interface ScrollTopWriteOptions {
 const ALLOW_DURING_SCROLL: ScrollTopWriteOptions = {
   allowDuringScroll: true,
 };
+
+type ScrollSettleStrategy = "default" | "chromium-wheel";
 
 interface MountedBoundarySlot {
   key: string | null;
@@ -394,6 +397,14 @@ export function measureDynamicVirtualizerItem(
   }
 }
 
+function detectScrollSettleStrategy(): ScrollSettleStrategy {
+  const userAgent = navigator.userAgent;
+  if (/\bFirefox\//.test(userAgent)) return "default";
+  return /\b(?:Chrome|Chromium|Edg|OPR)\//.test(userAgent)
+    ? "chromium-wheel"
+    : "default";
+}
+
 export function createDynamicVirtualizer(
   config: DynamicVirtualizerConfig,
 ): DynamicVirtualizer {
@@ -420,6 +431,10 @@ export function createDynamicVirtualizer(
       : () => overscanPx ?? DEFAULT_OVERSCAN_PX;
   const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
+  const scrollSettleStrategy = detectScrollSettleStrategy();
+  const debugScrollSettle = new URLSearchParams(window.location.search).has(
+    "debugScrollSettle",
+  );
   const renderDriftReporter =
     typeof config.debugRenderDrift === "function"
       ? config.debugRenderDrift
@@ -467,6 +482,14 @@ export function createDynamicVirtualizer(
   let nativeScrollEndPending = false;
   let settleFrame = 0;
   let settleTimer = 0;
+  let wheelInputActive = false;
+  let wheelInputTimer = 0;
+  let chromiumEdgeWheelActive: DynamicVirtualizerBoundary | null = null;
+  let chromiumEdgeWheelIdle = false;
+  let chromiumWheelSawNativeScrollEnd = false;
+  let chromiumWheelAwaitingFinalScrollEnd = false;
+  let chromiumEdgeWheelSuppressed = false;
+  let chromiumEdgeSettleTimer = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
   let reachTopArmed = false;
@@ -1727,6 +1750,30 @@ export function createDynamicVirtualizer(
     );
   }
 
+  function debugScrollSettled(): void {
+    if (!debugScrollSettle) return;
+    console.info("[vl4-scroll-settle]", {
+      event: "settled",
+      strategy: scrollSettleStrategy,
+      scrollTop: viewport.scrollTop,
+      scrollMax: nativeMaxScrollTop(),
+      scrollHeight: viewport.scrollHeight,
+      clientHeight: viewport.clientHeight,
+      inScrollRange: !isRubberBandOverscrolled(),
+      nativeScrollEndPending,
+      wheelInputActive,
+      chromiumEdgeWheelActive,
+      chromiumEdgeWheelIdle,
+      chromiumWheelSawNativeScrollEnd,
+      chromiumWheelAwaitingFinalScrollEnd,
+      chromiumEdgeWheelSuppressed,
+      chromiumEdgeSettleTimerActive: chromiumEdgeSettleTimer !== 0,
+      touchInputActive,
+      activePointers: activePointers.size,
+      rubberBandOverscrolled: isRubberBandOverscrolled(),
+    });
+  }
+
   function cancelSettleFrame(): void {
     if (!settleFrame) return;
     cancelAnimationFrame(settleFrame);
@@ -1739,22 +1786,67 @@ export function createDynamicVirtualizer(
     settleTimer = 0;
   }
 
+  function cancelWheelInputTimer(): void {
+    if (!wheelInputTimer) return;
+    window.clearTimeout(wheelInputTimer);
+    wheelInputTimer = 0;
+  }
+
+  function cancelChromiumEdgeSettleTimer(): void {
+    if (!chromiumEdgeSettleTimer) return;
+    window.clearTimeout(chromiumEdgeSettleTimer);
+    chromiumEdgeSettleTimer = 0;
+  }
+
+  function hasActiveWheelInput(): boolean {
+    return scrollSettleStrategy === "chromium-wheel" && wheelInputActive;
+  }
+
+  function hasActiveChromiumEdgeWheel(): boolean {
+    return (
+      scrollSettleStrategy === "chromium-wheel" &&
+      chromiumEdgeWheelActive !== null
+    );
+  }
+
+  function boundaryForOutwardWheel(
+    event: WheelEvent,
+  ): DynamicVirtualizerBoundary | null {
+    const scrollTop = viewport.scrollTop;
+    const maxScrollTop = nativeMaxScrollTop();
+    if (event.deltaY < 0 && scrollTop <= measureEpsilon) return "top";
+    if (
+      event.deltaY > 0 &&
+      maxScrollTop > measureEpsilon &&
+      maxScrollTop - scrollTop <= measureEpsilon
+    ) {
+      return "bottom";
+    }
+    return null;
+  }
+
   function canSettleUserScroll(): boolean {
-    return !hasActiveTouchOrPointerInput() && !isRubberBandOverscrolled();
+    return (
+      !hasActiveTouchOrPointerInput() &&
+      !hasActiveWheelInput() &&
+      !hasActiveChromiumEdgeWheel() &&
+      !chromiumWheelAwaitingFinalScrollEnd &&
+      !isRubberBandOverscrolled()
+    );
   }
 
   function finishUserScroll(): void {
     cancelSettleTimer();
     cancelSettleFrame();
-    if (new URLSearchParams(window.location.search).has("debugScrollSettle")) {
-      console.debug("[vl4-scroll-settled]", {
-        scrollTop: viewport.scrollTop,
-        scrollMax: nativeMaxScrollTop(),
-        touchInputActive,
-        activePointers: activePointers.size,
-        rubberBandOverscrolled: isRubberBandOverscrolled(),
-      });
-    }
+    cancelWheelInputTimer();
+    cancelChromiumEdgeSettleTimer();
+    wheelInputActive = false;
+    chromiumEdgeWheelActive = null;
+    chromiumEdgeWheelIdle = false;
+    chromiumWheelSawNativeScrollEnd = false;
+    chromiumWheelAwaitingFinalScrollEnd = false;
+    chromiumEdgeWheelSuppressed = false;
+    debugScrollSettled();
     nativeScrollEndPending = false;
     userScrollActive = false;
     userScrollMoved = false;
@@ -1771,6 +1863,13 @@ export function createDynamicVirtualizer(
   function maybeFinishUserScroll(): void {
     if (!userScrollActive || !nativeScrollEndPending) return;
     if (!canSettleUserScroll()) {
+      if (
+        hasActiveChromiumEdgeWheel() ||
+        (scrollSettleStrategy === "chromium-wheel" &&
+          (chromiumWheelAwaitingFinalScrollEnd || chromiumEdgeWheelSuppressed))
+      ) {
+        return;
+      }
       schedulePendingSettleCheck();
       return;
     }
@@ -1793,8 +1892,49 @@ export function createDynamicVirtualizer(
     }, SCROLL_SETTLE_COOLDOWN_MS);
   }
 
+  function scheduleChromiumEdgeSettleFallback(
+    boundary: DynamicVirtualizerBoundary,
+  ): void {
+    cancelChromiumEdgeSettleTimer();
+    chromiumEdgeSettleTimer = window.setTimeout(() => {
+      chromiumEdgeSettleTimer = 0;
+      if (
+        disposed ||
+        !userScrollActive ||
+        wheelInputActive ||
+        !chromiumEdgeWheelSuppressed ||
+        chromiumEdgeWheelActive !== boundary ||
+        isRubberBandOverscrolled()
+      ) {
+        return;
+      }
+      chromiumWheelAwaitingFinalScrollEnd = false;
+      chromiumEdgeWheelSuppressed = false;
+      chromiumEdgeWheelActive = null;
+      chromiumEdgeWheelIdle = false;
+      nativeScrollEndPending = true;
+      scheduleSettleCooldown();
+    }, CHROMIUM_EDGE_SETTLE_QUIET_MS);
+  }
+
   function handleScrollEnd(): void {
     nativeScrollEndPending = true;
+    if (scrollSettleStrategy === "chromium-wheel" && userScrollActive) {
+      chromiumWheelSawNativeScrollEnd = true;
+      if (!wheelInputActive && chromiumWheelAwaitingFinalScrollEnd) {
+        chromiumWheelAwaitingFinalScrollEnd = false;
+        chromiumEdgeWheelActive = null;
+        chromiumEdgeWheelIdle = false;
+      }
+    }
+    if (
+      scrollSettleStrategy === "chromium-wheel" &&
+      chromiumEdgeWheelActive &&
+      chromiumEdgeWheelIdle
+    ) {
+      chromiumEdgeWheelActive = null;
+      chromiumEdgeWheelIdle = false;
+    }
     scheduleSettleCooldown();
   }
 
@@ -1823,14 +1963,57 @@ export function createDynamicVirtualizer(
     if (!wasActive) {
       nativeScrollEndPending = false;
       userScrollMoved = false;
+      chromiumWheelSawNativeScrollEnd = false;
+      chromiumWheelAwaitingFinalScrollEnd = false;
+      chromiumEdgeWheelSuppressed = false;
+      cancelChromiumEdgeSettleTimer();
     }
     if (!wasActive) {
       onScrollStart?.(getState());
     }
   }
 
-  function handleWheel(): void {
+  function handleChromiumWheelInput(event: WheelEvent): void {
+    if (scrollSettleStrategy !== "chromium-wheel") return;
+    const outwardBoundary = boundaryForOutwardWheel(event);
+    chromiumWheelAwaitingFinalScrollEnd = false;
+    cancelChromiumEdgeSettleTimer();
+    if (outwardBoundary) {
+      chromiumEdgeWheelSuppressed = true;
+      nativeScrollEndPending = false;
+      chromiumWheelAwaitingFinalScrollEnd = true;
+    } else if (nativeScrollEndPending) {
+      nativeScrollEndPending = false;
+    }
+    if (!outwardBoundary) {
+      chromiumEdgeWheelActive = null;
+      chromiumEdgeWheelIdle = false;
+    } else {
+      chromiumEdgeWheelActive = outwardBoundary;
+      chromiumEdgeWheelIdle = false;
+    }
+    wheelInputActive = true;
+    cancelWheelInputTimer();
+    wheelInputTimer = window.setTimeout(() => {
+      wheelInputTimer = 0;
+      wheelInputActive = false;
+      if (outwardBoundary) {
+        chromiumEdgeWheelIdle = true;
+        chromiumWheelAwaitingFinalScrollEnd = true;
+        nativeScrollEndPending = false;
+        scheduleChromiumEdgeSettleFallback(outwardBoundary);
+      } else if (chromiumWheelSawNativeScrollEnd) {
+        nativeScrollEndPending = true;
+        chromiumWheelAwaitingFinalScrollEnd = false;
+        chromiumEdgeWheelSuppressed = false;
+      }
+      if (nativeScrollEndPending) scheduleSettleCooldown();
+    }, CHROMIUM_WHEEL_IDLE_MS);
+  }
+
+  function handleWheel(event: WheelEvent): void {
     handleUserScrollStart();
+    handleChromiumWheelInput(event);
   }
 
   function handleUserScrollMaybeEnd(): void {
@@ -1862,12 +2045,14 @@ export function createDynamicVirtualizer(
 
   function handlePointerScrollStart(event: PointerEvent): void {
     if (event.pointerType === "touch" && supportsTouchEvents) return;
+    if (event.pointerType === "mouse") return;
     activePointers.add(event.pointerId);
     handleUserScrollStart();
   }
 
   function handlePointerScrollEnd(event: PointerEvent): void {
     if (event.pointerType === "touch" && supportsTouchEvents) return;
+    if (event.pointerType === "mouse") return;
     activePointers.delete(event.pointerId);
     handleUserScrollMaybeEnd();
   }
@@ -1933,6 +2118,8 @@ export function createDynamicVirtualizer(
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
       cancelSettleFrame();
       cancelSettleTimer();
+      cancelWheelInputTimer();
+      cancelChromiumEdgeSettleTimer();
       stopFollowBottom();
       deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();
