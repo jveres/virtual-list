@@ -21,6 +21,9 @@ const BOUNDARY_SLOT_HEIGHT = 52;
 const MAX_CANVAS_WIDTH = 1180;
 const HORIZONTAL_PADDING = 32;
 const OVERSCAN_PX = 680;
+const PHOTO_VIEW_INLINE_PADDING = 24;
+const PHOTO_VIEW_BLOCK_PADDING = 0;
+const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
 const PHOTO_VIEW_DURATION_MS = 340;
 const PHOTO_VIEW_EASING = "cubic-bezier(0.2, 0, 0, 1)";
@@ -104,17 +107,25 @@ interface PhotoRect {
   height: number;
 }
 
+interface PhotoViewBox {
+  width: number;
+  height: number;
+}
+
 interface ActivePhotoView {
   photo: PlacedPhoto;
   overlay: HTMLElement;
   backdrop: HTMLElement;
+  closeButton: HTMLButtonElement;
+  frame: HTMLElement;
   scroll: HTMLElement;
   image: HTMLImageElement;
   highResolutionImage: HTMLImageElement;
   details: HTMLElement;
   sourceElement: HTMLElement | null;
   sourceRect: PhotoRect;
-  cleanup: (event: KeyboardEvent) => void;
+  onKeyDown: (event: KeyboardEvent) => void;
+  onViewportChange: () => void;
   closing: boolean;
 }
 
@@ -384,12 +395,75 @@ function imageUrlForWidth(photo: Photo, width: number): string {
 function photoViewImageWidth(): number {
   const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
   return Math.round(
-    clamp(window.innerWidth * pixelRatio, 720, PHOTO_VIEW_MAX_SOURCE_WIDTH),
+    clamp(
+      photoViewViewportWidth() * pixelRatio,
+      720,
+      PHOTO_VIEW_MAX_SOURCE_WIDTH,
+    ),
   );
 }
 
 function photoViewImageUrl(photo: Photo): string {
   return imageUrlForWidth(photo, photoViewImageWidth());
+}
+
+function photoViewViewportWidth(): number {
+  return window.visualViewport?.width ?? window.innerWidth;
+}
+
+function photoViewViewportHeight(): number {
+  return window.visualViewport?.height ?? window.innerHeight;
+}
+
+function photoViewImageBox(photo: Photo): PhotoViewBox {
+  const maxWidth = Math.max(
+    1,
+    Math.min(
+      PHOTO_VIEW_MAX_WIDTH,
+      photoViewViewportWidth() - PHOTO_VIEW_INLINE_PADDING * 2,
+    ),
+  );
+  const maxHeight = Math.max(
+    180,
+    photoViewViewportHeight() - PHOTO_VIEW_BLOCK_PADDING * 2,
+  );
+  const aspectRatio = Math.max(0.1, photo.aspectRatio);
+  const heightForMaxWidth = maxWidth * aspectRatio;
+  if (heightForMaxWidth <= maxHeight) {
+    return {
+      width: Math.round(maxWidth),
+      height: Math.round(heightForMaxWidth),
+    };
+  }
+
+  return {
+    width: Math.round(maxHeight / aspectRatio),
+    height: Math.round(maxHeight),
+  };
+}
+
+function syncPhotoViewViewportVars(
+  overlay: HTMLElement,
+  photo: Photo,
+): PhotoViewBox {
+  const imageBox = photoViewImageBox(photo);
+  overlay.style.setProperty(
+    "--photo-viewer-width",
+    `${photoViewViewportWidth()}px`,
+  );
+  overlay.style.setProperty(
+    "--photo-viewer-height",
+    `${photoViewViewportHeight()}px`,
+  );
+  overlay.style.setProperty(
+    "--photo-viewer-image-width",
+    `${imageBox.width}px`,
+  );
+  overlay.style.setProperty(
+    "--photo-viewer-image-height",
+    `${imageBox.height}px`,
+  );
+  return imageBox;
 }
 
 function reducedMotion(): boolean {
@@ -453,6 +527,24 @@ function createPhotoHero(src: string, rect: PhotoRect): HTMLImageElement {
   return hero;
 }
 
+function syncPhotoViewScrollMode(view: ActivePhotoView): void {
+  const scrollable = view.scroll.scrollHeight > view.scroll.clientHeight + 1;
+  view.scroll.classList.toggle("is-scrollable", scrollable);
+}
+
+function syncPhotoViewLayout(view: ActivePhotoView): void {
+  syncPhotoViewViewportVars(view.overlay, view.photo);
+  requestAnimationFrame(() => {
+    if (activePhotoView === view) syncPhotoViewScrollMode(view);
+  });
+}
+
+function currentPhotoViewImage(view: ActivePhotoView): HTMLImageElement {
+  return view.highResolutionImage.classList.contains("is-loaded")
+    ? view.highResolutionImage
+    : view.image;
+}
+
 function photoDetailsText(photo: PlacedPhoto): string {
   return `Photo ${photo.id} · ${Math.round(photo.width)}×${Math.round(photo.height)} · ${photo.aspectRatio.toFixed(2)} ratio`;
 }
@@ -463,11 +555,15 @@ async function revealHighResolutionImage(view: ActivePhotoView): Promise<void> {
   view.highResolutionImage.classList.add("is-loaded");
   if (view.highResolutionImage.naturalWidth > 0) {
     view.details.textContent = `${photoDetailsText(view.photo)} · source ${view.highResolutionImage.naturalWidth}×${view.highResolutionImage.naturalHeight}`;
+    syncPhotoViewScrollMode(view);
   }
 }
 
 function cleanupPhotoView(view: ActivePhotoView, source: HTMLElement | null) {
-  document.removeEventListener("keydown", view.cleanup);
+  document.removeEventListener("keydown", view.onKeyDown);
+  window.removeEventListener("resize", view.onViewportChange);
+  window.visualViewport?.removeEventListener("resize", view.onViewportChange);
+  window.visualViewport?.removeEventListener("scroll", view.onViewportChange);
   revealPhotoSource(source);
   if (source !== view.sourceElement) revealPhotoSource(view.sourceElement);
   view.overlay.remove();
@@ -489,12 +585,14 @@ async function openPhotoView(
     sourceImage?.currentSrc || sourceImage?.src || imageUrl(photo);
   const sourceRect = readRect(sourceElement.getBoundingClientRect());
   const overlay = document.createElement("div");
-  overlay.className = "photo-viewer";
+  overlay.className = "photo-viewer is-preparing";
   overlay.setAttribute("role", "dialog");
   overlay.setAttribute("aria-modal", "true");
+  const imageBox = syncPhotoViewViewportVars(overlay, photo);
 
   const backdrop = document.createElement("div");
   backdrop.className = "photo-viewer-backdrop";
+  backdrop.style.opacity = "0";
 
   const closeButton = document.createElement("button");
   closeButton.type = "button";
@@ -512,24 +610,27 @@ async function openPhotoView(
   const stage = document.createElement("div");
   stage.className = "photo-viewer-stage";
 
+  const frame = document.createElement("div");
+  frame.className = "photo-viewer-frame";
+
   const image = document.createElement("img");
   image.className = "photo-viewer-image";
   image.alt = "";
   image.decoding = "async";
   image.src = sourceSrc;
-  const viewWidth = photoViewImageWidth();
-  image.width = viewWidth;
-  image.height = Math.max(120, Math.round(viewWidth * photo.aspectRatio));
+  image.width = imageBox.width;
+  image.height = imageBox.height;
 
   const highResolutionImage = document.createElement("img");
   highResolutionImage.className = "photo-viewer-image photo-viewer-image-hires";
   highResolutionImage.alt = "";
   highResolutionImage.decoding = "async";
   highResolutionImage.src = photoViewImageUrl(photo);
-  highResolutionImage.width = image.width;
-  highResolutionImage.height = image.height;
+  highResolutionImage.width = imageBox.width;
+  highResolutionImage.height = imageBox.height;
 
-  stage.append(image, highResolutionImage, details);
+  frame.append(image, highResolutionImage);
+  stage.append(frame, details);
   scroll.append(stage);
   overlay.append(backdrop, scroll, closeButton);
 
@@ -539,34 +640,46 @@ async function openPhotoView(
       void closePhotoView();
     }
   };
+  const onViewportChange = () => syncPhotoViewLayout(view);
 
   const view: ActivePhotoView = {
     photo,
     overlay,
     backdrop,
+    closeButton,
+    frame,
     scroll,
     image,
     highResolutionImage,
     details,
     sourceElement,
     sourceRect,
-    cleanup: onKeyDown,
+    onKeyDown,
+    onViewportChange,
     closing: false,
   };
 
   activePhotoView = view;
-  hidePhotoSource(sourceElement);
-  document.documentElement.classList.add("photo-view-open");
   document.body.append(overlay);
   document.addEventListener("keydown", onKeyDown);
+  window.addEventListener("resize", onViewportChange);
+  window.visualViewport?.addEventListener("resize", onViewportChange);
+  window.visualViewport?.addEventListener("scroll", onViewportChange);
   closeButton.addEventListener("click", () => void closePhotoView());
 
+  await image.decode?.().catch(() => undefined);
   await nextAnimationFrame();
-  const targetRect = readRect(image.getBoundingClientRect());
+  if (activePhotoView !== view || view.closing) return;
+  syncPhotoViewScrollMode(view);
+  const targetRect = readRect(frame.getBoundingClientRect());
   const hero = createPhotoHero(sourceSrc, targetRect);
   overlay.append(hero);
+  hidePhotoSource(sourceElement);
+  document.documentElement.classList.add("photo-view-open");
+  overlay.classList.remove("is-preparing");
 
   if (reducedMotion()) {
+    backdrop.style.opacity = "1";
     image.classList.add("is-visible");
     hero.remove();
     void revealHighResolutionImage(view);
@@ -602,6 +715,7 @@ async function openPhotoView(
     animationFinished(backdropAnimation),
   ]);
   if (activePhotoView !== view || view.closing) return;
+  backdrop.style.opacity = "1";
   image.classList.add("is-visible");
   hero.remove();
   void revealHighResolutionImage(view);
@@ -617,13 +731,15 @@ async function closePhotoView(animate = true): Promise<void> {
     (view.sourceElement?.isConnected ? view.sourceElement : null);
   hidePhotoSource(currentSource);
 
-  const currentRect = readRect(view.image.getBoundingClientRect());
+  const currentImage = currentPhotoViewImage(view);
+  const currentRect = readRect(view.frame.getBoundingClientRect());
   const hero = createPhotoHero(
-    view.image.currentSrc || view.image.src,
+    currentImage.currentSrc || currentImage.src,
     currentRect,
   );
   view.overlay.append(hero);
   view.image.classList.remove("is-visible");
+  view.highResolutionImage.classList.remove("is-loaded");
 
   if (!animate || reducedMotion()) {
     cleanupPhotoView(view, currentSource);
@@ -672,11 +788,20 @@ async function closePhotoView(animate = true): Promise<void> {
       fill: "both",
     },
   );
+  const closeButtonAnimation = view.closeButton.animate(
+    [{ opacity: 1 }, { opacity: 0 }],
+    {
+      duration: Math.round(PHOTO_VIEW_DURATION_MS * 0.72),
+      easing: PHOTO_VIEW_EASING,
+      fill: "both",
+    },
+  );
 
   await Promise.all([
     animationFinished(heroAnimation),
     animationFinished(backdropAnimation),
     animationFinished(scrollAnimation),
+    animationFinished(closeButtonAnimation),
   ]);
   cleanupPhotoView(view, currentSource);
 }
