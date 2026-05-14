@@ -1891,7 +1891,7 @@ export function createDynamicVirtualizer(
 
   function debugScrollEnd(): void {
     if (!debugScrollSettle) return;
-    console.info("[vl4-scroll-settle]", {
+    console.info("[vl-scroll-settle]", {
       event: "settled",
       strategy: scrollSettleStrategy,
       scrollTop: viewport.scrollTop,

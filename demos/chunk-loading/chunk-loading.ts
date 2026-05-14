@@ -53,8 +53,8 @@ type PlaceholderSlotKind = "loading" | "empty" | "error";
 type MediaRenderMode = "load" | "placeholder";
 
 type RenderDriftDebugWindow = Window & {
-  __vl4RenderDriftCount?: number;
-  __vl4RenderDriftReports?: unknown[];
+  __vlRenderDriftCount?: number;
+  __vlRenderDriftReports?: unknown[];
 };
 
 interface BaseLoadedItem {
@@ -201,8 +201,8 @@ const configuredSource = params.get("source");
 const renderDriftDebug = readBooleanFlag("debugRenderDrift");
 if (renderDriftDebug) {
   const debugWindow = window as RenderDriftDebugWindow;
-  debugWindow.__vl4RenderDriftCount = 0;
-  debugWindow.__vl4RenderDriftReports = [];
+  debugWindow.__vlRenderDriftCount = 0;
+  debugWindow.__vlRenderDriftReports = [];
   console.info("[chunk-loading] render drift debug enabled");
 }
 
@@ -1036,16 +1036,16 @@ function reportRenderDrift(
   drifts: readonly DynamicVirtualizerRenderDrift[],
 ): void {
   const debugWindow = window as RenderDriftDebugWindow;
-  debugWindow.__vl4RenderDriftCount =
-    (debugWindow.__vl4RenderDriftCount ?? 0) + drifts.length;
-  const reports = debugWindow.__vl4RenderDriftReports ?? [];
+  debugWindow.__vlRenderDriftCount =
+    (debugWindow.__vlRenderDriftCount ?? 0) + drifts.length;
+  const reports = debugWindow.__vlRenderDriftReports ?? [];
   reports.push({
     source: sourceId,
     scrollTop: virtualizer?.state.scrollTop ?? 0,
     count: drifts.length,
     drifts,
   });
-  debugWindow.__vl4RenderDriftReports = reports.slice(-20);
+  debugWindow.__vlRenderDriftReports = reports.slice(-20);
   console.warn("[chunk-loading] render drift", reports.at(-1));
 }
 

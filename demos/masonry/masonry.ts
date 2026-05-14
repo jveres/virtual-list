@@ -350,7 +350,7 @@ function imageSourceWidth(photo: PlacedPhoto): number {
 function imageUrl(photo: PlacedPhoto): string {
   const width = imageSourceWidth(photo);
   const height = Math.max(120, Math.round(width * photo.aspectRatio));
-  return `https://picsum.photos/seed/virtual-list4-${photo.id}/${width}/${height}`;
+  return `https://picsum.photos/seed/virtual-list-${photo.id}/${width}/${height}`;
 }
 
 function buildPhotoCard(photo: PlacedPhoto, groupTop: number): HTMLElement {

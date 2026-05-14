@@ -1,6 +1,6 @@
-# virtual-list4
+# virtual-list
 
-`virtual-list4` is a dynamic-height virtual list experiment for chat-style
+`virtual-list` is a dynamic-height virtual list experiment for chat-style
 interfaces. It replaces the earlier phantom scroller work with a native
 scrolling viewport, a measured size model, and a small reusable TypeScript
 runtime.
@@ -235,8 +235,8 @@ call `getBoundingClientRect()` for this debug path.
 In the chunk loading demo, add `?debugRenderDrift=1` to the URL. The console
 prints one activation line when the flag is enabled. It logs warnings only when
 at least one mounted row drifts beyond the runtime epsilon. The demo also keeps
-the last reports on `window.__vl4RenderDriftReports` and increments
-`window.__vl4RenderDriftCount`. Because drift checks read DOM rects, use this
+the last reports on `window.__vlRenderDriftReports` and increments
+`window.__vlRenderDriftCount`. Because drift checks read DOM rects, use this
 flag only for diagnostics; it is not a scroll performance mode.
 
 ## Chunk loading
@@ -386,8 +386,8 @@ change the measured row height.
 When the list has no rows, the demo uses a placeholder slot for initial loading,
 empty results, and source errors. Use `?debugRenderDrift=1` to enable the
 runtime's mounted-row drift reporter. The demo stores the last reports on
-`window.__vl4RenderDriftReports` and increments
-`window.__vl4RenderDriftCount` for browser-driven checks.
+`window.__vlRenderDriftReports` and increments
+`window.__vlRenderDriftCount` for browser-driven checks.
 
 ## Streaming chat demo
 
