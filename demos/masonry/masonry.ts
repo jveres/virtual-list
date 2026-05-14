@@ -11,17 +11,16 @@ import "../demo-styles.css";
 import "./masonry.css";
 
 const TOTAL_PHOTOS = 2_400;
-const BAND_HEIGHT = 720;
 const PHOTO_GAP = 4;
-const IMAGE_SOURCE_WIDTH = 420;
-const INITIAL_BANDS = 44;
-const RETAIN_BANDS = 74;
-const LOAD_BANDS = 10;
+const MAX_IMAGE_SOURCE_WIDTH = 420;
+const INITIAL_GROUPS = 240;
+const RETAIN_GROUPS = 360;
+const LOAD_GROUPS = 90;
 const LOAD_DELAY_MS = 600;
 const BOUNDARY_SLOT_HEIGHT = 52;
 const MAX_CANVAS_WIDTH = 1180;
 const HORIZONTAL_PADDING = 32;
-const OVERSCAN_PX = 900;
+const OVERSCAN_PX = 680;
 
 const ASPECT_RATIOS = [0.66, 0.75, 0.9, 1, 1.18, 1.35, 1.52] as const;
 
@@ -31,13 +30,21 @@ interface Photo {
 }
 
 interface PlacedPhoto extends Photo {
+  column: number;
   left: number;
   top: number;
   width: number;
   height: number;
 }
 
-interface MasonryBand {
+interface MasonryPlaceholder {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface MasonryGroup {
   top: number;
   height: number;
   photos: readonly PlacedPhoto[];
@@ -47,8 +54,14 @@ interface MasonryLayout {
   width: number;
   columns: number;
   gap: number;
-  totalHeight: number;
-  bands: readonly MasonryBand[];
+  cardWidth: number;
+  groups: readonly MasonryGroup[];
+}
+
+interface LoadedBoundaryGeometry {
+  visualEnd: number;
+  topPlaceholders: readonly MasonryPlaceholder[];
+  bottomPlaceholders: readonly MasonryPlaceholder[];
 }
 
 const viewport = mustGet("viewport");
@@ -83,8 +96,13 @@ interface PendingBoundaryApply {
 
 let selectedColumns = 4;
 let layout = computeMasonryLayout();
-let loadedStartBand = 0;
-let loadedEndBand = 0;
+let loadedStartGroup = 0;
+let loadedEndGroup = 0;
+let loadedBoundaryGeometry: LoadedBoundaryGeometry = {
+  visualEnd: 0,
+  topPlaceholders: [],
+  bottomPlaceholders: [],
+};
 const boundaryStates: Record<Boundary, BoundarySlotState> = {
   top: "idle",
   bottom: "idle",
@@ -166,8 +184,7 @@ function computeMasonryLayout(): MasonryLayout {
   const gap = PHOTO_GAP;
   const cardWidth = Math.max(80, (width - (columns - 1) * gap) / columns);
   const columnHeights = Array.from({ length: columns }, () => 0);
-  const photosByBand = new Map<number, PlacedPhoto[]>();
-  const bands: MasonryBand[] = [];
+  const photosByTop = new Map<number, PlacedPhoto[]>();
 
   for (const photo of photos) {
     const column = shortestColumnIndex(columnHeights);
@@ -176,36 +193,35 @@ function computeMasonryLayout(): MasonryLayout {
     const left = column * (cardWidth + gap);
     const placed: PlacedPhoto = {
       ...photo,
+      column,
       left,
       top,
       width: cardWidth,
       height,
     };
 
-    const firstBand = Math.floor(top / BAND_HEIGHT);
-    const lastBand = Math.floor((top + height - 0.01) / BAND_HEIGHT);
-    for (let bandIndex = firstBand; bandIndex <= lastBand; bandIndex++) {
-      const bandPhotos = photosByBand.get(bandIndex);
-      if (bandPhotos) {
-        bandPhotos.push(placed);
-      } else {
-        photosByBand.set(bandIndex, [placed]);
-      }
+    const topGroup = placed.top;
+    const topPhotos = photosByTop.get(topGroup);
+    if (topPhotos) {
+      topPhotos.push(placed);
+    } else {
+      photosByTop.set(topGroup, [placed]);
     }
 
     columnHeights[column] = top + height + gap;
   }
 
-  const totalHeight = Math.max(BAND_HEIGHT, Math.max(...columnHeights) - gap);
-  const bandCount = Math.max(1, Math.ceil(totalHeight / BAND_HEIGHT));
+  const totalHeight = Math.max(1, Math.max(...columnHeights) - gap);
+  const groupTops = Array.from(photosByTop.keys()).sort((a, b) => a - b);
+  const groups: MasonryGroup[] = [];
 
-  for (let index = 0; index < bandCount; index++) {
-    const top = index * BAND_HEIGHT;
-    const height = Math.max(1, Math.min(BAND_HEIGHT, totalHeight - top));
-    bands.push({
+  for (let index = 0; index < groupTops.length; index++) {
+    const top = groupTops[index] ?? 0;
+    const nextTop = groupTops[index + 1] ?? totalHeight;
+    groups.push({
       top,
-      height,
-      photos: photosByBand.get(index) ?? [],
+      height: Math.max(1, nextTop - top),
+      photos: photosByTop.get(top) ?? [],
     });
   }
 
@@ -213,71 +229,194 @@ function computeMasonryLayout(): MasonryLayout {
     width,
     columns,
     gap,
-    totalHeight,
-    bands,
+    cardWidth,
+    groups,
   };
 }
 
 function currentCount(): number {
-  return Math.max(0, loadedEndBand - loadedStartBand);
+  return Math.max(0, loadedEndGroup - loadedStartGroup);
 }
 
-function bandForLocalIndex(index: number): MasonryBand {
-  const band = layout.bands[loadedStartBand + index];
-  if (!band) throw new Error(`missing masonry band ${loadedStartBand + index}`);
-  return band;
+function groupEnd(group: MasonryGroup | undefined): number {
+  return group ? group.top + group.height : 0;
+}
+
+function placeholderForColumn(
+  column: number,
+  top: number,
+  height: number,
+): MasonryPlaceholder | null {
+  if (height <= 1) return null;
+  return {
+    left: column * (layout.cardWidth + layout.gap),
+    top,
+    width: layout.cardWidth,
+    height,
+  };
+}
+
+function recomputeLoadedBoundaryGeometry(): void {
+  const sliceStart = layout.groups[loadedStartGroup]?.top ?? 0;
+  const firstTopByColumn = Array.from(
+    { length: layout.columns },
+    () => Number.POSITIVE_INFINITY,
+  );
+  const lastBottomByColumn = Array.from(
+    { length: layout.columns },
+    () => Number.NEGATIVE_INFINITY,
+  );
+  let nextVisualEnd = groupEnd(layout.groups[loadedEndGroup - 1]);
+
+  for (let index = loadedStartGroup; index < loadedEndGroup; index++) {
+    const group = layout.groups[index];
+    if (!group) continue;
+    for (const photo of group.photos) {
+      const bottom = photo.top + photo.height;
+      const firstTop =
+        firstTopByColumn[photo.column] ?? Number.POSITIVE_INFINITY;
+      const lastBottom =
+        lastBottomByColumn[photo.column] ?? Number.NEGATIVE_INFINITY;
+      firstTopByColumn[photo.column] = Math.min(firstTop, photo.top);
+      lastBottomByColumn[photo.column] = Math.max(lastBottom, bottom);
+      nextVisualEnd = Math.max(nextVisualEnd, bottom);
+    }
+  }
+
+  const topPlaceholders: MasonryPlaceholder[] = [];
+  if (loadedStartGroup > 0) {
+    for (let column = 0; column < layout.columns; column++) {
+      const firstTop = firstTopByColumn[column] ?? Number.POSITIVE_INFINITY;
+      if (!Number.isFinite(firstTop)) continue;
+      const placeholder = placeholderForColumn(
+        column,
+        sliceStart,
+        firstTop - sliceStart - layout.gap,
+      );
+      if (placeholder) topPlaceholders.push(placeholder);
+    }
+  }
+
+  const bottomPlaceholders: MasonryPlaceholder[] = [];
+  if (loadedEndGroup < layout.groups.length) {
+    for (let column = 0; column < layout.columns; column++) {
+      const lastBottom = lastBottomByColumn[column] ?? Number.NEGATIVE_INFINITY;
+      if (!Number.isFinite(lastBottom)) continue;
+      const top = lastBottom + layout.gap;
+      const placeholder = placeholderForColumn(
+        column,
+        top,
+        nextVisualEnd - top,
+      );
+      if (placeholder) bottomPlaceholders.push(placeholder);
+    }
+  }
+
+  loadedBoundaryGeometry = {
+    visualEnd: nextVisualEnd,
+    topPlaceholders,
+    bottomPlaceholders,
+  };
+}
+
+function loadedBottomTailHeight(): number {
+  if (currentCount() === 0) return 0;
+  const modeledEnd = groupEnd(layout.groups[loadedEndGroup - 1]);
+  return Math.max(0, loadedBoundaryGeometry.visualEnd - modeledEnd);
+}
+
+function groupForLocalIndex(index: number): MasonryGroup {
+  const group = layout.groups[loadedStartGroup + index];
+  if (!group) {
+    throw new Error(`missing masonry group ${loadedStartGroup + index}`);
+  }
+  return group;
 }
 
 function itemHeight(index: number): number {
-  return bandForLocalIndex(index).height;
+  const group = groupForLocalIndex(index);
+  const tailHeight =
+    index === currentCount() - 1 ? loadedBottomTailHeight() : 0;
+  return group.height + tailHeight;
 }
 
-function imageUrl(photo: Photo): string {
-  const height = Math.max(
-    120,
-    Math.round(IMAGE_SOURCE_WIDTH * photo.aspectRatio),
+function imageSourceWidth(photo: PlacedPhoto): number {
+  return Math.min(
+    MAX_IMAGE_SOURCE_WIDTH,
+    Math.max(120, Math.ceil(photo.width)),
   );
-  return `https://picsum.photos/seed/virtual-list4-${photo.id}/${IMAGE_SOURCE_WIDTH}/${height}`;
 }
 
-function buildPhotoCard(photo: PlacedPhoto, bandTop: number): HTMLElement {
+function imageUrl(photo: PlacedPhoto): string {
+  const width = imageSourceWidth(photo);
+  const height = Math.max(120, Math.round(width * photo.aspectRatio));
+  return `https://picsum.photos/seed/virtual-list4-${photo.id}/${width}/${height}`;
+}
+
+function buildPhotoCard(photo: PlacedPhoto, groupTop: number): HTMLElement {
   const card = document.createElement("div");
   card.className = "masonry-photo";
   card.style.left = px(photo.left);
-  card.style.top = px(photo.top - bandTop);
+  card.style.top = px(photo.top - groupTop);
   card.style.width = px(photo.width);
   card.style.height = px(photo.height);
 
   const image = document.createElement("img");
   image.className = "masonry-photo-img";
   image.alt = "";
+  image.decoding = "async";
   image.loading = "lazy";
-  image.width = IMAGE_SOURCE_WIDTH;
-  image.height = Math.max(
-    120,
-    Math.round(IMAGE_SOURCE_WIDTH * photo.aspectRatio),
-  );
+  const sourceWidth = imageSourceWidth(photo);
+  image.width = sourceWidth;
+  image.height = Math.max(120, Math.round(sourceWidth * photo.aspectRatio));
   image.src = imageUrl(photo);
 
   card.append(image);
   return card;
 }
 
-function buildBand(localIndex: number): HTMLElement {
-  const band = bandForLocalIndex(localIndex);
+function buildPlaceholderCard(
+  placeholder: MasonryPlaceholder,
+  groupTop: number,
+): HTMLElement {
+  const card = document.createElement("div");
+  card.className = "masonry-placeholder";
+  card.setAttribute("aria-hidden", "true");
+  card.style.left = px(placeholder.left);
+  card.style.top = px(placeholder.top - groupTop);
+  card.style.width = px(placeholder.width);
+  card.style.height = px(placeholder.height);
+  return card;
+}
+
+function buildGroup(localIndex: number): HTMLElement {
+  const group = groupForLocalIndex(localIndex);
+  const height = itemHeight(localIndex);
   const item = document.createElement("section");
-  item.className = "masonry-band";
-  item.style.height = px(band.height);
-  item.style.contain = "layout paint style";
-  item.style.overflow = "hidden";
+  item.className = "masonry-group";
+  item.style.height = px(height);
+  item.style.contain = "layout style";
+  item.style.overflow = "visible";
 
   const inner = document.createElement("div");
-  inner.className = "masonry-band-inner";
+  inner.className = "masonry-group-inner";
   inner.style.width = px(layout.width);
-  inner.style.height = px(band.height);
+  inner.style.height = px(height);
 
-  for (const photo of band.photos) {
-    inner.appendChild(buildPhotoCard(photo, band.top));
+  if (localIndex === 0) {
+    for (const placeholder of loadedBoundaryGeometry.topPlaceholders) {
+      inner.appendChild(buildPlaceholderCard(placeholder, group.top));
+    }
+  }
+
+  for (const photo of group.photos) {
+    inner.appendChild(buildPhotoCard(photo, group.top));
+  }
+
+  if (localIndex === currentCount() - 1) {
+    for (const placeholder of loadedBoundaryGeometry.bottomPlaceholders) {
+      inner.appendChild(buildPlaceholderCard(placeholder, group.top));
+    }
   }
 
   item.appendChild(inner);
@@ -294,6 +433,7 @@ function buildBoundarySlot(boundary: Boundary): HTMLElement {
   spinner.setAttribute("aria-hidden", "true");
 
   const text = document.createElement("span");
+  text.className = "boundary-text";
 
   slot.append(spinner, text);
   updateBoundarySlotElement(slot, boundary);
@@ -310,7 +450,7 @@ function updateBoundarySlotElement(
   if (!slot) return;
 
   const state = boundaryStates[boundary];
-  const text = slot.querySelector("span:last-child");
+  const text = slot.querySelector(".boundary-text");
   if (slot.dataset.state !== state) {
     slot.dataset.state = state;
   }
@@ -327,7 +467,6 @@ function updateBoundarySlotElement(
   if (text.textContent !== nextText) {
     text.textContent = nextText;
   }
-  syncLoadLabel();
 }
 
 function boundarySlotFor(boundary: Boundary): DynamicVirtualizerBoundarySlot {
@@ -379,7 +518,7 @@ function syncLoadLabel(): void {
   } else if (boundaryStates.bottom === "loading") {
     loadText = "loading next";
   } else {
-    loadText = `${loadedEndBand - loadedStartBand} retained bands`;
+    loadText = `${loadedEndGroup - loadedStartGroup} retained groups`;
   }
 
   if (loadText !== renderedLoadText) {
@@ -388,9 +527,9 @@ function syncLoadLabel(): void {
 }
 
 function updateInfo(state: DynamicVirtualizerState = virtualizer.state): void {
-  const firstBand = loadedStartBand + state.range.start + 1;
-  const lastBand = loadedStartBand + state.range.end;
-  const rangeText = `${firstBand}-${lastBand} / ${layout.bands.length} bands`;
+  const firstGroup = loadedStartGroup + state.range.start + 1;
+  const lastGroup = loadedStartGroup + state.range.end;
+  const rangeText = `${firstGroup}-${lastGroup} / ${layout.groups.length} groups`;
   if (rangeText !== renderedRangeText) {
     renderedRangeText = setTextIfChanged(rangeLabel, rangeText);
   }
@@ -409,16 +548,17 @@ function updateInfo(state: DynamicVirtualizerState = virtualizer.state): void {
 }
 
 function initializeLoadedWindow(): void {
-  const bandCount = layout.bands.length;
-  const retained = Math.min(INITIAL_BANDS, bandCount);
-  const middleStart = Math.floor((bandCount - retained) / 2);
-  loadedStartBand = clamp(middleStart, 0, Math.max(0, bandCount - retained));
-  loadedEndBand = Math.min(bandCount, loadedStartBand + retained);
+  const groupCount = layout.groups.length;
+  const retained = Math.min(INITIAL_GROUPS, groupCount);
+  const middleStart = Math.floor((groupCount - retained) / 2);
+  loadedStartGroup = clamp(middleStart, 0, Math.max(0, groupCount - retained));
+  loadedEndGroup = Math.min(groupCount, loadedStartGroup + retained);
+  recomputeLoadedBoundaryGeometry();
 }
 
 function idleStateForBoundary(boundary: Boundary): BoundaryResolvedState {
-  if (boundary === "top") return loadedStartBand <= 0 ? "no-more" : "idle";
-  return loadedEndBand >= layout.bands.length ? "no-more" : "idle";
+  if (boundary === "top") return loadedStartGroup <= 0 ? "no-more" : "idle";
+  return loadedEndGroup >= layout.groups.length ? "no-more" : "idle";
 }
 
 function canLoadBoundary(boundary: Boundary): boolean {
@@ -450,7 +590,7 @@ function resetBoundaryLoading(): void {
 }
 
 function prepareTopApply(signal: AbortSignal): Promise<PendingBoundaryApply> {
-  if (loadedStartBand <= 0) {
+  if (loadedStartGroup <= 0) {
     return Promise.resolve({
       boundary: "top",
       state: "no-more",
@@ -467,10 +607,10 @@ function prepareTopApply(signal: AbortSignal): Promise<PendingBoundaryApply> {
       };
     }
 
-    const addedBefore = Math.min(LOAD_BANDS, loadedStartBand);
-    const nextStart = loadedStartBand - addedBefore;
-    let nextEnd = loadedEndBand;
-    const overflow = nextEnd - nextStart - RETAIN_BANDS;
+    const addedBefore = Math.min(LOAD_GROUPS, loadedStartGroup);
+    const nextStart = loadedStartGroup - addedBefore;
+    let nextEnd = loadedEndGroup;
+    const overflow = nextEnd - nextStart - RETAIN_GROUPS;
     if (overflow > 0) nextEnd -= overflow;
 
     return {
@@ -478,8 +618,9 @@ function prepareTopApply(signal: AbortSignal): Promise<PendingBoundaryApply> {
       state: nextStart <= 0 ? "no-more" : "idle",
       addedBefore,
       apply: () => {
-        loadedStartBand = nextStart;
-        loadedEndBand = nextEnd;
+        loadedStartGroup = nextStart;
+        loadedEndGroup = nextEnd;
+        recomputeLoadedBoundaryGeometry();
         return true;
       },
     };
@@ -489,7 +630,7 @@ function prepareTopApply(signal: AbortSignal): Promise<PendingBoundaryApply> {
 function prepareBottomApply(
   signal: AbortSignal,
 ): Promise<PendingBoundaryApply> {
-  if (loadedEndBand >= layout.bands.length) {
+  if (loadedEndGroup >= layout.groups.length) {
     return Promise.resolve({
       boundary: "bottom",
       state: "no-more",
@@ -506,19 +647,23 @@ function prepareBottomApply(
       };
     }
 
-    const appended = Math.min(LOAD_BANDS, layout.bands.length - loadedEndBand);
-    let nextStart = loadedStartBand;
-    const nextEnd = loadedEndBand + appended;
-    const overflow = nextEnd - nextStart - RETAIN_BANDS;
+    const appended = Math.min(
+      LOAD_GROUPS,
+      layout.groups.length - loadedEndGroup,
+    );
+    let nextStart = loadedStartGroup;
+    const nextEnd = loadedEndGroup + appended;
+    const overflow = nextEnd - nextStart - RETAIN_GROUPS;
     if (overflow > 0) nextStart += overflow;
 
     return {
       boundary: "bottom",
-      state: nextEnd >= layout.bands.length ? "no-more" : "idle",
-      removedBefore: nextStart - loadedStartBand,
+      state: nextEnd >= layout.groups.length ? "no-more" : "idle",
+      removedBefore: nextStart - loadedStartGroup,
       apply: () => {
-        loadedStartBand = nextStart;
-        loadedEndBand = nextEnd;
+        loadedStartGroup = nextStart;
+        loadedEndGroup = nextEnd;
+        recomputeLoadedBoundaryGeometry();
         return true;
       },
     };
@@ -542,6 +687,7 @@ function applyPendingBoundaryLoad(): void {
     removedBefore: pending.removedBefore,
     apply: pending.apply,
     after: () => {
+      virtualizer.invalidateMeasurements();
       refreshBoundarySlots();
       updateInfo();
     },
@@ -621,21 +767,22 @@ function syncControlButtons(): void {
   }
 }
 
-function rebuildLayoutAroundCurrentBand(): void {
+function rebuildLayoutAroundCurrentGroup(): void {
   const current = virtualizer.state;
-  const anchorBand = clamp(
-    loadedStartBand + current.range.start,
+  const anchorGroup = clamp(
+    loadedStartGroup + current.range.start,
     0,
-    Math.max(0, layout.bands.length - 1),
+    Math.max(0, layout.groups.length - 1),
   );
   layout = computeMasonryLayout();
-  const retained = Math.min(RETAIN_BANDS, layout.bands.length);
-  loadedStartBand = clamp(
-    anchorBand - Math.floor(retained / 2),
+  const retained = Math.min(RETAIN_GROUPS, layout.groups.length);
+  loadedStartGroup = clamp(
+    anchorGroup - Math.floor(retained / 2),
     0,
-    Math.max(0, layout.bands.length - retained),
+    Math.max(0, layout.groups.length - retained),
   );
-  loadedEndBand = Math.min(layout.bands.length, loadedStartBand + retained);
+  loadedEndGroup = Math.min(layout.groups.length, loadedStartGroup + retained);
+  recomputeLoadedBoundaryGeometry();
   resetBoundaryLoading();
   virtualizer.syncLayout({
     topSlot: boundarySlotFor("top"),
@@ -659,7 +806,7 @@ function bindControls(): void {
       if (!Number.isFinite(columns) || columns === selectedColumns) return;
       selectedColumns = columns;
       syncControlButtons();
-      rebuildLayoutAroundCurrentBand();
+      rebuildLayoutAroundCurrentGroup();
     });
   }
 
@@ -679,11 +826,11 @@ function refreshTheme(): void {
 function handleViewportResize(): void {
   if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
   measuredViewportWidth = viewport.clientWidth;
-  rebuildLayoutAroundCurrentBand();
+  rebuildLayoutAroundCurrentGroup();
 }
 
 async function alignInitialViewport(): Promise<void> {
-  if (loadedStartBand <= 0 || currentCount() === 0) return;
+  if (loadedStartGroup <= 0 || currentCount() === 0) return;
   await virtualizer.scrollToIndex(0, "top");
 }
 
@@ -698,7 +845,7 @@ virtualizer = createDynamicVirtualizer({
   canvasClassName: "masonry-canvas",
   getCount: currentCount,
   getItemHeight: itemHeight,
-  buildItem: buildBand,
+  buildItem: buildGroup,
   overscanPx: OVERSCAN_PX,
   onReachTop: () => {
     startBoundaryLoad("top");

@@ -9,26 +9,43 @@
   width: 100%;
 }
 
-.masonry-band.dv-item {
-  overflow: hidden;
-  contain: layout paint style;
+.masonry-group.dv-item {
+  overflow: visible;
+  contain: layout style;
 }
 
-.masonry-band-inner {
+.masonry-group-inner {
   position: relative;
   height: 100%;
   margin: 0 auto;
+  overflow: visible;
 }
 
 .masonry-photo {
   position: absolute;
   display: block;
+  contain: layout paint;
   overflow: hidden;
   padding: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-surface);
-  box-shadow: 0 1px 0 color-mix(in srgb, var(--border) 80%, transparent);
+}
+
+.masonry-placeholder {
+  position: absolute;
+  display: block;
+  contain: layout paint;
+  overflow: hidden;
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+  border-radius: 8px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--bg-surface) 94%, var(--border)),
+    color-mix(in srgb, var(--bg-surface) 84%, var(--border))
+  );
+  opacity: 0.72;
+  pointer-events: none;
 }
 
 .masonry-photo-img {
