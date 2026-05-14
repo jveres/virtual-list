@@ -6,7 +6,7 @@ const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
 const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_RENDER_DRIFT_EPSILON = 1;
 const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
-const WHEEL_SCROLL_IDLE_MS = 3000;
+const SCROLL_SETTLE_COOLDOWN_MS = 140;
 
 const CSS = `
 .dv-viewport {
@@ -17,7 +17,6 @@ const CSS = `
 }
 .minimal-scrollbar {
   isolation: isolate;
-  scrollbar-color: var(--border) transparent;
   scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
   will-change: scroll-position;
@@ -66,6 +65,7 @@ export interface DynamicVirtualizerConfig {
   onReachBottom?: (state: DynamicVirtualizerState) => void;
   onScrollStart?: (state: DynamicVirtualizerState) => void;
   onScrollEnd?: (state: DynamicVirtualizerState) => void;
+  onScrollSettled?: (state: DynamicVirtualizerState) => void;
 }
 
 export interface DynamicVirtualizerItemMeasurerConfig {
@@ -404,6 +404,7 @@ export function createDynamicVirtualizer(
     onReachBottom,
     onScrollStart,
     onScrollEnd,
+    onScrollSettled,
   } = config;
 
   const overscanPx = config.overscanPx;
@@ -421,7 +422,6 @@ export function createDynamicVirtualizer(
             console.warn("[dynamic-virtualizer] render drift", drifts);
           }
         : null;
-
   let count = 0;
   let sizes = new Float64Array(0);
   let measured = new Uint8Array(0);
@@ -457,10 +457,9 @@ export function createDynamicVirtualizer(
   let placeholderSlot: MountedPlaceholderSlot | null = null;
   let userScrollActive = false;
   let userScrollMoved = false;
-  let userInputMoved = false;
-  let scrollEndBlockedByInput = false;
-  let blockedScrollEndFrame = 0;
-  let wheelIdleTimer = 0;
+  let nativeScrollEndPending = false;
+  let settleFrame = 0;
+  let settleTimer = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
   let reachTopArmed = false;
@@ -1309,8 +1308,12 @@ export function createDynamicVirtualizer(
       return Promise.resolve(true);
     }
 
+    handleUserScrollStart();
+
     if (options.behavior !== "smooth") {
       setScrollTop(target, { allowDuringScroll: true });
+      nativeScrollEndPending = true;
+      scheduleSettleCooldown();
       return Promise.resolve(true);
     }
 
@@ -1584,9 +1587,11 @@ export function createDynamicVirtualizer(
       addedBefore > 0 || removedBefore > 0
         ? topSlotHeight() - previousTopSlotHeight
         : 0;
-    const scrollCorrection = beforeHeightDelta + topSlotDelta;
-    if (Math.abs(scrollCorrection) > measureEpsilon) {
-      setScrollTop(previousScrollTop + scrollCorrection, {
+    const nextScrollTop = previousScrollTop + beforeHeightDelta + topSlotDelta;
+    const hasScrollTarget =
+      Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
+    if (hasScrollTarget) {
+      setScrollTop(nextScrollTop, {
         allowDuringScroll: true,
       });
     }
@@ -1600,7 +1605,16 @@ export function createDynamicVirtualizer(
     if (emittingChangeCallback) {
       scheduleRender();
     } else {
-      renderNow();
+      renderNow(hasScrollTarget ? nextScrollTop : viewport.scrollTop);
+      if (
+        hasScrollTarget &&
+        Math.abs(viewport.scrollTop - nextScrollTop) > measureEpsilon
+      ) {
+        setScrollTop(nextScrollTop, {
+          allowDuringScroll: true,
+        });
+        renderNow(nextScrollTop);
+      }
     }
     update.after?.();
   }
@@ -1674,8 +1688,10 @@ export function createDynamicVirtualizer(
   }
 
   function handleScroll(): void {
+    if (nativeScrollEndPending) {
+      scheduleSettleCooldown();
+    }
     if (userScrollActive) userScrollMoved = true;
-    if (wheelIdleTimer) scheduleWheelIdleFinish();
     scheduleRender();
   }
 
@@ -1683,74 +1699,83 @@ export function createDynamicVirtualizer(
     return touchInputActive || activePointers.size > 0;
   }
 
-  function cancelBlockedScrollEndFrame(): void {
-    if (!blockedScrollEndFrame) return;
-    cancelAnimationFrame(blockedScrollEndFrame);
-    blockedScrollEndFrame = 0;
+  function isRubberBandOverscrolled(): boolean {
+    const scrollTop = viewport.scrollTop;
+    const maxScrollTop = nativeMaxScrollTop();
+    return (
+      scrollTop < -measureEpsilon || scrollTop - maxScrollTop > measureEpsilon
+    );
   }
 
-  function cancelWheelIdleTimer(): void {
-    if (!wheelIdleTimer) return;
-    window.clearTimeout(wheelIdleTimer);
-    wheelIdleTimer = 0;
+  function cancelSettleFrame(): void {
+    if (!settleFrame) return;
+    cancelAnimationFrame(settleFrame);
+    settleFrame = 0;
+  }
+
+  function cancelSettleTimer(): void {
+    if (!settleTimer) return;
+    window.clearTimeout(settleTimer);
+    settleTimer = 0;
+  }
+
+  function canSettleUserScroll(): boolean {
+    return !hasActiveTouchOrPointerInput() && !isRubberBandOverscrolled();
   }
 
   function finishUserScroll(): void {
-    cancelBlockedScrollEndFrame();
-    cancelWheelIdleTimer();
-    scrollEndBlockedByInput = false;
+    cancelSettleTimer();
+    cancelSettleFrame();
+    if (new URLSearchParams(window.location.search).has("debugScrollSettle")) {
+      console.debug("[vl4-scroll-settled]", {
+        scrollTop: viewport.scrollTop,
+        scrollMax: nativeMaxScrollTop(),
+        touchInputActive,
+        activePointers: activePointers.size,
+        rubberBandOverscrolled: isRubberBandOverscrolled(),
+      });
+    }
+    nativeScrollEndPending = false;
     userScrollActive = false;
     userScrollMoved = false;
-    userInputMoved = false;
     if (flushDeferredLayoutUpdates()) {
       flushMeasurementsNow();
     } else if (!flushMeasurementsNow()) {
       renderNow(viewport.scrollTop);
     }
-    onScrollEnd?.(getState());
+    const state = getState();
+    onScrollEnd?.(state);
+    onScrollSettled?.(state);
   }
 
-  function scheduleBlockedScrollEndFinish(): void {
-    if (blockedScrollEndFrame || !scrollEndBlockedByInput) return;
-
-    // Some browsers can report scrollend before the final touch/pointer release.
-    // If no second scrollend follows, this releases deferred layout work.
-    blockedScrollEndFrame = requestAnimationFrame(() => {
-      blockedScrollEndFrame = 0;
-      if (
-        disposed ||
-        hasActiveTouchOrPointerInput() ||
-        !scrollEndBlockedByInput
-      ) {
-        return;
-      }
-      finishUserScroll();
-    });
-  }
-
-  function scheduleWheelIdleFinish(): void {
-    if (hasActiveTouchOrPointerInput()) return;
-
-    cancelWheelIdleTimer();
-    wheelIdleTimer = window.setTimeout(() => {
-      wheelIdleTimer = 0;
-      if (disposed || !userScrollActive || hasActiveTouchOrPointerInput()) {
-        return;
-      }
-      finishUserScroll();
-    }, WHEEL_SCROLL_IDLE_MS);
-  }
-
-  function handleScrollEnd(): void {
-    if (hasActiveTouchOrPointerInput()) {
-      scrollEndBlockedByInput = true;
-      scheduleRender();
-      return;
-    }
-    if (wheelIdleTimer) {
+  function maybeFinishUserScroll(): void {
+    if (!userScrollActive || !nativeScrollEndPending) return;
+    if (!canSettleUserScroll()) {
+      schedulePendingSettleCheck();
       return;
     }
     finishUserScroll();
+  }
+
+  function schedulePendingSettleCheck(): void {
+    if (settleFrame || disposed) return;
+    settleFrame = requestAnimationFrame(() => {
+      settleFrame = 0;
+      maybeFinishUserScroll();
+    });
+  }
+
+  function scheduleSettleCooldown(): void {
+    cancelSettleTimer();
+    settleTimer = window.setTimeout(() => {
+      settleTimer = 0;
+      maybeFinishUserScroll();
+    }, SCROLL_SETTLE_COOLDOWN_MS);
+  }
+
+  function handleScrollEnd(): void {
+    nativeScrollEndPending = true;
+    scheduleSettleCooldown();
   }
 
   function handleViewportResize(): void {
@@ -1773,12 +1798,11 @@ export function createDynamicVirtualizer(
 
   function handleUserScrollStart(): void {
     stopFollowBottom();
-    cancelBlockedScrollEndFrame();
     const wasActive = userScrollActive;
     userScrollActive = true;
     if (!wasActive) {
+      nativeScrollEndPending = false;
       userScrollMoved = false;
-      userInputMoved = false;
     }
     if (!wasActive) {
       onScrollStart?.(getState());
@@ -1787,20 +1811,18 @@ export function createDynamicVirtualizer(
 
   function handleWheel(): void {
     handleUserScrollStart();
-    userInputMoved = true;
-    scheduleWheelIdleFinish();
   }
 
   function handleUserScrollMaybeEnd(): void {
     if (hasActiveTouchOrPointerInput()) return;
-    if (scrollEndBlockedByInput) {
-      scheduleBlockedScrollEndFinish();
-      return;
-    }
-    if (userScrollMoved || userInputMoved) return;
-    userScrollActive = false;
-    if (pendingMeasurements.size > 0) {
-      scheduleMeasurementFlush();
+    maybeFinishUserScroll();
+    if (
+      userScrollActive &&
+      !userScrollMoved &&
+      !nativeScrollEndPending &&
+      !isRubberBandOverscrolled()
+    ) {
+      finishUserScroll();
     }
   }
 
@@ -1810,7 +1832,7 @@ export function createDynamicVirtualizer(
   }
 
   function handleTouchScrollMove(): void {
-    userInputMoved = true;
+    handleUserScrollStart();
   }
 
   function handleTouchScrollEnd(event: TouchEvent): void {
@@ -1822,11 +1844,6 @@ export function createDynamicVirtualizer(
     if (event.pointerType === "touch" && supportsTouchEvents) return;
     activePointers.add(event.pointerId);
     handleUserScrollStart();
-  }
-
-  function handlePointerScrollMove(event: PointerEvent): void {
-    if (!activePointers.has(event.pointerId)) return;
-    userInputMoved = true;
   }
 
   function handlePointerScrollEnd(event: PointerEvent): void {
@@ -1842,9 +1859,6 @@ export function createDynamicVirtualizer(
   const supportsTouchEvents = "TouchEvent" in window;
   if (supportsPointerEvents) {
     viewport.addEventListener("pointerdown", handlePointerScrollStart, {
-      passive: true,
-    });
-    viewport.addEventListener("pointermove", handlePointerScrollMove, {
       passive: true,
     });
     viewport.addEventListener("pointerup", handlePointerScrollEnd, {
@@ -1897,9 +1911,9 @@ export function createDynamicVirtualizer(
       disposed = true;
       if (renderFrame) cancelAnimationFrame(renderFrame);
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
+      cancelSettleFrame();
+      cancelSettleTimer();
       stopFollowBottom();
-      cancelBlockedScrollEndFrame();
-      cancelWheelIdleTimer();
       deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();
@@ -1909,7 +1923,6 @@ export function createDynamicVirtualizer(
       viewport.removeEventListener("wheel", handleWheel);
       if (supportsPointerEvents) {
         viewport.removeEventListener("pointerdown", handlePointerScrollStart);
-        viewport.removeEventListener("pointermove", handlePointerScrollMove);
         viewport.removeEventListener("pointerup", handlePointerScrollEnd);
         viewport.removeEventListener("pointercancel", handlePointerScrollEnd);
       }

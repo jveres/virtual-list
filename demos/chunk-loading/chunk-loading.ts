@@ -816,13 +816,13 @@ function boundarySlotLabel(
 
 function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
   const element = document.createElement("div");
-  element.className = "boundary-slot idle";
+  element.className = "boundary-slot";
   element.dataset.boundaryContent = boundary;
+  element.dataset.state = "idle";
 
   const spinner = document.createElement("span");
   spinner.className = "boundary-spinner";
   spinner.setAttribute("aria-hidden", "true");
-  spinner.hidden = true;
 
   const label = document.createElement("span");
 
@@ -841,12 +841,10 @@ function updateBoundarySlotElement(
   if (!element) return;
 
   const kind = visibleBoundarySlotKind(boundary);
-  const spinner = element.querySelector<HTMLElement>(".boundary-spinner");
   const label = element.querySelector<HTMLElement>("span:last-child");
 
-  const nextClassName = `boundary-slot ${kind}`;
-  if (element.className !== nextClassName) {
-    element.className = nextClassName;
+  if (element.dataset.state !== kind) {
+    element.dataset.state = kind;
   }
   if (kind === "idle") {
     if (element.getAttribute("aria-hidden") !== "true") {
@@ -863,10 +861,6 @@ function updateBoundarySlotElement(
     }
   }
 
-  const shouldHideSpinner = kind !== "loading";
-  if (spinner && spinner.hidden !== shouldHideSpinner) {
-    spinner.hidden = shouldHideSpinner;
-  }
   if (!label) return;
   const nextLabel = boundarySlotLabel(boundary, kind);
   if (label.textContent !== nextLabel) {

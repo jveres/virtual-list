@@ -1,6 +1,7 @@
 import {
   createDynamicVirtualizer,
   type DynamicVirtualizer,
+  type DynamicVirtualizerBoundary,
   type DynamicVirtualizerBoundarySlot,
   type DynamicVirtualizerState,
 } from "../../src/dynamic-virtualizer.js";
@@ -22,26 +23,10 @@ const MAX_CANVAS_WIDTH = 1180;
 const HORIZONTAL_PADDING = 32;
 const OVERSCAN_PX = 900;
 
-const CATEGORIES = [
-  "Nature",
-  "Urban",
-  "Portrait",
-  "Abstract",
-  "Travel",
-  "Food",
-  "Architecture",
-  "Space",
-] as const;
-
 const ASPECT_RATIOS = [0.66, 0.75, 0.9, 1, 1.18, 1.35, 1.52] as const;
-
-type PhotoCategory = (typeof CATEGORIES)[number];
 
 interface Photo {
   id: number;
-  title: string;
-  category: PhotoCategory;
-  likes: number;
   aspectRatio: number;
 }
 
@@ -78,16 +63,36 @@ const photos = Array.from({ length: TOTAL_PHOTOS }, (_, index) =>
   createPhoto(index),
 );
 
-type BoundaryState = "idle" | "loading" | "done";
+type Boundary = DynamicVirtualizerBoundary;
+type BoundarySlotState = "idle" | "loading" | "no-more" | "error";
+type BoundaryResolvedState = Exclude<BoundarySlotState, "loading">;
+
+interface ActiveBoundaryLoad {
+  boundary: Boundary;
+  sequence: number;
+  controller: AbortController;
+}
+
+interface PendingBoundaryApply {
+  boundary: Boundary;
+  state: BoundaryResolvedState;
+  addedBefore?: number;
+  removedBefore?: number;
+  apply: () => boolean;
+}
 
 let selectedColumns = 4;
 let layout = computeMasonryLayout();
 let loadedStartBand = 0;
 let loadedEndBand = 0;
-let topState: BoundaryState = "idle";
-let bottomState: BoundaryState = "idle";
-let activeLoadBoundary: "top" | "bottom" | null = null;
+const boundaryStates: Record<Boundary, BoundarySlotState> = {
+  top: "idle",
+  bottom: "idle",
+};
 let loadSequence = 0;
+let activeBoundaryLoad: ActiveBoundaryLoad | null = null;
+let pendingBoundaryApply: PendingBoundaryApply | null = null;
+let scrollSettled = true;
 let measuredViewportWidth = viewport.clientWidth;
 let virtualizer: DynamicVirtualizer;
 let renderedRangeText = "";
@@ -96,13 +101,9 @@ let renderedLayoutText = "";
 let renderedLoadText = "";
 
 function createPhoto(index: number): Photo {
-  const category = CATEGORIES[index % CATEGORIES.length] ?? "Nature";
   const aspectRatio = ASPECT_RATIOS[index % ASPECT_RATIOS.length] ?? 1;
   return {
     id: index + 1,
-    title: `Photo ${index + 1}`,
-    category,
-    likes: Math.floor(Math.abs(Math.sin(index * 2.1)) * 500),
     aspectRatio,
   };
 }
@@ -115,9 +116,21 @@ function px(value: number): string {
   return `${value.toFixed(3)}px`;
 }
 
-function sleep(ms: number): Promise<void> {
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const timeout = window.setTimeout(resolve, ms);
+    signal?.addEventListener(
+      "abort",
+      () => {
+        window.clearTimeout(timeout);
+        resolve();
+      },
+      { once: true },
+    );
   });
 }
 
@@ -228,15 +241,12 @@ function imageUrl(photo: Photo): string {
 }
 
 function buildPhotoCard(photo: PlacedPhoto, bandTop: number): HTMLElement {
-  const card = document.createElement("button");
-  card.type = "button";
+  const card = document.createElement("div");
   card.className = "masonry-photo";
   card.style.left = px(photo.left);
   card.style.top = px(photo.top - bandTop);
   card.style.width = px(photo.width);
   card.style.height = px(photo.height);
-  card.title = `${photo.title} · ${photo.category}`;
-  card.dataset.photoInfo = `${photo.title} · ${photo.category} · ${photo.likes}`;
 
   const image = document.createElement("img");
   image.className = "masonry-photo-img";
@@ -249,23 +259,7 @@ function buildPhotoCard(photo: PlacedPhoto, bandTop: number): HTMLElement {
   );
   image.src = imageUrl(photo);
 
-  const overlay = document.createElement("div");
-  overlay.className = "masonry-photo-overlay";
-
-  const title = document.createElement("span");
-  title.className = "masonry-photo-title";
-  title.textContent = photo.title;
-
-  const meta = document.createElement("span");
-  meta.className = "masonry-photo-meta";
-  meta.textContent = photo.category;
-
-  const likes = document.createElement("span");
-  likes.className = "masonry-like-badge";
-  likes.textContent = `♥ ${photo.likes}`;
-
-  overlay.append(title, meta);
-  card.append(image, overlay, likes);
+  card.append(image);
   return card;
 }
 
@@ -290,9 +284,9 @@ function buildBand(localIndex: number): HTMLElement {
   return item;
 }
 
-function buildBoundarySlot(boundary: "top" | "bottom"): HTMLElement {
+function buildBoundarySlot(boundary: Boundary): HTMLElement {
   const slot = document.createElement("div");
-  slot.className = "boundary-slot idle";
+  slot.className = "boundary-slot";
   slot.dataset.boundaryContent = boundary;
 
   const spinner = document.createElement("span");
@@ -308,42 +302,35 @@ function buildBoundarySlot(boundary: "top" | "bottom"): HTMLElement {
 
 function updateBoundarySlotElement(
   container: HTMLElement,
-  boundary: "top" | "bottom",
+  boundary: Boundary,
 ): void {
   const slot = container.matches(".boundary-slot")
     ? container
     : container.querySelector<HTMLElement>(".boundary-slot");
   if (!slot) return;
 
-  const state = boundary === "top" ? topState : bottomState;
+  const state = boundaryStates[boundary];
   const text = slot.querySelector("span:last-child");
-  const nextClassName = `boundary-slot ${state}`;
-  if (slot.className !== nextClassName) {
-    slot.className = nextClassName;
+  if (slot.dataset.state !== state) {
+    slot.dataset.state = state;
   }
   if (!text) return;
   let nextText = "";
   if (state === "loading") {
     nextText =
       boundary === "top" ? "Loading previous photos" : "Loading next photos";
-  } else if (state === "done") {
+  } else if (state === "no-more") {
     nextText = boundary === "top" ? "At first photo" : "At last photo";
+  } else if (state === "error") {
+    nextText = "Could not load photos";
   }
   if (text.textContent !== nextText) {
     text.textContent = nextText;
   }
+  syncLoadLabel();
 }
 
-function refreshBoundarySlotElements(): void {
-  for (const boundary of ["top", "bottom"] as const) {
-    const element = virtualizer.getBoundaryElement(boundary);
-    if (element) updateBoundarySlotElement(element, boundary);
-  }
-}
-
-function boundarySlot(
-  boundary: "top" | "bottom",
-): DynamicVirtualizerBoundarySlot {
+function boundarySlotFor(boundary: Boundary): DynamicVirtualizerBoundarySlot {
   return {
     key: boundary,
     height: BOUNDARY_SLOT_HEIGHT,
@@ -351,23 +338,31 @@ function boundarySlot(
   };
 }
 
-function topSlot(): DynamicVirtualizerBoundarySlot {
-  return boundarySlot("top");
+function refreshBoundarySlot(boundary: Boundary): void {
+  const element = virtualizer.getBoundaryElement(boundary);
+  if (element) updateBoundarySlotElement(element, boundary);
 }
 
-function bottomSlot(): DynamicVirtualizerBoundarySlot {
-  return boundarySlot("bottom");
+function refreshBoundarySlots(): void {
+  refreshBoundarySlot("top");
+  refreshBoundarySlot("bottom");
 }
 
 function syncBoundarySlots(): void {
   virtualizer.syncLayout({
-    topSlot: topSlot(),
-    bottomSlot: bottomSlot(),
+    topSlot: boundarySlotFor("top"),
+    bottomSlot: boundarySlotFor("bottom"),
     after: () => {
-      refreshBoundarySlotElements();
+      refreshBoundarySlots();
       updateInfo();
     },
   });
+}
+
+function setBoundaryState(boundary: Boundary, state: BoundarySlotState): void {
+  boundaryStates[boundary] = state;
+  refreshBoundarySlot(boundary);
+  syncLoadLabel();
 }
 
 function setTextIfChanged(element: HTMLElement, nextText: string): string {
@@ -375,6 +370,21 @@ function setTextIfChanged(element: HTMLElement, nextText: string): string {
     element.textContent = nextText;
   }
   return nextText;
+}
+
+function syncLoadLabel(): void {
+  let loadText: string;
+  if (boundaryStates.top === "loading") {
+    loadText = "loading previous";
+  } else if (boundaryStates.bottom === "loading") {
+    loadText = "loading next";
+  } else {
+    loadText = `${loadedEndBand - loadedStartBand} retained bands`;
+  }
+
+  if (loadText !== renderedLoadText) {
+    renderedLoadText = setTextIfChanged(loadLabel, loadText);
+  }
 }
 
 function updateInfo(state: DynamicVirtualizerState = virtualizer.state): void {
@@ -395,18 +405,7 @@ function updateInfo(state: DynamicVirtualizerState = virtualizer.state): void {
     renderedLayoutText = setTextIfChanged(layoutLabel, layoutText);
   }
 
-  let loadText: string;
-  if (topState === "loading") {
-    loadText = "loading previous";
-  } else if (bottomState === "loading") {
-    loadText = "loading next";
-  } else {
-    loadText = `${loadedEndBand - loadedStartBand} retained bands`;
-  }
-
-  if (loadText !== renderedLoadText) {
-    renderedLoadText = setTextIfChanged(loadLabel, loadText);
-  }
+  syncLoadLabel();
 }
 
 function initializeLoadedWindow(): void {
@@ -417,131 +416,198 @@ function initializeLoadedWindow(): void {
   loadedEndBand = Math.min(bandCount, loadedStartBand + retained);
 }
 
-function idleStateForBoundary(boundary: "top" | "bottom"): BoundaryState {
-  if (boundary === "top") return loadedStartBand <= 0 ? "done" : "idle";
-  return loadedEndBand >= layout.bands.length ? "done" : "idle";
+function idleStateForBoundary(boundary: Boundary): BoundaryResolvedState {
+  if (boundary === "top") return loadedStartBand <= 0 ? "no-more" : "idle";
+  return loadedEndBand >= layout.bands.length ? "no-more" : "idle";
 }
 
-function setBoundaryState(
-  boundary: "top" | "bottom",
-  state: BoundaryState,
-): void {
-  if (boundary === "top") {
-    topState = state;
-  } else {
-    bottomState = state;
-  }
+function canLoadBoundary(boundary: Boundary): boolean {
+  return idleStateForBoundary(boundary) !== "no-more";
 }
 
-function isCurrentLoad(boundary: "top" | "bottom", sequence: number): boolean {
-  return activeLoadBoundary === boundary && loadSequence === sequence;
+function isCurrentBoundaryLoad(load: ActiveBoundaryLoad): boolean {
+  return (
+    activeBoundaryLoad?.boundary === load.boundary &&
+    activeBoundaryLoad.sequence === load.sequence
+  );
 }
 
-function cancelActiveLoad(): void {
-  const boundary = activeLoadBoundary;
-  if (!boundary) return;
-  loadSequence++;
-  activeLoadBoundary = null;
-  setBoundaryState(boundary, idleStateForBoundary(boundary));
-  refreshBoundarySlotElements();
-  updateInfo();
+function cancelActiveBoundaryLoad(): void {
+  const load = activeBoundaryLoad;
+  if (!load) return;
+  load.controller.abort();
+  activeBoundaryLoad = null;
+  setBoundaryState(load.boundary, idleStateForBoundary(load.boundary));
 }
 
-function startLoad(boundary: "top" | "bottom"): number | null {
-  if (activeLoadBoundary === boundary) return null;
-  cancelActiveLoad();
-  const sequence = ++loadSequence;
-  activeLoadBoundary = boundary;
-  setBoundaryState(boundary, "loading");
-  refreshBoundarySlotElements();
-  updateInfo();
-  return sequence;
+function resetBoundaryLoading(): void {
+  cancelActiveBoundaryLoad();
+  pendingBoundaryApply = null;
+  boundaryStates.top = idleStateForBoundary("top");
+  boundaryStates.bottom = idleStateForBoundary("bottom");
+  refreshBoundarySlots();
+  syncLoadLabel();
 }
 
-function finishLoad(boundary: "top" | "bottom", sequence: number): boolean {
-  if (!isCurrentLoad(boundary, sequence)) return false;
-  activeLoadBoundary = null;
-  return true;
-}
-
-async function loadTop(): Promise<void> {
-  const sequence = startLoad("top");
-  if (sequence === null) return;
+function prepareTopApply(signal: AbortSignal): Promise<PendingBoundaryApply> {
   if (loadedStartBand <= 0) {
-    finishLoad("top", sequence);
-    topState = "done";
-    refreshBoundarySlotElements();
-    updateInfo();
-    return;
+    return Promise.resolve({
+      boundary: "top",
+      state: "no-more",
+      apply: () => false,
+    });
   }
 
-  await sleep(LOAD_DELAY_MS);
-  if (!isCurrentLoad("top", sequence)) return;
+  return sleep(LOAD_DELAY_MS, signal).then(() => {
+    if (signal.aborted) {
+      return {
+        boundary: "top",
+        state: idleStateForBoundary("top"),
+        apply: () => false,
+      };
+    }
 
-  const addedBefore = Math.min(LOAD_BANDS, loadedStartBand);
-  const nextStart = loadedStartBand - addedBefore;
-  let nextEnd = loadedEndBand;
-  const overflow = nextEnd - nextStart - RETAIN_BANDS;
-  if (overflow > 0) nextEnd -= overflow;
-  const nextTopState: BoundaryState = nextStart <= 0 ? "done" : "idle";
+    const addedBefore = Math.min(LOAD_BANDS, loadedStartBand);
+    const nextStart = loadedStartBand - addedBefore;
+    let nextEnd = loadedEndBand;
+    const overflow = nextEnd - nextStart - RETAIN_BANDS;
+    if (overflow > 0) nextEnd -= overflow;
+
+    return {
+      boundary: "top",
+      state: nextStart <= 0 ? "no-more" : "idle",
+      addedBefore,
+      apply: () => {
+        loadedStartBand = nextStart;
+        loadedEndBand = nextEnd;
+        return true;
+      },
+    };
+  });
+}
+
+function prepareBottomApply(
+  signal: AbortSignal,
+): Promise<PendingBoundaryApply> {
+  if (loadedEndBand >= layout.bands.length) {
+    return Promise.resolve({
+      boundary: "bottom",
+      state: "no-more",
+      apply: () => false,
+    });
+  }
+
+  return sleep(LOAD_DELAY_MS, signal).then(() => {
+    if (signal.aborted) {
+      return {
+        boundary: "bottom",
+        state: idleStateForBoundary("bottom"),
+        apply: () => false,
+      };
+    }
+
+    const appended = Math.min(LOAD_BANDS, layout.bands.length - loadedEndBand);
+    let nextStart = loadedStartBand;
+    const nextEnd = loadedEndBand + appended;
+    const overflow = nextEnd - nextStart - RETAIN_BANDS;
+    if (overflow > 0) nextStart += overflow;
+
+    return {
+      boundary: "bottom",
+      state: nextEnd >= layout.bands.length ? "no-more" : "idle",
+      removedBefore: nextStart - loadedStartBand,
+      apply: () => {
+        loadedStartBand = nextStart;
+        loadedEndBand = nextEnd;
+        return true;
+      },
+    };
+  });
+}
+
+function applyPendingBoundaryLoad(): void {
+  if (!scrollSettled || !pendingBoundaryApply) return;
+
+  const pending = pendingBoundaryApply;
+  pendingBoundaryApply = null;
+  boundaryStates[pending.boundary] = pending.state;
+  const slot =
+    pending.boundary === "top"
+      ? { topSlot: boundarySlotFor("top") }
+      : { bottomSlot: boundarySlotFor("bottom") };
 
   virtualizer.syncLayout({
-    addedBefore,
-    deferDuringScroll: true,
-    apply: () => {
-      if (!finishLoad("top", sequence)) return false;
-      loadedStartBand = nextStart;
-      loadedEndBand = nextEnd;
-      topState = nextTopState;
-      bottomState = "idle";
-      return true;
-    },
+    ...slot,
+    addedBefore: pending.addedBefore,
+    removedBefore: pending.removedBefore,
+    apply: pending.apply,
     after: () => {
-      refreshBoundarySlotElements();
+      refreshBoundarySlots();
       updateInfo();
     },
   });
 }
 
-async function loadBottom(): Promise<void> {
-  const sequence = startLoad("bottom");
-  if (sequence === null) return;
-  if (loadedEndBand >= layout.bands.length) {
-    finishLoad("bottom", sequence);
-    bottomState = "done";
-    refreshBoundarySlotElements();
-    updateInfo();
+async function prepareBoundaryLoad(load: ActiveBoundaryLoad): Promise<void> {
+  try {
+    const pending =
+      load.boundary === "top"
+        ? await prepareTopApply(load.controller.signal)
+        : await prepareBottomApply(load.controller.signal);
+    if (!isCurrentBoundaryLoad(load) || load.controller.signal.aborted) return;
+
+    activeBoundaryLoad = null;
+    if (
+      pending.addedBefore === undefined &&
+      pending.removedBefore === undefined
+    ) {
+      setBoundaryState(load.boundary, pending.state);
+      return;
+    }
+    pendingBoundaryApply = pending;
+    applyPendingBoundaryLoad();
+  } catch (error) {
+    if (!isCurrentBoundaryLoad(load) || load.controller.signal.aborted) return;
+    activeBoundaryLoad = null;
+    console.error(error);
+    setBoundaryState(load.boundary, "error");
+  }
+}
+
+function startBoundaryLoad(boundary: Boundary): void {
+  if (pendingBoundaryApply?.boundary === boundary) return;
+  if (activeBoundaryLoad?.boundary === boundary) return;
+  cancelActiveBoundaryLoad();
+  if (pendingBoundaryApply) {
+    setBoundaryState(
+      pendingBoundaryApply.boundary,
+      idleStateForBoundary(pendingBoundaryApply.boundary),
+    );
+  }
+  pendingBoundaryApply = null;
+
+  if (!canLoadBoundary(boundary)) {
+    setBoundaryState(boundary, "no-more");
     return;
   }
 
-  await sleep(LOAD_DELAY_MS);
-  if (!isCurrentLoad("bottom", sequence)) return;
+  const load: ActiveBoundaryLoad = {
+    boundary,
+    sequence: ++loadSequence,
+    controller: new AbortController(),
+  };
+  activeBoundaryLoad = load;
+  setBoundaryState(boundary, "loading");
+  void prepareBoundaryLoad(load);
+}
 
-  const appended = Math.min(LOAD_BANDS, layout.bands.length - loadedEndBand);
-  let nextStart = loadedStartBand;
-  const nextEnd = loadedEndBand + appended;
-  const overflow = nextEnd - nextStart - RETAIN_BANDS;
-  if (overflow > 0) nextStart += overflow;
+function handleScrollStart(): void {
+  scrollSettled = false;
+}
 
-  const removedBefore = nextStart - loadedStartBand;
-  const nextBottomState: BoundaryState =
-    nextEnd >= layout.bands.length ? "done" : "idle";
-  virtualizer.syncLayout({
-    removedBefore,
-    deferDuringScroll: true,
-    apply: () => {
-      if (!finishLoad("bottom", sequence)) return false;
-      loadedStartBand = nextStart;
-      loadedEndBand = nextEnd;
-      topState = "idle";
-      bottomState = nextBottomState;
-      return true;
-    },
-    after: () => {
-      refreshBoundarySlotElements();
-      updateInfo();
-    },
-  });
+function handleScrollSettled(): void {
+  scrollSettled = true;
+  applyPendingBoundaryLoad();
 }
 
 function syncControlButtons(): void {
@@ -562,8 +628,6 @@ function rebuildLayoutAroundCurrentBand(): void {
     0,
     Math.max(0, layout.bands.length - 1),
   );
-  loadSequence++;
-  activeLoadBoundary = null;
   layout = computeMasonryLayout();
   const retained = Math.min(RETAIN_BANDS, layout.bands.length);
   loadedStartBand = clamp(
@@ -572,11 +636,12 @@ function rebuildLayoutAroundCurrentBand(): void {
     Math.max(0, layout.bands.length - retained),
   );
   loadedEndBand = Math.min(layout.bands.length, loadedStartBand + retained);
-  topState = loadedStartBand <= 0 ? "done" : "idle";
-  bottomState = loadedEndBand >= layout.bands.length ? "done" : "idle";
+  resetBoundaryLoading();
   virtualizer.syncLayout({
+    topSlot: boundarySlotFor("top"),
+    bottomSlot: boundarySlotFor("bottom"),
     after: () => {
-      refreshBoundarySlotElements();
+      refreshBoundarySlots();
       updateInfo();
     },
   });
@@ -606,17 +671,6 @@ function bindControls(): void {
   });
 }
 
-function bindPhotoSelection(): void {
-  viewport.addEventListener("click", (event) => {
-    if (!(event.target instanceof Element)) return;
-    const card = event.target.closest<HTMLElement>(".masonry-photo");
-    if (!card || !viewport.contains(card)) return;
-    const info = card.dataset.photoInfo;
-    if (!info) return;
-    renderedLoadText = setTextIfChanged(loadLabel, info);
-  });
-}
-
 function refreshTheme(): void {
   applyDocumentTheme();
   syncThemeButtons();
@@ -635,7 +689,6 @@ async function alignInitialViewport(): Promise<void> {
 
 initializeLoadedWindow();
 bindControls();
-bindPhotoSelection();
 bindThemeButtons(refreshTheme);
 syncControlButtons();
 refreshTheme();
@@ -648,11 +701,13 @@ virtualizer = createDynamicVirtualizer({
   buildItem: buildBand,
   overscanPx: OVERSCAN_PX,
   onReachTop: () => {
-    void loadTop();
+    startBoundaryLoad("top");
   },
   onReachBottom: () => {
-    void loadBottom();
+    startBoundaryLoad("bottom");
   },
+  onScrollStart: handleScrollStart,
+  onScrollSettled: handleScrollSettled,
   onRangeChange: updateInfo,
 });
 syncBoundarySlots();
