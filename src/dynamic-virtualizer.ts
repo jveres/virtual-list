@@ -156,7 +156,7 @@ const ALLOW_DURING_SCROLL: ScrollTopWriteOptions = {
   allowDuringScroll: true,
 };
 
-type ScrollSettleStrategy = "default" | "chromium-wheel";
+type ScrollSettleStrategy = "default" | "chromium-wheel" | "firefox-wheel";
 
 interface MountedBoundarySlot {
   key: string | null;
@@ -406,7 +406,7 @@ export function measureDynamicVirtualizerItem(
 
 function detectScrollSettleStrategy(): ScrollSettleStrategy {
   const userAgent = navigator.userAgent;
-  if (/\bFirefox\//.test(userAgent)) return "default";
+  if (/\bFirefox\//.test(userAgent)) return "firefox-wheel";
   return /\b(?:Chrome|Chromium|Edg|OPR)\//.test(userAgent)
     ? "chromium-wheel"
     : "default";
@@ -1939,8 +1939,15 @@ export function createDynamicVirtualizer(
     chromiumEdgeSettleTimer = 0;
   }
 
+  function usesWheelInputSettle(): boolean {
+    return (
+      scrollSettleStrategy === "chromium-wheel" ||
+      scrollSettleStrategy === "firefox-wheel"
+    );
+  }
+
   function hasActiveWheelInput(): boolean {
-    return scrollSettleStrategy === "chromium-wheel" && wheelInputActive;
+    return usesWheelInputSettle() && wheelInputActive;
   }
 
   function hasActiveChromiumEdgeWheel(): boolean {
@@ -2155,7 +2162,26 @@ export function createDynamicVirtualizer(
     }, CHROMIUM_WHEEL_IDLE_MS);
   }
 
+  function handleFirefoxWheelInput(): void {
+    if (scrollSettleStrategy !== "firefox-wheel") return;
+    wheelInputActive = true;
+    cancelWheelInputTimer();
+    wheelInputTimer = window.setTimeout(() => {
+      wheelInputTimer = 0;
+      wheelInputActive = false;
+      if (nativeScrollEndPending) scheduleSettleCooldown();
+    }, CHROMIUM_WHEEL_IDLE_MS);
+  }
+
   function handleWheel(event: WheelEvent): void {
+    if (scrollSettleStrategy === "firefox-wheel") {
+      const outwardBoundary = boundaryForOutwardWheel(event);
+      if (outwardBoundary && !userScrollActive) return;
+      handleUserScrollStart();
+      handleFirefoxWheelInput();
+      return;
+    }
+
     handleUserScrollStart();
     handleChromiumWheelInput(event);
   }
