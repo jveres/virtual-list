@@ -148,6 +148,10 @@ interface ScrollTopWriteOptions {
   allowDuringScroll?: boolean;
 }
 
+const ALLOW_DURING_SCROLL: ScrollTopWriteOptions = {
+  allowDuringScroll: true,
+};
+
 interface MountedBoundarySlot {
   key: string | null;
   build: (() => HTMLElement) | null;
@@ -196,6 +200,7 @@ class FenwickTree {
   private readonly tree: Float64Array;
 
   readonly size: number;
+  readonly maxBit: number;
 
   constructor(values: Float64Array) {
     this.size = values.length;
@@ -203,6 +208,9 @@ class FenwickTree {
     for (let index = 0; index < values.length; index++) {
       this.add(index, values[index] ?? 0);
     }
+    let maxBit = 1;
+    while (maxBit << 1 <= this.size) maxBit <<= 1;
+    this.maxBit = maxBit;
   }
 
   add(index: number, delta: number): void {
@@ -229,10 +237,8 @@ class FenwickTree {
 
     let index = 0;
     let sum = 0;
-    let bit = 1;
-    while (bit << 1 <= this.size) bit <<= 1;
 
-    for (; bit > 0; bit >>= 1) {
+    for (let bit = this.maxBit; bit > 0; bit >>= 1) {
       const next = index + bit;
       const nextValue = this.tree[next] ?? 0;
       if (next <= this.size && sum + nextValue <= offset) {
@@ -426,6 +432,7 @@ export function createDynamicVirtualizer(
   let sizes = new Float64Array(0);
   let measured = new Uint8Array(0);
   let sizeTree = new FenwickTree(sizes);
+  let itemSizeTotal = 0;
   let measuredCount = 0;
   let mounted = new Map<number, HTMLElement>();
   let rangeStart = 0;
@@ -473,6 +480,7 @@ export function createDynamicVirtualizer(
   const pendingMeasurements = new Map<number, number>();
   const deferredLayoutUpdates: DynamicVirtualizerLayoutUpdate[] = [];
   const content = document.createElement("div");
+  const computedRange = { start: 0, end: 0 };
 
   const itemResizeObserver = new ResizeObserver((entries) => {
     for (const entry of entries) {
@@ -523,7 +531,7 @@ export function createDynamicVirtualizer(
   }
 
   function itemTotalSize(): number {
-    return sizeTree.total();
+    return itemSizeTotal;
   }
 
   function contentTotalSize(): number {
@@ -884,16 +892,19 @@ export function createDynamicVirtualizer(
     if (bottomSlot) bottomSlot.observed = false;
   }
 
+  function observeBoundarySlot(slot: MountedBoundarySlot | null): void {
+    if (!slot || slot.observed || !slot.element.isConnected) return;
+    boundaryIntersectionObserver?.observe(slot.element);
+    slot.observed = true;
+  }
+
   function syncBoundaryIntersectionObserver(): void {
     if (count <= 0 || (!onReachTop && !onReachBottom)) return;
 
     if (!boundaryIntersectionObserver) recreateBoundaryIntersectionObserver();
 
-    for (const slot of [topSlot, bottomSlot]) {
-      if (!slot || slot.observed || !slot.element.isConnected) continue;
-      boundaryIntersectionObserver?.observe(slot.element);
-      slot.observed = true;
-    }
+    observeBoundarySlot(topSlot);
+    observeBoundarySlot(bottomSlot);
   }
 
   function preparePlaceholderSlot(slot: MountedPlaceholderSlot): HTMLElement {
@@ -958,9 +969,9 @@ export function createDynamicVirtualizer(
 
   function setScrollTop(
     value: number,
-    options: ScrollTopWriteOptions = {},
+    options?: ScrollTopWriteOptions,
   ): boolean {
-    if (userScrollActive && options.allowDuringScroll !== true) return false;
+    if (userScrollActive && options?.allowDuringScroll !== true) return false;
     const target = clamp(value, 0, nativeMaxScrollTop());
     if (Math.abs(viewport.scrollTop - target) <= 0.5) return false;
     viewport.scrollTop = target;
@@ -1015,6 +1026,7 @@ export function createDynamicVirtualizer(
       if (value) measuredCount++;
     }
     sizeTree = new FenwickTree(sizes);
+    itemSizeTotal = sizeTree.total();
     layoutVersion++;
     return beforeHeightDelta;
   }
@@ -1034,6 +1046,7 @@ export function createDynamicVirtualizer(
     measured = new Uint8Array(count);
     measuredCount = 0;
     sizeTree = new FenwickTree(sizes);
+    itemSizeTotal = sizeTree.total();
     layoutVersion++;
   }
 
@@ -1041,9 +1054,17 @@ export function createDynamicVirtualizer(
     scrollTop: number,
     viewportHeight = lastViewportHeight,
     overscanPx = Math.max(0, getOverscanPx()),
-  ): { start: number; end: number } {
-    if (count === 0) return { start: 0, end: 0 };
-    if (renderMode === "full") return { start: 0, end: count };
+  ): void {
+    if (count === 0) {
+      computedRange.start = 0;
+      computedRange.end = 0;
+      return;
+    }
+    if (renderMode === "full") {
+      computedRange.start = 0;
+      computedRange.end = count;
+      return;
+    }
 
     const itemScrollTop = scrollTop - topSlotHeight();
     const startTarget = Math.max(0, itemScrollTop - overscanPx);
@@ -1051,10 +1072,8 @@ export function createDynamicVirtualizer(
       itemTotalSize(),
       itemScrollTop + viewportHeight + overscanPx,
     );
-    return {
-      start: Math.max(0, sizeTree.indexAt(startTarget) - 1),
-      end: Math.min(count, sizeTree.indexAt(endTarget) + 2),
-    };
+    computedRange.start = Math.max(0, sizeTree.indexAt(startTarget) - 1);
+    computedRange.end = Math.min(count, sizeTree.indexAt(endTarget) + 2);
   }
 
   function prepareItem(
@@ -1118,7 +1137,8 @@ export function createDynamicVirtualizer(
 
     const previousStart = rangeStart;
     const previousEnd = rangeEnd;
-    const { start, end } = computeRange(explicitScrollTop, viewportHeight);
+    computeRange(explicitScrollTop, viewportHeight);
+    const { start, end } = computedRange;
     const layoutDirty = renderedLayoutVersion !== layoutVersion;
     rangeStart = start;
     rangeEnd = end;
@@ -1160,17 +1180,20 @@ export function createDynamicVirtualizer(
       mounted.delete(index);
     }
 
+    let newItems: DocumentFragment | null = null;
     for (let index = start; index < end; index++) {
       let element = mounted.get(index);
       if (!element) {
         element = prepareItem(index, buildItem(index), itemOffset);
         itemResizeObserver.observe(element);
-        content.appendChild(element);
+        newItems ??= document.createDocumentFragment();
+        newItems.appendChild(element);
         mounted.set(index, element);
       } else if (layoutDirty) {
         positionItem(index, element, sizeTree, itemOffset);
       }
     }
+    if (newItems) content.appendChild(newItems);
 
     renderedLayoutVersion = layoutVersion;
     inspectRenderDrift();
@@ -1235,6 +1258,7 @@ export function createDynamicVirtualizer(
 
     sizes[index] = height;
     sizeTree.add(index, delta);
+    itemSizeTotal += delta;
     layoutVersion++;
 
     if (!measured[index]) {
@@ -1304,14 +1328,14 @@ export function createDynamicVirtualizer(
     }
 
     if (Math.abs(viewport.scrollTop - target) <= snapThreshold) {
-      setScrollTop(target, { allowDuringScroll: true });
+      setScrollTop(target, ALLOW_DURING_SCROLL);
       return Promise.resolve(true);
     }
 
     handleUserScrollStart();
 
     if (options.behavior !== "smooth") {
-      setScrollTop(target, { allowDuringScroll: true });
+      setScrollTop(target, ALLOW_DURING_SCROLL);
       nativeScrollEndPending = true;
       scheduleSettleCooldown();
       return Promise.resolve(true);
@@ -1382,7 +1406,7 @@ export function createDynamicVirtualizer(
 
     const distance = Math.abs(viewport.scrollTop - target);
     if (distance <= bottomFollowSnapThreshold) {
-      const didScroll = setScrollTop(target, { allowDuringScroll: true });
+      const didScroll = setScrollTop(target, ALLOW_DURING_SCROLL);
       if (didScroll || flushedMeasurements) {
         renderNow(viewport.scrollTop);
       }
@@ -1394,7 +1418,7 @@ export function createDynamicVirtualizer(
     const progress = bottomFollowFrameProgress(now);
     const nextTop =
       viewport.scrollTop + (target - viewport.scrollTop) * progress;
-    if (setScrollTop(nextTop, { allowDuringScroll: true })) {
+    if (setScrollTop(nextTop, ALLOW_DURING_SCROLL)) {
       renderNow(viewport.scrollTop);
     }
     scheduleBottomFollowFrame();
@@ -1591,9 +1615,7 @@ export function createDynamicVirtualizer(
     const hasScrollTarget =
       Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
     if (hasScrollTarget) {
-      setScrollTop(nextScrollTop, {
-        allowDuringScroll: true,
-      });
+      setScrollTop(nextScrollTop, ALLOW_DURING_SCROLL);
     }
     if (
       addedBefore > 0 &&
@@ -1610,9 +1632,7 @@ export function createDynamicVirtualizer(
         hasScrollTarget &&
         Math.abs(viewport.scrollTop - nextScrollTop) > measureEpsilon
       ) {
-        setScrollTop(nextScrollTop, {
-          allowDuringScroll: true,
-        });
+        setScrollTop(nextScrollTop, ALLOW_DURING_SCROLL);
         renderNow(nextScrollTop);
       }
     }
