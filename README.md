@@ -215,6 +215,16 @@ Placeholder slots are optional host-owned rows for the `count === 0` state.
 They don't affect indexes or the modeled item size. Use them for initial
 loading, empty, and error states before rows are available.
 
+Velocity placeholders are optional host-owned row DOM for fast virtual scrolling.
+Pass `buildPlaceholder(index)` to create lightweight row content, and tune
+`placeholderVelocityThreshold` if the default `2.5` px/ms threshold is too high
+or too low for the host. The runtime uses hysteresis: it enters placeholder mode
+when velocity crosses that threshold and exits when velocity falls below half
+that threshold. Existing real rows stay mounted, newly mounted rows use
+placeholders while fast mode is active, placeholders keep the same modeled
+height from `getItemHeight(index)`, and placeholders are replaced with real
+`buildItem()` rows when fast mode exits or scrolling ends.
+
 `debugRenderDrift` is an optional diagnostics flag. Pass `true` to log mounted
 row drift with `console.warn`, or pass a reporter function to collect drift
 records. The runtime compares each mounted row's actual DOM rect against its
@@ -397,6 +407,13 @@ The assistant status label uses:
 The streaming delays are demo simulation code. They are not part of the
 virtualizer hot path.
 
+## Masonry demo
+
+The masonry demo exercises variable-position image groups in a single
+virtualizer instance. The host precomputes group heights, keeps fixed-height
+boundary slots at the top and bottom, and uses the runtime `onReachTop`,
+`onReachBottom`, `onScrollStart`, and `onScrollEnd` callbacks for loading.
+
 ## Performance notes
 
 The virtualizer keeps scrolling work small and predictable.
@@ -409,7 +426,8 @@ The virtualizer keeps scrolling work small and predictable.
 - Range changes are incremental: rows leaving the buffered range are removed,
   rows entering it are appended, and overlapping rows stay attached.
 - Hidden pre-measurement is host-driven and happens outside scroll handling.
-- The virtualizer itself doesn't use timers.
+- Velocity placeholders are host-driven and only affect newly mounted rows.
+- Scroll-settle timers are lifecycle gates, not per-row render work.
 
 The demos cache rendered markdown HTML by message or template and theme. When
 the Shiki highlighter loads or the theme changes, only mounted rows are rebuilt.

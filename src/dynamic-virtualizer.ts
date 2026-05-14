@@ -6,6 +6,8 @@ const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
 const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_RENDER_DRIFT_EPSILON = 1;
 const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
+const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 2.5;
+const PLACEHOLDER_VELOCITY_EXIT_RATIO = 0.5;
 const SCROLL_SETTLE_COOLDOWN_MS = 140;
 const CHROMIUM_WHEEL_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 const CHROMIUM_EDGE_SETTLE_QUIET_MS = 450;
@@ -57,6 +59,8 @@ export interface DynamicVirtualizerConfig {
   getCount: () => number;
   getItemHeight: (index: number) => number;
   buildItem: (index: number) => HTMLElement;
+  buildPlaceholder?: (index: number) => HTMLElement;
+  placeholderVelocityThreshold?: number;
   overscanPx?: number | (() => number);
   renderMode?: DynamicVirtualizerRenderMode;
   measureEpsilon?: number;
@@ -417,6 +421,7 @@ export function createDynamicVirtualizer(
     viewport,
     canvasClassName,
     buildItem,
+    buildPlaceholder,
     getCount,
     getItemHeight,
     onRangeChange,
@@ -433,6 +438,11 @@ export function createDynamicVirtualizer(
       : () => overscanPx ?? DEFAULT_OVERSCAN_PX;
   const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
+  const placeholderVelocityThreshold = Math.max(
+    0,
+    config.placeholderVelocityThreshold ??
+      DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD,
+  );
   const scrollSettleStrategy = detectScrollSettleStrategy();
   const debugScrollSettle = new URLSearchParams(window.location.search).has(
     "debugScrollSettle",
@@ -452,6 +462,7 @@ export function createDynamicVirtualizer(
   let itemSizeTotal = 0;
   let measuredCount = 0;
   let mounted = new Map<number, HTMLElement>();
+  let mountedPlaceholders = new Set<number>();
   let rangeStart = 0;
   let rangeEnd = 0;
   let renderFrame = 0;
@@ -481,6 +492,10 @@ export function createDynamicVirtualizer(
   let placeholderSlot: MountedPlaceholderSlot | null = null;
   let userScrollActive = false;
   let userScrollMoved = false;
+  let scrollVelocity = 0;
+  let placeholderFastMode = false;
+  let lastScrollSampleTop = viewport.scrollTop;
+  let lastScrollSampleAt = performance.now();
   let nativeScrollEndPending = false;
   let settleFrame = 0;
   let settleTimer = 0;
@@ -1112,6 +1127,76 @@ export function createDynamicVirtualizer(
     return element;
   }
 
+  function canMountPlaceholderItems(): boolean {
+    return renderMode !== "full" && buildPlaceholder !== undefined;
+  }
+
+  function shouldUsePlaceholderMode(): boolean {
+    if (!canMountPlaceholderItems()) {
+      placeholderFastMode = false;
+      return false;
+    }
+
+    if (placeholderFastMode) {
+      const exitThreshold =
+        placeholderVelocityThreshold * PLACEHOLDER_VELOCITY_EXIT_RATIO;
+      if (scrollVelocity <= exitThreshold) {
+        placeholderFastMode = false;
+      }
+    } else if (scrollVelocity >= placeholderVelocityThreshold) {
+      placeholderFastMode = true;
+    }
+
+    return placeholderFastMode;
+  }
+
+  function mountItem(
+    index: number,
+    usePlaceholder: boolean,
+    offset = topSlotHeight(),
+  ): HTMLElement {
+    const element =
+      usePlaceholder && buildPlaceholder
+        ? prepareItem(index, buildPlaceholder(index), offset)
+        : prepareItem(index, buildItem(index), offset);
+
+    if (usePlaceholder && buildPlaceholder) {
+      element.dataset.placeholder = "true";
+      mountedPlaceholders.add(index);
+    } else {
+      itemResizeObserver.observe(element);
+      mountedPlaceholders.delete(index);
+    }
+
+    return element;
+  }
+
+  function refreshMountedPlaceholder(index: number): boolean {
+    const previous = mounted.get(index);
+    if (!previous) {
+      mountedPlaceholders.delete(index);
+      return false;
+    }
+
+    const next = prepareItem(index, buildItem(index));
+    itemResizeObserver.observe(next);
+    previous.replaceWith(next);
+    itemResizeObserver.unobserve(previous);
+    mounted.set(index, next);
+    mountedPlaceholders.delete(index);
+    return true;
+  }
+
+  function refreshMountedPlaceholders(): boolean {
+    if (mountedPlaceholders.size === 0) return false;
+
+    let refreshed = false;
+    for (const index of Array.from(mountedPlaceholders)) {
+      refreshed = refreshMountedPlaceholder(index) || refreshed;
+    }
+    return refreshed;
+  }
+
   function inspectRenderDrift(): void {
     if (!renderDriftReporter || mounted.size === 0) return;
 
@@ -1165,6 +1250,7 @@ export function createDynamicVirtualizer(
     computeRange(explicitScrollTop, viewportHeight);
     const { start, end } = computedRange;
     const layoutDirty = renderedLayoutVersion !== layoutVersion;
+    const mountPlaceholders = shouldUsePlaceholderMode();
     rangeStart = start;
     rangeEnd = end;
 
@@ -1173,7 +1259,9 @@ export function createDynamicVirtualizer(
       end === previousEnd &&
       mounted.size === end - start
     ) {
-      if (!layoutDirty) {
+      const refreshedPlaceholders =
+        !mountPlaceholders && refreshMountedPlaceholders();
+      if (!layoutDirty && !refreshedPlaceholders) {
         inspectRenderDrift();
         emitViewportChange(totalSize, actualScrollTop, viewportHeight);
         return;
@@ -1203,14 +1291,18 @@ export function createDynamicVirtualizer(
       itemResizeObserver.unobserve(element);
       element.remove();
       mounted.delete(index);
+      mountedPlaceholders.delete(index);
+    }
+
+    if (!mountPlaceholders) {
+      refreshMountedPlaceholders();
     }
 
     let newItems: DocumentFragment | null = null;
     for (let index = start; index < end; index++) {
       let element = mounted.get(index);
       if (!element) {
-        element = prepareItem(index, buildItem(index), itemOffset);
-        itemResizeObserver.observe(element);
+        element = mountItem(index, mountPlaceholders, itemOffset);
         newItems ??= document.createDocumentFragment();
         newItems.appendChild(element);
         mounted.set(index, element);
@@ -1544,6 +1636,7 @@ export function createDynamicVirtualizer(
     previous.replaceWith(next);
     itemResizeObserver.unobserve(previous);
     mounted.set(index, next);
+    mountedPlaceholders.delete(index);
     emitViewportChange();
   }
 
@@ -1556,10 +1649,12 @@ export function createDynamicVirtualizer(
     if (mounted.size === 0) return;
 
     const nextMounted = new Map<number, HTMLElement>();
+    const nextMountedPlaceholders = new Set<number>();
     for (const [index, element] of mounted) {
       if (index < removedBefore) {
         itemResizeObserver.unobserve(element);
         element.remove();
+        mountedPlaceholders.delete(index);
         continue;
       }
 
@@ -1567,14 +1662,19 @@ export function createDynamicVirtualizer(
       if (nextIndex < 0 || nextIndex >= count) {
         itemResizeObserver.unobserve(element);
         element.remove();
+        mountedPlaceholders.delete(index);
         continue;
       }
 
+      if (mountedPlaceholders.has(index)) {
+        nextMountedPlaceholders.add(nextIndex);
+      }
       element.dataset.index = String(nextIndex);
       nextMounted.set(nextIndex, element);
     }
 
     mounted = nextMounted;
+    mountedPlaceholders = nextMountedPlaceholders;
   }
 
   function removePendingMeasurementsOutsideCount(): void {
@@ -1645,6 +1745,7 @@ export function createDynamicVirtualizer(
           itemResizeObserver.unobserve(element);
           element.remove();
           mounted.delete(index);
+          mountedPlaceholders.delete(index);
         }
       }
     }
@@ -1751,7 +1852,24 @@ export function createDynamicVirtualizer(
     renderNow(viewport.scrollTop);
   }
 
+  function resetScrollVelocity(scrollTop = viewport.scrollTop): void {
+    scrollVelocity = 0;
+    lastScrollSampleTop = scrollTop;
+    lastScrollSampleAt = performance.now();
+  }
+
+  function updateScrollVelocity(scrollTop = viewport.scrollTop): void {
+    const now = performance.now();
+    const elapsed = now - lastScrollSampleAt;
+    if (elapsed > 0) {
+      scrollVelocity = Math.abs(scrollTop - lastScrollSampleTop) / elapsed;
+    }
+    lastScrollSampleTop = scrollTop;
+    lastScrollSampleAt = now;
+  }
+
   function handleScroll(): void {
+    updateScrollVelocity();
     if (nativeScrollEndPending) {
       scheduleSettleCooldown();
     }
@@ -1780,6 +1898,8 @@ export function createDynamicVirtualizer(
       scrollMax: nativeMaxScrollTop(),
       scrollHeight: viewport.scrollHeight,
       clientHeight: viewport.clientHeight,
+      scrollVelocity,
+      placeholderFastMode,
       inScrollRange: !isRubberBandOverscrolled(),
       nativeScrollEndPending,
       wheelInputActive,
@@ -1871,9 +1991,12 @@ export function createDynamicVirtualizer(
     nativeScrollEndPending = false;
     userScrollActive = false;
     userScrollMoved = false;
-    if (flushDeferredLayoutUpdates()) {
-      flushMeasurementsNow();
-    } else if (!flushMeasurementsNow()) {
+    resetScrollVelocity();
+    placeholderFastMode = false;
+    const flushedLayout = flushDeferredLayoutUpdates();
+    const flushedMeasurements = flushMeasurementsNow();
+    const refreshedPlaceholders = refreshMountedPlaceholders();
+    if (refreshedPlaceholders || (!flushedLayout && !flushedMeasurements)) {
       renderNow(viewport.scrollTop);
     }
     const state = getState();
@@ -1983,6 +2106,7 @@ export function createDynamicVirtualizer(
     if (!wasActive) {
       nativeScrollEndPending = false;
       userScrollMoved = false;
+      resetScrollVelocity();
       chromiumWheelSawNativeScrollEnd = false;
       chromiumWheelAwaitingFinalScrollEnd = false;
       chromiumEdgeWheelSuppressed = false;
@@ -2163,6 +2287,7 @@ export function createDynamicVirtualizer(
       viewport.classList.remove("dv-viewport", "minimal-scrollbar");
       content.remove();
       mounted.clear();
+      mountedPlaceholders.clear();
     },
   };
 }
