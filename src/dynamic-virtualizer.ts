@@ -1239,6 +1239,13 @@ export function createDynamicVirtualizer(
     render(explicitScrollTop);
   }
 
+  function syncScrollSurface(): void {
+    ensureReachBoundarySlots();
+    syncContentHeight();
+    renderBoundarySlots();
+    renderPlaceholderSlot();
+  }
+
   function queueMeasurement(index: number, height: number): void {
     if (
       !Number.isFinite(height) ||
@@ -1480,8 +1487,8 @@ export function createDynamicVirtualizer(
     stopFollowBottom();
     if (count <= 0 || options.signal?.aborted) return false;
     const targetIndex = clamp(Math.floor(index), 0, count - 1);
+    syncScrollSurface();
     const target = scrollTopForIndex(targetIndex, align);
-    renderNow(target);
     const ok = await scrollToNativeTop(target, options);
     renderNow(viewport.scrollTop);
     return ok;
