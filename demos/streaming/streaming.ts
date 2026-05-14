@@ -52,6 +52,7 @@ const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
 const BOTTOM_FOLLOW_DURATION_MS = 300;
+const SCROLL_BUTTONS_DEBOUNCE_MS = 120;
 
 const demoParams = new URLSearchParams(location.search);
 const instantReplies =
@@ -74,7 +75,7 @@ let measuredViewportWidth = viewport.clientWidth;
 let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
 let scrollTurnInProgress = false;
-let scrollButtonsFrame = 0;
+let scrollButtonsTimer = 0;
 let nextResponse = 0;
 let bottomFollowArmed = false;
 let bottomFollowCleanup: (() => void) | null = null;
@@ -429,16 +430,20 @@ function refreshTheme(): void {
 }
 
 function syncScrollButtons(state = virtualizer.state): void {
+  if (scrollButtonsTimer) {
+    window.clearTimeout(scrollButtonsTimer);
+    scrollButtonsTimer = 0;
+  }
   scrollTopBtn.hidden = state.atTop;
   scrollBottomBtn.hidden = state.atBottom || scrollTurnInProgress;
 }
 
 function scheduleScrollButtons(): void {
-  if (scrollButtonsFrame) return;
-  scrollButtonsFrame = requestAnimationFrame(() => {
-    scrollButtonsFrame = 0;
+  if (scrollButtonsTimer) window.clearTimeout(scrollButtonsTimer);
+  scrollButtonsTimer = window.setTimeout(() => {
+    scrollButtonsTimer = 0;
     syncScrollButtons();
-  });
+  }, SCROLL_BUTTONS_DEBOUNCE_MS);
 }
 
 function pickResponse(): ReplyVariant {

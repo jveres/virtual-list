@@ -1610,7 +1610,12 @@ export function createDynamicVirtualizer(
   async function scrollToBottom(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
-    return scrollToIndex(count - 1, "bottom", options);
+    stopFollowBottom();
+    if (options.signal?.aborted) return false;
+    syncScrollSurface();
+    const ok = await scrollToNativeTop(nativeMaxScrollTop(), options);
+    renderNow(viewport.scrollTop);
+    return ok;
   }
 
   function setStickyIndex(index: number | null): void {
