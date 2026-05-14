@@ -12,6 +12,7 @@
 .masonry-group.dv-item {
   overflow: visible;
   contain: layout style;
+  pointer-events: none;
 }
 
 .masonry-group-inner {
@@ -19,6 +20,7 @@
   height: 100%;
   margin: 0 auto;
   overflow: visible;
+  pointer-events: none;
 }
 
 .masonry-photo {
@@ -30,6 +32,17 @@
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-surface);
+  cursor: default;
+  pointer-events: auto;
+}
+
+.masonry-photo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.masonry-photo.is-photo-view-source {
+  visibility: hidden;
 }
 
 .masonry-placeholder {
@@ -55,6 +68,120 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
+}
+
+.photo-view-open {
+  overflow: hidden;
+}
+
+.photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  color: var(--fg);
+}
+
+.photo-viewer-backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg) 94%, #000000);
+}
+
+.photo-viewer-scroll {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  overflow: auto;
+  padding: 72px 24px;
+  scrollbar-color: var(--border) transparent;
+  scrollbar-gutter: stable both-edges;
+  scrollbar-width: thin;
+}
+
+.photo-viewer-stage {
+  display: grid;
+  min-height: calc(100vh - 144px);
+  place-content: center;
+  justify-items: center;
+}
+
+.photo-viewer-image,
+.photo-viewer-hero {
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  object-fit: cover;
+  box-shadow: 0 18px 64px color-mix(in srgb, #000000 28%, transparent);
+}
+
+.photo-viewer-image {
+  grid-area: 1 / 1;
+  width: min(1280px, calc(100vw - 48px));
+  max-width: 100%;
+  height: auto;
+  visibility: hidden;
+}
+
+.photo-viewer-image.is-visible {
+  visibility: visible;
+}
+
+.photo-viewer-image-hires {
+  opacity: 0;
+  transition: opacity 180ms ease;
+}
+
+.photo-viewer-image-hires.is-loaded {
+  visibility: visible;
+  opacity: 1;
+}
+
+.photo-viewer-hero {
+  position: fixed;
+  z-index: 3;
+  pointer-events: none;
+  transform-origin: top left;
+  will-change: transform;
+}
+
+.photo-viewer-close {
+  position: fixed;
+  z-index: 4;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-surface) 94%, transparent);
+  color: var(--fg);
+  font: inherit;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+  backdrop-filter: blur(12px);
+}
+
+.photo-viewer-close:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.photo-viewer-details {
+  grid-area: 2 / 1;
+  width: min(1280px, calc(100vw - 48px));
+  max-width: 100%;
+  margin-top: 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
 }
 
 .masonry-control-group {

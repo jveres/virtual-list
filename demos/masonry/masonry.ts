@@ -21,6 +21,9 @@ const BOUNDARY_SLOT_HEIGHT = 52;
 const MAX_CANVAS_WIDTH = 1180;
 const HORIZONTAL_PADDING = 32;
 const OVERSCAN_PX = 680;
+const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
+const PHOTO_VIEW_DURATION_MS = 340;
+const PHOTO_VIEW_EASING = "cubic-bezier(0.2, 0, 0, 1)";
 
 const ASPECT_RATIOS = [0.66, 0.75, 0.9, 1, 1.18, 1.35, 1.52] as const;
 
@@ -94,6 +97,27 @@ interface PendingBoundaryApply {
   apply: () => boolean;
 }
 
+interface PhotoRect {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+interface ActivePhotoView {
+  photo: PlacedPhoto;
+  overlay: HTMLElement;
+  backdrop: HTMLElement;
+  scroll: HTMLElement;
+  image: HTMLImageElement;
+  highResolutionImage: HTMLImageElement;
+  details: HTMLElement;
+  sourceElement: HTMLElement | null;
+  sourceRect: PhotoRect;
+  cleanup: (event: KeyboardEvent) => void;
+  closing: boolean;
+}
+
 let selectedColumns = 4;
 let layout = computeMasonryLayout();
 let loadedStartGroup = 0;
@@ -117,6 +141,7 @@ let renderedRangeText = "";
 let renderedMountedText = "";
 let renderedLayoutText = "";
 let renderedLoadText = "";
+let activePhotoView: ActivePhotoView | null = null;
 
 function createPhoto(index: number): Photo {
   const aspectRatio = ASPECT_RATIOS[index % ASPECT_RATIOS.length] ?? 1;
@@ -348,18 +373,333 @@ function imageSourceWidth(photo: PlacedPhoto): number {
 }
 
 function imageUrl(photo: PlacedPhoto): string {
-  const width = imageSourceWidth(photo);
+  return imageUrlForWidth(photo, imageSourceWidth(photo));
+}
+
+function imageUrlForWidth(photo: Photo, width: number): string {
   const height = Math.max(120, Math.round(width * photo.aspectRatio));
   return `https://picsum.photos/seed/virtual-list-${photo.id}/${width}/${height}`;
+}
+
+function photoViewImageWidth(): number {
+  const pixelRatio = Math.min(2, window.devicePixelRatio || 1);
+  return Math.round(
+    clamp(window.innerWidth * pixelRatio, 720, PHOTO_VIEW_MAX_SOURCE_WIDTH),
+  );
+}
+
+function photoViewImageUrl(photo: Photo): string {
+  return imageUrlForWidth(photo, photoViewImageWidth());
+}
+
+function reducedMotion(): boolean {
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function nextAnimationFrame(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+function readRect(rect: DOMRect): PhotoRect {
+  return {
+    left: rect.left,
+    top: rect.top,
+    width: rect.width,
+    height: rect.height,
+  };
+}
+
+function rectTransform(from: PhotoRect, to: PhotoRect): string {
+  const scaleX = from.width / Math.max(1, to.width);
+  const scaleY = from.height / Math.max(1, to.height);
+  return `translate3d(${from.left - to.left}px, ${from.top - to.top}px, 0) scale(${scaleX}, ${scaleY})`;
+}
+
+function styleFixedRect(element: HTMLElement, rect: PhotoRect): void {
+  element.style.left = `${rect.left}px`;
+  element.style.top = `${rect.top}px`;
+  element.style.width = `${rect.width}px`;
+  element.style.height = `${rect.height}px`;
+}
+
+function animationFinished(animation: Animation): Promise<void> {
+  return animation.finished.then(
+    () => undefined,
+    () => undefined,
+  );
+}
+
+function findMountedPhotoElement(photoId: number): HTMLElement | null {
+  return viewport.querySelector<HTMLElement>(
+    `.masonry-photo[data-photo-id="${photoId}"]`,
+  );
+}
+
+function revealPhotoSource(element: HTMLElement | null): void {
+  element?.classList.remove("is-photo-view-source");
+}
+
+function hidePhotoSource(element: HTMLElement | null): void {
+  element?.classList.add("is-photo-view-source");
+}
+
+function createPhotoHero(src: string, rect: PhotoRect): HTMLImageElement {
+  const hero = document.createElement("img");
+  hero.className = "photo-viewer-hero";
+  hero.alt = "";
+  hero.decoding = "async";
+  hero.src = src;
+  styleFixedRect(hero, rect);
+  return hero;
+}
+
+function photoDetailsText(photo: PlacedPhoto): string {
+  return `Photo ${photo.id} · ${Math.round(photo.width)}×${Math.round(photo.height)} · ${photo.aspectRatio.toFixed(2)} ratio`;
+}
+
+async function revealHighResolutionImage(view: ActivePhotoView): Promise<void> {
+  await view.highResolutionImage.decode?.().catch(() => undefined);
+  if (activePhotoView !== view || view.closing) return;
+  view.highResolutionImage.classList.add("is-loaded");
+  if (view.highResolutionImage.naturalWidth > 0) {
+    view.details.textContent = `${photoDetailsText(view.photo)} · source ${view.highResolutionImage.naturalWidth}×${view.highResolutionImage.naturalHeight}`;
+  }
+}
+
+function cleanupPhotoView(view: ActivePhotoView, source: HTMLElement | null) {
+  document.removeEventListener("keydown", view.cleanup);
+  revealPhotoSource(source);
+  if (source !== view.sourceElement) revealPhotoSource(view.sourceElement);
+  view.overlay.remove();
+  document.documentElement.classList.remove("photo-view-open");
+  if (activePhotoView === view) activePhotoView = null;
+}
+
+async function openPhotoView(
+  photo: PlacedPhoto,
+  sourceElement: HTMLElement,
+): Promise<void> {
+  if (activePhotoView) {
+    await closePhotoView(false);
+  }
+
+  const sourceImage =
+    sourceElement.querySelector<HTMLImageElement>(".masonry-photo-img");
+  const sourceSrc =
+    sourceImage?.currentSrc || sourceImage?.src || imageUrl(photo);
+  const sourceRect = readRect(sourceElement.getBoundingClientRect());
+  const overlay = document.createElement("div");
+  overlay.className = "photo-viewer";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+
+  const backdrop = document.createElement("div");
+  backdrop.className = "photo-viewer-backdrop";
+
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "photo-viewer-close";
+  closeButton.setAttribute("aria-label", "Close photo");
+  closeButton.textContent = "×";
+
+  const details = document.createElement("div");
+  details.className = "photo-viewer-details";
+  details.textContent = photoDetailsText(photo);
+
+  const scroll = document.createElement("div");
+  scroll.className = "photo-viewer-scroll";
+
+  const stage = document.createElement("div");
+  stage.className = "photo-viewer-stage";
+
+  const image = document.createElement("img");
+  image.className = "photo-viewer-image";
+  image.alt = "";
+  image.decoding = "async";
+  image.src = sourceSrc;
+  const viewWidth = photoViewImageWidth();
+  image.width = viewWidth;
+  image.height = Math.max(120, Math.round(viewWidth * photo.aspectRatio));
+
+  const highResolutionImage = document.createElement("img");
+  highResolutionImage.className = "photo-viewer-image photo-viewer-image-hires";
+  highResolutionImage.alt = "";
+  highResolutionImage.decoding = "async";
+  highResolutionImage.src = photoViewImageUrl(photo);
+  highResolutionImage.width = image.width;
+  highResolutionImage.height = image.height;
+
+  stage.append(image, highResolutionImage, details);
+  scroll.append(stage);
+  overlay.append(backdrop, scroll, closeButton);
+
+  const onKeyDown = (event: KeyboardEvent) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void closePhotoView();
+    }
+  };
+
+  const view: ActivePhotoView = {
+    photo,
+    overlay,
+    backdrop,
+    scroll,
+    image,
+    highResolutionImage,
+    details,
+    sourceElement,
+    sourceRect,
+    cleanup: onKeyDown,
+    closing: false,
+  };
+
+  activePhotoView = view;
+  hidePhotoSource(sourceElement);
+  document.documentElement.classList.add("photo-view-open");
+  document.body.append(overlay);
+  document.addEventListener("keydown", onKeyDown);
+  closeButton.addEventListener("click", () => void closePhotoView());
+
+  await nextAnimationFrame();
+  const targetRect = readRect(image.getBoundingClientRect());
+  const hero = createPhotoHero(sourceSrc, targetRect);
+  overlay.append(hero);
+
+  if (reducedMotion()) {
+    image.classList.add("is-visible");
+    hero.remove();
+    void revealHighResolutionImage(view);
+    return;
+  }
+
+  const fromTransform = rectTransform(sourceRect, targetRect);
+  const heroAnimation = hero.animate(
+    [
+      {
+        borderRadius: "8px",
+        transform: fromTransform,
+      },
+      {
+        borderRadius: "10px",
+        transform: "translate3d(0, 0, 0) scale(1)",
+      },
+    ],
+    {
+      duration: PHOTO_VIEW_DURATION_MS,
+      easing: PHOTO_VIEW_EASING,
+      fill: "both",
+    },
+  );
+  const backdropAnimation = backdrop.animate([{ opacity: 0 }, { opacity: 1 }], {
+    duration: PHOTO_VIEW_DURATION_MS,
+    easing: PHOTO_VIEW_EASING,
+    fill: "both",
+  });
+
+  await Promise.all([
+    animationFinished(heroAnimation),
+    animationFinished(backdropAnimation),
+  ]);
+  if (activePhotoView !== view || view.closing) return;
+  image.classList.add("is-visible");
+  hero.remove();
+  void revealHighResolutionImage(view);
+}
+
+async function closePhotoView(animate = true): Promise<void> {
+  const view = activePhotoView;
+  if (!view || view.closing) return;
+  view.closing = true;
+
+  const currentSource =
+    findMountedPhotoElement(view.photo.id) ??
+    (view.sourceElement?.isConnected ? view.sourceElement : null);
+  hidePhotoSource(currentSource);
+
+  const currentRect = readRect(view.image.getBoundingClientRect());
+  const hero = createPhotoHero(
+    view.image.currentSrc || view.image.src,
+    currentRect,
+  );
+  view.overlay.append(hero);
+  view.image.classList.remove("is-visible");
+
+  if (!animate || reducedMotion()) {
+    cleanupPhotoView(view, currentSource);
+    return;
+  }
+
+  const targetRect = currentSource
+    ? readRect(currentSource.getBoundingClientRect())
+    : view.sourceRect;
+  const toTransform = currentSource
+    ? rectTransform(targetRect, currentRect)
+    : "translate3d(0, 18px, 0) scale(0.96)";
+
+  const heroAnimation = hero.animate(
+    [
+      {
+        borderRadius: "10px",
+        opacity: 1,
+        transform: "translate3d(0, 0, 0) scale(1)",
+      },
+      {
+        borderRadius: currentSource ? "8px" : "10px",
+        opacity: currentSource ? 1 : 0,
+        transform: toTransform,
+      },
+    ],
+    {
+      duration: PHOTO_VIEW_DURATION_MS,
+      easing: PHOTO_VIEW_EASING,
+      fill: "both",
+    },
+  );
+  const backdropAnimation = view.backdrop.animate(
+    [{ opacity: 1 }, { opacity: 0 }],
+    {
+      duration: PHOTO_VIEW_DURATION_MS,
+      easing: PHOTO_VIEW_EASING,
+      fill: "both",
+    },
+  );
+  const scrollAnimation = view.scroll.animate(
+    [{ opacity: 1 }, { opacity: 0 }],
+    {
+      duration: Math.round(PHOTO_VIEW_DURATION_MS * 0.72),
+      easing: PHOTO_VIEW_EASING,
+      fill: "both",
+    },
+  );
+
+  await Promise.all([
+    animationFinished(heroAnimation),
+    animationFinished(backdropAnimation),
+    animationFinished(scrollAnimation),
+  ]);
+  cleanupPhotoView(view, currentSource);
 }
 
 function buildPhotoCard(photo: PlacedPhoto, groupTop: number): HTMLElement {
   const card = document.createElement("div");
   card.className = "masonry-photo";
+  card.dataset.photoId = String(photo.id);
+  card.setAttribute("role", "button");
+  card.setAttribute("tabindex", "0");
+  card.setAttribute("aria-label", `View photo ${photo.id}`);
   card.style.left = px(photo.left);
   card.style.top = px(photo.top - groupTop);
   card.style.width = px(photo.width);
   card.style.height = px(photo.height);
+  card.addEventListener("click", () => {
+    void openPhotoView(photo, card);
+  });
+  card.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    void openPhotoView(photo, card);
+  });
 
   const image = document.createElement("img");
   image.className = "masonry-photo-img";
