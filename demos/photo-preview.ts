@@ -2,8 +2,9 @@ const PHOTO_VIEW_INLINE_PADDING = 24;
 const PHOTO_VIEW_BLOCK_PADDING = 0;
 const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
-const PHOTO_VIEW_DURATION_MS = 340;
-const PHOTO_VIEW_EASING = "cubic-bezier(0.2, 0, 0, 1)";
+const PHOTO_VIEW_DURATION_MS = 380;
+const PHOTO_VIEW_GEOMETRY_EASING = "cubic-bezier(0.18, 1.28, 0.32, 1)";
+const PHOTO_VIEW_FADE_EASING = "cubic-bezier(0.2, 0, 0, 1)";
 const PHOTO_PRESS_DOWN_MS = 150;
 const PHOTO_TOUCH_PRESS_DELAY_MS = 80;
 const PHOTO_TAP_MOVE_TOLERANCE_PX = 10;
@@ -804,7 +805,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       ],
       {
         duration: PHOTO_VIEW_DURATION_MS,
-        easing: PHOTO_VIEW_EASING,
+        easing: PHOTO_VIEW_GEOMETRY_EASING,
         fill: "both",
       },
     );
@@ -812,7 +813,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       [{ opacity: 0 }, { opacity: backdropOpacity }],
       {
         duration: PHOTO_VIEW_DURATION_MS,
-        easing: PHOTO_VIEW_EASING,
+        easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
     );
@@ -893,7 +894,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
           ],
           {
             duration: PHOTO_VIEW_DURATION_MS,
-            easing: PHOTO_VIEW_EASING,
+            easing: PHOTO_VIEW_GEOMETRY_EASING,
             fill: "both",
           },
         )
@@ -914,7 +915,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
           ],
           {
             duration: PHOTO_VIEW_DURATION_MS,
-            easing: PHOTO_VIEW_EASING,
+            easing: PHOTO_VIEW_FADE_EASING,
             fill: "both",
           },
         );
@@ -922,7 +923,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       [{ opacity: currentPhotoViewBackdropOpacity(view) }, { opacity: 0 }],
       {
         duration: PHOTO_VIEW_DURATION_MS,
-        easing: PHOTO_VIEW_EASING,
+        easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
     );
@@ -930,7 +931,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       [{ opacity: 1 }, { opacity: 0 }],
       {
         duration: Math.round(PHOTO_VIEW_DURATION_MS * 0.72),
-        easing: PHOTO_VIEW_EASING,
+        easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
     );
@@ -938,7 +939,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       [{ opacity: 1 }, { opacity: 0 }],
       {
         duration: Math.round(PHOTO_VIEW_DURATION_MS * 0.72),
-        easing: PHOTO_VIEW_EASING,
+        easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
     );
