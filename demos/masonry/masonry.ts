@@ -27,6 +27,9 @@ const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
 const PHOTO_VIEW_DURATION_MS = 340;
 const PHOTO_VIEW_EASING = "cubic-bezier(0.2, 0, 0, 1)";
+const PHOTO_PRESS_DOWN_MS = 150;
+const PHOTO_TOUCH_PRESS_DELAY_MS = 80;
+const PHOTO_TAP_MOVE_TOLERANCE_PX = 10;
 
 const ASPECT_RATIOS = [0.66, 0.75, 0.9, 1, 1.18, 1.35, 1.52] as const;
 
@@ -123,13 +126,21 @@ interface ActivePhotoView {
   highResolutionImage: HTMLImageElement;
   details: HTMLElement;
   openingAnimations: Animation[];
-  openingHero: HTMLImageElement | null;
+  openingHero: HTMLElement | null;
   sourceElement: HTMLElement | null;
   sourceRect: PhotoRect;
   onKeyDown: (event: KeyboardEvent) => void;
   onOverlayClick: (event: MouseEvent) => void;
   onViewportChange: () => void;
   closing: boolean;
+}
+
+interface PhotoPressState {
+  pointerId: number;
+  pressedAt: number | null;
+  pressTimer: number | null;
+  startX: number;
+  startY: number;
 }
 
 let selectedColumns = 4;
@@ -156,6 +167,8 @@ let renderedMountedText = "";
 let renderedLayoutText = "";
 let renderedLoadText = "";
 let activePhotoView: ActivePhotoView | null = null;
+const openingPhotoCards = new WeakSet<HTMLElement>();
+const photoPressStates = new WeakMap<HTMLElement, PhotoPressState>();
 
 function createPhoto(index: number): Photo {
   const aspectRatio = ASPECT_RATIOS[index % ASPECT_RATIOS.length] ?? 1;
@@ -483,6 +496,102 @@ function nextAnimationFrame(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
+function clearPhotoPressState(card: HTMLElement): void {
+  const state = photoPressStates.get(card);
+  if (state?.pressTimer !== null && state?.pressTimer !== undefined) {
+    window.clearTimeout(state.pressTimer);
+  }
+  photoPressStates.delete(card);
+  card.classList.remove("is-photo-pressed");
+}
+
+function applyPhotoPress(card: HTMLElement, state: PhotoPressState): void {
+  if (photoPressStates.get(card) !== state || state.pressedAt !== null) return;
+  state.pressTimer = null;
+  state.pressedAt = performance.now();
+  card.classList.add("is-photo-pressed");
+}
+
+function startPhotoPress(card: HTMLElement, event: PointerEvent): void {
+  if (reducedMotion()) return;
+
+  const state: PhotoPressState = {
+    pointerId: event.pointerId,
+    pressedAt: null,
+    pressTimer: null,
+    startX: event.clientX,
+    startY: event.clientY,
+  };
+  photoPressStates.set(card, state);
+
+  if (event.pointerType === "touch") {
+    state.pressTimer = window.setTimeout(() => {
+      applyPhotoPress(card, state);
+    }, PHOTO_TOUCH_PRESS_DELAY_MS);
+    return;
+  }
+
+  applyPhotoPress(card, state);
+}
+
+async function releasePhotoPress(card: HTMLElement): Promise<void> {
+  if (reducedMotion()) return;
+  clearPhotoPressState(card);
+}
+
+async function holdPhotoPressForOpen(card: HTMLElement): Promise<void> {
+  if (reducedMotion()) return;
+
+  const pressState = photoPressStates.get(card);
+  if (pressState === undefined) {
+    const keyboardPressState: PhotoPressState = {
+      pointerId: -1,
+      pressedAt: null,
+      pressTimer: null,
+      startX: 0,
+      startY: 0,
+    };
+    photoPressStates.set(card, keyboardPressState);
+    applyPhotoPress(card, keyboardPressState);
+    await nextAnimationFrame();
+    await sleep(PHOTO_PRESS_DOWN_MS);
+    return;
+  }
+  if (pressState.pressedAt === null) {
+    if (pressState.pressTimer !== null) {
+      window.clearTimeout(pressState.pressTimer);
+      pressState.pressTimer = null;
+    }
+    applyPhotoPress(card, pressState);
+    await nextAnimationFrame();
+    await sleep(PHOTO_PRESS_DOWN_MS);
+    return;
+  }
+  const elapsed = performance.now() - pressState.pressedAt;
+  if (elapsed < PHOTO_PRESS_DOWN_MS) {
+    await sleep(PHOTO_PRESS_DOWN_MS - elapsed);
+  }
+}
+
+async function openPhotoViewWithPressFeedback(
+  photo: PlacedPhoto,
+  card: HTMLElement,
+): Promise<void> {
+  if (openingPhotoCards.has(card)) return;
+  openingPhotoCards.add(card);
+
+  try {
+    if (!reducedMotion()) {
+      await holdPhotoPressForOpen(card);
+      await nextAnimationFrame();
+    }
+    if (card.isConnected) await openPhotoView(photo, card);
+  } finally {
+    clearPhotoPressState(card);
+    openingPhotoCards.delete(card);
+  }
+}
+
 function readRect(rect: DOMRect): PhotoRect {
   return {
     left: rect.left,
@@ -492,10 +601,30 @@ function readRect(rect: DOMRect): PhotoRect {
   };
 }
 
-function rectTransform(from: PhotoRect, to: PhotoRect): string {
-  const scaleX = from.width / Math.max(1, to.width);
-  const scaleY = from.height / Math.max(1, to.height);
-  return `translate3d(${from.left - to.left}px, ${from.top - to.top}px, 0) scale(${scaleX}, ${scaleY})`;
+function pointInsideElement(
+  element: HTMLElement,
+  clientX: number,
+  clientY: number,
+): boolean {
+  const rect = element.getBoundingClientRect();
+  return (
+    clientX >= rect.left &&
+    clientX <= rect.right &&
+    clientY >= rect.top &&
+    clientY <= rect.bottom
+  );
+}
+
+function pointerMovedPastTapTolerance(
+  pressState: PhotoPressState,
+  event: PointerEvent,
+): boolean {
+  return (
+    Math.hypot(
+      event.clientX - pressState.startX,
+      event.clientY - pressState.startY,
+    ) > PHOTO_TAP_MOVE_TOLERANCE_PX
+  );
 }
 
 function styleFixedRect(element: HTMLElement, rect: PhotoRect): void {
@@ -503,6 +632,11 @@ function styleFixedRect(element: HTMLElement, rect: PhotoRect): void {
   element.style.top = `${rect.top}px`;
   element.style.width = `${rect.width}px`;
   element.style.height = `${rect.height}px`;
+}
+
+function setPhotoHeroRadius(hero: HTMLElement, radius: string): void {
+  hero.style.borderRadius = radius;
+  hero.style.clipPath = `inset(0 round ${radius})`;
 }
 
 function animationFinished(animation: Animation): Promise<void> {
@@ -526,12 +660,10 @@ function hidePhotoSource(element: HTMLElement | null): void {
   element?.classList.add("is-photo-view-source");
 }
 
-function createPhotoHero(src: string, rect: PhotoRect): HTMLImageElement {
-  const hero = document.createElement("img");
+function createPhotoHero(src: string, rect: PhotoRect): HTMLElement {
+  const hero = document.createElement("div");
   hero.className = "photo-viewer-hero";
-  hero.alt = "";
-  hero.decoding = "async";
-  hero.src = src;
+  hero.style.backgroundImage = `url(${JSON.stringify(src)})`;
   styleFixedRect(hero, rect);
   return hero;
 }
@@ -709,7 +841,8 @@ async function openPhotoView(
   if (activePhotoView !== view || view.closing) return;
   syncPhotoViewScrollMode(view);
   const targetRect = readRect(frame.getBoundingClientRect());
-  const hero = createPhotoHero(sourceSrc, targetRect);
+  const hero = createPhotoHero(sourceSrc, sourceRect);
+  setPhotoHeroRadius(hero, "8px");
   view.openingHero = hero;
   overlay.append(hero);
   hidePhotoSource(sourceElement);
@@ -726,16 +859,23 @@ async function openPhotoView(
     return;
   }
 
-  const fromTransform = rectTransform(sourceRect, targetRect);
   const heroAnimation = hero.animate(
     [
       {
         borderRadius: "8px",
-        transform: fromTransform,
+        clipPath: "inset(0 round 8px)",
+        height: `${sourceRect.height}px`,
+        left: `${sourceRect.left}px`,
+        top: `${sourceRect.top}px`,
+        width: `${sourceRect.width}px`,
       },
       {
         borderRadius: "10px",
-        transform: "translate3d(0, 0, 0) scale(1)",
+        clipPath: "inset(0 round 10px)",
+        height: `${targetRect.height}px`,
+        left: `${targetRect.left}px`,
+        top: `${targetRect.top}px`,
+        width: `${targetRect.width}px`,
       },
     ],
     {
@@ -801,29 +941,57 @@ async function closePhotoView(animate = true): Promise<void> {
   const targetRect = currentSource
     ? readRect(currentSource.getBoundingClientRect())
     : view.sourceRect;
-  const toTransform = currentSource
-    ? rectTransform(targetRect, currentRect)
-    : "translate3d(0, 18px, 0) scale(0.96)";
+  const heroBorderRadius = currentSource ? "8px" : "10px";
+  const heroClipPath = `inset(0 round ${heroBorderRadius})`;
+  setPhotoHeroRadius(hero, heroBorderRadius);
 
-  const heroAnimation = hero.animate(
-    [
-      {
-        borderRadius: "10px",
-        opacity: 1,
-        transform: "translate3d(0, 0, 0) scale(1)",
-      },
-      {
-        borderRadius: currentSource ? "8px" : "10px",
-        opacity: currentSource ? 1 : 0,
-        transform: toTransform,
-      },
-    ],
-    {
-      duration: PHOTO_VIEW_DURATION_MS,
-      easing: PHOTO_VIEW_EASING,
-      fill: "both",
-    },
-  );
+  const heroAnimation = currentSource
+    ? hero.animate(
+        [
+          {
+            borderRadius: heroBorderRadius,
+            clipPath: heroClipPath,
+            height: `${currentRect.height}px`,
+            left: `${currentRect.left}px`,
+            top: `${currentRect.top}px`,
+            width: `${currentRect.width}px`,
+          },
+          {
+            borderRadius: heroBorderRadius,
+            clipPath: heroClipPath,
+            height: `${targetRect.height}px`,
+            left: `${targetRect.left}px`,
+            top: `${targetRect.top}px`,
+            width: `${targetRect.width}px`,
+          },
+        ],
+        {
+          duration: PHOTO_VIEW_DURATION_MS,
+          easing: PHOTO_VIEW_EASING,
+          fill: "both",
+        },
+      )
+    : hero.animate(
+        [
+          {
+            borderRadius: heroBorderRadius,
+            clipPath: heroClipPath,
+            opacity: 1,
+            transform: "translate3d(0, 0, 0) scale(1)",
+          },
+          {
+            borderRadius: heroBorderRadius,
+            clipPath: heroClipPath,
+            opacity: 0,
+            transform: "translate3d(0, 18px, 0) scale(0.96)",
+          },
+        ],
+        {
+          duration: PHOTO_VIEW_DURATION_MS,
+          easing: PHOTO_VIEW_EASING,
+          fill: "both",
+        },
+      );
   const backdropAnimation = view.backdrop.animate(
     [{ opacity: photoViewBackdropOpacity(view) }, { opacity: 0 }],
     {
@@ -869,19 +1037,51 @@ function buildPhotoCard(photo: PlacedPhoto, groupTop: number): HTMLElement {
   card.style.top = px(photo.top - groupTop);
   card.style.width = px(photo.width);
   card.style.height = px(photo.height);
+  card.addEventListener("pointerdown", (event) => {
+    if (!event.isPrimary || event.button !== 0 || activePhotoView) return;
+    startPhotoPress(card, event);
+  });
+  card.addEventListener("pointermove", (event) => {
+    const pressState = photoPressStates.get(card);
+    if (!pressState || pressState.pointerId !== event.pointerId) return;
+    if (pointerMovedPastTapTolerance(pressState, event)) {
+      void releasePhotoPress(card);
+    }
+  });
+  card.addEventListener("pointerup", (event) => {
+    const pressState = photoPressStates.get(card);
+    if (!event.isPrimary || !pressState) return;
+    if (
+      pressState.pointerId === event.pointerId &&
+      pointInsideElement(card, event.clientX, event.clientY) &&
+      !pointerMovedPastTapTolerance(pressState, event)
+    ) {
+      void openPhotoViewWithPressFeedback(photo, card);
+    } else {
+      void releasePhotoPress(card);
+    }
+  });
+  card.addEventListener("pointercancel", () => {
+    void releasePhotoPress(card);
+  });
+  card.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+  });
   card.addEventListener("click", () => {
-    void openPhotoView(photo, card);
+    if (openingPhotoCards.has(card) || photoPressStates.has(card)) return;
+    void openPhotoViewWithPressFeedback(photo, card);
   });
   card.addEventListener("keydown", (event) => {
     if (event.key !== "Enter" && event.key !== " ") return;
     event.preventDefault();
-    void openPhotoView(photo, card);
+    void openPhotoViewWithPressFeedback(photo, card);
   });
 
   const image = document.createElement("img");
   image.className = "masonry-photo-img";
   image.alt = "";
   image.decoding = "async";
+  image.draggable = false;
   image.loading = "lazy";
   const sourceWidth = imageSourceWidth(photo);
   image.width = sourceWidth;
