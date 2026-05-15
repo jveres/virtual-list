@@ -122,6 +122,8 @@ interface ActivePhotoView {
   image: HTMLImageElement;
   highResolutionImage: HTMLImageElement;
   details: HTMLElement;
+  openingAnimations: Animation[];
+  openingHero: HTMLImageElement | null;
   sourceElement: HTMLElement | null;
   sourceRect: PhotoRect;
   onKeyDown: (event: KeyboardEvent) => void;
@@ -534,6 +536,18 @@ function createPhotoHero(src: string, rect: PhotoRect): HTMLImageElement {
   return hero;
 }
 
+function cancelPhotoViewOpeningAnimation(
+  view: ActivePhotoView,
+  removeHero = true,
+): void {
+  for (const animation of view.openingAnimations) {
+    animation.cancel();
+  }
+  view.openingAnimations = [];
+  if (removeHero) view.openingHero?.remove();
+  view.openingHero = null;
+}
+
 function syncPhotoViewScrollMode(view: ActivePhotoView): void {
   const scrollable = view.scroll.scrollHeight > view.scroll.clientHeight + 1;
   view.scroll.classList.toggle("is-scrollable", scrollable);
@@ -572,6 +586,7 @@ function cleanupPhotoView(view: ActivePhotoView, source: HTMLElement | null) {
   window.removeEventListener("resize", view.onViewportChange);
   window.visualViewport?.removeEventListener("resize", view.onViewportChange);
   window.visualViewport?.removeEventListener("scroll", view.onViewportChange);
+  cancelPhotoViewOpeningAnimation(view);
   revealPhotoSource(source);
   if (source !== view.sourceElement) revealPhotoSource(view.sourceElement);
   view.overlay.remove();
@@ -670,6 +685,8 @@ async function openPhotoView(
     image,
     highResolutionImage,
     details,
+    openingAnimations: [],
+    openingHero: null,
     sourceElement,
     sourceRect,
     onKeyDown,
@@ -693,6 +710,7 @@ async function openPhotoView(
   syncPhotoViewScrollMode(view);
   const targetRect = readRect(frame.getBoundingClientRect());
   const hero = createPhotoHero(sourceSrc, targetRect);
+  view.openingHero = hero;
   overlay.append(hero);
   hidePhotoSource(sourceElement);
   document.documentElement.classList.add("photo-view-open");
@@ -702,6 +720,7 @@ async function openPhotoView(
   if (reducedMotion()) {
     backdrop.style.opacity = backdropOpacity;
     image.classList.add("is-visible");
+    view.openingHero = null;
     hero.remove();
     void revealHighResolutionImage(view);
     return;
@@ -733,6 +752,7 @@ async function openPhotoView(
       fill: "both",
     },
   );
+  view.openingAnimations = [heroAnimation, backdropAnimation];
 
   await Promise.all([
     animationFinished(heroAnimation),
@@ -741,6 +761,8 @@ async function openPhotoView(
   if (activePhotoView !== view || view.closing) return;
   backdrop.style.opacity = backdropOpacity;
   image.classList.add("is-visible");
+  view.openingAnimations = [];
+  view.openingHero = null;
   hero.remove();
   void revealHighResolutionImage(view);
 }
@@ -755,13 +777,18 @@ async function closePhotoView(animate = true): Promise<void> {
     (view.sourceElement?.isConnected ? view.sourceElement : null);
   hidePhotoSource(currentSource);
 
+  const openingHero =
+    view.openingHero?.isConnected === true ? view.openingHero : null;
   const currentImage = currentPhotoViewImage(view);
-  const currentRect = readRect(view.frame.getBoundingClientRect());
-  const hero = createPhotoHero(
-    currentImage.currentSrc || currentImage.src,
-    currentRect,
+  const currentRect = readRect(
+    (openingHero ?? view.frame).getBoundingClientRect(),
   );
-  view.overlay.append(hero);
+  const hero =
+    openingHero ??
+    createPhotoHero(currentImage.currentSrc || currentImage.src, currentRect);
+  cancelPhotoViewOpeningAnimation(view, false);
+  styleFixedRect(hero, currentRect);
+  if (!hero.isConnected) view.overlay.append(hero);
   view.frame.style.visibility = "hidden";
   view.image.classList.remove("is-visible");
   view.highResolutionImage.classList.remove("is-loaded");

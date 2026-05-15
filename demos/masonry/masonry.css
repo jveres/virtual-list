@@ -101,8 +101,6 @@ html.photo-view-open body {
   position: absolute;
   inset: 0;
   background: color-mix(in srgb, var(--bg) 78%, transparent);
-  -webkit-backdrop-filter: blur(24px);
-  backdrop-filter: blur(24px);
 }
 
 .photo-viewer-scroll {
