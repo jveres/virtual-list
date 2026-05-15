@@ -470,6 +470,7 @@ export function createDynamicVirtualizer(
   let renderFrame = 0;
   let measurementFrame = 0;
   let bottomFollowFrame = 0;
+  let bottomFollowActive = false;
   let bottomFollowLastFrameAt = 0;
   let bottomFollowDuration = DEFAULT_SMOOTH_SCROLL_DURATION;
   let bottomFollowSnapThreshold = SCROLL_SNAP_THRESHOLD;
@@ -733,26 +734,13 @@ export function createDynamicVirtualizer(
     }
   }
 
-  function stopProgrammaticBoundaryScroll(
-    boundary: DynamicVirtualizerBoundary,
-  ): void {
-    if (programmaticReachBoundary !== boundary) return;
-
-    if (activeSmoothScrollCancel) {
-      activeSmoothScrollCancel();
-    } else {
-      viewport.scrollTo({ top: viewport.scrollTop, behavior: "auto" });
-    }
-    clearProgrammaticBoundaryReach(boundary);
-  }
-
   function emitBoundaryReach(boundary: DynamicVirtualizerBoundary): void {
     if (!canEmitBoundaryReach(boundary)) return;
     if (!armedForBoundary(boundary)) return;
 
     setBoundaryArmed(boundary, false);
     setReachConsumed(boundary, true);
-    stopProgrammaticBoundaryScroll(boundary);
+    clearProgrammaticBoundaryReach(boundary);
     emittingChangeCallback = true;
     try {
       callReachCallback(
@@ -769,6 +757,7 @@ export function createDynamicVirtualizer(
     if (Math.abs(totalSize - renderedTotalSize) > 0.01) {
       content.style.height = px(totalSize);
       renderedTotalSize = totalSize;
+      wakeBottomFollow();
     }
     return totalSize;
   }
@@ -1571,6 +1560,12 @@ export function createDynamicVirtualizer(
       const finish = (completed: boolean) => {
         if (finished) return;
         finished = true;
+        if (completed && !options.signal?.aborted) {
+          const finalTarget = clamp(target, 0, nativeMaxScrollTop());
+          if (Math.abs(viewport.scrollTop - finalTarget) <= snapThreshold) {
+            setScrollTop(finalTarget, ALLOW_DURING_SCROLL);
+          }
+        }
         if (activeSmoothScrollCancel === cancel) {
           activeSmoothScrollCancel = null;
         }
@@ -1604,11 +1599,25 @@ export function createDynamicVirtualizer(
   }
 
   function stopFollowBottom(): void {
+    bottomFollowActive = false;
     if (bottomFollowFrame) {
       cancelAnimationFrame(bottomFollowFrame);
       bottomFollowFrame = 0;
     }
     clearBottomFollowSignal();
+  }
+
+  function wakeBottomFollow(): void {
+    if (
+      !bottomFollowActive ||
+      disposed ||
+      userScrollActive ||
+      bottomFollowSignal?.aborted ||
+      count <= 0
+    ) {
+      return;
+    }
+    scheduleBottomFollowFrame();
   }
 
   function bottomFollowFrameProgress(now: number): number {
@@ -1630,6 +1639,7 @@ export function createDynamicVirtualizer(
     bottomFollowFrame = 0;
     if (
       disposed ||
+      !bottomFollowActive ||
       userScrollActive ||
       bottomFollowSignal?.aborted ||
       count <= 0
@@ -1650,7 +1660,6 @@ export function createDynamicVirtualizer(
         renderNow(viewport.scrollTop);
       }
       if (Math.abs(viewport.scrollTop - target) <= bottomFollowSnapThreshold) {
-        stopFollowBottom();
         return;
       }
       bottomFollowLastFrameAt = now;
@@ -1681,6 +1690,7 @@ export function createDynamicVirtualizer(
         : 1,
     );
     bottomFollowSnapThreshold = snapThreshold;
+    bottomFollowActive = true;
     bottomFollowSignal = options.signal ?? null;
     if (bottomFollowSignal) {
       bottomFollowAbortHandler = stopFollowBottom;

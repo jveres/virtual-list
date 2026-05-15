@@ -1464,7 +1464,7 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
     if (activeSource.id === "synthetic") {
       await virtualizer.scrollToIndex(Math.floor(items.length / 2), "center");
     } else {
-      await virtualizer.scrollToTop();
+      await virtualizer.scrollToIndex(0, "top");
     }
   } catch (error) {
     if (version === sourceVersion) {
@@ -2081,11 +2081,13 @@ const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
 
 document.getElementById("top-btn")?.addEventListener("click", () => {
-  void virtualizer?.scrollToIndex(0, "top");
+  void virtualizer?.scrollToIndex(0, "top", { behavior: "smooth" });
 });
 
 document.getElementById("bottom-btn")?.addEventListener("click", () => {
-  void virtualizer?.scrollToIndex(items.length - 1, "bottom");
+  void virtualizer?.scrollToIndex(items.length - 1, "bottom", {
+    behavior: "smooth",
+  });
 });
 
 await Promise.all([initMarkdown(), document.fonts.ready]);

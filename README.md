@@ -5,9 +5,10 @@ interfaces. It replaces the earlier phantom scroller work with a native
 scrolling viewport, a measured size model, and a small reusable TypeScript
 runtime.
 
-The current focus is preserving native scroll behavior while rows are measured
-and corrected at runtime. The demos cover a large static chat transcript and a
-streaming chat surface where the newest assistant message grows while mounted.
+The current focus is preserving native scroll behavior while rows are measured,
+loaded, trimmed, and corrected at runtime. The demos cover chat transcripts,
+streaming messages, dynamic network-backed loading, masonry images, and
+justified photo rows.
 
 ## Run the demos
 
@@ -23,8 +24,11 @@ Open these pages from the dev server:
 - `/demos/chat-history/chat-history.html` shows 10,000 chat history rows.
 - `/demos/dynamic-content/dynamic-content.html` shows dynamic top and bottom
   content loading over a 10,000-row transcript window.
+- `/demos/dynamic-content/dynamic-content.html?source=bsky` shows the same
+  dynamic loading path with Bluesky public feed data.
 - `/demos/dynamic-content/dynamic-content.html?source=lemmy&debugRenderDrift=1`
   enables render drift reports for the dynamic content demo.
+- `/demos/masonry/masonry.html` shows dynamic masonry photo loading.
 - `/demos/photo-gallery/photo-gallery.html` shows dynamic justified photo rows.
 - `/demos/streaming/streaming.html` shows append, streaming, cancel, and
   sticky user-message scroll behavior.
@@ -173,10 +177,14 @@ The returned object exposes:
 - `setPlaceholderSlot(slot | null)` for empty-list content such as initial
   loading, empty, and error states.
 - `getPlaceholderElement()` for direct access to the mounted empty-list row.
-- `scrollToIndex(index, align, options)` for index navigation.
+- `scrollToIndex(index, align, options)` for item navigation. This targets the
+  item itself, so `scrollToIndex(0, "top")` keeps the top boundary slot above
+  the viewport and `scrollToIndex(count - 1, "bottom")` keeps the bottom
+  boundary slot below the viewport.
 - `scrollToOffset(offset, options)` for absolute scroll-offset navigation
   through the runtime.
-- `scrollToTop(options)` and `scrollToBottom(options)` as convenience wrappers.
+- `scrollToTop(options)` and `scrollToBottom(options)` for boundary navigation.
+  These methods target the native scroll range and include boundary slots.
 - `followBottom(options)` to keep the viewport following the current bottom
   while content grows. Wheel, touch, and pointer input stop the follow.
 - `stopFollowBottom()` to cancel an active bottom follow.
@@ -203,9 +211,14 @@ into an existing list.
 Boundary slots are optional host-owned rows before item `0` and after the last
 item. The host provides a stable `key`, a measured `height`, and a `build()`
 function. The runtime positions the slot, includes it in `scrollHeight`, and
-keeps normal item indexes unchanged. Use `syncLayout({ addedBefore, topSlot:
-null })` when a loading slot is replaced by prepended rows, so the slot removal
-and count shift happen in one anchor-preserving update.
+keeps normal item indexes unchanged. Use one `syncLayout()` call when a loading
+slot state changes together with a prepend or append, so the slot update and
+count shift happen in one anchor-preserving update.
+
+If a boundary callback exists and the host passes `null` for that slot, the
+runtime keeps a 1 px sentinel so future boundary detection can re-arm. For
+visible loading, no-more, or error affordances, keep a fixed-height boundary
+slot and change only its host-rendered contents.
 
 Top boundary slot changes by themselves don't move `scrollTop`. This lets the
 host reveal a loading spinner at the native top edge without immediately
@@ -384,6 +397,13 @@ context as the visible list. Network posts render text as sanitized or escaped
 HTML and render images as reserved-aspect media blocks so image loading doesn't
 change the measured row height.
 
+The top and bottom toolbar buttons use `scrollToIndex()` with smooth scrolling
+because they jump to the loaded item window, not to the boundary slots. That
+keeps the top spinner slot above the first loaded row and the bottom spinner
+slot below the last loaded row. Demos that need to inspect the boundary slots,
+such as masonry and photo gallery, use `scrollToTop()` and `scrollToBottom()`
+instead.
+
 When the list has no rows, the demo uses a placeholder slot for initial loading,
 empty results, and source errors. Use `?debugRenderDrift=1` to enable the
 runtime's mounted-row drift reporter. The demo stores the last reports on
@@ -472,4 +492,4 @@ Use the project check before committing runtime or demo changes.
 pnpm run check
 ```
 
-This runs Biome and TypeScript.
+This runs `oxlint`, `oxfmt --check`, and TypeScript.
