@@ -21,10 +21,11 @@ pnpm run dev
 Open these pages from the dev server:
 
 - `/demos/chat-history/chat-history.html` shows 10,000 chat history rows.
-- `/demos/dynamic-loading/dynamic-loading.html` shows top and bottom dynamic
-  loading over a 10,000-row transcript window.
-- `/demos/dynamic-loading/dynamic-loading.html?source=lemmy&debugRenderDrift=1`
-  enables render drift reports for the dynamic loading demo.
+- `/demos/dynamic-content/dynamic-content.html` shows dynamic top and bottom
+  content loading over a 10,000-row transcript window.
+- `/demos/dynamic-content/dynamic-content.html?source=lemmy&debugRenderDrift=1`
+  enables render drift reports for the dynamic content demo.
+- `/demos/photo-gallery/photo-gallery.html` shows dynamic justified photo rows.
 - `/demos/streaming/streaming.html` shows append, streaming, cancel, and
   sticky user-message scroll behavior.
 - `/demos/streaming/streaming.html?instant` disables simulated token delays for
@@ -232,7 +233,7 @@ modeled `translateY()` position and measured height. The runtime skips all drift
 reads when the option is unset or `false`, so normal scroll rendering doesn't
 call `getBoundingClientRect()` for this debug path.
 
-In the dynamic loading demo, add `?debugRenderDrift=1` to the URL. The console
+In the dynamic content demo, add `?debugRenderDrift=1` to the URL. The console
 prints one activation line when the flag is enabled. It logs warnings only when
 at least one mounted row drifts beyond the runtime epsilon. The demo also keeps
 the last reports on `window.__vlRenderDriftReports` and increments
@@ -337,9 +338,9 @@ The shared helpers cover:
 Hidden row measurement is handled by the runtime module. Demo helpers remain
 demo-only plumbing and are not part of the virtualizer API.
 
-## Dynamic loading demo
+## Dynamic content demo
 
-The dynamic loading demo keeps a target window of rows loaded in the virtualizer.
+The dynamic content demo keeps a target window of rows loaded in the virtualizer.
 It defaults to a retained target of 100 rows and 50-row load chunks. You can
 change those values with `?retain=300&chunk=50`. The header source selector can
 switch between the local synthetic transcript, Bluesky's public Discover feed,
@@ -413,6 +414,14 @@ The masonry demo exercises variable-position image groups in a single
 virtualizer instance. The host precomputes group heights, keeps fixed-height
 boundary slots at the top and bottom, and uses the runtime `onReachTop`,
 `onReachBottom`, `onScrollStart`, and `onScrollEnd` callbacks for loading.
+
+## Photo gallery demo
+
+The photo gallery demo uses justified rows instead of masonry columns. Each
+virtualized row is one complete photo strip with precomputed height, so the
+runtime mounts and unmounts row bands rather than independent column fragments.
+The host keeps fixed-height boundary slots and commits pending top or bottom
+loads only from the runtime `onScrollEnd` callback.
 
 ## Performance notes
 

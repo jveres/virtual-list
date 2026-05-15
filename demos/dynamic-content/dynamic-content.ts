@@ -203,7 +203,7 @@ if (renderDriftDebug) {
   const debugWindow = window as RenderDriftDebugWindow;
   debugWindow.__vlRenderDriftCount = 0;
   debugWindow.__vlRenderDriftReports = [];
-  console.info("[dynamic-loading] render drift debug enabled");
+  console.info("[dynamic-content] render drift debug enabled");
 }
 
 const viewport = mustGet("viewport");
@@ -962,11 +962,11 @@ function syncLoadModeButton(): void {
   loadModeButton.classList.toggle("active", deferred);
   loadModeButton.setAttribute("aria-pressed", String(deferred));
   loadModeButton.title = deferred
-    ? "Deferred dynamic loading"
-    : "Instant dynamic loading";
+    ? "Deferred dynamic content"
+    : "Instant dynamic content";
   loadModeButton.setAttribute(
     "aria-label",
-    deferred ? "Deferred dynamic loading" : "Instant dynamic loading",
+    deferred ? "Deferred dynamic content" : "Instant dynamic content",
   );
 }
 
@@ -1046,7 +1046,7 @@ function reportRenderDrift(
     drifts,
   });
   debugWindow.__vlRenderDriftReports = reports.slice(-20);
-  console.warn("[dynamic-loading] render drift", reports.at(-1));
+  console.warn("[dynamic-content] render drift", reports.at(-1));
 }
 
 function createVirtualizer(): DynamicVirtualizer {
@@ -2110,7 +2110,7 @@ loadHighlighter()
 
 declare global {
   interface Window {
-    dynamicLoading: {
+    dynamicContent: {
       virtualizer: DynamicVirtualizer | undefined;
       loadTop: () => void;
       loadBottom: () => void;
@@ -2123,7 +2123,7 @@ declare global {
   }
 }
 
-window.dynamicLoading = {
+window.dynamicContent = {
   get virtualizer() {
     return virtualizer;
   },

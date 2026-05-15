@@ -12,8 +12,8 @@ export default defineConfig({
           "demos/chat-history/chat-history.html",
           import.meta.url,
         ).pathname,
-        dynamicLoading: new URL(
-          "demos/dynamic-loading/dynamic-loading.html",
+        dynamicContent: new URL(
+          "demos/dynamic-content/dynamic-content.html",
           import.meta.url,
         ).pathname,
         streaming: new URL("demos/streaming/streaming.html", import.meta.url)

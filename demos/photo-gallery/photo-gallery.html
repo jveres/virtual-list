@@ -49,26 +49,21 @@
         matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
       );
     </script>
-    <title>virtual-list · dynamic loading</title>
+    <title>virtual-list · photo gallery</title>
   </head>
   <body>
     <div class="shell">
       <div class="header">
         <span class="header-title">
           <a href="/" title="Back to demos">virtual-list</a>
-          <span class="sep">·</span>dynamic-loading
+          <span class="sep">·</span>photo gallery
         </span>
         <div class="header-actions">
-          <select
-            class="source-select"
-            id="source-select"
-            aria-label="Data source"
-            title="Data source"
-          >
-            <option value="synthetic">Synthetic</option>
-            <option value="bsky">Bluesky</option>
-            <option value="lemmy">Lemmy</option>
-          </select>
+          <div class="gallery-control-group" aria-label="Row height">
+            <button type="button" data-row-height="150">S</button>
+            <button type="button" data-row-height="190">M</button>
+            <button type="button" data-row-height="240">L</button>
+          </div>
           <div class="theme-group" aria-label="Theme">
             <button
               type="button"
@@ -138,58 +133,9 @@
           <button
             type="button"
             class="icon-btn"
-            id="load-mode-btn"
-            title="Deferred dynamic loading"
-            aria-label="Deferred dynamic loading"
-          >
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle
-                cx="8"
-                cy="8"
-                r="5.75"
-                stroke="currentColor"
-                stroke-width="1.5"
-              />
-              <path
-                d="M8 4.75V8l2.25 1.5"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                stroke-width="1.5"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
-            id="render-mode-btn"
-            title="Virtualized rows"
-            aria-label="Virtualized rows"
-          >
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect
-                x="3"
-                y="2.5"
-                width="10"
-                height="11"
-                rx="1.5"
-                stroke="currentColor"
-                stroke-width="1.5"
-              />
-              <path
-                d="M5.5 5h5M5.5 8h5M5.5 11h5"
-                stroke="currentColor"
-                stroke-linecap="round"
-                stroke-width="1.5"
-              />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
             id="top-btn"
-            title="Scroll to loaded top"
-            aria-label="Scroll to loaded top"
+            title="Scroll to top"
+            aria-label="Scroll to top"
           >
             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
@@ -205,8 +151,8 @@
             type="button"
             class="icon-btn"
             id="bottom-btn"
-            title="Scroll to loaded bottom"
-            aria-label="Scroll to loaded bottom"
+            title="Scroll to bottom"
+            aria-label="Scroll to bottom"
           >
             <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
@@ -220,14 +166,20 @@
           </button>
         </div>
       </div>
-      <div class="viewport-wrap">
-        <div class="viewport" id="viewport"></div>
+      <div class="viewport-wrap gallery-viewport-wrap">
+        <div class="viewport gallery-viewport" id="viewport"></div>
       </div>
       <div class="statusbar">
-        <span id="window-status"></span>
-        <span id="range-status"></span>
+        <div>
+          <span id="range-label">0-0</span>
+          <span class="sep">·</span>
+          <span id="mounted-label">0 mounted</span>
+          <span class="sep">·</span>
+          <span id="layout-label">0 rows</span>
+        </div>
+        <div id="load-label">idle</div>
       </div>
     </div>
-    <script type="module" src="./dynamic-loading.ts"></script>
+    <script type="module" src="./photo-gallery.ts"></script>
   </body>
 </html>
