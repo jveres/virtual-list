@@ -30,6 +30,10 @@ const PHOTO_VIEW_EASING = "cubic-bezier(0.2, 0, 0, 1)";
 const PHOTO_PRESS_DOWN_MS = 150;
 const PHOTO_TOUCH_PRESS_DELAY_MS = 80;
 const PHOTO_TAP_MOVE_TOLERANCE_PX = 10;
+const PHOTO_SWIPE_CLOSE_DISTANCE_PX = 120;
+const PHOTO_SWIPE_CLOSE_VELOCITY_PX_MS = 0.55;
+const PHOTO_SWIPE_SCROLL_TOP_TOLERANCE_PX = 24;
+const PHOTO_SWIPE_START_PX = 14;
 
 const ASPECT_RATIOS = [0.66, 0.75, 0.9, 1, 1.18, 1.35, 1.52] as const;
 
@@ -121,6 +125,7 @@ interface ActivePhotoView {
   backdrop: HTMLElement;
   closeButton: HTMLButtonElement;
   frame: HTMLElement;
+  stage: HTMLElement;
   scroll: HTMLElement;
   image: HTMLImageElement;
   highResolutionImage: HTMLImageElement;
@@ -131,8 +136,25 @@ interface ActivePhotoView {
   sourceRect: PhotoRect;
   onKeyDown: (event: KeyboardEvent) => void;
   onOverlayClick: (event: MouseEvent) => void;
+  onSwipePointerCancel: (event: PointerEvent) => void;
+  onSwipePointerDown: (event: PointerEvent) => void;
+  onSwipePointerMove: (event: PointerEvent) => void;
+  onSwipePointerUp: (event: PointerEvent) => void;
   onViewportChange: () => void;
+  swipeResetAnimations: Animation[];
+  swipeState: PhotoSwipeState | null;
   closing: boolean;
+}
+
+interface PhotoSwipeState {
+  dragY: number;
+  dragging: boolean;
+  lastTime: number;
+  lastY: number;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  velocityY: number;
 }
 
 interface PhotoPressState {
@@ -488,6 +510,13 @@ function photoViewBackdropOpacity(view: ActivePhotoView): string {
     .trim();
 }
 
+function currentPhotoViewBackdropOpacity(view: ActivePhotoView): string {
+  const opacity = Number.parseFloat(getComputedStyle(view.backdrop).opacity);
+  return Number.isFinite(opacity)
+    ? String(opacity)
+    : photoViewBackdropOpacity(view);
+}
+
 function reducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -534,7 +563,7 @@ function startPhotoPress(card: HTMLElement, event: PointerEvent): void {
   applyPhotoPress(card, state);
 }
 
-async function releasePhotoPress(card: HTMLElement): Promise<void> {
+function releasePhotoPress(card: HTMLElement): void {
   if (reducedMotion()) return;
   clearPhotoPressState(card);
 }
@@ -627,6 +656,19 @@ function pointerMovedPastTapTolerance(
   );
 }
 
+function isPhotoTapRelease(
+  card: HTMLElement,
+  pressState: PhotoPressState,
+  event: PointerEvent,
+): boolean {
+  return (
+    event.isPrimary &&
+    pressState.pointerId === event.pointerId &&
+    pointInsideElement(card, event.clientX, event.clientY) &&
+    !pointerMovedPastTapTolerance(pressState, event)
+  );
+}
+
 function styleFixedRect(element: HTMLElement, rect: PhotoRect): void {
   element.style.left = `${rect.left}px`;
   element.style.top = `${rect.top}px`;
@@ -698,6 +740,161 @@ function currentPhotoViewImage(view: ActivePhotoView): HTMLImageElement {
     : view.image;
 }
 
+function cancelPhotoSwipeReset(view: ActivePhotoView): void {
+  for (const animation of view.swipeResetAnimations) animation.cancel();
+  view.swipeResetAnimations = [];
+}
+
+function canStartPhotoSwipe(view: ActivePhotoView): boolean {
+  if (view.scroll.scrollTop <= PHOTO_SWIPE_SCROLL_TOP_TOLERANCE_PX) {
+    view.scroll.scrollTop = 0;
+    return true;
+  }
+  return false;
+}
+
+function photoSwipeVisualOffset(deltaY: number): number {
+  const sign = Math.sign(deltaY);
+  const distance = Math.abs(deltaY);
+  if (distance <= 240) return sign * distance * 0.62;
+  return sign * (148.8 + (distance - 240) * 0.18);
+}
+
+function applyPhotoSwipe(view: ActivePhotoView, dragY: number): void {
+  const distance = Math.abs(dragY);
+  const scale = clamp(1 - distance / 2400, 0.94, 1);
+  const opacity =
+    Number.parseFloat(photoViewBackdropOpacity(view)) *
+    (1 - clamp(distance / 320, 0, 0.72));
+  view.stage.style.transform = `translate3d(0, ${dragY.toFixed(3)}px, 0) scale(${scale.toFixed(4)})`;
+  view.stage.style.willChange = "transform";
+  view.backdrop.style.opacity = opacity.toFixed(3);
+}
+
+function clearPhotoSwipeVisualState(view: ActivePhotoView): void {
+  view.scroll.classList.remove("is-swiping");
+  view.scroll.scrollTop = 0;
+  view.stage.style.transform = "";
+  view.stage.style.willChange = "";
+  view.backdrop.style.opacity = photoViewBackdropOpacity(view);
+}
+
+async function resetPhotoSwipe(view: ActivePhotoView): Promise<void> {
+  cancelPhotoSwipeReset(view);
+  const backdropOpacity = photoViewBackdropOpacity(view);
+  const stageAnimation = view.stage.animate(
+    [
+      { transform: getComputedStyle(view.stage).transform },
+      { transform: "translate3d(0, 0, 0) scale(1)" },
+    ],
+    {
+      duration: 320,
+      easing: "cubic-bezier(0.2, 0, 0, 1)",
+      fill: "both",
+    },
+  );
+  const backdropAnimation = view.backdrop.animate(
+    [
+      { opacity: getComputedStyle(view.backdrop).opacity },
+      { opacity: backdropOpacity },
+    ],
+    {
+      duration: 260,
+      easing: "cubic-bezier(0.2, 0, 0, 1)",
+      fill: "both",
+    },
+  );
+  view.swipeResetAnimations = [stageAnimation, backdropAnimation];
+  await Promise.all([
+    animationFinished(stageAnimation),
+    animationFinished(backdropAnimation),
+  ]);
+  if (activePhotoView !== view || view.closing) return;
+  stageAnimation.cancel();
+  backdropAnimation.cancel();
+  view.swipeResetAnimations = [];
+  clearPhotoSwipeVisualState(view);
+}
+
+function startPhotoSwipe(view: ActivePhotoView, event: PointerEvent): void {
+  if (view.closing || event.button !== 0 || !event.isPrimary) return;
+  if (view.closeButton.contains(event.target as Node)) return;
+  if (!canStartPhotoSwipe(view)) return;
+
+  cancelPhotoSwipeReset(view);
+  view.swipeState = {
+    dragY: 0,
+    dragging: false,
+    lastTime: performance.now(),
+    lastY: event.clientY,
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startY: event.clientY,
+    velocityY: 0,
+  };
+}
+
+function updatePhotoSwipe(view: ActivePhotoView, event: PointerEvent): void {
+  const state = view.swipeState;
+  if (!state || state.pointerId !== event.pointerId || view.closing) return;
+
+  const deltaX = event.clientX - state.startX;
+  const deltaY = event.clientY - state.startY;
+  const absDeltaY = Math.abs(deltaY);
+  if (!state.dragging) {
+    if (Math.abs(deltaX) > PHOTO_SWIPE_START_PX * 1.4) {
+      view.swipeState = null;
+      return;
+    }
+    if (absDeltaY < PHOTO_SWIPE_START_PX || absDeltaY < Math.abs(deltaX) * 1.2)
+      return;
+    if (!canStartPhotoSwipe(view)) {
+      view.swipeState = null;
+      return;
+    }
+    state.dragging = true;
+    view.scroll.classList.add("is-swiping");
+  }
+
+  event.preventDefault();
+  const now = performance.now();
+  const elapsed = Math.max(1, now - state.lastTime);
+  state.velocityY = (event.clientY - state.lastY) / elapsed;
+  state.lastTime = now;
+  state.lastY = event.clientY;
+  state.dragY = photoSwipeVisualOffset(deltaY);
+  applyPhotoSwipe(view, state.dragY);
+}
+
+function endPhotoSwipe(view: ActivePhotoView, event: PointerEvent): void {
+  const state = view.swipeState;
+  if (!state || state.pointerId !== event.pointerId) return;
+  view.swipeState = null;
+  view.scroll.classList.remove("is-swiping");
+  if (!state.dragging) return;
+
+  event.preventDefault();
+  const dragDistance = Math.abs(state.dragY);
+  const shouldClose =
+    dragDistance >= PHOTO_SWIPE_CLOSE_DISTANCE_PX ||
+    (dragDistance >= 40 &&
+      Math.abs(state.velocityY) >= PHOTO_SWIPE_CLOSE_VELOCITY_PX_MS);
+  if (shouldClose) {
+    void closePhotoView();
+    return;
+  }
+  view.scroll.classList.add("is-swiping");
+  void resetPhotoSwipe(view);
+}
+
+function cancelPhotoSwipe(view: ActivePhotoView, event: PointerEvent): void {
+  const state = view.swipeState;
+  if (!state || state.pointerId !== event.pointerId) return;
+  view.swipeState = null;
+  if (state.dragging) void resetPhotoSwipe(view);
+  else view.scroll.classList.remove("is-swiping");
+}
+
 function photoDetailsText(photo: PlacedPhoto): string {
   return `Photo ${photo.id} · ${Math.round(photo.width)}×${Math.round(photo.height)} · ${photo.aspectRatio.toFixed(2)} ratio`;
 }
@@ -715,10 +912,16 @@ async function revealHighResolutionImage(view: ActivePhotoView): Promise<void> {
 function cleanupPhotoView(view: ActivePhotoView, source: HTMLElement | null) {
   document.removeEventListener("keydown", view.onKeyDown);
   view.overlay.removeEventListener("click", view.onOverlayClick);
+  view.scroll.removeEventListener("pointercancel", view.onSwipePointerCancel);
+  view.scroll.removeEventListener("pointerdown", view.onSwipePointerDown);
+  view.scroll.removeEventListener("pointermove", view.onSwipePointerMove);
+  view.scroll.removeEventListener("pointerup", view.onSwipePointerUp);
   window.removeEventListener("resize", view.onViewportChange);
   window.visualViewport?.removeEventListener("resize", view.onViewportChange);
   window.visualViewport?.removeEventListener("scroll", view.onViewportChange);
   cancelPhotoViewOpeningAnimation(view);
+  cancelPhotoSwipeReset(view);
+  clearPhotoSwipeVisualState(view);
   revealPhotoSource(source);
   if (source !== view.sourceElement) revealPhotoSource(view.sourceElement);
   view.overlay.remove();
@@ -805,6 +1008,13 @@ async function openPhotoView(
     }
     void closePhotoView();
   };
+  const onSwipePointerDown = (event: PointerEvent) =>
+    startPhotoSwipe(view, event);
+  const onSwipePointerMove = (event: PointerEvent) =>
+    updatePhotoSwipe(view, event);
+  const onSwipePointerUp = (event: PointerEvent) => endPhotoSwipe(view, event);
+  const onSwipePointerCancel = (event: PointerEvent) =>
+    cancelPhotoSwipe(view, event);
   const onViewportChange = () => syncPhotoViewLayout(view);
 
   const view: ActivePhotoView = {
@@ -813,6 +1023,7 @@ async function openPhotoView(
     backdrop,
     closeButton,
     frame,
+    stage,
     scroll,
     image,
     highResolutionImage,
@@ -823,7 +1034,13 @@ async function openPhotoView(
     sourceRect,
     onKeyDown,
     onOverlayClick,
+    onSwipePointerCancel,
+    onSwipePointerDown,
+    onSwipePointerMove,
+    onSwipePointerUp,
     onViewportChange,
+    swipeResetAnimations: [],
+    swipeState: null,
     closing: false,
   };
 
@@ -831,6 +1048,10 @@ async function openPhotoView(
   document.body.append(overlay);
   document.addEventListener("keydown", onKeyDown);
   overlay.addEventListener("click", onOverlayClick);
+  scroll.addEventListener("pointercancel", onSwipePointerCancel);
+  scroll.addEventListener("pointerdown", onSwipePointerDown);
+  scroll.addEventListener("pointermove", onSwipePointerMove);
+  scroll.addEventListener("pointerup", onSwipePointerUp);
   window.addEventListener("resize", onViewportChange);
   window.visualViewport?.addEventListener("resize", onViewportChange);
   window.visualViewport?.addEventListener("scroll", onViewportChange);
@@ -911,6 +1132,8 @@ async function closePhotoView(animate = true): Promise<void> {
   const view = activePhotoView;
   if (!view || view.closing) return;
   view.closing = true;
+  view.swipeState = null;
+  cancelPhotoSwipeReset(view);
 
   const currentSource =
     findMountedPhotoElement(view.photo.id) ??
@@ -993,7 +1216,7 @@ async function closePhotoView(animate = true): Promise<void> {
         },
       );
   const backdropAnimation = view.backdrop.animate(
-    [{ opacity: photoViewBackdropOpacity(view) }, { opacity: 0 }],
+    [{ opacity: currentPhotoViewBackdropOpacity(view) }, { opacity: 0 }],
     {
       duration: PHOTO_VIEW_DURATION_MS,
       easing: PHOTO_VIEW_EASING,
@@ -1045,24 +1268,20 @@ function buildPhotoCard(photo: PlacedPhoto, groupTop: number): HTMLElement {
     const pressState = photoPressStates.get(card);
     if (!pressState || pressState.pointerId !== event.pointerId) return;
     if (pointerMovedPastTapTolerance(pressState, event)) {
-      void releasePhotoPress(card);
+      releasePhotoPress(card);
     }
   });
   card.addEventListener("pointerup", (event) => {
     const pressState = photoPressStates.get(card);
     if (!event.isPrimary || !pressState) return;
-    if (
-      pressState.pointerId === event.pointerId &&
-      pointInsideElement(card, event.clientX, event.clientY) &&
-      !pointerMovedPastTapTolerance(pressState, event)
-    ) {
+    if (isPhotoTapRelease(card, pressState, event)) {
       void openPhotoViewWithPressFeedback(photo, card);
     } else {
-      void releasePhotoPress(card);
+      releasePhotoPress(card);
     }
   });
   card.addEventListener("pointercancel", () => {
-    void releasePhotoPress(card);
+    releasePhotoPress(card);
   });
   card.addEventListener("contextmenu", (event) => {
     event.preventDefault();

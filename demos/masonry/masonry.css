@@ -133,6 +133,10 @@ html.photo-view-open body {
   scrollbar-width: thin;
 }
 
+.photo-viewer-scroll.is-swiping {
+  touch-action: none;
+}
+
 .photo-viewer-scroll.is-scrollable {
   overflow: auto;
 }
@@ -146,6 +150,7 @@ html.photo-view-open body {
   grid-template-columns: minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr) auto minmax(0, 1fr);
   justify-items: center;
+  transform-origin: center;
 }
 
 .photo-viewer-frame,
@@ -190,7 +195,7 @@ html.photo-view-open body {
 
 .photo-viewer-hero {
   position: fixed;
-  z-index: 3;
+  z-index: 5;
   overflow: hidden;
   background-position: center;
   background-repeat: no-repeat;
