@@ -82,8 +82,7 @@ export interface DynamicVirtualizerItemMeasurerConfig {
   buildItem: (index: number) => HTMLElement;
 }
 
-export interface DynamicVirtualizerMeasureItemConfig
-  extends DynamicVirtualizerItemMeasurerConfig {
+export interface DynamicVirtualizerMeasureItemConfig extends DynamicVirtualizerItemMeasurerConfig {
   index: number;
 }
 
@@ -115,8 +114,7 @@ export interface DynamicVirtualizerPlaceholderSlot {
   build: () => HTMLElement;
 }
 
-export interface DynamicVirtualizerLayoutUpdate
-  extends DynamicVirtualizerSetCountOptions {
+export interface DynamicVirtualizerLayoutUpdate extends DynamicVirtualizerSetCountOptions {
   topSlot?: DynamicVirtualizerBoundarySlot | null;
   bottomSlot?: DynamicVirtualizerBoundarySlot | null;
   placeholderSlot?: DynamicVirtualizerPlaceholderSlot | null;

@@ -15,6 +15,7 @@ import {
   watchSystemTheme,
 } from "../../src/markdown.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+
 import "../demo-styles.css";
 
 const TOTAL_INITIAL = 10_000;

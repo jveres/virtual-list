@@ -2,25 +2,26 @@
   "name": "virtual-list",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.1.1",
   "scripts": {
     "dev": "vite",
     "build": "pnpm run check && vite build",
     "preview": "vite preview",
-    "lint": "biome lint .",
-    "format": "biome format --write .",
-    "check": "biome check . && tsc --noEmit"
+    "lint": "oxlint .",
+    "format": "oxfmt --write .",
+    "check": "oxlint . && oxfmt --check . && tsc --noEmit"
   },
   "dependencies": {
     "@typefm/comrak-wasm": "file:../../typefm/packages/comrak-wasm"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.4.15",
     "@shikijs/engine-oniguruma": "4.0.2",
     "@shikijs/langs": "4.0.2",
     "@shikijs/themes": "4.0.2",
+    "oxfmt": "0.50.0",
+    "oxlint": "1.65.0",
     "shiki": "^4.0.2",
     "typescript": "^6.0.3",
     "vite": "^8.0.12"
-  }
+  },
+  "packageManager": "pnpm@11.1.1"
 }

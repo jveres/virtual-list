@@ -20,6 +20,7 @@ import {
   watchSystemTheme,
 } from "../../src/markdown.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+
 import "../demo-styles.css";
 
 interface Message {

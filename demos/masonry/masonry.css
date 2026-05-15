@@ -1,7 +1,7 @@
 .masonry-viewport-wrap {
   background:
     linear-gradient(var(--bg), color-mix(in srgb, var(--bg) 92%, transparent))
-    top / 100% 42px no-repeat,
+      top / 100% 42px no-repeat,
     var(--bg);
 }
 
