@@ -1604,7 +1604,7 @@ export function createDynamicVirtualizer(
   async function scrollToTop(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
-    return scrollToIndex(0, "top", options);
+    return scrollToOffset(0, options);
   }
 
   async function scrollToBottom(
