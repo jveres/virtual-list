@@ -28,6 +28,7 @@ const CSS = `
   position: relative;
   width: 100%;
   min-height: 100%;
+  overflow-anchor: none;
 }
 .dv-item {
   position: absolute;
@@ -35,17 +36,20 @@ const CSS = `
   left: 0;
   right: 0;
   contain: layout paint;
+  overflow-anchor: none;
 }
 .dv-boundary-slot {
   position: absolute;
   left: 0;
   right: 0;
+  overflow-anchor: none;
 }
 .dv-placeholder-slot {
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
+  overflow-anchor: none;
 }
 `;
 
@@ -150,6 +154,11 @@ export type DynamicVirtualizerRenderDriftReporter = (
 
 interface ScrollTopWriteOptions {
   allowDuringScroll?: boolean;
+}
+
+interface SizeRefreshResult {
+  addedBeforeHeight: number;
+  removedBeforeHeight: number;
 }
 
 const ALLOW_DURING_SCROLL: ScrollTopWriteOptions = {
@@ -485,6 +494,7 @@ export function createDynamicVirtualizer(
   let emittedAtBottom = false;
   let lastViewportWidth = viewport.clientWidth;
   let lastViewportHeight = viewport.clientHeight;
+  let headGap = 0;
   let stickyIndex: number | null = null;
   let tailGap = 0;
   let topSlot: MountedBoundarySlot | null = null;
@@ -512,6 +522,9 @@ export function createDynamicVirtualizer(
   let touchInputActive = false;
   let reachTopArmed = false;
   let reachBottomArmed = false;
+  let topReachConsumed = false;
+  let bottomReachConsumed = false;
+  let activeSmoothScrollCancel: (() => void) | null = null;
   let reachCallbacksEnabled = false;
   let emittingChangeCallback = false;
   let emittingReachCallback = false;
@@ -555,6 +568,14 @@ export function createDynamicVirtualizer(
     return bottomSlot?.height ?? 0;
   }
 
+  function itemStartOffset(): number {
+    return headGap + topSlotHeight();
+  }
+
+  function topBoundaryScrollTop(): number {
+    return headGap;
+  }
+
   function atBottom(): boolean {
     return nativeMaxScrollTop() - viewport.scrollTop <= 2;
   }
@@ -577,7 +598,11 @@ export function createDynamicVirtualizer(
 
   function contentTotalSize(): number {
     const itemSize =
-      topSlotHeight() + itemTotalSize() + bottomSlotHeight() + tailGap;
+      headGap +
+      topSlotHeight() +
+      itemTotalSize() +
+      bottomSlotHeight() +
+      tailGap;
     return count === 0 && placeholderSlot
       ? Math.max(itemSize, viewport.clientHeight)
       : itemSize;
@@ -599,7 +624,7 @@ export function createDynamicVirtualizer(
       scrollHeight,
       scrollMax,
       totalSize,
-      atTop: scrollTop <= 1,
+      atTop: scrollTop <= topBoundaryScrollTop() + 1,
       atBottom: scrollMax - scrollTop <= 1,
     };
   }
@@ -653,7 +678,7 @@ export function createDynamicVirtualizer(
     if (!onRangeChange) return;
 
     const scrollMax = Math.max(0, totalSize - viewportHeight);
-    const atTop = scrollTop <= 1;
+    const atTop = scrollTop <= topBoundaryScrollTop() + 1;
     const atBottom = scrollMax - scrollTop <= 1;
     const emitRange = shouldEmitRangeChange(totalSize, atTop, atBottom);
 
@@ -682,6 +707,23 @@ export function createDynamicVirtualizer(
     return boundary === "top" ? reachTopArmed : reachBottomArmed;
   }
 
+  function reachConsumedForBoundary(
+    boundary: DynamicVirtualizerBoundary,
+  ): boolean {
+    return boundary === "top" ? topReachConsumed : bottomReachConsumed;
+  }
+
+  function setReachConsumed(
+    boundary: DynamicVirtualizerBoundary,
+    consumed: boolean,
+  ): void {
+    if (boundary === "top") {
+      topReachConsumed = consumed;
+    } else {
+      bottomReachConsumed = consumed;
+    }
+  }
+
   function setBoundaryArmed(
     boundary: DynamicVirtualizerBoundary,
     armed: boolean,
@@ -695,11 +737,18 @@ export function createDynamicVirtualizer(
     }
   }
 
+  function armProgrammaticBoundaryReach(
+    boundary: DynamicVirtualizerBoundary,
+  ): void {
+    setBoundaryArmed(boundary, true);
+  }
+
   function emitBoundaryReach(boundary: DynamicVirtualizerBoundary): void {
     if (!canEmitBoundaryReach(boundary)) return;
     if (!armedForBoundary(boundary)) return;
 
     setBoundaryArmed(boundary, false);
+    setReachConsumed(boundary, true);
     emittingChangeCallback = true;
     try {
       callReachCallback(
@@ -859,7 +908,7 @@ export function createDynamicVirtualizer(
   }
 
   function boundarySlotTop(boundary: DynamicVirtualizerBoundary): number {
-    return boundary === "top" ? 0 : topSlotHeight() + itemTotalSize();
+    return boundary === "top" ? headGap : itemStartOffset() + itemTotalSize();
   }
 
   function renderBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
@@ -911,12 +960,56 @@ export function createDynamicVirtualizer(
         !entry.isIntersecting ||
         entry.intersectionRatio < BOUNDARY_INTERSECTION_THRESHOLD
       ) {
-        setBoundaryArmed(boundary, true);
+        const canRearm =
+          userScrollActive || !reachConsumedForBoundary(boundary);
+        if (canRearm) {
+          setReachConsumed(boundary, false);
+          setBoundaryArmed(boundary, true);
+        }
         continue;
       }
 
       emitBoundaryReach(boundary);
     }
+  }
+
+  function boundarySlotVisible(boundary: DynamicVirtualizerBoundary): boolean {
+    const slot = currentBoundarySlot(boundary);
+    if (!slot?.element.isConnected || slot.height <= 0) return false;
+
+    const rootRect = viewport.getBoundingClientRect();
+    const slotRect = slot.element.getBoundingClientRect();
+    const visibleHeight =
+      Math.min(slotRect.bottom, rootRect.bottom) -
+      Math.max(slotRect.top, rootRect.top);
+    if (visibleHeight <= 0) return false;
+
+    const visibleWidth =
+      Math.min(slotRect.right, rootRect.right) -
+      Math.max(slotRect.left, rootRect.left);
+    if (visibleWidth <= 0) return false;
+
+    return (
+      visibleHeight / Math.max(1, slotRect.height) >=
+      BOUNDARY_INTERSECTION_THRESHOLD
+    );
+  }
+
+  function emitVisibleBoundaryReach(
+    boundary: DynamicVirtualizerBoundary | null,
+  ): void {
+    if (!boundary) return;
+    const visible = boundarySlotVisible(boundary);
+    if (!visible) return;
+    emitBoundaryReach(boundary);
+  }
+
+  function armCoveredBoundaryForScroll(
+    boundary: DynamicVirtualizerBoundary,
+  ): void {
+    if (boundarySlotVisible(boundary)) return;
+    setReachConsumed(boundary, false);
+    setBoundaryArmed(boundary, true);
   }
 
   function recreateBoundaryIntersectionObserver(): void {
@@ -987,8 +1080,8 @@ export function createDynamicVirtualizer(
     }
 
     const baseTotalSize =
-      topSlotHeight() + itemTotalSize() + bottomSlotHeight();
-    const stickyTop = topSlotHeight() + sizeTree.prefix(stickyIndex);
+      headGap + topSlotHeight() + itemTotalSize() + bottomSlotHeight();
+    const stickyTop = itemStartOffset() + sizeTree.prefix(stickyIndex);
     if (stickyTop <= 0.5) {
       stickyIndex = null;
       tailGap = 0;
@@ -1023,7 +1116,7 @@ export function createDynamicVirtualizer(
     nextCount: number,
     addedBefore: number,
     removedBefore: number,
-  ): number {
+  ): SizeRefreshResult {
     const previousSizes = sizes;
     const previousMeasured = measured;
     const nextSizes = new Float64Array(nextCount);
@@ -1045,15 +1138,16 @@ export function createDynamicVirtualizer(
       );
     }
 
-    let beforeHeightDelta = 0;
+    let removedBeforeHeight = 0;
     for (let index = 0; index < previousStart; index++) {
-      beforeHeightDelta -= previousSizes[index] ?? 0;
+      removedBeforeHeight += previousSizes[index] ?? 0;
     }
 
+    let addedBeforeHeight = 0;
     for (let index = 0; index < addedBefore; index++) {
       const height = modeledItemHeight(index);
       nextSizes[index] = height;
-      beforeHeightDelta += height;
+      addedBeforeHeight += height;
     }
 
     for (let index = addedBefore + preserved; index < nextCount; index++) {
@@ -1069,10 +1163,11 @@ export function createDynamicVirtualizer(
     sizeTree = new FenwickTree(sizes);
     itemSizeTotal = sizeTree.total();
     layoutVersion++;
-    return beforeHeightDelta;
+    return { addedBeforeHeight, removedBeforeHeight };
   }
 
   function refillModeledSizes(): void {
+    headGap = 0;
     const nextSizes = new Float64Array(count);
     for (let index = 0; index < count; index++) {
       nextSizes[index] = modeledItemHeight(index);
@@ -1107,7 +1202,7 @@ export function createDynamicVirtualizer(
       return;
     }
 
-    const itemScrollTop = scrollTop - topSlotHeight();
+    const itemScrollTop = scrollTop - itemStartOffset();
     const startTarget = Math.max(0, itemScrollTop - overscanPx);
     const endTarget = Math.min(
       itemTotalSize(),
@@ -1120,7 +1215,7 @@ export function createDynamicVirtualizer(
   function prepareItem(
     index: number,
     element: HTMLElement,
-    offset = topSlotHeight(),
+    offset = itemStartOffset(),
   ): HTMLElement {
     element.dataset.index = String(index);
     element.classList.add("dv-item");
@@ -1154,7 +1249,7 @@ export function createDynamicVirtualizer(
   function mountItem(
     index: number,
     usePlaceholder: boolean,
-    offset = topSlotHeight(),
+    offset = itemStartOffset(),
   ): HTMLElement {
     const element =
       usePlaceholder && buildPlaceholder
@@ -1202,11 +1297,11 @@ export function createDynamicVirtualizer(
     if (!renderDriftReporter || mounted.size === 0) return;
 
     const drifts: DynamicVirtualizerRenderDrift[] = [];
-    const slotHeight = topSlotHeight();
+    const offset = itemStartOffset();
     const contentTop = content.getBoundingClientRect().top;
 
     for (const [index, element] of mounted) {
-      const expectedTop = slotHeight + sizeTree.prefix(index);
+      const expectedTop = offset + sizeTree.prefix(index);
       const actualRect = element.getBoundingClientRect();
       const actualTop = actualRect.top - contentTop;
       const expectedHeight = sizes[index] ?? modeledItemHeight(index);
@@ -1244,7 +1339,7 @@ export function createDynamicVirtualizer(
     renderPlaceholderSlot();
     const viewportHeight = lastViewportHeight;
     const actualScrollTop = viewport.scrollTop;
-    const itemOffset = topSlotHeight();
+    const itemOffset = itemStartOffset();
 
     const previousStart = rangeStart;
     const previousEnd = rangeEnd;
@@ -1401,7 +1496,9 @@ export function createDynamicVirtualizer(
 
     const wasAtBottom = atBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
-    const anchorIndex = sizeTree.indexAt(viewport.scrollTop);
+    const anchorIndex = sizeTree.indexAt(
+      Math.max(0, viewport.scrollTop - itemStartOffset()),
+    );
     let changed = false;
     let correction = 0;
 
@@ -1432,7 +1529,7 @@ export function createDynamicVirtualizer(
     index: number,
     align: DynamicVirtualizerAlign = "top",
   ): number {
-    const itemTop = topSlotHeight() + sizeTree.prefix(index);
+    const itemTop = itemStartOffset() + sizeTree.prefix(index);
     const itemHeight = sizes[index] ?? modeledItemHeight(index);
     if (typeof align === "number") return itemTop - align;
     if (align === "bottom") return itemTop + itemHeight - viewport.clientHeight;
@@ -1446,6 +1543,7 @@ export function createDynamicVirtualizer(
     top: number,
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
+    activeSmoothScrollCancel?.();
     const target = clamp(top, 0, nativeMaxScrollTop());
     const snapThreshold = options.snapThreshold ?? SCROLL_SNAP_THRESHOLD;
     if (options.signal?.aborted) {
@@ -1467,14 +1565,28 @@ export function createDynamicVirtualizer(
     }
 
     return new Promise<boolean>((resolve) => {
+      let finished = false;
       const finish = (completed: boolean) => {
+        if (finished) return;
+        finished = true;
+        if (activeSmoothScrollCancel === cancel) {
+          activeSmoothScrollCancel = null;
+        }
         viewport.removeEventListener("scrollend", handleScrollEnd);
         options.signal?.removeEventListener("abort", handleAbort);
         resolve(completed);
       };
+      const cancel = () => {
+        const currentTop = viewport.scrollTop;
+        viewport.scrollTo({ top: currentTop, behavior: "auto" });
+        nativeScrollEndPending = true;
+        scheduleSettleCooldown();
+        finish(false);
+      };
       const handleScrollEnd = () => finish(true);
       const handleAbort = () => finish(false);
 
+      activeSmoothScrollCancel = cancel;
       viewport.addEventListener("scrollend", handleScrollEnd, { once: true });
       options.signal?.addEventListener("abort", handleAbort, { once: true });
       viewport.scrollTo({ top: target, behavior: "smooth" });
@@ -1535,6 +1647,10 @@ export function createDynamicVirtualizer(
       if (didScroll || flushedMeasurements) {
         renderNow(viewport.scrollTop);
       }
+      if (Math.abs(viewport.scrollTop - target) <= bottomFollowSnapThreshold) {
+        stopFollowBottom();
+        return;
+      }
       bottomFollowLastFrameAt = now;
       scheduleBottomFollowFrame();
       return;
@@ -1584,8 +1700,16 @@ export function createDynamicVirtualizer(
     const targetIndex = clamp(Math.floor(index), 0, count - 1);
     syncScrollSurface();
     const target = scrollTopForIndex(targetIndex, align);
+    const boundary =
+      targetIndex === 0 && align === "top"
+        ? "top"
+        : targetIndex === count - 1 && align === "bottom"
+          ? "bottom"
+          : null;
+    if (boundary) armProgrammaticBoundaryReach(boundary);
     const ok = await scrollToNativeTop(target, options);
     renderNow(viewport.scrollTop);
+    emitVisibleBoundaryReach(boundary);
     return ok;
   }
 
@@ -1604,7 +1728,14 @@ export function createDynamicVirtualizer(
   async function scrollToTop(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
-    return scrollToOffset(0, options);
+    stopFollowBottom();
+    if (options.signal?.aborted) return false;
+    syncScrollSurface();
+    armProgrammaticBoundaryReach("top");
+    const ok = await scrollToNativeTop(topBoundaryScrollTop(), options);
+    renderNow(viewport.scrollTop);
+    emitVisibleBoundaryReach("top");
+    return ok;
   }
 
   async function scrollToBottom(
@@ -1613,8 +1744,10 @@ export function createDynamicVirtualizer(
     stopFollowBottom();
     if (options.signal?.aborted) return false;
     syncScrollSurface();
+    armProgrammaticBoundaryReach("bottom");
     const ok = await scrollToNativeTop(nativeMaxScrollTop(), options);
     renderNow(viewport.scrollTop);
+    emitVisibleBoundaryReach("bottom");
     return ok;
   }
 
@@ -1725,17 +1858,27 @@ export function createDynamicVirtualizer(
       nextCount !== count ||
       addedBefore > 0 ||
       removedBefore > 0;
+    const isWindowShift = addedBefore > 0 || removedBefore > 0;
     applyBoundarySlotUpdate("top", update.topSlot);
     applyBoundarySlotUpdate("bottom", update.bottomSlot);
     applyPlaceholderSlotUpdate(update.placeholderSlot);
-    const beforeHeightDelta = shouldRefreshSizes
+    const sizeRefresh = shouldRefreshSizes
       ? fillSizes(nextCount, addedBefore, removedBefore)
-      : 0;
+      : { addedBeforeHeight: 0, removedBeforeHeight: 0 };
     count = nextCount;
+    let scrollHeightDeltaBeforeViewport = 0;
+    if (isWindowShift) {
+      const filledHeadGap = Math.min(headGap, sizeRefresh.addedBeforeHeight);
+      headGap -= filledHeadGap;
+      scrollHeightDeltaBeforeViewport +=
+        sizeRefresh.addedBeforeHeight - filledHeadGap;
+      headGap += sizeRefresh.removedBeforeHeight;
+    } else if (nextCount === 0) {
+      headGap = 0;
+    }
 
-    if (addedBefore > 0 || removedBefore > 0) {
+    if (isWindowShift) {
       pendingMeasurements.clear();
-      reindexMounted(addedBefore, removedBefore);
       if (stickyIndex !== null) {
         const nextStickyIndex = stickyIndex + addedBefore - removedBefore;
         stickyIndex =
@@ -1745,15 +1888,6 @@ export function createDynamicVirtualizer(
       }
     } else {
       removePendingMeasurementsOutsideCount();
-
-      for (const [index, element] of mounted) {
-        if (index >= count) {
-          itemResizeObserver.unobserve(element);
-          element.remove();
-          mounted.delete(index);
-          mountedPlaceholders.delete(index);
-        }
-      }
     }
 
     recomputeTailGap();
@@ -1762,18 +1896,25 @@ export function createDynamicVirtualizer(
       addedBefore > 0 || removedBefore > 0
         ? topSlotHeight() - previousTopSlotHeight
         : 0;
-    const nextScrollTop = previousScrollTop + beforeHeightDelta + topSlotDelta;
+    const nextScrollTop =
+      previousScrollTop + scrollHeightDeltaBeforeViewport + topSlotDelta;
     const hasScrollTarget =
       Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
     if (hasScrollTarget) {
       setScrollTop(nextScrollTop, ALLOW_DURING_SCROLL);
     }
-    if (
-      addedBefore > 0 &&
-      previousScrollTop <= previousTopSlotHeight + 1 &&
-      viewport.scrollTop > topSlotHeight() + 1
-    ) {
-      setBoundaryArmed("top", true);
+
+    if (isWindowShift) {
+      reindexMounted(addedBefore, removedBefore);
+    } else {
+      for (const [index, element] of mounted) {
+        if (index >= count) {
+          itemResizeObserver.unobserve(element);
+          element.remove();
+          mounted.delete(index);
+          mountedPlaceholders.delete(index);
+        }
+      }
     }
     if (emittingChangeCallback) {
       scheduleRender();
@@ -1831,10 +1972,9 @@ export function createDynamicVirtualizer(
     lastViewportWidth = viewport.clientWidth;
     lastViewportHeight = viewport.clientHeight;
     const previousScrollTop = viewport.scrollTop;
-    const previousTopSlotHeight = topSlotHeight();
     const previousItemOffset = Math.max(
       0,
-      previousScrollTop - previousTopSlotHeight,
+      previousScrollTop - itemStartOffset(),
     );
     const anchorIndex =
       count > 0 ? clamp(sizeTree.indexAt(previousItemOffset), 0, count - 1) : 0;
@@ -1851,7 +1991,7 @@ export function createDynamicVirtualizer(
     if (count > 0) {
       const nextScrollTop = wasAtBottom
         ? Math.max(0, totalSize - lastViewportHeight)
-        : topSlotHeight() + sizeTree.prefix(anchorIndex) + anchorOffset;
+        : itemStartOffset() + sizeTree.prefix(anchorIndex) + anchorOffset;
       setScrollTop(nextScrollTop);
     }
 
@@ -2186,6 +2326,8 @@ export function createDynamicVirtualizer(
       nativeScrollEndPending = false;
       firefoxPendingNativeScrollEndTop = null;
       userScrollMoved = false;
+      armCoveredBoundaryForScroll("top");
+      armCoveredBoundaryForScroll("bottom");
       resetScrollVelocity();
       chromiumWheelSawNativeScrollEnd = false;
       chromiumWheelAwaitingFinalScrollEnd = false;
