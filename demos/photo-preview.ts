@@ -10,7 +10,7 @@ const PHOTO_TOUCH_PRESS_DELAY_MS = 80;
 const PHOTO_TAP_MOVE_TOLERANCE_PX = 10;
 const PHOTO_SWIPE_CLOSE_DISTANCE_PX = 120;
 const PHOTO_SWIPE_CLOSE_VELOCITY_PX_MS = 0.55;
-const PHOTO_SWIPE_SCROLL_TOP_TOLERANCE_PX = 24;
+const PHOTO_SWIPE_EDGE_TOLERANCE_PX = 1;
 const PHOTO_SWIPE_START_PX = 14;
 
 export interface PhotoPreviewItem {
@@ -46,6 +46,9 @@ interface PhotoViewBox {
   height: number;
 }
 
+type PhotoSwipeEdge = "bottom" | "top";
+type PhotoSwipeAllowedEdge = PhotoSwipeEdge | "both" | null;
+
 interface ActivePhotoView<T extends PhotoPreviewItem> {
   photo: T;
   overlay: HTMLElement;
@@ -67,6 +70,10 @@ interface ActivePhotoView<T extends PhotoPreviewItem> {
   onSwipePointerDown: (event: PointerEvent) => void;
   onSwipePointerMove: (event: PointerEvent) => void;
   onSwipePointerUp: (event: PointerEvent) => void;
+  onSwipeTouchCancel: (event: TouchEvent) => void;
+  onSwipeTouchEnd: (event: TouchEvent) => void;
+  onSwipeTouchMove: (event: TouchEvent) => void;
+  onSwipeTouchStart: (event: TouchEvent) => void;
   onViewportChange: () => void;
   swipeResetAnimations: Animation[];
   swipeState: PhotoSwipeState | null;
@@ -74,8 +81,11 @@ interface ActivePhotoView<T extends PhotoPreviewItem> {
 }
 
 interface PhotoSwipeState {
+  allowedEdge: PhotoSwipeAllowedEdge;
   dragY: number;
   dragging: boolean;
+  edge: PhotoSwipeEdge | null;
+  input: "pointer" | "touch";
   lastTime: number;
   lastY: number;
   pointerId: number;
@@ -102,6 +112,10 @@ function sleep(ms: number): Promise<void> {
 
 function reducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+function supportsTouchEvents(): boolean {
+  return "TouchEvent" in window;
 }
 
 function nextAnimationFrame(): Promise<void> {
@@ -431,12 +445,56 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     view.swipeResetAnimations = [];
   }
 
-  function canStartPhotoSwipe(view: ActivePhotoView<T>): boolean {
-    if (view.scroll.scrollTop <= PHOTO_SWIPE_SCROLL_TOP_TOLERANCE_PX) {
+  function photoViewScrollMax(view: ActivePhotoView<T>): number {
+    return Math.max(0, view.scroll.scrollHeight - view.scroll.clientHeight);
+  }
+
+  function photoSwipeAllowedEdge(
+    view: ActivePhotoView<T>,
+  ): PhotoSwipeAllowedEdge {
+    const scrollMax = photoViewScrollMax(view);
+    if (scrollMax <= PHOTO_SWIPE_EDGE_TOLERANCE_PX) {
       view.scroll.scrollTop = 0;
-      return true;
+      return "both";
     }
-    return false;
+    if (view.scroll.scrollTop <= PHOTO_SWIPE_EDGE_TOLERANCE_PX) return "top";
+    if (view.scroll.scrollTop >= scrollMax - PHOTO_SWIPE_EDGE_TOLERANCE_PX)
+      return "bottom";
+    return null;
+  }
+
+  function photoSwipeEdgeForDelta(
+    view: ActivePhotoView<T>,
+    allowedEdge: PhotoSwipeAllowedEdge,
+    deltaY: number,
+  ): PhotoSwipeEdge | null {
+    if (!allowedEdge) return null;
+
+    const scrollMax = photoViewScrollMax(view);
+    if (allowedEdge === "both") {
+      view.scroll.scrollTop = 0;
+      return deltaY < 0 ? "bottom" : "top";
+    }
+
+    if (
+      allowedEdge === "top" &&
+      deltaY > 0 &&
+      view.scroll.scrollTop <= PHOTO_SWIPE_EDGE_TOLERANCE_PX
+    ) {
+      view.scroll.scrollTop = 0;
+      return "top";
+    }
+
+    if (
+      allowedEdge === "bottom" &&
+      deltaY < 0 &&
+      view.scroll.scrollTop >= scrollMax - PHOTO_SWIPE_EDGE_TOLERANCE_PX
+    ) {
+      view.scroll.scrollTop = scrollMax;
+      return "bottom";
+    }
+
+    return null;
   }
 
   function photoSwipeVisualOffset(deltaY: number): number {
@@ -457,15 +515,22 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     view.backdrop.style.opacity = opacity.toFixed(3);
   }
 
-  function clearPhotoSwipeVisualState(view: ActivePhotoView<T>): void {
+  function clearPhotoSwipeVisualState(
+    view: ActivePhotoView<T>,
+    edge: PhotoSwipeEdge | null,
+  ): void {
     view.scroll.classList.remove("is-swiping");
-    view.scroll.scrollTop = 0;
+    if (edge === "top") view.scroll.scrollTop = 0;
+    if (edge === "bottom") view.scroll.scrollTop = photoViewScrollMax(view);
     view.stage.style.transform = "";
     view.stage.style.willChange = "";
     view.backdrop.style.opacity = photoViewBackdropOpacity(view);
   }
 
-  async function resetPhotoSwipe(view: ActivePhotoView<T>): Promise<void> {
+  async function resetPhotoSwipe(
+    view: ActivePhotoView<T>,
+    edge: PhotoSwipeEdge | null,
+  ): Promise<void> {
     cancelPhotoSwipeReset(view);
     const backdropOpacity = photoViewBackdropOpacity(view);
     const stageAnimation = view.stage.animate(
@@ -499,76 +564,97 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     stageAnimation.cancel();
     backdropAnimation.cancel();
     view.swipeResetAnimations = [];
-    clearPhotoSwipeVisualState(view);
+    clearPhotoSwipeVisualState(view, edge);
   }
 
   function startPhotoSwipe(
     view: ActivePhotoView<T>,
-    event: PointerEvent,
+    input: "pointer" | "touch",
+    pointerId: number,
+    clientX: number,
+    clientY: number,
   ): void {
-    if (view.closing || event.button !== 0 || !event.isPrimary) return;
-    if (view.closeButton.contains(event.target as Node)) return;
-    if (!canStartPhotoSwipe(view)) return;
-
+    if (view.closing) return;
     cancelPhotoSwipeReset(view);
     view.swipeState = {
+      allowedEdge: photoSwipeAllowedEdge(view),
       dragY: 0,
       dragging: false,
+      edge: null,
+      input,
       lastTime: performance.now(),
-      lastY: event.clientY,
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
+      lastY: clientY,
+      pointerId,
+      startX: clientX,
+      startY: clientY,
       velocityY: 0,
     };
   }
 
   function updatePhotoSwipe(
     view: ActivePhotoView<T>,
-    event: PointerEvent,
-  ): void {
+    input: "pointer" | "touch",
+    pointerId: number,
+    clientX: number,
+    clientY: number,
+  ): boolean {
     const state = view.swipeState;
-    if (!state || state.pointerId !== event.pointerId || view.closing) return;
+    if (
+      !state ||
+      state.input !== input ||
+      state.pointerId !== pointerId ||
+      view.closing
+    )
+      return false;
 
-    const deltaX = event.clientX - state.startX;
-    const deltaY = event.clientY - state.startY;
+    const deltaX = clientX - state.startX;
+    const deltaY = clientY - state.startY;
     const absDeltaY = Math.abs(deltaY);
     if (!state.dragging) {
       if (Math.abs(deltaX) > PHOTO_SWIPE_START_PX * 1.4) {
         view.swipeState = null;
-        return;
+        return false;
       }
       if (
         absDeltaY < PHOTO_SWIPE_START_PX ||
         absDeltaY < Math.abs(deltaX) * 1.2
       )
-        return;
-      if (!canStartPhotoSwipe(view)) {
-        view.swipeState = null;
-        return;
+        return false;
+      const edge = photoSwipeEdgeForDelta(view, state.allowedEdge, deltaY);
+      if (!edge) {
+        return false;
       }
+      state.edge = edge;
+      state.startX = clientX;
+      state.startY = clientY;
+      state.lastY = clientY;
+      state.lastTime = performance.now();
       state.dragging = true;
       view.scroll.classList.add("is-swiping");
     }
 
-    event.preventDefault();
     const now = performance.now();
     const elapsed = Math.max(1, now - state.lastTime);
-    state.velocityY = (event.clientY - state.lastY) / elapsed;
+    state.velocityY = (clientY - state.lastY) / elapsed;
     state.lastTime = now;
-    state.lastY = event.clientY;
-    state.dragY = photoSwipeVisualOffset(deltaY);
+    state.lastY = clientY;
+    state.dragY = photoSwipeVisualOffset(clientY - state.startY);
     applyPhotoSwipe(view, state.dragY);
+    return true;
   }
 
-  function endPhotoSwipe(view: ActivePhotoView<T>, event: PointerEvent): void {
+  function endPhotoSwipe(
+    view: ActivePhotoView<T>,
+    input: "pointer" | "touch",
+    pointerId: number,
+  ): boolean {
     const state = view.swipeState;
-    if (!state || state.pointerId !== event.pointerId) return;
+    if (!state || state.input !== input || state.pointerId !== pointerId)
+      return false;
     view.swipeState = null;
     view.scroll.classList.remove("is-swiping");
-    if (!state.dragging) return;
+    if (!state.dragging) return false;
 
-    event.preventDefault();
     const dragDistance = Math.abs(state.dragY);
     const shouldClose =
       dragDistance >= PHOTO_SWIPE_CLOSE_DISTANCE_PX ||
@@ -576,21 +662,35 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         Math.abs(state.velocityY) >= PHOTO_SWIPE_CLOSE_VELOCITY_PX_MS);
     if (shouldClose) {
       void closePhotoView();
-      return;
+      return true;
     }
     view.scroll.classList.add("is-swiping");
-    void resetPhotoSwipe(view);
+    void resetPhotoSwipe(view, state.edge);
+    return true;
   }
 
   function cancelPhotoSwipe(
     view: ActivePhotoView<T>,
-    event: PointerEvent,
+    input: "pointer" | "touch",
+    pointerId: number,
   ): void {
     const state = view.swipeState;
-    if (!state || state.pointerId !== event.pointerId) return;
+    if (!state || state.input !== input || state.pointerId !== pointerId)
+      return;
     view.swipeState = null;
-    if (state.dragging) void resetPhotoSwipe(view);
+    if (state.dragging) void resetPhotoSwipe(view, state.edge);
     else view.scroll.classList.remove("is-swiping");
+  }
+
+  function changedTouchById(
+    event: TouchEvent,
+    pointerId: number,
+  ): Touch | null {
+    for (let index = 0; index < event.changedTouches.length; index += 1) {
+      const touch = event.changedTouches.item(index);
+      if (touch?.identifier === pointerId) return touch;
+    }
+    return null;
   }
 
   async function revealHighResolutionImage(
@@ -615,12 +715,16 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     view.scroll.removeEventListener("pointerdown", view.onSwipePointerDown);
     view.scroll.removeEventListener("pointermove", view.onSwipePointerMove);
     view.scroll.removeEventListener("pointerup", view.onSwipePointerUp);
+    view.scroll.removeEventListener("touchcancel", view.onSwipeTouchCancel);
+    view.scroll.removeEventListener("touchend", view.onSwipeTouchEnd);
+    view.scroll.removeEventListener("touchmove", view.onSwipeTouchMove);
+    view.scroll.removeEventListener("touchstart", view.onSwipeTouchStart);
     window.removeEventListener("resize", view.onViewportChange);
     window.visualViewport?.removeEventListener("resize", view.onViewportChange);
     window.visualViewport?.removeEventListener("scroll", view.onViewportChange);
     cancelPhotoViewOpeningAnimation(view);
     cancelPhotoSwipeReset(view);
-    clearPhotoSwipeVisualState(view);
+    clearPhotoSwipeVisualState(view, null);
     revealPhotoSource(source);
     if (source !== view.sourceElement) revealPhotoSource(view.sourceElement);
     view.overlay.remove();
@@ -711,14 +815,99 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       }
       void closePhotoView();
     };
-    const onSwipePointerDown = (event: PointerEvent) =>
-      startPhotoSwipe(view, event);
-    const onSwipePointerMove = (event: PointerEvent) =>
-      updatePhotoSwipe(view, event);
-    const onSwipePointerUp = (event: PointerEvent) =>
-      endPhotoSwipe(view, event);
-    const onSwipePointerCancel = (event: PointerEvent) =>
-      cancelPhotoSwipe(view, event);
+    const onSwipePointerDown = (event: PointerEvent) => {
+      if (event.pointerType === "touch" && supportsTouchEvents()) return;
+      if (view.closing || event.button !== 0 || !event.isPrimary) return;
+      if (view.closeButton.contains(event.target as Node)) return;
+      startPhotoSwipe(
+        view,
+        "pointer",
+        event.pointerId,
+        event.clientX,
+        event.clientY,
+      );
+      try {
+        view.scroll.setPointerCapture(event.pointerId);
+      } catch {
+        // The pointer may already be captured by native scrolling.
+      }
+    };
+    const onSwipePointerMove = (event: PointerEvent) => {
+      if (event.pointerType === "touch" && supportsTouchEvents()) return;
+      if (
+        updatePhotoSwipe(
+          view,
+          "pointer",
+          event.pointerId,
+          event.clientX,
+          event.clientY,
+        )
+      )
+        event.preventDefault();
+    };
+    const onSwipePointerUp = (event: PointerEvent) => {
+      if (event.pointerType === "touch" && supportsTouchEvents()) return;
+      if (endPhotoSwipe(view, "pointer", event.pointerId))
+        event.preventDefault();
+      try {
+        view.scroll.releasePointerCapture(event.pointerId);
+      } catch {
+        // Ignore stale captures after native cancellation.
+      }
+    };
+    const onSwipePointerCancel = (event: PointerEvent) => {
+      if (event.pointerType === "touch" && supportsTouchEvents()) return;
+      cancelPhotoSwipe(view, "pointer", event.pointerId);
+    };
+    const onSwipeTouchStart = (event: TouchEvent) => {
+      if (view.closing) return;
+      const state = view.swipeState;
+      if (event.touches.length !== 1) {
+        if (state?.input === "touch")
+          cancelPhotoSwipe(view, "touch", state.pointerId);
+        return;
+      }
+      if (view.closeButton.contains(event.target as Node)) return;
+      const touch = event.changedTouches.item(0);
+      if (!touch) return;
+      startPhotoSwipe(
+        view,
+        "touch",
+        touch.identifier,
+        touch.clientX,
+        touch.clientY,
+      );
+    };
+    const onSwipeTouchMove = (event: TouchEvent) => {
+      const state = view.swipeState;
+      if (!state || state.input !== "touch") return;
+      const touch = changedTouchById(event, state.pointerId);
+      if (!touch) return;
+      if (
+        updatePhotoSwipe(
+          view,
+          "touch",
+          touch.identifier,
+          touch.clientX,
+          touch.clientY,
+        )
+      )
+        event.preventDefault();
+    };
+    const onSwipeTouchEnd = (event: TouchEvent) => {
+      const state = view.swipeState;
+      if (!state || state.input !== "touch") return;
+      const touch = changedTouchById(event, state.pointerId);
+      if (!touch) return;
+      if (endPhotoSwipe(view, "touch", touch.identifier))
+        event.preventDefault();
+    };
+    const onSwipeTouchCancel = (event: TouchEvent) => {
+      const state = view.swipeState;
+      if (!state || state.input !== "touch") return;
+      const touch = changedTouchById(event, state.pointerId);
+      cancelPhotoSwipe(view, "touch", touch?.identifier ?? state.pointerId);
+    };
     const onViewportChange = () => syncPhotoViewLayout(view);
 
     const view: ActivePhotoView<T> = {
@@ -742,6 +931,10 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       onSwipePointerDown,
       onSwipePointerMove,
       onSwipePointerUp,
+      onSwipeTouchCancel,
+      onSwipeTouchEnd,
+      onSwipeTouchMove,
+      onSwipeTouchStart,
       onViewportChange,
       swipeResetAnimations: [],
       swipeState: null,
@@ -756,6 +949,10 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     scroll.addEventListener("pointerdown", onSwipePointerDown);
     scroll.addEventListener("pointermove", onSwipePointerMove);
     scroll.addEventListener("pointerup", onSwipePointerUp);
+    scroll.addEventListener("touchcancel", onSwipeTouchCancel);
+    scroll.addEventListener("touchend", onSwipeTouchEnd);
+    scroll.addEventListener("touchmove", onSwipeTouchMove, { passive: false });
+    scroll.addEventListener("touchstart", onSwipeTouchStart, { passive: true });
     window.addEventListener("resize", onViewportChange);
     window.visualViewport?.addEventListener("resize", onViewportChange);
     window.visualViewport?.addEventListener("scroll", onViewportChange);
