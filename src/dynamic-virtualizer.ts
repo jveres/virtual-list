@@ -1625,6 +1625,43 @@ export function createDynamicVirtualizer(
     renderNow(viewport.scrollTop);
   }
 
+  function commitExplicitMeasurement(index: number, height: number): void {
+    if (
+      !Number.isFinite(height) ||
+      height <= 0 ||
+      index < 0 ||
+      index >= count
+    ) {
+      return;
+    }
+
+    const wasAtBottom = atBottom();
+    const hadStickyTail = stickyIndex !== null || tailGap > 0;
+    const anchorIndex = sizeTree.indexAt(
+      Math.max(0, viewport.scrollTop - topSlotHeight()),
+    );
+    if (userScrollActive && index < anchorIndex) {
+      queueMeasurement(index, height);
+      return;
+    }
+
+    pendingMeasurements.delete(index);
+    const correction = commitMeasurement(index, height, anchorIndex);
+    if (correction === null) {
+      emitViewportChange();
+      return;
+    }
+
+    recomputeTailGap();
+    syncContentHeight();
+    if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
+      setScrollTop(nativeMaxScrollTop());
+    } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
+      setScrollTop(viewport.scrollTop + correction);
+    }
+    renderNow(viewport.scrollTop);
+  }
+
   function scrollTopForIndex(
     index: number,
     align: DynamicVirtualizerAlign = "top",
@@ -1916,8 +1953,7 @@ export function createDynamicVirtualizer(
 
     const previous = mounted.get(targetIndex);
     if (!previous) {
-      queueMeasurement(targetIndex, measureUnmountedItem(targetIndex));
-      flushMeasurementsNow();
+      commitExplicitMeasurement(targetIndex, measureUnmountedItem(targetIndex));
       return;
     }
 
