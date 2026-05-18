@@ -1246,10 +1246,6 @@ export function createDynamicVirtualizer(
     return Math.max(0, value);
   }
 
-  function placeholderExitVelocity(): number {
-    return placeholderEnterVelocity() * PLACEHOLDER_VELOCITY_EXIT_RATIO;
-  }
-
   function mountedPlaceholderCount(): number {
     return mountedPlaceholders.size;
   }
@@ -1292,15 +1288,20 @@ export function createDynamicVirtualizer(
       return false;
     }
 
-    if (scrollVelocity >= placeholderEnterVelocity()) {
+    const enterVelocity = placeholderEnterVelocity();
+    if (scrollVelocity >= enterVelocity) {
+      const wasFast = placeholderFastMode;
       hydratePlaceholdersBlocked = true;
       placeholderFastMode = true;
       placeholderLowVelocitySamples = 0;
-      debugPlaceholderEvent("fast-mode-enter", { velocity: scrollVelocity });
+      if (!wasFast && debugPlaceholder) {
+        debugPlaceholderEvent("fast-mode-enter", { velocity: scrollVelocity });
+      }
     } else if (placeholderFastMode) {
+      const exitVelocity = enterVelocity * PLACEHOLDER_VELOCITY_EXIT_RATIO;
       if (
         lastScrollSampleDelta > measureEpsilon &&
-        scrollVelocity <= placeholderExitVelocity()
+        scrollVelocity <= exitVelocity
       ) {
         placeholderLowVelocitySamples++;
       } else if (lastScrollSampleDelta > measureEpsilon) {
@@ -1309,9 +1310,11 @@ export function createDynamicVirtualizer(
       if (placeholderLowVelocitySamples >= PLACEHOLDER_EXIT_SAMPLE_COUNT) {
         hydratePlaceholdersBlocked = false;
         placeholderFastMode = false;
-        debugPlaceholderEvent("fast-mode-exit", {
-          velocity: scrollVelocity,
-        });
+        if (debugPlaceholder) {
+          debugPlaceholderEvent("fast-mode-exit", {
+            velocity: scrollVelocity,
+          });
+        }
       }
     } else {
       placeholderFastMode = false;
@@ -1369,7 +1372,9 @@ export function createDynamicVirtualizer(
       }
     }
     if (refreshedCount > 0) {
-      debugPlaceholderEvent("hydrate-range", { refreshedCount });
+      if (debugPlaceholder) {
+        debugPlaceholderEvent("hydrate-range", { refreshedCount });
+      }
     }
     return refreshed;
   }
@@ -2270,10 +2275,11 @@ export function createDynamicVirtualizer(
     event: WheelEvent,
   ): DynamicVirtualizerBoundary | null {
     const scrollTop = viewport.scrollTop;
-    const maxScrollTop = nativeMaxScrollTop();
     if (event.deltaY < 0 && scrollTop <= measureEpsilon) return "top";
+    if (event.deltaY <= 0) return null;
+
+    const maxScrollTop = nativeMaxScrollTop();
     if (
-      event.deltaY > 0 &&
       maxScrollTop > measureEpsilon &&
       maxScrollTop - scrollTop <= measureEpsilon
     ) {
@@ -2328,7 +2334,7 @@ export function createDynamicVirtualizer(
   }
 
   function finishUserScroll(): void {
-    debugPlaceholderEvent("finish-attempt");
+    if (debugPlaceholder) debugPlaceholderEvent("finish-attempt");
     cancelUserScrollTimers();
     resetScrollSettleState();
     debugScrollEnd();
@@ -2339,11 +2345,13 @@ export function createDynamicVirtualizer(
     if (refreshedPlaceholders || (!flushedLayout && !flushedMeasurements)) {
       renderNow(viewport.scrollTop);
     }
-    debugPlaceholderEvent("finish-commit", {
-      flushedLayout,
-      flushedMeasurements,
-      refreshedPlaceholders,
-    });
+    if (debugPlaceholder) {
+      debugPlaceholderEvent("finish-commit", {
+        flushedLayout,
+        flushedMeasurements,
+        refreshedPlaceholders,
+      });
+    }
     const state = getState();
     onScrollEnd?.(state);
   }
@@ -2480,10 +2488,12 @@ export function createDynamicVirtualizer(
       chromiumWheelAwaitingFinalScrollEnd = false;
       chromiumEdgeWheelSuppressed = false;
       cancelChromiumEdgeSettleTimer();
-    } else {
+    } else if (scrollSettleStrategy !== "firefox-wheel") {
       cancelPendingUserScrollEnd();
     }
-    debugPlaceholderEvent(wasActive ? "scroll-start-active" : "scroll-start");
+    if (debugPlaceholder) {
+      debugPlaceholderEvent(wasActive ? "scroll-start-active" : "scroll-start");
+    }
     if (!wasActive) {
       onScrollStart?.(getState());
     }
@@ -2539,7 +2549,9 @@ export function createDynamicVirtualizer(
   }
 
   function handleWheel(event: WheelEvent): void {
-    debugPlaceholderEvent("wheel", { deltaY: event.deltaY });
+    if (debugPlaceholder) {
+      debugPlaceholderEvent("wheel", { deltaY: event.deltaY });
+    }
     if (scrollSettleStrategy === "firefox-wheel") {
       const outwardBoundary = boundaryForOutwardWheel(event);
       if (outwardBoundary && !userScrollActive) return;
