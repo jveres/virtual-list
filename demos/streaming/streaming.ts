@@ -398,13 +398,19 @@ function buildItem(index: number): HTMLElement {
   return buildChatItem(index, message, htmlForMessage(message));
 }
 
-function refreshItem(index: number): void {
+function refreshItem(
+  index: number,
+  options: { refreshUnmounted?: boolean } = {},
+): void {
   const message = messages[index];
   if (!message) return;
 
   htmlCache.delete(cacheKey(message));
   const element = virtualizer.getMountedElement(index);
-  if (!element) return;
+  if (!element) {
+    if (options.refreshUnmounted) virtualizer.refreshIndex(index);
+    return;
+  }
 
   const label = element.querySelector<HTMLElement>(".role-label");
   const markdown = element.querySelector<HTMLElement>(".md");
@@ -486,7 +492,7 @@ async function streamResponse(
   if (instantReplies) {
     if (abort.cancelled) return;
     messages[index]!.markdown = reply.markdown;
-    refreshItem(index);
+    refreshItem(index, { refreshUnmounted: true });
     return;
   }
 
@@ -776,7 +782,7 @@ async function handleSend(): Promise<void> {
       const assistant = messages[assistantIndex];
       if (assistant?.role === "assistant") {
         assistant.status = abort.cancelled ? "cancelled" : "done";
-        refreshItem(assistantIndex);
+        refreshItem(assistantIndex, { refreshUnmounted: true });
       }
     }
     if (!abort.cancelled) {
