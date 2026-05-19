@@ -44,7 +44,7 @@ const DEFAULT_OPTIONS: DemoOptions = {
   itemVariance: 120,
   measureEpsilon: 0.5,
   overscanPx: 800,
-  placeholderVelocityThreshold: 2.5,
+  placeholderVelocityThreshold: 8,
   placeholders: true,
   renderMode: "virtual",
 };

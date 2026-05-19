@@ -6,7 +6,7 @@ const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
 const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_RENDER_DRIFT_EPSILON = 1;
 const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
-const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 2.5;
+const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 8;
 const PLACEHOLDER_VELOCITY_EXIT_RATIO = 0.5;
 const PLACEHOLDER_EXIT_SAMPLE_COUNT = 3;
 const SCROLL_SETTLE_COOLDOWN_MS = 140;
@@ -1431,6 +1431,16 @@ export function createDynamicVirtualizer(
     return refreshMountedPlaceholders();
   }
 
+  function hydratePlaceholdersAfterNativeScrollEnd(): void {
+    if (mountedPlaceholders.size === 0) return;
+    if (!nativeScrollEndPending) return;
+    if (!canSettleUserScroll()) return;
+    const refreshedPlaceholders = forceHydratePlaceholders();
+    if (!refreshedPlaceholders) return;
+    if (debugPlaceholder) debugPlaceholderEvent("hydrate-scrollend");
+    renderNow(logicalScrollTop());
+  }
+
   function inspectRenderDrift(): void {
     if (!renderDriftReporter || mounted.size === 0) return;
 
@@ -2518,6 +2528,7 @@ export function createDynamicVirtualizer(
       }
       nativeScrollEndPending = true;
       firefoxPendingNativeScrollEndTop = viewport.scrollTop;
+      hydratePlaceholdersAfterNativeScrollEnd();
       scheduleSettleCooldown();
       return;
     }
@@ -2539,6 +2550,7 @@ export function createDynamicVirtualizer(
       chromiumEdgeWheelActive = null;
       chromiumEdgeWheelIdle = false;
     }
+    hydratePlaceholdersAfterNativeScrollEnd();
     scheduleSettleCooldown();
   }
 
@@ -2621,6 +2633,7 @@ export function createDynamicVirtualizer(
         chromiumWheelAwaitingFinalScrollEnd = false;
         chromiumEdgeWheelSuppressed = false;
       }
+      hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) scheduleSettleCooldown();
     }, CHROMIUM_WHEEL_IDLE_MS);
   }
@@ -2632,6 +2645,7 @@ export function createDynamicVirtualizer(
     wheelInputTimer = window.setTimeout(() => {
       wheelInputTimer = 0;
       wheelInputActive = false;
+      hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) scheduleSettleCooldown();
     }, CHROMIUM_WHEEL_IDLE_MS);
   }

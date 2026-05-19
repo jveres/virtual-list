@@ -231,7 +231,7 @@ loading, empty, and error states before rows are available.
 
 Velocity placeholders are optional host-owned row DOM for fast virtual scrolling.
 Pass `buildPlaceholder(index)` to create lightweight row content, and tune
-`placeholderVelocityThreshold` if the default `2.5` px/ms threshold is too high
+`placeholderVelocityThreshold` if the default `8` px/ms threshold is too high
 or too low for the host. The runtime uses hysteresis: it enters placeholder mode
 when velocity crosses that threshold and exits when velocity falls below half
 that threshold. Existing real rows stay mounted, newly mounted rows use
