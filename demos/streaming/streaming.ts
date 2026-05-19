@@ -54,6 +54,7 @@ const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
 const BOTTOM_FOLLOW_DURATION_MS = 300;
 const SCROLL_BUTTONS_DEBOUNCE_MS = 120;
+const MESSAGE_TOP_EPSILON_PX = 2;
 
 const demoParams = new URLSearchParams(location.search);
 const instantReplies =
@@ -79,6 +80,7 @@ let scrollTurnInProgress = false;
 let scrollButtonsTimer = 0;
 let nextResponse = 0;
 let bottomFollowArmed = false;
+let bottomFollowPending = false;
 let bottomFollowCleanup: (() => void) | null = null;
 let virtualizerScrollActive = false;
 const virtualizerScrollEndWaiters = new Set<() => void>();
@@ -563,16 +565,69 @@ function nextAnimationFrame(): Promise<void> {
   });
 }
 
+function waitForMountedMessageTop(
+  index: number,
+  abort: StreamAbort,
+): {
+  promise: Promise<void>;
+  cancel: () => void;
+} {
+  let frame = 0;
+  let done = false;
+  let resolvePromise: () => void = () => {};
+
+  const finish = () => {
+    if (done) return;
+    done = true;
+    if (frame) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    }
+    abort.onCancel.delete(finish);
+    resolvePromise();
+  };
+
+  const tick = () => {
+    frame = 0;
+    if (abort.cancelled) {
+      finish();
+      return;
+    }
+
+    const element = virtualizer.getMountedElement(index);
+    if (element) {
+      const viewportTop = viewport.getBoundingClientRect().top;
+      const itemTop = element.getBoundingClientRect().top;
+      if (Math.abs(itemTop - viewportTop) <= MESSAGE_TOP_EPSILON_PX) {
+        finish();
+        return;
+      }
+    }
+
+    frame = requestAnimationFrame(tick);
+  };
+
+  const promise = new Promise<void>((resolve) => {
+    resolvePromise = resolve;
+    abort.onCancel.add(finish);
+    frame = requestAnimationFrame(tick);
+    if (abort.cancelled) finish();
+  });
+
+  return { promise, cancel: finish };
+}
+
 async function settleVirtualizerFrames(): Promise<void> {
   await nextAnimationFrame();
   await nextAnimationFrame();
 }
 
-function startStreamingBottomFollow(abort: StreamAbort): void {
+function beginStreamingBottomFollow(abort: StreamAbort): void {
   if (abort.cancelled) return;
 
   bottomFollowCleanup?.();
   const followAbort = linkedAbortSignal(abort);
+  bottomFollowPending = false;
   bottomFollowArmed = true;
   bottomFollowCleanup = followAbort.cleanup;
   virtualizer.followBottom({
@@ -582,7 +637,22 @@ function startStreamingBottomFollow(abort: StreamAbort): void {
   });
 }
 
+function startStreamingBottomFollow(abort: StreamAbort): void {
+  if (abort.cancelled) return;
+  if (!virtualizerScrollActive) {
+    beginStreamingBottomFollow(abort);
+    return;
+  }
+
+  bottomFollowPending = true;
+  void waitForVirtualizerScrollEnd(abort).then(() => {
+    if (bottomFollowPending && !abort.cancelled)
+      beginStreamingBottomFollow(abort);
+  });
+}
+
 function dearmStreamingBottomFollow(): void {
+  bottomFollowPending = false;
   bottomFollowArmed = false;
   bottomFollowCleanup?.();
   bottomFollowCleanup = null;
@@ -658,14 +728,18 @@ function fadeInMountedItems(
 
 function handleVirtualizerScrollStart(): void {
   virtualizerScrollActive = true;
-  if (!bottomFollowArmed) return;
+  if (!bottomFollowArmed && !bottomFollowPending) return;
   dearmStreamingBottomFollow();
 }
 
-function handleVirtualizerScrollEnd(): void {
+function finishVirtualizerScrollTracking(): void {
   virtualizerScrollActive = false;
   for (const resolve of virtualizerScrollEndWaiters) resolve();
   virtualizerScrollEndWaiters.clear();
+}
+
+function handleVirtualizerScrollEnd(): void {
+  finishVirtualizerScrollTracking();
 }
 
 function waitForVirtualizerScrollEnd(abort: StreamAbort): Promise<void> {
@@ -693,17 +767,19 @@ async function scrollMessageToTop(
   afterTargetMount?: () => void,
 ): Promise<void> {
   const abortLink = linkedAbortSignal(abort);
+  let targetAtTop: ReturnType<typeof waitForMountedMessageTop> | null = null;
   scrollTurnInProgress = true;
   scheduleScrollButtons();
   try {
+    targetAtTop = waitForMountedMessageTop(index, abort);
     const scroll = virtualizer.scrollToIndex(index, "top", {
       behavior: "smooth",
       signal: abortLink.signal,
     });
     afterTargetMount?.();
-    await scroll;
-    await waitForVirtualizerScrollEnd(abort);
+    await Promise.race([scroll.then(() => undefined), targetAtTop.promise]);
   } finally {
+    targetAtTop?.cancel();
     scrollTurnInProgress = false;
     abortLink.cleanup();
     scheduleScrollButtons();

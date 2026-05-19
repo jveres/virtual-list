@@ -12,6 +12,8 @@ const PLACEHOLDER_EXIT_SAMPLE_COUNT = 3;
 const SCROLL_SETTLE_COOLDOWN_MS = 140;
 const CHROMIUM_WHEEL_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 const CHROMIUM_EDGE_SETTLE_QUIET_MS = 450;
+const SCROLL_TOP_RESIDUAL_EPSILON = 0.01;
+const MAX_SCROLL_TOP_RESIDUAL = 2;
 const CSS = `
 .dv-viewport {
   overflow-y: auto;
@@ -154,10 +156,16 @@ export type DynamicVirtualizerRenderDriftReporter = (
 
 interface ScrollTopWriteOptions {
   allowDuringScroll?: boolean;
+  preserveLogicalOffset?: boolean;
 }
 
 const ALLOW_DURING_SCROLL: ScrollTopWriteOptions = {
   allowDuringScroll: true,
+};
+
+const PRESERVE_LOGICAL_SCROLL_OFFSET: ScrollTopWriteOptions = {
+  allowDuringScroll: true,
+  preserveLogicalOffset: true,
 };
 
 type ScrollSettleStrategy = "default" | "chromium-wheel" | "firefox-wheel";
@@ -291,6 +299,10 @@ function nonNegativeSize(value: number): number {
 
 function px(value: number): string {
   return `${nonNegativeSize(value).toFixed(3)}px`;
+}
+
+function signedPx(value: number): string {
+  return `${(Number.isFinite(value) ? value : 0).toFixed(3)}px`;
 }
 
 function addClassNames(
@@ -483,6 +495,7 @@ export function createDynamicVirtualizer(
   let bottomFollowSnapThreshold = SCROLL_SNAP_THRESHOLD;
   let bottomFollowSignal: AbortSignal | null = null;
   let bottomFollowAbortHandler: (() => void) | null = null;
+  let scrollTopResidual = 0;
   let layoutVersion = 0;
   let renderedLayoutVersion = -1;
   let renderedTotalSize = -1;
@@ -574,7 +587,7 @@ export function createDynamicVirtualizer(
   }
 
   function atBottom(): boolean {
-    return nativeMaxScrollTop() - viewport.scrollTop <= 2;
+    return nativeMaxScrollTop() - logicalScrollTop() <= 2;
   }
 
   function modeledItemHeight(index: number): number {
@@ -601,9 +614,13 @@ export function createDynamicVirtualizer(
       : itemSize;
   }
 
+  function logicalScrollTop(): number {
+    return viewport.scrollTop + scrollTopResidual;
+  }
+
   function getState(
     totalSize = contentTotalSize(),
-    scrollTop = viewport.scrollTop,
+    scrollTop = logicalScrollTop(),
     viewportHeight = lastViewportHeight,
   ): DynamicVirtualizerState {
     const scrollHeight = Math.max(viewportHeight, totalSize);
@@ -665,7 +682,7 @@ export function createDynamicVirtualizer(
 
   function emitViewportChange(
     totalSize = contentTotalSize(),
-    scrollTop = viewport.scrollTop,
+    scrollTop = logicalScrollTop(),
     viewportHeight = lastViewportHeight,
   ): void {
     if (!onRangeChange) return;
@@ -1105,15 +1122,43 @@ export function createDynamicVirtualizer(
     }
   }
 
+  function setScrollTopResidual(value: number): void {
+    const nextResidual =
+      Number.isFinite(value) && Math.abs(value) <= MAX_SCROLL_TOP_RESIDUAL
+        ? value
+        : 0;
+    if (
+      Math.abs(scrollTopResidual - nextResidual) <= SCROLL_TOP_RESIDUAL_EPSILON
+    ) {
+      return;
+    }
+
+    scrollTopResidual =
+      Math.abs(nextResidual) > SCROLL_TOP_RESIDUAL_EPSILON ? nextResidual : 0;
+    content.style.transform =
+      scrollTopResidual === 0
+        ? ""
+        : `translateY(${signedPx(-scrollTopResidual)})`;
+  }
+
+  function clearScrollTopResidual(): void {
+    setScrollTopResidual(0);
+  }
+
   function setScrollTop(
     value: number,
     options?: ScrollTopWriteOptions,
   ): boolean {
     if (userScrollActive && options?.allowDuringScroll !== true) return false;
     const target = clamp(value, 0, nativeMaxScrollTop());
-    if (Math.abs(viewport.scrollTop - target) <= 0.5) return false;
-    viewport.scrollTop = target;
-    return true;
+    const shouldWrite = Math.abs(viewport.scrollTop - target) > 0.5;
+    if (shouldWrite) viewport.scrollTop = target;
+    if (options?.preserveLogicalOffset) {
+      setScrollTopResidual(target - viewport.scrollTop);
+    } else {
+      clearScrollTopResidual();
+    }
+    return shouldWrite;
   }
 
   function fillSizes(
@@ -1423,7 +1468,7 @@ export function createDynamicVirtualizer(
     if (drifts.length > 0) renderDriftReporter(drifts);
   }
 
-  function render(explicitScrollTop = viewport.scrollTop): void {
+  function render(explicitScrollTop = logicalScrollTop()): void {
     if (disposed) return;
 
     ensureReachBoundarySlots();
@@ -1431,7 +1476,7 @@ export function createDynamicVirtualizer(
     renderBoundarySlots();
     renderPlaceholderSlot();
     const viewportHeight = lastViewportHeight;
-    const actualScrollTop = viewport.scrollTop;
+    const actualScrollTop = logicalScrollTop();
     const itemOffset = topSlotHeight();
 
     const previousStart = rangeStart;
@@ -1521,7 +1566,7 @@ export function createDynamicVirtualizer(
     });
   }
 
-  function renderNow(explicitScrollTop = viewport.scrollTop): void {
+  function renderNow(explicitScrollTop = logicalScrollTop()): void {
     if (renderFrame) {
       cancelAnimationFrame(renderFrame);
       renderFrame = 0;
@@ -1597,7 +1642,7 @@ export function createDynamicVirtualizer(
     const wasAtBottom = atBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
-      Math.max(0, viewport.scrollTop - topSlotHeight()),
+      Math.max(0, logicalScrollTop() - topSlotHeight()),
     );
     let changed = false;
     let correction = 0;
@@ -1620,9 +1665,12 @@ export function createDynamicVirtualizer(
     if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
       setScrollTop(nativeMaxScrollTop());
     } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
-      setScrollTop(viewport.scrollTop + correction);
+      setScrollTop(
+        logicalScrollTop() + correction,
+        PRESERVE_LOGICAL_SCROLL_OFFSET,
+      );
     }
-    renderNow(viewport.scrollTop);
+    renderNow(logicalScrollTop());
   }
 
   function commitExplicitMeasurement(index: number, height: number): void {
@@ -1638,7 +1686,7 @@ export function createDynamicVirtualizer(
     const wasAtBottom = atBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
-      Math.max(0, viewport.scrollTop - topSlotHeight()),
+      Math.max(0, logicalScrollTop() - topSlotHeight()),
     );
     if (userScrollActive && index < anchorIndex) {
       queueMeasurement(index, height);
@@ -1657,9 +1705,12 @@ export function createDynamicVirtualizer(
     if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
       setScrollTop(nativeMaxScrollTop());
     } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
-      setScrollTop(viewport.scrollTop + correction);
+      setScrollTop(
+        logicalScrollTop() + correction,
+        PRESERVE_LOGICAL_SCROLL_OFFSET,
+      );
     }
-    renderNow(viewport.scrollTop);
+    renderNow(logicalScrollTop());
   }
 
   function scrollTopForIndex(
@@ -2034,7 +2085,7 @@ export function createDynamicVirtualizer(
       update.removedBefore,
       sizes.length,
     );
-    const previousScrollTop = viewport.scrollTop;
+    const previousScrollTop = logicalScrollTop();
     const previousTopSlotHeight = topSlotHeight();
     const hasSlotUpdate =
       update.topSlot !== undefined ||
@@ -2091,14 +2142,14 @@ export function createDynamicVirtualizer(
     }
     if (emittingChangeCallback) {
       if (hasScrollTarget) {
-        setScrollTop(nextScrollTop, ALLOW_DURING_SCROLL);
+        setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
       }
       scheduleRender();
     } else {
-      renderNow(hasScrollTarget ? nextScrollTop : viewport.scrollTop);
+      renderNow(hasScrollTarget ? nextScrollTop : logicalScrollTop());
       if (hasScrollTarget) {
-        setScrollTop(nextScrollTop, ALLOW_DURING_SCROLL);
-        renderNow(nextScrollTop);
+        setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
+        renderNow(logicalScrollTop());
       }
     }
     update.after?.();
@@ -2144,7 +2195,7 @@ export function createDynamicVirtualizer(
   function invalidateMeasurements(): void {
     lastViewportWidth = viewport.clientWidth;
     lastViewportHeight = viewport.clientHeight;
-    const previousScrollTop = viewport.scrollTop;
+    const previousScrollTop = logicalScrollTop();
     const previousItemOffset = Math.max(0, previousScrollTop - topSlotHeight());
     const anchorIndex =
       count > 0 ? clamp(sizeTree.indexAt(previousItemOffset), 0, count - 1) : 0;
@@ -2162,10 +2213,10 @@ export function createDynamicVirtualizer(
       const nextScrollTop = wasAtBottom
         ? Math.max(0, totalSize - lastViewportHeight)
         : topSlotHeight() + sizeTree.prefix(anchorIndex) + anchorOffset;
-      setScrollTop(nextScrollTop);
+      setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
     }
 
-    renderNow(viewport.scrollTop);
+    renderNow(logicalScrollTop());
   }
 
   function resetScrollVelocity(scrollTop = viewport.scrollTop): void {
@@ -2511,6 +2562,7 @@ export function createDynamicVirtualizer(
 
   function handleUserScrollStart(): void {
     stopFollowBottom();
+    clearScrollTopResidual();
     const wasActive = userScrollActive;
     userScrollActive = true;
     if (!wasActive) {
