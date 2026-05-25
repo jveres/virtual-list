@@ -1380,7 +1380,12 @@ export function createDynamicVirtualizer(
   }
 
   function needsAuxiliaryChrome(): boolean {
-    return needsBoundaryRender || placeholderSlot !== null;
+    return (
+      needsBoundaryRender ||
+      topSlot !== null ||
+      bottomSlot !== null ||
+      placeholderSlot !== null
+    );
   }
 
   function positionItem(
@@ -1631,7 +1636,7 @@ export function createDynamicVirtualizer(
 
   function syncRenderChrome(): number {
     if (needsAuxiliaryChrome()) {
-      ensureReachBoundarySlots();
+      if (needsBoundaryRender) ensureReachBoundarySlots();
       const totalSize = syncContentHeight();
       renderBoundarySlots();
       renderPlaceholderSlot();

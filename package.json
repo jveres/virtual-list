@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "lint": "biome lint .",
     "format": "biome format --write .",
-    "check": "biome check . && tsc --noEmit",
+    "check": "biome check . && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest"
   },

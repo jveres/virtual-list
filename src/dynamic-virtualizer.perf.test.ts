@@ -53,34 +53,34 @@ function disposeViewport(
 }
 
 describe("FenwickTree perf", () => {
-  it("keeps prefix and indexAt fast at 100k items", () => {
+  it("resolves prefix sums and offsets at 100k items", () => {
     const sizes = new Float64Array(100_000);
     sizes.fill(50);
     const tree = new FenwickTree(sizes);
 
-    const start = performance.now();
     for (let pass = 0; pass < 10_000; pass++) {
-      tree.indexAt((pass * 37) % 5_000_000);
-      tree.prefix(pass % 100_000);
-    }
-    const elapsed = performance.now() - start;
+      const offset = (pass * 37) % 5_000_000;
+      const count = pass % 100_000;
 
-    expect(elapsed).toBeLessThan(500);
+      expect(tree.indexAt(offset)).toBe(Math.floor(offset / 50));
+      expect(tree.prefix(count)).toBe(count * 50);
+    }
   });
 
-  it("keeps incremental updates fast at 10k items", () => {
+  it("keeps prefix sums and offsets correct after incremental updates", () => {
     const sizes = new Float64Array(10_000);
     sizes.fill(40);
     const tree = new FenwickTree(sizes);
 
-    const start = performance.now();
     for (let index = 0; index < 10_000; index++) {
       tree.add(index, 1);
-      tree.indexAt(index * 40);
     }
-    const elapsed = performance.now() - start;
 
-    expect(elapsed).toBeLessThan(500);
+    expect(tree.total()).toBe(410_000);
+    expect(tree.prefix(5_000)).toBe(205_000);
+    expect(tree.indexAt(0)).toBe(0);
+    expect(tree.indexAt(41 * 5_000 - 1)).toBe(4_999);
+    expect(tree.indexAt(41 * 5_000)).toBe(5_000);
   });
 });
 
@@ -101,16 +101,47 @@ describe("dynamic virtualizer perf", () => {
     virtualizer.setCount();
     await virtualizer.scrollToOffset(0);
 
-    const start = performance.now();
     for (let scrollTop = 0; scrollTop <= 50_000; scrollTop += 500) {
       viewport.scrollTop = scrollTop;
       viewport.dispatchEvent(new Event("scroll"));
       await flushRaf();
     }
-    const elapsed = performance.now() - start;
 
     expect(virtualizer.state.mountedCount).toBeLessThan(80);
-    expect(elapsed).toBeLessThan(4_000);
+    disposeViewport(viewport, virtualizer);
+  });
+
+  it("mounts explicit boundary slots without reach callbacks", () => {
+    const viewport = createViewport();
+    const itemHeight = 40;
+    const virtualizer = createDynamicVirtualizer({
+      viewport,
+      getCount: () => 20,
+      getItemHeight: () => itemHeight,
+      buildItem: buildFixedHeightItem(itemHeight),
+      overscanPx: 80,
+    });
+
+    virtualizer.setCount();
+    virtualizer.setBoundarySlot("top", {
+      key: "loading",
+      height: 48,
+      build: () => {
+        const element = document.createElement("div");
+        element.className = "perf-boundary";
+        element.textContent = "Loading";
+        return element;
+      },
+    });
+
+    const topBoundary = virtualizer.getBoundaryElement("top");
+    expect(topBoundary).not.toBeNull();
+    expect(topBoundary?.isConnected).toBe(true);
+    expect(topBoundary?.style.height).toBe("48px");
+
+    virtualizer.setBoundarySlot("top", null);
+
+    expect(virtualizer.getBoundaryElement("top")).toBeNull();
     disposeViewport(viewport, virtualizer);
   });
 

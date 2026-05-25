@@ -12,12 +12,16 @@ justified photo rows.
 
 ## Run the demos
 
-Use the existing Vite setup from this directory.
+Use the existing Vite setup from this directory. The repo doesn't pin a package
+manager version; use the globally installed `pnpm`.
 
 ```sh
 pnpm install
 pnpm run dev
 ```
+
+The `pnpm-workspace.yaml` file only approves the `esbuild` install script for
+pnpm 11. It doesn't pin `pnpm` or require Corepack.
 
 Open these pages from the dev server:
 
@@ -533,7 +537,9 @@ measurement pass catches up from the current native scroll position.
 Use the project check before committing runtime or demo changes.
 
 ```sh
+pnpm run test
 pnpm run check
 ```
 
-This runs Biome checks and TypeScript.
+The test command runs the Vitest suite. The check command runs Biome, the main
+TypeScript config, and `tsconfig.test.json` so test files are typechecked too.
