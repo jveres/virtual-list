@@ -12,6 +12,15 @@
   pointer-events: none;
 }
 
+.gallery-row-placeholder {
+  border-radius: 8px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--bg-surface) 94%, var(--border)),
+    color-mix(in srgb, var(--bg-surface) 84%, var(--border))
+  );
+}
+
 .gallery-row-inner {
   position: relative;
   height: 100%;

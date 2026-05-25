@@ -304,7 +304,7 @@ function createVirtualizer(
     getCount: () => options.count,
     getItemHeight: itemHeight,
     buildItem,
-    buildPlaceholder,
+    buildPlaceholder: options.placeholders ? buildPlaceholder : undefined,
     placeholderVelocityThreshold: effectivePlaceholderThreshold,
     overscanPx: () => options.overscanPx,
     renderMode: options.renderMode,
@@ -416,6 +416,7 @@ function scheduleOptionApply(): void {
 
   if (onlyPlaceholderOptionsChanged && virtualizer) {
     if (!options.placeholders) {
+      virtualizer.refreshMounted();
       void virtualizer.scrollToOffset(virtualizer.state.scrollTop);
     }
     scheduleStateRender("options");

@@ -15,6 +15,16 @@
   pointer-events: none;
 }
 
+.masonry-group-placeholder {
+  border-radius: 12px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--bg-surface) 94%, var(--border)),
+    color-mix(in srgb, var(--bg-surface) 84%, var(--border))
+  );
+  opacity: 0.72;
+}
+
 .masonry-group-inner {
   position: relative;
   height: 100%;

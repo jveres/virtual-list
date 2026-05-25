@@ -135,3 +135,28 @@ export function buildChatItem(
   row.appendChild(content);
   return row;
 }
+
+export function buildChatPlaceholder(
+  index: number,
+  height: number,
+  options: ChatItemOptions = {},
+): HTMLElement {
+  const row = document.createElement("article");
+  row.className = "message message-placeholder";
+  row.style.height = `${Math.max(1, height)}px`;
+
+  const content = document.createElement("div");
+  content.className = "message-content";
+
+  const label = document.createElement("div");
+  label.className = "role-label";
+  label.textContent = options.indexLabel ? `#${index}` : "";
+
+  const line = document.createElement("div");
+  line.className = "message-placeholder-line";
+  line.setAttribute("aria-hidden", "true");
+
+  content.append(label, line);
+  row.appendChild(content);
+  return row;
+}

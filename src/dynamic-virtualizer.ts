@@ -244,7 +244,7 @@ export interface DynamicVirtualizer {
   dispose(): void;
 }
 
-class FenwickTree {
+export class FenwickTree {
   private readonly tree: Float64Array;
 
   readonly size: number;
@@ -441,14 +441,13 @@ function resizeEntryHeight(entry: ResizeObserverEntry): number | null {
   return contentHeight > 0 ? contentHeight : null;
 }
 
-function positionItem(
-  index: number,
-  element: HTMLElement,
-  tree: FenwickTree,
-  offset = 0,
-): void {
-  const top = offset + tree.prefix(index);
-  element.style.transform = `translateY(${px(top)})`;
+function translateYTransform(top: number): string {
+  const safe = nonNegativeSize(top);
+  const rounded = Math.round(safe);
+  if (Math.abs(safe - rounded) <= 0.001) {
+    return `translateY(${rounded}px)`;
+  }
+  return `translateY(${safe.toFixed(3)}px)`;
 }
 
 function prepareMeasuredItem(element: HTMLElement): HTMLElement {
@@ -562,10 +561,15 @@ export function createDynamicVirtualizer(
   } = config;
 
   const overscanPx = config.overscanPx;
-  const getOverscanPx: () => number =
+  const staticOverscanPx =
     typeof overscanPx === "function"
-      ? overscanPx
-      : () => overscanPx ?? DEFAULT_OVERSCAN_PX;
+      ? null
+      : (overscanPx ?? DEFAULT_OVERSCAN_PX);
+  const getOverscanPx: () => number =
+    staticOverscanPx === null
+      ? (overscanPx as () => number)
+      : () => staticOverscanPx;
+  const needsBoundaryRender = Boolean(onReachTop || onReachBottom);
   const placeholderVelocityThresholdOption =
     config.placeholderVelocityThreshold;
   const getPlaceholderVelocityThreshold: () => number =
@@ -659,6 +663,7 @@ export function createDynamicVirtualizer(
   let reachCallbacksEnabled = false;
   let emittingChangeCallback = false;
   let emittingReachCallback = false;
+  let pendingBoundaryArm = false;
   let boundaryIntersectionObserver: IntersectionObserver | null = null;
   let itemMeasurer: DynamicVirtualizerItemMeasurer | null = null;
   let disposed = false;
@@ -1374,6 +1379,19 @@ export function createDynamicVirtualizer(
     computedRange.end = Math.min(count, sizeTree.indexAt(endTarget) + 2);
   }
 
+  function needsAuxiliaryChrome(): boolean {
+    return needsBoundaryRender || placeholderSlot !== null;
+  }
+
+  function positionItem(
+    index: number,
+    element: HTMLElement,
+    offset = topSlotHeight(),
+  ): void {
+    const top = offset + sizeTree.prefix(index);
+    element.style.transform = translateYTransform(top);
+  }
+
   function prepareItem(
     index: number,
     element: HTMLElement,
@@ -1381,7 +1399,7 @@ export function createDynamicVirtualizer(
   ): HTMLElement {
     element.dataset.index = String(index);
     element.classList.add("dv-item");
-    positionItem(index, element, sizeTree, offset);
+    positionItem(index, element, offset);
     return element;
   }
 
@@ -1442,13 +1460,32 @@ export function createDynamicVirtualizer(
     });
   }
 
+  function clearPlaceholderFastModeState(): void {
+    placeholderFastMode = false;
+    hydratePlaceholdersBlocked = false;
+    placeholderLowVelocitySamples = 0;
+  }
+
+  function disablePlaceholderFastMode(): boolean {
+    const hadPlaceholderMounts = mountedPlaceholders.size > 0;
+    const wasActive =
+      placeholderFastMode || hydratePlaceholdersBlocked || hadPlaceholderMounts;
+    clearPlaceholderFastModeState();
+    return wasActive ? refreshMountedPlaceholders() : false;
+  }
+
   function shouldUsePlaceholderMode(): boolean {
     if (!canMountPlaceholderItems()) {
-      placeholderFastMode = false;
+      disablePlaceholderFastMode();
       return false;
     }
 
     const enterVelocity = placeholderEnterVelocity();
+    if (enterVelocity === Number.POSITIVE_INFINITY) {
+      disablePlaceholderFastMode();
+      return false;
+    }
+
     if (scrollVelocity >= enterVelocity) {
       const wasFast = placeholderFastMode;
       hydratePlaceholdersBlocked = true;
@@ -1470,6 +1507,7 @@ export function createDynamicVirtualizer(
       if (placeholderLowVelocitySamples >= PLACEHOLDER_EXIT_SAMPLE_COUNT) {
         hydratePlaceholdersBlocked = false;
         placeholderFastMode = false;
+        placeholderLowVelocitySamples = 0;
         if (debugPlaceholder) {
           debugPlaceholderEvent("fast-mode-exit", {
             velocity: scrollVelocity,
@@ -1540,9 +1578,7 @@ export function createDynamicVirtualizer(
   }
 
   function forceHydratePlaceholders(): boolean {
-    hydratePlaceholdersBlocked = false;
-    placeholderFastMode = false;
-    placeholderLowVelocitySamples = 0;
+    clearPlaceholderFastModeState();
     return refreshMountedPlaceholders();
   }
 
@@ -1593,13 +1629,45 @@ export function createDynamicVirtualizer(
     if (drifts.length > 0) renderDriftReporter(drifts);
   }
 
+  function syncRenderChrome(): number {
+    if (needsAuxiliaryChrome()) {
+      ensureReachBoundarySlots();
+      const totalSize = syncContentHeight();
+      renderBoundarySlots();
+      renderPlaceholderSlot();
+      return totalSize;
+    }
+    return syncContentHeight();
+  }
+
+  function unmountIndex(index: number): void {
+    const element = mounted.get(index);
+    if (!element) return;
+    itemResizeObserver.unobserve(element);
+    element.remove();
+    mounted.delete(index);
+    mountedPlaceholders.delete(index);
+  }
+
+  function rangeFullyMounted(start: number, end: number): boolean {
+    if (end <= start) return mounted.size === 0;
+    if (mounted.size !== end - start) return false;
+    for (let index = start; index < end; index++) {
+      if (!mounted.has(index)) return false;
+    }
+    return true;
+  }
+
   function render(explicitScrollTop = logicalScrollTop()): void {
     if (disposed) return;
 
-    ensureReachBoundarySlots();
-    const totalSize = syncContentHeight();
-    renderBoundarySlots();
-    renderPlaceholderSlot();
+    if (pendingBoundaryArm && needsBoundaryRender) {
+      pendingBoundaryArm = false;
+      armCoveredBoundaryForScroll("top");
+      armCoveredBoundaryForScroll("bottom");
+    }
+
+    const totalSize = syncRenderChrome();
     const viewportHeight = lastViewportHeight;
     const actualScrollTop = logicalScrollTop();
     const itemOffset = topSlotHeight();
@@ -1610,13 +1678,14 @@ export function createDynamicVirtualizer(
     const { start, end } = computedRange;
     const layoutDirty = renderedLayoutVersion !== layoutVersion;
     const mountPlaceholders = shouldUsePlaceholderMode();
+    const rangeChanged = start !== previousStart || end !== previousEnd;
     rangeStart = start;
     rangeEnd = end;
 
     if (
       start === previousStart &&
       end === previousEnd &&
-      mounted.size === end - start
+      rangeFullyMounted(start, end)
     ) {
       // Entering fast mode does NOT placeholderize items already on screen —
       // that caused a visible flash. Newly mounted items below already build as
@@ -1640,8 +1709,8 @@ export function createDynamicVirtualizer(
           complete = false;
           break;
         }
-        if (layoutDirty) {
-          positionItem(index, element, sizeTree, itemOffset);
+        if (layoutDirty || rangeChanged) {
+          positionItem(index, element, itemOffset);
         }
       }
       if (complete) {
@@ -1652,12 +1721,9 @@ export function createDynamicVirtualizer(
       }
     }
 
-    for (const [index, element] of mounted) {
+    for (const [index] of mounted) {
       if (index >= start && index < end) continue;
-      itemResizeObserver.unobserve(element);
-      element.remove();
-      mounted.delete(index);
-      mountedPlaceholders.delete(index);
+      unmountIndex(index);
     }
 
     if (!mountPlaceholders && !hydratePlaceholdersBlocked) {
@@ -1672,8 +1738,8 @@ export function createDynamicVirtualizer(
         newItems ??= document.createDocumentFragment();
         newItems.appendChild(element);
         mounted.set(index, element);
-      } else if (layoutDirty) {
-        positionItem(index, element, sizeTree, itemOffset);
+      } else if (layoutDirty || rangeChanged) {
+        positionItem(index, element, itemOffset);
       }
     }
     if (newItems) content.appendChild(newItems);
@@ -2172,6 +2238,7 @@ export function createDynamicVirtualizer(
         nextMountedPlaceholders.add(nextIndex);
       }
       element.dataset.index = String(nextIndex);
+      positionItem(nextIndex, element);
       nextMounted.set(nextIndex, element);
     }
 
@@ -2552,8 +2619,7 @@ export function createDynamicVirtualizer(
     userScrollActive = false;
     userScrollMoved = false;
     resetScrollVelocity();
-    placeholderFastMode = false;
-    hydratePlaceholdersBlocked = false;
+    clearPlaceholderFastModeState();
     placeholderLowVelocitySamples = 0;
   }
 
@@ -2708,8 +2774,7 @@ export function createDynamicVirtualizer(
       nativeScrollEndPending = false;
       firefoxPendingNativeScrollEndTop = null;
       userScrollMoved = false;
-      armCoveredBoundaryForScroll("top");
-      armCoveredBoundaryForScroll("bottom");
+      pendingBoundaryArm = needsBoundaryRender;
       resetScrollVelocity();
       chromiumWheelSawNativeScrollEnd = false;
       chromiumWheelAwaitingFinalScrollEnd = false;
