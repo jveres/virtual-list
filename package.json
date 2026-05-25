@@ -6,22 +6,20 @@
     "dev": "vite",
     "build": "pnpm run check && vite build",
     "preview": "vite preview",
-    "lint": "oxlint .",
-    "format": "oxfmt --write .",
-    "check": "oxlint . && oxfmt --check . && tsc --noEmit"
+    "lint": "biome lint .",
+    "format": "biome format --write .",
+    "check": "biome check . && tsc --noEmit"
   },
   "dependencies": {
     "@typefm/comrak-wasm": "file:../../typefm/packages/comrak-wasm"
   },
   "devDependencies": {
-    "@shikijs/engine-oniguruma": "4.0.2",
-    "@shikijs/langs": "4.0.2",
-    "@shikijs/themes": "4.0.2",
-    "oxfmt": "0.50.0",
-    "oxlint": "1.65.0",
-    "shiki": "^4.0.2",
+    "@biomejs/biome": "2.4.15",
+    "@shikijs/engine-oniguruma": "4.1.0",
+    "@shikijs/langs": "4.1.0",
+    "@shikijs/themes": "4.1.0",
+    "shiki": "^4.1.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.12"
-  },
-  "packageManager": "pnpm@11.1.1"
+    "vite": "^8.0.14"
+  }
 }

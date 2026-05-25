@@ -492,4 +492,4 @@ Use the project check before committing runtime or demo changes.
 pnpm run check
 ```
 
-This runs `oxlint`, `oxfmt --check`, and TypeScript.
+This runs Biome checks and TypeScript.
