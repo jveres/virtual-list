@@ -26,7 +26,6 @@ import "../demo-styles.css";
 const TOTAL_AVAILABLE = 10_000;
 const DEFAULT_RETAINED_COUNT = 100;
 const DEFAULT_CHUNK_SIZE = 50;
-const DEFAULT_LOAD_MODE: LoadMode = "deferred";
 const DEFAULT_RENDER_MODE: DynamicVirtualizerRenderMode = "virtual";
 const DEFAULT_SOURCE: SourceId = "synthetic";
 const BOUNDARY_SLOT_HEIGHT = 52;
@@ -46,7 +45,6 @@ const LEMMY_ORIGINS = [
   "https://sh.itjust.works",
 ];
 
-type LoadMode = "instant" | "deferred";
 type SourceId = "synthetic" | "bsky" | "lemmy";
 type DemoRenderMode = DynamicVirtualizerRenderMode;
 type BoundarySlotKind = "none" | "idle" | "loading" | "no-more" | "error";
@@ -196,7 +194,6 @@ interface LemmyPostPage {
 const params = new URLSearchParams(location.search);
 const retainedCount = readPositiveInt("retain", DEFAULT_RETAINED_COUNT);
 const chunkSize = readPositiveInt("chunk", DEFAULT_CHUNK_SIZE);
-const configuredLoadMode = params.get("mode");
 const configuredRenderMode = params.get("render");
 const configuredSource = params.get("source");
 const renderDriftDebug = readBooleanFlag("debugRenderDrift");
@@ -210,13 +207,9 @@ if (renderDriftDebug) {
 const viewport = mustGet("viewport");
 const windowStatus = mustGet("window-status");
 const rangeStatus = mustGet("range-status");
-const loadModeButton = mustGet("load-mode-btn", HTMLButtonElement);
 const renderModeButton = mustGet("render-mode-btn", HTMLButtonElement);
 const sourceSelect = mustGet("source-select", HTMLSelectElement);
 
-let loadMode: LoadMode = isLoadMode(configuredLoadMode)
-  ? configuredLoadMode
-  : DEFAULT_LOAD_MODE;
 let renderMode: DemoRenderMode = isRenderMode(configuredRenderMode)
   ? configuredRenderMode
   : DEFAULT_RENDER_MODE;
@@ -268,10 +261,6 @@ function readPositiveInt(name: string, fallback: number): number {
 function readBooleanFlag(name: string): boolean {
   const value = params.get(name);
   return value !== null && value !== "0" && value !== "false";
-}
-
-function isLoadMode(value: string | null | undefined): value is LoadMode {
-  return value === "instant" || value === "deferred";
 }
 
 function isRenderMode(
@@ -958,19 +947,6 @@ function refreshBoundarySlotElements(): void {
   }
 }
 
-function syncLoadModeButton(): void {
-  const deferred = loadMode === "deferred";
-  loadModeButton.classList.toggle("active", deferred);
-  loadModeButton.setAttribute("aria-pressed", String(deferred));
-  loadModeButton.title = deferred
-    ? "Deferred dynamic content"
-    : "Instant dynamic content";
-  loadModeButton.setAttribute(
-    "aria-label",
-    deferred ? "Deferred dynamic content" : "Instant dynamic content",
-  );
-}
-
 function syncRenderModeButton(): void {
   const full = renderMode === "full";
   renderModeButton.classList.toggle("active", full);
@@ -1001,7 +977,7 @@ function syncStatus(state = virtualizer?.state): void {
     .join(" ");
   const nextWindowStatus = sourceError
     ? sourceError
-    : `${activeSource.label} · ${activeSource.statusLabel(items)} ${activeSource.totalLabel()} · retain ${retainedCount} · chunk ${chunkSize} · ${loadMode} · ${renderMode}${pending ? ` · ${pending}` : ""} · ↑${topLoads} ↓${bottomLoads}`;
+    : `${activeSource.label} · ${activeSource.statusLabel(items)} ${activeSource.totalLabel()} · retain ${retainedCount} · chunk ${chunkSize} · deferred · ${renderMode}${pending ? ` · ${pending}` : ""} · ↑${topLoads} ↓${bottomLoads}`;
   if (nextWindowStatus !== renderedWindowStatus) {
     renderedWindowStatus = nextWindowStatus;
     windowStatus.textContent = nextWindowStatus;
@@ -1172,10 +1148,10 @@ function loadTopChunk(): void {
     return;
   }
 
-  void commitTopChunk(loadMode === "deferred");
+  void commitTopChunk();
 }
 
-async function commitTopChunk(deferDuringScroll: boolean): Promise<void> {
+async function commitTopChunk(): Promise<void> {
   if (sourceLoading || !virtualizer || !activeSource.canLoadTop(items)) {
     pendingTopLoad = false;
     if (virtualizer && !activeSource.canLoadTop(items)) {
@@ -1188,7 +1164,7 @@ async function commitTopChunk(deferDuringScroll: boolean): Promise<void> {
 
   const version = sourceVersion;
   const token = beginBoundaryLoad("top");
-  pendingTopLoad = deferDuringScroll;
+  pendingTopLoad = true;
   loadingTop = true;
   sourceError = "";
   setBoundarySlotState("top", "loading");
@@ -1198,7 +1174,7 @@ async function commitTopChunk(deferDuringScroll: boolean): Promise<void> {
   try {
     const addedItems = await activeSource.loadTop(items, token.controller);
     if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    applyTopChunk(addedItems, token, deferDuringScroll);
+    applyTopChunk(addedItems, token);
   } catch (error) {
     if (
       version !== sourceVersion ||
@@ -1230,10 +1206,10 @@ function loadBottomChunk(): void {
     return;
   }
 
-  void commitBottomChunk(loadMode === "deferred");
+  void commitBottomChunk();
 }
 
-async function commitBottomChunk(deferDuringScroll: boolean): Promise<void> {
+async function commitBottomChunk(): Promise<void> {
   if (sourceLoading || !virtualizer || !activeSource.canLoadBottom(items)) {
     pendingBottomLoad = false;
     if (virtualizer && !activeSource.canLoadBottom(items)) {
@@ -1246,7 +1222,7 @@ async function commitBottomChunk(deferDuringScroll: boolean): Promise<void> {
 
   const version = sourceVersion;
   const token = beginBoundaryLoad("bottom");
-  pendingBottomLoad = deferDuringScroll;
+  pendingBottomLoad = true;
   loadingBottom = true;
   sourceError = "";
   setBoundarySlotState("bottom", "loading");
@@ -1256,7 +1232,7 @@ async function commitBottomChunk(deferDuringScroll: boolean): Promise<void> {
   try {
     const addedItems = await activeSource.loadBottom(items, token.controller);
     if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    applyBottomChunk(addedItems, token, deferDuringScroll);
+    applyBottomChunk(addedItems, token);
   } catch (error) {
     if (
       version !== sourceVersion ||
@@ -1290,7 +1266,6 @@ function finishBoundaryLoad(token: BoundaryLoadToken): void {
 function applyTopChunk(
   addedItems: readonly LoadedItem[],
   token: BoundaryLoadToken,
-  deferDuringScroll: boolean,
 ): void {
   if (!virtualizer) return;
 
@@ -1304,7 +1279,6 @@ function applyTopChunk(
   measureItems(addedItems);
   virtualizer.syncLayout({
     addedBefore: addedItems.length,
-    deferDuringScroll,
     topSlot: boundarySlotFor("top"),
     apply: () => {
       if (!isCurrentBoundaryLoad(token)) {
@@ -1329,7 +1303,6 @@ function applyTopChunk(
 function applyBottomChunk(
   addedItems: readonly LoadedItem[],
   token: BoundaryLoadToken,
-  deferDuringScroll: boolean,
 ): void {
   if (!virtualizer) return;
 
@@ -1342,7 +1315,6 @@ function applyBottomChunk(
 
   measureItems(addedItems);
   virtualizer.syncLayout({
-    deferDuringScroll,
     bottomSlot: boundarySlotFor("bottom"),
     apply: () => {
       if (!isCurrentBoundaryLoad(token)) {
@@ -1362,20 +1334,6 @@ function applyBottomChunk(
       syncStatus();
     },
   });
-}
-
-function setLoadMode(nextLoadMode: LoadMode): void {
-  if (nextLoadMode === loadMode) return;
-
-  loadMode = nextLoadMode;
-  syncLoadModeButton();
-  if (loadMode === "instant") {
-    clearBoundarySlotStates();
-    syncBoundarySlots();
-  } else {
-    syncBoundarySlots();
-  }
-  syncStatus();
 }
 
 function setRenderMode(nextRenderMode: DemoRenderMode): void {
@@ -2064,10 +2022,6 @@ function escapeHtml(value: string): string {
 
 bindThemeButtons(refreshTheme);
 
-loadModeButton.addEventListener("click", () => {
-  setLoadMode(loadMode === "deferred" ? "instant" : "deferred");
-});
-
 renderModeButton.addEventListener("click", () => {
   setRenderMode(renderMode === "virtual" ? "full" : "virtual");
 });
@@ -2093,7 +2047,6 @@ document.getElementById("bottom-btn")?.addEventListener("click", () => {
 await Promise.all([initMarkdown(), document.fonts.ready]);
 applyDocumentTheme();
 syncThemeButtons();
-syncLoadModeButton();
 syncRenderModeButton();
 syncSourceSelect();
 await resetSource(sourceId);
@@ -2119,7 +2072,6 @@ declare global {
       loadBottom: () => void;
       loadOlder: () => void;
       loadNewer: () => void;
-      setLoadMode: (mode: LoadMode) => void;
       setSource: (source: SourceId) => Promise<void>;
       loadedWindow: () => { source: SourceId; count: number };
     };
@@ -2134,7 +2086,6 @@ window.dynamicContent = {
   loadBottom: loadBottomChunk,
   loadOlder: loadTopChunk,
   loadNewer: loadBottomChunk,
-  setLoadMode,
   setSource: switchSource,
   loadedWindow: () => ({
     source: sourceId,

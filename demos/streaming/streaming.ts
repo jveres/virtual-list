@@ -8,7 +8,11 @@ import {
 import {
   createDynamicVirtualizer,
   type DynamicVirtualizer,
+  type DynamicVirtualizerBoundary,
+  type DynamicVirtualizerBoundarySlot,
+  type DynamicVirtualizerState,
   measureDynamicVirtualizerItem,
+  planDynamicVirtualizerPixelWindowFromEnd,
 } from "../../src/dynamic-virtualizer.js";
 import {
   applyDocumentTheme,
@@ -55,6 +59,12 @@ const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
 const BOTTOM_FOLLOW_DURATION_MS = 300;
 const SCROLL_BUTTONS_DEBOUNCE_MS = 120;
 const MESSAGE_TOP_EPSILON_PX = 2;
+const DATA_WINDOW_FACTOR = 3;
+const DOM_OVERSCAN_FACTOR = 1;
+const BOUNDARY_SLOT_HEIGHT = 52;
+const LOAD_OLDER_DELAY_MS = 180;
+
+type BoundarySlotKind = "none" | "idle" | "loading";
 
 const demoParams = new URLSearchParams(location.search);
 const instantReplies =
@@ -67,6 +77,8 @@ const promptInput = mustGet("prompt", HTMLTextAreaElement);
 const sendBtn = mustGet("send-btn", HTMLButtonElement);
 const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
 const scrollBottomBtn = mustGet("scroll-bottom-btn", HTMLButtonElement);
+const windowStatus = mustGet("window-status");
+const virtualizerStatus = mustGet("virtualizer-status");
 const composerMinHeight = Math.max(
   COMPOSER_FALLBACK_MIN_HEIGHT,
   promptInput.getBoundingClientRect().height,
@@ -83,12 +95,27 @@ let bottomFollowArmed = false;
 let bottomFollowPending = false;
 let bottomFollowCleanup: (() => void) | null = null;
 let virtualizerScrollActive = false;
+let loadedStart = 0;
+let loadingTop = false;
 const virtualizerScrollEndWaiters = new Set<() => void>();
 
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
 const htmlCache = new Map<string, string>();
-const messages: Message[] = [];
+const transcript: Message[] = [];
+let messages: Message[] = [];
+const boundarySlotStates: Record<
+  DynamicVirtualizerBoundary,
+  { kind: BoundarySlotKind }
+> = {
+  top: { kind: "none" },
+  bottom: { kind: "none" },
+};
+
+interface LoadedAppendResult {
+  startIndex: number;
+  replacedWindow: boolean;
+}
 
 const BULK_RESPONSES = [
   `Sure — here's a quick rundown.
@@ -332,6 +359,323 @@ function createSimulatedToolCalls(): ChatToolCall[] {
   return cloneToolCalls(toolCalls);
 }
 
+function findTranscriptMessageById(id: number): Message | undefined {
+  return transcript.find((message) => message.id === id);
+}
+
+function findLoadedMessageIndex(id: number): number {
+  return messages.findIndex((message) => message.id === id);
+}
+
+function mutateMessageById(
+  id: number,
+  mutate: (message: Message) => void,
+  options: { refreshUnmounted?: boolean } = {},
+): number {
+  const message = findTranscriptMessageById(id);
+  if (!message) return -1;
+  mutate(message);
+
+  const index = findLoadedMessageIndex(id);
+  if (index >= 0) refreshItem(index, options);
+  return index;
+}
+
+function dataWindowPx(): number {
+  return Math.max(1, viewport.clientHeight * DATA_WINDOW_FACTOR);
+}
+
+function domOverscanPx(): number {
+  return Math.max(1, viewport.clientHeight * DOM_OVERSCAN_FACTOR);
+}
+
+function formatCount(value: number): string {
+  return Math.round(value).toLocaleString();
+}
+
+function formatPx(value: number): string {
+  return `${formatCount(value)}px`;
+}
+
+function transcriptItemHeight(index: number): number {
+  return transcript[index]?.itemHeight ?? 180;
+}
+
+function loadedEnd(): number {
+  return loadedStart + messages.length;
+}
+
+function loadedHeight(): number {
+  let height = 0;
+  for (const message of messages) height += message.itemHeight;
+  return height;
+}
+
+function canLoadOlderMessages(): boolean {
+  return loadedStart > 0;
+}
+
+function measureMessageRange(start: number, end: number): void {
+  for (let index = start; index < end; index++) {
+    const message = messages[index];
+    if (!message) continue;
+    message.itemHeight = measureMessageHeight(index, message);
+  }
+}
+
+function measureStandaloneMessages(
+  nextMessages: readonly Message[],
+  startIndex = 0,
+): void {
+  for (let index = 0; index < nextMessages.length; index++) {
+    const message = nextMessages[index];
+    if (!message) continue;
+    message.itemHeight = measureMessageHeight(startIndex + index, message);
+  }
+}
+
+function setLoadedWindow(start: number, end: number): void {
+  loadedStart = Math.min(Math.max(0, Math.floor(start)), transcript.length);
+  const loadedWindowEnd = Math.min(
+    Math.max(loadedStart, Math.floor(end)),
+    transcript.length,
+  );
+  messages = transcript.slice(loadedStart, loadedWindowEnd);
+  measureExistingMessages();
+}
+
+function setNewestLoadedWindow(): void {
+  const plan = planDynamicVirtualizerPixelWindowFromEnd({
+    count: transcript.length,
+    minimumPx: dataWindowPx(),
+    getItemHeight: transcriptItemHeight,
+  });
+  setLoadedWindow(plan.start, plan.end);
+}
+
+function appendMessagesToLoadedBottom(
+  nextMessages: readonly Message[],
+): LoadedAppendResult {
+  const previousTranscriptEnd = transcript.length;
+  const previousLoadedEnd = loadedEnd();
+  const shouldReplaceLoadedWindow =
+    messages.length > 0 && previousLoadedEnd !== previousTranscriptEnd;
+  transcript.push(...nextMessages);
+
+  if (messages.length === 0 || shouldReplaceLoadedWindow) {
+    setNewestLoadedWindow();
+    return {
+      startIndex: Math.max(0, messages.length - nextMessages.length),
+      replacedWindow: shouldReplaceLoadedWindow,
+    };
+  }
+
+  const localStart = messages.length;
+  messages.push(...nextMessages);
+  measureMessageRange(localStart, messages.length);
+  return { startIndex: localStart, replacedWindow: false };
+}
+
+function refreshLoadedWindowIfReplaced(result: LoadedAppendResult): void {
+  if (!result.replacedWindow) return;
+  virtualizer.invalidateMeasurements();
+  virtualizer.refreshMounted();
+}
+
+interface BoundarySlotContext {
+  loadedCount: number;
+  loadedStart: number;
+  loadingTop: boolean;
+}
+
+function currentBoundarySlotContext(): BoundarySlotContext {
+  return {
+    loadedCount: messages.length,
+    loadedStart,
+    loadingTop,
+  };
+}
+
+function visibleBoundarySlotKind(
+  boundary: DynamicVirtualizerBoundary,
+): Exclude<BoundarySlotKind, "none"> {
+  const kind = boundarySlotStates[boundary].kind;
+  return kind === "none" ? "idle" : kind;
+}
+
+function boundarySlotLabel(
+  boundary: DynamicVirtualizerBoundary,
+  kind: BoundarySlotKind,
+): string {
+  if (kind !== "loading") return "";
+  return boundary === "top"
+    ? "Loading older messages"
+    : "Loading newer messages";
+}
+
+function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
+  const element = document.createElement("div");
+  element.className = "boundary-slot";
+  element.dataset.boundaryContent = boundary;
+  element.dataset.state = "idle";
+
+  const spinner = document.createElement("span");
+  spinner.className = "boundary-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+
+  const label = document.createElement("span");
+
+  element.append(spinner, label);
+  updateBoundarySlotElement(element, boundary);
+  return element;
+}
+
+function updateBoundarySlotElement(
+  container: HTMLElement,
+  boundary: DynamicVirtualizerBoundary,
+): void {
+  const element = container.matches(".boundary-slot")
+    ? container
+    : container.querySelector<HTMLElement>(".boundary-slot");
+  if (!element) return;
+
+  const kind = visibleBoundarySlotKind(boundary);
+  const label = element.querySelector<HTMLElement>("span:last-child");
+  element.dataset.state = kind;
+
+  if (kind === "idle") {
+    element.setAttribute("aria-hidden", "true");
+    if (element.hasAttribute("role")) element.removeAttribute("role");
+  } else {
+    element.removeAttribute("aria-hidden");
+    element.setAttribute("role", "status");
+  }
+
+  if (label) label.textContent = boundarySlotLabel(boundary, kind);
+}
+
+function shouldMountBoundarySlot(
+  boundary: DynamicVirtualizerBoundary,
+  context = currentBoundarySlotContext(),
+): boolean {
+  if (boundary === "bottom") return false;
+  if (context.loadedCount === 0) return false;
+  return context.loadingTop || context.loadedStart > 0;
+}
+
+function boundarySlotFor(
+  boundary: DynamicVirtualizerBoundary,
+  context = currentBoundarySlotContext(),
+): DynamicVirtualizerBoundarySlot | null {
+  if (!shouldMountBoundarySlot(boundary, context)) return null;
+
+  return {
+    key: `${boundary}:streaming-window-slot`,
+    height: BOUNDARY_SLOT_HEIGHT,
+    build: () => buildBoundarySlot(boundary),
+  };
+}
+
+function setBoundarySlotState(
+  boundary: DynamicVirtualizerBoundary,
+  kind: BoundarySlotKind,
+): void {
+  boundarySlotStates[boundary] = { kind };
+}
+
+function syncBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
+  virtualizer.setBoundarySlot(boundary, boundarySlotFor(boundary));
+  const element = virtualizer.getBoundaryElement(boundary);
+  if (element) updateBoundarySlotElement(element, boundary);
+}
+
+function updateRenderedBoundarySlots(): void {
+  const topElement = virtualizer.getBoundaryElement("top");
+  if (topElement) updateBoundarySlotElement(topElement, "top");
+}
+
+function syncVirtualizerLayout(options?: { addedBefore?: number }): void {
+  virtualizer.syncLayout({
+    ...options,
+    topSlot: boundarySlotFor("top"),
+    after: () => {
+      updateRenderedBoundarySlots();
+      syncDemoState();
+    },
+  });
+}
+
+function loadOlderMessages(): void {
+  if (loadingTop || !canLoadOlderMessages()) return;
+
+  loadingTop = true;
+  setBoundarySlotState("top", "loading");
+  syncBoundarySlot("top");
+  syncDemoState();
+
+  window.setTimeout(() => {
+    const plan = planDynamicVirtualizerPixelWindowFromEnd({
+      count: transcript.length,
+      end: loadedStart,
+      minimumPx: dataWindowPx(),
+      getItemHeight: transcriptItemHeight,
+    });
+
+    if (plan.count === 0) {
+      loadingTop = false;
+      setBoundarySlotState("top", "none");
+      syncBoundarySlot("top");
+      syncDemoState();
+      return;
+    }
+
+    const addedMessages = transcript.slice(plan.start, plan.end);
+    measureStandaloneMessages(addedMessages);
+    const nextContext: BoundarySlotContext = {
+      loadedCount: messages.length + addedMessages.length,
+      loadedStart: plan.start,
+      loadingTop: false,
+    };
+
+    virtualizer.syncLayout({
+      addedBefore: addedMessages.length,
+      topSlot: boundarySlotFor("top", nextContext),
+      apply: () => {
+        loadedStart = plan.start;
+        messages = [...addedMessages, ...messages];
+        loadingTop = false;
+        setBoundarySlotState("top", "none");
+        return true;
+      },
+      after: () => {
+        updateRenderedBoundarySlots();
+        syncDemoState();
+      },
+    });
+  }, LOAD_OLDER_DELAY_MS);
+}
+
+function syncDemoState(state = virtualizer.state): void {
+  syncScrollButtons(state);
+  syncMetrics(state);
+}
+
+function syncMetrics(state: DynamicVirtualizerState): void {
+  const loadedRange =
+    messages.length === 0
+      ? "loaded 0-0/0"
+      : `loaded ${formatCount(loadedStart + 1)}-${formatCount(loadedEnd())}/${formatCount(transcript.length)}`;
+  const topStatus = loadingTop
+    ? "loading top"
+    : canLoadOlderMessages()
+      ? "top"
+      : "none";
+  const mountedEnd = Math.max(state.range.start, state.range.end - 1);
+
+  windowStatus.textContent = `${loadedRange} · height ${formatPx(loadedHeight())}/${formatPx(dataWindowPx())} · load ${topStatus}`;
+  virtualizerStatus.textContent = `dom ${formatCount(state.mountedCount)}/${formatCount(state.count)} · measured ${formatCount(state.measuredCount)} · mounted ${formatCount(state.range.start)}-${formatCount(mountedEnd)}`;
+}
+
 function cacheKey(message: Message): string {
   const themeKey = hasHighlighter() ? codeThemeName() : "plain";
   return `${themeKey}:${message.id}`;
@@ -364,6 +708,7 @@ function remeasureForViewportWidth(): void {
   measureTemplateHeights();
   measureExistingMessages();
   virtualizer.invalidateMeasurements();
+  syncDemoState();
 }
 
 function buildTemplateItem(index: number): HTMLElement {
@@ -430,11 +775,14 @@ function refreshItem(
 function refreshMountedItems(): void {
   htmlCache.clear();
   virtualizer.refreshMounted();
+  syncDemoState();
 }
 
 function refreshTheme(): void {
   applyDocumentTheme();
   syncThemeButtons();
+  measureExistingMessages();
+  virtualizer.invalidateMeasurements();
   refreshMountedItems();
 }
 
@@ -451,7 +799,7 @@ function scheduleScrollButtons(): void {
   if (scrollButtonsTimer) window.clearTimeout(scrollButtonsTimer);
   scrollButtonsTimer = window.setTimeout(() => {
     scrollButtonsTimer = 0;
-    syncScrollButtons();
+    syncDemoState();
   }, SCROLL_BUTTONS_DEBOUNCE_MS);
 }
 
@@ -488,21 +836,27 @@ function wait(ms: number, abort: StreamAbort): Promise<void> {
 
 async function streamResponse(
   reply: ReplyVariant,
-  index: number,
+  messageId: number,
   abort: StreamAbort,
 ): Promise<void> {
   if (instantReplies) {
     if (abort.cancelled) return;
-    messages[index]!.markdown = reply.markdown;
-    refreshItem(index, { refreshUnmounted: true });
+    mutateMessageById(
+      messageId,
+      (message) => {
+        message.markdown = reply.markdown;
+      },
+      { refreshUnmounted: true },
+    );
     return;
   }
 
   const delayRange = reply.tokenDelayMs;
   for (const token of tokenize(reply.markdown)) {
     if (abort.cancelled) return;
-    messages[index]!.markdown += token;
-    refreshItem(index);
+    mutateMessageById(messageId, (message) => {
+      message.markdown += token;
+    });
     await wait(
       delayRange.min + Math.random() * (delayRange.max - delayRange.min),
       abort,
@@ -740,6 +1094,7 @@ function finishVirtualizerScrollTracking(): void {
 
 function handleVirtualizerScrollEnd(): void {
   finishVirtualizerScrollTracking();
+  syncDemoState();
 }
 
 function waitForVirtualizerScrollEnd(abort: StreamAbort): Promise<void> {
@@ -801,19 +1156,19 @@ async function handleSend(): Promise<void> {
   const abort: StreamAbort = { cancelled: false, onCancel: new Set() };
   streamAbort = abort;
   setStreamingUI(true);
-  let assistantIndex: number | null = null;
-  const shouldFlyIn = messages.length === 0;
+  let assistantId: number | null = null;
+  const shouldFlyIn = transcript.length === 0;
 
   try {
-    const userIndex = messages.length;
     const userMessage = createMessage({
       role: "user",
       markdown: text,
       itemHeight: 180,
     });
-    userMessage.itemHeight = measureMessageHeight(userIndex, userMessage);
-    messages.push(userMessage);
-    virtualizer.setCount();
+    const userAppend = appendMessagesToLoadedBottom([userMessage]);
+    syncVirtualizerLayout();
+    refreshLoadedWindowIfReplaced(userAppend);
+    const userIndex = userAppend.startIndex;
     virtualizer.setStickyIndex(userIndex);
     await scrollMessageToTop(
       userIndex,
@@ -834,13 +1189,10 @@ async function handleSend(): Promise<void> {
       itemHeight: 180,
       toolCalls: createSimulatedToolCalls(),
     });
-    assistantIndex = messages.length;
-    assistantMessage.itemHeight = measureMessageHeight(
-      assistantIndex,
-      assistantMessage,
-    );
-    messages.push(assistantMessage);
-    virtualizer.setCount();
+    assistantId = assistantMessage.id;
+    const assistantAppend = appendMessagesToLoadedBottom([assistantMessage]);
+    syncVirtualizerLayout();
+    refreshLoadedWindowIfReplaced(assistantAppend);
     scheduleScrollButtons();
     if (abort.cancelled) return;
 
@@ -850,16 +1202,21 @@ async function handleSend(): Promise<void> {
     await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
     if (abort.cancelled) return;
 
-    messages[assistantIndex]!.status = "streaming";
-    refreshItem(assistantIndex);
-    await streamResponse(reply, assistantIndex, abort);
+    mutateMessageById(assistantId, (message) => {
+      message.status = "streaming";
+    });
+    await streamResponse(reply, assistantId, abort);
   } finally {
-    if (assistantIndex !== null) {
-      const assistant = messages[assistantIndex];
-      if (assistant?.role === "assistant") {
-        assistant.status = abort.cancelled ? "cancelled" : "done";
-        refreshItem(assistantIndex, { refreshUnmounted: true });
-      }
+    if (assistantId !== null) {
+      mutateMessageById(
+        assistantId,
+        (message) => {
+          if (message.role === "assistant") {
+            message.status = abort.cancelled ? "cancelled" : "done";
+          }
+        },
+        { refreshUnmounted: true },
+      );
     }
     if (!abort.cancelled) {
       await settleVirtualizerFrames();
@@ -878,33 +1235,37 @@ async function handleSend(): Promise<void> {
 bindThemeButtons(refreshTheme);
 
 mustGet("bulk-btn", HTMLButtonElement).addEventListener("click", () => {
-  const start = messages.length;
+  const start = transcript.length;
+  const nextMessages: Message[] = [];
   for (let i = 0; i < 100; i++) {
     const templateId = (start + i) % conversation.length;
     const sample = conversation[templateId]!;
-    messages.push(
+    nextMessages.push(
       createMessage({
         ...sample,
         itemHeight: templateHeights[templateId]!,
       }),
     );
   }
-  virtualizer.setCount();
+  const appendResult = appendMessagesToLoadedBottom(nextMessages);
+  virtualizer.setStickyIndex(null);
+  syncVirtualizerLayout();
+  refreshLoadedWindowIfReplaced(appendResult);
   void virtualizer.scrollToBottom().then(() => {
-    syncScrollButtons();
+    syncDemoState();
   });
   scheduleScrollButtons();
 });
 
 scrollTopBtn.addEventListener("click", () => {
-  void virtualizer.scrollToIndex(0, "top", { behavior: "smooth" }).then(() => {
-    syncScrollButtons();
+  void virtualizer.scrollToTop({ behavior: "smooth" }).then(() => {
+    syncDemoState();
   });
 });
 
 scrollBottomBtn.addEventListener("click", () => {
   void virtualizer.scrollToBottom({ behavior: "smooth" }).then(() => {
-    syncScrollButtons();
+    syncDemoState();
   });
 });
 
@@ -938,8 +1299,9 @@ virtualizer = createDynamicVirtualizer({
   getCount: () => messages.length,
   getItemHeight,
   buildItem,
-  overscanPx: 700,
-  onRangeChange: scheduleScrollButtons,
+  overscanPx: domOverscanPx,
+  onRangeChange: syncDemoState,
+  onReachTop: loadOlderMessages,
   onScrollStart: handleVirtualizerScrollStart,
   onScrollEnd: handleVirtualizerScrollEnd,
 });
@@ -947,7 +1309,7 @@ const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
 
 await virtualizer.scrollToBottom();
-syncScrollButtons();
+syncDemoState();
 document.documentElement.classList.remove("booting");
 promptInput.focus();
 
@@ -955,6 +1317,8 @@ watchSystemTheme(refreshTheme);
 loadHighlighter()
   .then(() => {
     measureTemplateHeights();
+    measureExistingMessages();
+    virtualizer.invalidateMeasurements();
     refreshMountedItems();
   })
   .catch(console.error);

@@ -270,11 +270,11 @@ ordinary slot DOM nodes from the runtime's perspective. The runtime doesn't own
 loading semantics; it only makes the host-provided node part of the scrollable
 content.
 
-Deferred loading can split network and DOM work without host scroll-state
+Deferred loading splits network and DOM work without host scroll-state
 bookkeeping. Use `onReachTop` or `onReachBottom` to start the network request
 as soon as the user reaches a boundary. When the rows are ready, call
-`syncLayout({ deferDuringScroll: true, ... })`. The runtime queues that layout
-update while native scrolling is active and applies it from its `scrollend`
+`syncLayout(...)`. The runtime queues row prepends, appends, and retained-window
+shifts while native scrolling is active and applies them from its `scrollend`
 path.
 
 The runtime treats `scrollend` as blocked while touch or pointer input is still
@@ -368,12 +368,10 @@ in the retained window mounted while preserving the same runtime scroll model,
 boundary slots, measurements, and scroll APIs. Use it to compare normal
 virtualization against mount-free retained-window rendering.
 
-The load mode button switches the host between instant and deferred boundary
-loading. In instant mode, top and bottom reach callbacks load and commit the
-next chunk as soon as the boundary slot enters the viewport. In deferred mode,
-the host displays a boundary spinner as a scrollable row, starts the fetch from
-the reach callback, and passes `deferDuringScroll: true` to `syncLayout()` so
-the runtime applies the ready chunk after native scrolling ends.
+Boundary loading is always deferred while native scrolling is active. The host
+displays a boundary spinner as a scrollable row, starts the fetch from the reach
+callback, and calls `syncLayout()` when the chunk is ready. The runtime applies
+the ready chunk after native scrolling ends.
 
 When a boundary load starts, the demo cancels any in-flight or pending boundary
 load with an `AbortController`. This prevents stale loading spinners and stops

@@ -124,9 +124,33 @@ export interface DynamicVirtualizerLayoutUpdate
   topSlot?: DynamicVirtualizerBoundarySlot | null;
   bottomSlot?: DynamicVirtualizerBoundarySlot | null;
   placeholderSlot?: DynamicVirtualizerPlaceholderSlot | null;
-  deferDuringScroll?: boolean;
   apply?: () => boolean | undefined;
   after?: () => void;
+}
+
+export interface DynamicVirtualizerPixelWindowPlan {
+  start: number;
+  end: number;
+  count: number;
+  height: number;
+}
+
+export interface DynamicVirtualizerPixelWindowConfig {
+  count: number;
+  minimumPx: number;
+  getItemHeight: (index: number) => number;
+  minItems?: number;
+  maxItems?: number;
+}
+
+export interface DynamicVirtualizerPixelWindowFromStartConfig
+  extends DynamicVirtualizerPixelWindowConfig {
+  start?: number;
+}
+
+export interface DynamicVirtualizerPixelWindowFromEndConfig
+  extends DynamicVirtualizerPixelWindowConfig {
+  end?: number;
 }
 
 export interface DynamicVirtualizerState {
@@ -293,6 +317,94 @@ function nonNegativeInteger(value: number): number {
 
 function positiveSize(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : 1;
+}
+
+function normalizedWindowItemLimit(
+  value: number | undefined,
+  fallback: number,
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isFinite(value) || value < 0) return fallback;
+  return Math.floor(value);
+}
+
+function shouldCollectPixelWindowItem(
+  itemCount: number,
+  height: number,
+  minimumPx: number,
+  minItems: number,
+  maxItems: number,
+): boolean {
+  if (itemCount >= maxItems) return false;
+  return itemCount < minItems || height < minimumPx;
+}
+
+export function planDynamicVirtualizerPixelWindowFromEnd(
+  config: DynamicVirtualizerPixelWindowFromEndConfig,
+): DynamicVirtualizerPixelWindowPlan {
+  const count = nonNegativeInteger(config.count);
+  const end = clamp(normalizedWindowItemLimit(config.end, count), 0, count);
+  const minimumPx = nonNegativeSize(config.minimumPx);
+  const minItems = normalizedWindowItemLimit(
+    config.minItems,
+    count > 0 ? 1 : 0,
+  );
+  const maxItems = Math.max(
+    minItems,
+    normalizedWindowItemLimit(config.maxItems, count),
+  );
+  let start = end;
+  let height = 0;
+
+  while (
+    start > 0 &&
+    shouldCollectPixelWindowItem(
+      end - start,
+      height,
+      minimumPx,
+      minItems,
+      maxItems,
+    )
+  ) {
+    start--;
+    height += positiveSize(config.getItemHeight(start));
+  }
+
+  return { start, end, count: end - start, height };
+}
+
+export function planDynamicVirtualizerPixelWindowFromStart(
+  config: DynamicVirtualizerPixelWindowFromStartConfig,
+): DynamicVirtualizerPixelWindowPlan {
+  const count = nonNegativeInteger(config.count);
+  const start = clamp(normalizedWindowItemLimit(config.start, 0), 0, count);
+  const minimumPx = nonNegativeSize(config.minimumPx);
+  const minItems = normalizedWindowItemLimit(
+    config.minItems,
+    count > 0 ? 1 : 0,
+  );
+  const maxItems = Math.max(
+    minItems,
+    normalizedWindowItemLimit(config.maxItems, count),
+  );
+  let end = start;
+  let height = 0;
+
+  while (
+    end < count &&
+    shouldCollectPixelWindowItem(
+      end - start,
+      height,
+      minimumPx,
+      minItems,
+      maxItems,
+    )
+  ) {
+    height += positiveSize(config.getItemHeight(end));
+    end++;
+  }
+
+  return { start, end, count: end - start, height };
 }
 
 function nonNegativeSize(value: number): number {
@@ -1157,6 +1269,7 @@ export function createDynamicVirtualizer(
     if (shouldWrite) viewport.scrollTop = target;
     if (options?.preserveLogicalOffset) {
       setScrollTopResidual(target - viewport.scrollTop);
+      if (userScrollActive) resetScrollVelocity(viewport.scrollTop);
     } else {
       clearScrollTopResidual();
     }
@@ -2077,12 +2190,23 @@ export function createDynamicVirtualizer(
 
     const updates = deferredLayoutUpdates.splice(0);
     for (const update of updates) {
-      applyLayoutUpdate({
-        ...update,
-        deferDuringScroll: false,
-      });
+      applyLayoutUpdate(update);
     }
     return true;
+  }
+
+  function shouldDeferLayoutUpdate(
+    update: DynamicVirtualizerLayoutUpdate,
+  ): boolean {
+    if (!userScrollActive) return false;
+    if (update.apply) return true;
+    if (
+      normalizedCountShift(update.addedBefore, Number.MAX_SAFE_INTEGER) > 0 ||
+      normalizedCountShift(update.removedBefore, sizes.length) > 0
+    ) {
+      return true;
+    }
+    return nonNegativeInteger(getCount()) !== count;
   }
 
   function applyLayoutUpdate(
@@ -2158,9 +2282,10 @@ export function createDynamicVirtualizer(
       }
       scheduleRender();
     } else {
-      renderNow(hasScrollTarget ? nextScrollTop : logicalScrollTop());
       if (hasScrollTarget) {
         setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
+        scheduleRender();
+      } else {
         renderNow(logicalScrollTop());
       }
     }
@@ -2168,7 +2293,7 @@ export function createDynamicVirtualizer(
   }
 
   function syncLayout(update: DynamicVirtualizerLayoutUpdate = {}): void {
-    if (update.deferDuringScroll && userScrollActive) {
+    if (shouldDeferLayoutUpdate(update)) {
       deferredLayoutUpdates.push(update);
       return;
     }
