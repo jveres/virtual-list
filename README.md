@@ -57,9 +57,11 @@ The runtime uses these pieces:
 - A viewport `ResizeObserver` to keep the current anchor stable when the list
   area changes height.
 
-There is no phantom element, scroll runway, idle rebase, or chunk trimming in
-this version. The browser owns the scroll range directly, and the runtime keeps
-that range accurate by updating measured row sizes.
+There is no phantom element, scroll runway, idle rebase, or runtime-owned chunk
+trimming in this version. The browser owns the scroll range directly, and the
+runtime keeps that range accurate by updating measured row sizes. Hosts that
+keep a retained data window can trim their own arrays with `setCount()` or
+`syncLayout()`.
 
 ## Measurement and scroll correction
 
@@ -126,7 +128,7 @@ const itemMeasurer = createDynamicVirtualizerItemMeasurer({
   buildItem: (index) => buildMessageElement(index),
 });
 
-const measuredMessageHeights = messages.map((_, index) =>
+let measuredMessageHeights = messages.map((_, index) =>
   itemMeasurer.measure(index),
 );
 itemMeasurer.dispose();
@@ -141,14 +143,32 @@ const virtualizer = createDynamicVirtualizer({
   onRangeChange: (state) => {
     updateControls(state.atTop, state.atBottom);
   },
-  onReachTop: () => {
+  onReachTop: async () => {
     virtualizer.setBoundarySlot("top", loadingSlot);
-    const addedBefore = prependOlderMessages();
-    virtualizer.syncLayout({ addedBefore, topSlot: null });
+    const olderMessages = await loadOlderMessages();
+    const olderHeights = measureMessages(olderMessages);
+    virtualizer.syncLayout({
+      addedBefore: olderMessages.length,
+      topSlot: null,
+      apply: () => {
+        messages = [...olderMessages, ...messages];
+        measuredMessageHeights = [...olderHeights, ...measuredMessageHeights];
+        return true;
+      },
+    });
   },
-  onReachBottom: () => {
-    appendNewerMessages();
-    virtualizer.setCount();
+  onReachBottom: async () => {
+    virtualizer.setBoundarySlot("bottom", loadingSlot);
+    const newerMessages = await loadNewerMessages();
+    const newerHeights = measureMessages(newerMessages);
+    virtualizer.syncLayout({
+      bottomSlot: null,
+      apply: () => {
+        messages = [...messages, ...newerMessages];
+        measuredMessageHeights = [...measuredMessageHeights, ...newerHeights];
+        return true;
+      },
+    });
   },
 });
 ```
@@ -165,9 +185,12 @@ The returned object exposes:
   font, or orientation change.
 - `setCount()` after append, remove, or replace operations.
 - `syncLayout(update)` after count changes that need to be applied atomically
-  with boundary slot changes.
-- `setCount({ addedBefore })` after prepending rows before the current first
-  row.
+  with boundary slot changes. Use `apply` for host data mutations that must be
+  committed with the virtualizer layout update. Return `false` from `apply` to
+  cancel the update.
+- `setCount({ addedBefore })` after prepending rows before the current first row
+  outside an active boundary load. Use `syncLayout({ addedBefore, apply })` for
+  boundary-triggered prepends.
 - `setCount({ removedBefore })` after trimming rows from the start of the
   loaded window.
 - `setBoundarySlot("top" | "bottom", slot | null)` for scrollable boundary
@@ -207,6 +230,13 @@ wrapper for single-row measurement. Both measurement APIs are intentionally
 separate from the live instance so the host can measure rows before the
 virtualizer exists, before appending a new message, or before loading a chunk
 into an existing list.
+
+Use `planDynamicVirtualizerPixelWindowFromStart()` and
+`planDynamicVirtualizerPixelWindowFromEnd()` when a retained host window needs
+to load enough rows to cover a target pixel height instead of a fixed row
+count. The streaming demo uses this to load roughly a viewport-height multiple
+from the newest transcript tail and to prepend older messages in similarly
+sized batches.
 
 Boundary slots are optional host-owned rows before item `0` and after the last
 item. The host provides a stable `key`, a measured `height`, and a `build()`
@@ -277,6 +307,12 @@ as soon as the user reaches a boundary. When the rows are ready, call
 shifts while native scrolling is active and applies them from its `scrollend`
 path.
 
+Slot-only updates apply immediately while native scrolling is active. This lets
+the host show a loading spinner as soon as a boundary is reached. Layout updates
+with `apply`, `addedBefore`, `removedBefore`, or a count change are deferred
+until scrolling settles. Put boundary-load array mutations inside `apply` so the
+host data changes in the same step as the virtualizer's count and size model.
+
 The runtime treats `scrollend` as blocked while touch or pointer input is still
 active. In that case, a later native `scrollend` flushes deferred layout
 updates. If the browser already emitted the final `scrollend` before the input
@@ -297,15 +333,17 @@ when the mounted range, mounted count, measured count, modeled total size, or
 true top or bottom state changes. It doesn't fire for every scroll frame when
 the rendered range and edge state remain unchanged.
 
-For bottom appends, update the host data and call `setCount()`. The current
-`scrollTop` is preserved, so newly appended rows extend the scroll range below
-the current view.
+For bottom appends outside an active boundary load, update the host data and
+call `setCount()`. The current `scrollTop` is preserved, so newly appended rows
+extend the scroll range below the current view. For boundary-triggered appends,
+use `syncLayout({ apply })` so the host data and runtime count commit together
+after native scrolling settles.
 
-For top prepends, update the host data and call
-`setCount({ addedBefore: rowCount })`. The runtime shifts the existing size
-model by `rowCount`, fills the new leading rows from `getItemHeight(index)`,
-and adds the inserted height to `scrollTop`. That keeps the same visible row
-anchored while the newly loaded rows become available above it.
+For top prepends, pass `addedBefore` in the same `syncLayout()` update that
+mutates the host data. The runtime shifts the existing size model by the added
+row count, fills the new leading rows from `getItemHeight(index)`, and adds the
+inserted height to `scrollTop`. That keeps the same visible row anchored while
+the newly loaded rows become available above it.
 
 For top trims, update the host data and call
 `setCount({ removedBefore: rowCount })`. The runtime shifts the retained size
@@ -378,14 +416,15 @@ load with an `AbortController`. This prevents stale loading spinners and stops
 network requests when momentum carries the viewport from one edge to the other
 before the first load commits.
 
-Top loading uses `syncLayout({ addedBefore, topSlot })`, because that prepend
-path must write `scrollTop` to preserve the currently visible anchor while
-replacing any top boundary slot. Bottom loading uses
-`syncLayout({ bottomSlot })`, because extending the range below the viewport
-doesn't need an anchor correction. If the loaded window exceeds the retained
-target, the host trims rows from the opposite end only when the rows to trim
-are outside the mounted range. The trim uses the same runtime layout path as
-the load operation, so retention changes remain anchored to the current view.
+Top loading uses `syncLayout({ addedBefore, topSlot, apply })`, because that
+prepend path must write `scrollTop` to preserve the currently visible anchor
+while replacing any top boundary slot. Bottom loading uses
+`syncLayout({ bottomSlot, apply })`, because the host still needs the ready rows
+to commit through the same deferred layout path. If the loaded window exceeds
+the retained target, the host trims rows from the opposite end only when the
+rows to trim are outside the mounted range. The trim uses the same runtime
+layout path as the load operation, so retention changes remain anchored to the
+current view.
 
 The status bar shows the loaded global index window and mounted global index
 range. The host still provides near-exact row heights through
@@ -415,6 +454,13 @@ mounted. Sending a message appends the user row first, calls
 `setStickyIndex(userIndex)`, and then scrolls that user row to the top of the
 viewport. The assistant placeholder is appended after that scroll finishes, so
 the response fills the space below the user message as it streams.
+
+The demo keeps a linear transcript outside the virtualizer and loads only a
+pixel-sized retained window into the live list. The initial bulk load uses the
+newest rows needed to cover the viewport-height factor, and top boundary loads
+prepend older rows with the same pixel-window planner. The footer shows the
+loaded transcript range, loaded height, mounted range, mounted count, and
+measured count for manual checks.
 
 The assistant status label uses:
 
