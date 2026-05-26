@@ -65,7 +65,7 @@ const BOUNDARY_SLOT_HEIGHT = 52;
 const LOAD_OLDER_DELAY_MS = 180;
 const INITIAL_TRANSCRIPT_COUNT = 100;
 
-type BoundarySlotKind = "none" | "idle" | "loading";
+type BoundarySlotKind = "none" | "idle" | "loading" | "no-more";
 
 const demoParams = new URLSearchParams(location.search);
 const instantReplies =
@@ -524,10 +524,10 @@ function boundarySlotLabel(
   boundary: DynamicVirtualizerBoundary,
   kind: BoundarySlotKind,
 ): string {
-  if (kind !== "loading") return "";
-  return boundary === "top"
-    ? "Loading older messages"
-    : "Loading newer messages";
+  if (boundary !== "top") return "";
+  if (kind === "loading") return "Loading older messages";
+  if (kind === "no-more") return "At the top";
+  return "";
 }
 
 function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
@@ -558,17 +558,29 @@ function updateBoundarySlotElement(
 
   const kind = visibleBoundarySlotKind(boundary);
   const label = element.querySelector<HTMLElement>("span:last-child");
-  element.dataset.state = kind;
-
-  if (kind === "idle") {
-    element.setAttribute("aria-hidden", "true");
-    if (element.hasAttribute("role")) element.removeAttribute("role");
-  } else {
-    element.removeAttribute("aria-hidden");
-    element.setAttribute("role", "status");
+  if (element.dataset.state !== kind) {
+    element.dataset.state = kind;
   }
 
-  if (label) label.textContent = boundarySlotLabel(boundary, kind);
+  if (kind === "idle") {
+    if (element.getAttribute("aria-hidden") !== "true") {
+      element.setAttribute("aria-hidden", "true");
+    }
+    if (element.hasAttribute("role")) element.removeAttribute("role");
+  } else {
+    if (element.hasAttribute("aria-hidden")) {
+      element.removeAttribute("aria-hidden");
+    }
+    if (element.getAttribute("role") !== "status") {
+      element.setAttribute("role", "status");
+    }
+  }
+
+  if (!label) return;
+  const nextLabel = boundarySlotLabel(boundary, kind);
+  if (label.textContent !== nextLabel) {
+    label.textContent = nextLabel;
+  }
 }
 
 function shouldMountBoundarySlot(
@@ -576,8 +588,7 @@ function shouldMountBoundarySlot(
   context = currentBoundarySlotContext(),
 ): boolean {
   if (boundary === "bottom") return false;
-  if (context.loadedCount === 0) return false;
-  return context.loadingTop || context.loadedStart > 0;
+  return context.loadedCount > 0;
 }
 
 function boundarySlotFor(
@@ -600,18 +611,37 @@ function setBoundarySlotState(
   boundarySlotStates[boundary] = { kind };
 }
 
-function syncBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
-  virtualizer.setBoundarySlot(boundary, boundarySlotFor(boundary));
+function idleBoundarySlotState(
+  boundary: DynamicVirtualizerBoundary,
+  context = currentBoundarySlotContext(),
+): BoundarySlotKind {
+  if (boundary === "bottom" || context.loadedCount === 0) return "none";
+  return context.loadedStart <= 0 ? "no-more" : "none";
+}
+
+function setBoundarySlotIdleState(
+  boundary: DynamicVirtualizerBoundary,
+  context = currentBoundarySlotContext(),
+): void {
+  setBoundarySlotState(boundary, idleBoundarySlotState(boundary, context));
+}
+
+function refreshBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
   const element = virtualizer.getBoundaryElement(boundary);
   if (element) updateBoundarySlotElement(element, boundary);
 }
 
+function syncBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
+  virtualizer.setBoundarySlot(boundary, boundarySlotFor(boundary));
+  refreshBoundarySlot(boundary);
+}
+
 function updateRenderedBoundarySlots(): void {
-  const topElement = virtualizer.getBoundaryElement("top");
-  if (topElement) updateBoundarySlotElement(topElement, "top");
+  refreshBoundarySlot("top");
 }
 
 function syncVirtualizerLayout(options?: { addedBefore?: number }): void {
+  if (!loadingTop) setBoundarySlotIdleState("top");
   virtualizer.syncLayout({
     ...options,
     topSlot: boundarySlotFor("top"),
@@ -623,11 +653,18 @@ function syncVirtualizerLayout(options?: { addedBefore?: number }): void {
 }
 
 function loadOlderMessages(): void {
-  if (loadingTop || !canLoadOlderMessages()) return;
+  if (loadingTop) return;
+
+  if (!canLoadOlderMessages()) {
+    setBoundarySlotState("top", "no-more");
+    refreshBoundarySlot("top");
+    syncDemoState();
+    return;
+  }
 
   loadingTop = true;
   setBoundarySlotState("top", "loading");
-  syncBoundarySlot("top");
+  refreshBoundarySlot("top");
   syncDemoState();
 
   window.setTimeout(() => {
@@ -640,8 +677,8 @@ function loadOlderMessages(): void {
 
     if (plan.count === 0) {
       loadingTop = false;
-      setBoundarySlotState("top", "none");
-      syncBoundarySlot("top");
+      setBoundarySlotState("top", "no-more");
+      refreshBoundarySlot("top");
       syncDemoState();
       return;
     }
@@ -661,7 +698,7 @@ function loadOlderMessages(): void {
         loadedStart = plan.start;
         messages = [...addedMessages, ...messages];
         loadingTop = false;
-        setBoundarySlotState("top", "none");
+        setBoundarySlotIdleState("top", nextContext);
         return true;
       },
       after: () => {
@@ -1299,6 +1336,8 @@ virtualizer = createDynamicVirtualizer({
   onScrollStart: handleVirtualizerScrollStart,
   onScrollEnd: handleVirtualizerScrollEnd,
 });
+setBoundarySlotIdleState("top");
+syncBoundarySlot("top");
 const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
 
