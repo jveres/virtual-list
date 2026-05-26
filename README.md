@@ -539,9 +539,7 @@ measurement pass catches up from the current native scroll position.
 Use the project check before committing runtime or demo changes.
 
 ```sh
-pnpm run test
 pnpm run check
 ```
 
-The test command runs the Vitest suite. The check command runs Biome, the main
-TypeScript config, and `tsconfig.test.json` so test files are typechecked too.
+The check command runs Biome and the main TypeScript config.

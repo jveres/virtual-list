@@ -8,9 +8,7 @@
     "preview": "vite preview",
     "lint": "biome lint .",
     "format": "biome format --write .",
-    "check": "biome check . && tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "check": "biome check . && tsc --noEmit"
   },
   "dependencies": {
     "@typefm/comrak-wasm": "file:../../typefm/packages/comrak-wasm"
@@ -20,10 +18,8 @@
     "@shikijs/engine-oniguruma": "4.1.0",
     "@shikijs/langs": "4.1.0",
     "@shikijs/themes": "4.1.0",
-    "happy-dom": "^20.0.10",
     "shiki": "^4.1.0",
     "typescript": "^6.0.3",
-    "vite": "^8.0.14",
-    "vitest": "^3.2.4"
+    "vite": "^8.0.14"
   }
 }
