@@ -645,6 +645,7 @@ export function createDynamicVirtualizer(
   let placeholderFastMode = false;
   let hydratePlaceholdersBlocked = false;
   let placeholderLowVelocitySamples = 0;
+  let placeholderHydrationFrame = 0;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
   let nativeScrollEndPending = false;
@@ -1474,6 +1475,34 @@ export function createDynamicVirtualizer(
     });
   }
 
+  function cancelPlaceholderHydrationCheck(): void {
+    if (!placeholderHydrationFrame) return;
+    cancelAnimationFrame(placeholderHydrationFrame);
+    placeholderHydrationFrame = 0;
+  }
+
+  function needsPlaceholderHydrationCheck(): boolean {
+    return (
+      mountedPlaceholders.size > 0 &&
+      (placeholderFastMode || hydratePlaceholdersBlocked)
+    );
+  }
+
+  function schedulePlaceholderHydrationCheck(): void {
+    if (placeholderHydrationFrame || disposed) return;
+    if (!needsPlaceholderHydrationCheck()) return;
+
+    placeholderHydrationFrame = requestAnimationFrame(() => {
+      placeholderHydrationFrame = 0;
+      if (disposed || !needsPlaceholderHydrationCheck()) return;
+
+      renderNow(logicalScrollTop());
+      if (needsPlaceholderHydrationCheck()) {
+        schedulePlaceholderHydrationCheck();
+      }
+    });
+  }
+
   function clearPlaceholderFastModeState(): void {
     placeholderFastMode = false;
     hydratePlaceholdersBlocked = false;
@@ -1500,30 +1529,30 @@ export function createDynamicVirtualizer(
       return false;
     }
 
+    const velocity = currentScrollVelocity();
+
     if (isAtNativeScrollBoundary()) {
       const refreshedPlaceholders = disablePlaceholderFastMode();
       if (debugPlaceholder && refreshedPlaceholders) {
         debugPlaceholderEvent("fast-mode-boundary-exit", {
-          velocity: scrollVelocity,
+          velocity,
         });
       }
       return false;
     }
 
-    if (scrollVelocity >= enterVelocity) {
+    if (velocity >= enterVelocity) {
       const wasFast = placeholderFastMode;
       hydratePlaceholdersBlocked = true;
       placeholderFastMode = true;
       placeholderLowVelocitySamples = 0;
+      schedulePlaceholderHydrationCheck();
       if (!wasFast && debugPlaceholder) {
-        debugPlaceholderEvent("fast-mode-enter", { velocity: scrollVelocity });
+        debugPlaceholderEvent("fast-mode-enter", { velocity });
       }
     } else if (placeholderFastMode) {
       const exitVelocity = enterVelocity * PLACEHOLDER_VELOCITY_EXIT_RATIO;
-      if (
-        lastScrollSampleDelta > measureEpsilon &&
-        scrollVelocity <= exitVelocity
-      ) {
+      if (lastScrollSampleDelta > measureEpsilon && velocity <= exitVelocity) {
         placeholderLowVelocitySamples++;
       } else if (lastScrollSampleDelta > measureEpsilon) {
         placeholderLowVelocitySamples = 0;
@@ -1534,9 +1563,11 @@ export function createDynamicVirtualizer(
         placeholderLowVelocitySamples = 0;
         if (debugPlaceholder) {
           debugPlaceholderEvent("fast-mode-exit", {
-            velocity: scrollVelocity,
+            velocity,
           });
         }
+      } else {
+        schedulePlaceholderHydrationCheck();
       }
     } else {
       placeholderFastMode = false;
@@ -1558,6 +1589,7 @@ export function createDynamicVirtualizer(
     if (usePlaceholder && buildPlaceholder) {
       element.dataset.placeholder = "true";
       mountedPlaceholders.add(index);
+      schedulePlaceholderHydrationCheck();
     } else {
       itemResizeObserver.observe(element);
       mountedPlaceholders.delete(index);
@@ -3110,6 +3142,7 @@ export function createDynamicVirtualizer(
       disposed = true;
       if (renderFrame) cancelAnimationFrame(renderFrame);
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
+      cancelPlaceholderHydrationCheck();
       cancelSettleFrame();
       cancelSettleTimer();
       cancelWheelInputTimer();

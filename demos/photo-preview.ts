@@ -2,9 +2,9 @@ const PHOTO_VIEW_INLINE_PADDING = 24;
 const PHOTO_VIEW_BLOCK_PADDING = 0;
 const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
-const PHOTO_VIEW_DURATION_MS = 380;
+const PHOTO_VIEW_DURATION_MS = 420;
 const PHOTO_VIEW_GEOMETRY_EASING = "cubic-bezier(0.18, 1.28, 0.32, 1)";
-const PHOTO_VIEW_FADE_EASING = "cubic-bezier(0.2, 0, 0, 1)";
+const PHOTO_VIEW_FADE_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 const PHOTO_PRESS_DOWN_MS = 150;
 const PHOTO_TOUCH_PRESS_DELAY_MS = 80;
 const PHOTO_TAP_MOVE_TOLERANCE_PX = 10;
@@ -141,6 +141,14 @@ function styleFixedRect(element: HTMLElement, rect: PhotoRect): void {
 function setPhotoHeroRadius(hero: HTMLElement, radius: string): void {
   hero.style.borderRadius = radius;
   hero.style.clipPath = `inset(0 round ${radius})`;
+}
+
+function photoHeroTransform(from: PhotoRect, to: PhotoRect): string {
+  const scaleX = from.width / Math.max(1, to.width);
+  const scaleY = from.height / Math.max(1, to.height);
+  const translateX = from.left - to.left;
+  const translateY = from.top - to.top;
+  return `translate3d(${translateX.toFixed(3)}px, ${translateY.toFixed(3)}px, 0) scale(${scaleX.toFixed(5)}, ${scaleY.toFixed(5)})`;
 }
 
 function animationFinished(animation: Animation): Promise<void> {
@@ -696,6 +704,9 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
   async function revealHighResolutionImage(
     view: ActivePhotoView<T>,
   ): Promise<void> {
+    if (!view.highResolutionImage.src) {
+      view.highResolutionImage.src = photoViewImageUrl(view.photo);
+    }
     await view.highResolutionImage.decode?.().catch(() => undefined);
     if (activePhotoView !== view || view.closing) return;
     view.highResolutionImage.classList.add("is-loaded");
@@ -790,7 +801,6 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       "photo-viewer-image photo-viewer-image-hires";
     highResolutionImage.alt = "";
     highResolutionImage.decoding = "async";
-    highResolutionImage.src = photoViewImageUrl(photo);
     highResolutionImage.width = imageBox.width;
     highResolutionImage.height = imageBox.height;
 
@@ -963,8 +973,9 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     if (activePhotoView !== view || view.closing) return;
     syncPhotoViewScrollMode(view);
     const targetRect = readRect(frame.getBoundingClientRect());
-    const hero = createPhotoHero(sourceSrc, sourceRect);
+    const hero = createPhotoHero(sourceSrc, targetRect);
     setPhotoHeroRadius(hero, "8px");
+    hero.style.transform = photoHeroTransform(sourceRect, targetRect);
     view.openingHero = hero;
     overlay.append(hero);
     hidePhotoSource(sourceElement);
@@ -986,18 +997,12 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         {
           borderRadius: "8px",
           clipPath: "inset(0 round 8px)",
-          height: `${sourceRect.height}px`,
-          left: `${sourceRect.left}px`,
-          top: `${sourceRect.top}px`,
-          width: `${sourceRect.width}px`,
+          transform: photoHeroTransform(sourceRect, targetRect),
         },
         {
           borderRadius: "10px",
           clipPath: "inset(0 round 10px)",
-          height: `${targetRect.height}px`,
-          left: `${targetRect.left}px`,
-          top: `${targetRect.top}px`,
-          width: `${targetRect.width}px`,
+          transform: "translate3d(0, 0, 0) scale(1)",
         },
       ],
       {
@@ -1070,31 +1075,30 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     setPhotoHeroRadius(hero, heroBorderRadius);
 
     const heroAnimation = currentSource
-      ? hero.animate(
-          [
+      ? (() => {
+          const initialTransform = photoHeroTransform(currentRect, targetRect);
+          styleFixedRect(hero, targetRect);
+          hero.style.transform = initialTransform;
+          return hero.animate(
+            [
+              {
+                borderRadius: heroBorderRadius,
+                clipPath: heroClipPath,
+                transform: initialTransform,
+              },
+              {
+                borderRadius: heroBorderRadius,
+                clipPath: heroClipPath,
+                transform: "translate3d(0, 0, 0) scale(1)",
+              },
+            ],
             {
-              borderRadius: heroBorderRadius,
-              clipPath: heroClipPath,
-              height: `${currentRect.height}px`,
-              left: `${currentRect.left}px`,
-              top: `${currentRect.top}px`,
-              width: `${currentRect.width}px`,
+              duration: PHOTO_VIEW_DURATION_MS,
+              easing: PHOTO_VIEW_GEOMETRY_EASING,
+              fill: "both",
             },
-            {
-              borderRadius: heroBorderRadius,
-              clipPath: heroClipPath,
-              height: `${targetRect.height}px`,
-              left: `${targetRect.left}px`,
-              top: `${targetRect.top}px`,
-              width: `${targetRect.width}px`,
-            },
-          ],
-          {
-            duration: PHOTO_VIEW_DURATION_MS,
-            easing: PHOTO_VIEW_GEOMETRY_EASING,
-            fill: "both",
-          },
-        )
+          );
+        })()
       : hero.animate(
           [
             {

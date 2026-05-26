@@ -63,6 +63,7 @@ html.photo-view-open body {
   position: absolute;
   inset: 0;
   background: color-mix(in srgb, var(--bg) 78%, transparent);
+  will-change: opacity;
 }
 
 .photo-viewer-scroll {
@@ -142,9 +143,11 @@ html.photo-view-open body {
   position: fixed;
   z-index: 5;
   overflow: hidden;
+  backface-visibility: hidden;
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;
+  contain: layout paint;
   pointer-events: none;
   transform-origin: top left;
   will-change: transform;
