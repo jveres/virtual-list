@@ -2890,7 +2890,9 @@ export function createDynamicVirtualizer(
     }, WHEEL_INPUT_IDLE_MS);
   }
 
-  function handleWheelInputSettle(): void {
+  function handleWheelInputSettle(
+    outwardBoundary: DynamicVirtualizerBoundary | null = null,
+  ): void {
     if (
       scrollSettleStrategy !== "firefox-wheel" &&
       scrollSettleStrategy !== "safari-wheel"
@@ -2903,8 +2905,17 @@ export function createDynamicVirtualizer(
       wheelInputTimer = 0;
       wheelInputActive = false;
       hydratePlaceholdersAfterNativeScrollEnd();
-      if (nativeScrollEndPending) scheduleSettleCooldown();
-      else scheduleWheelScrollEndFallback();
+      if (nativeScrollEndPending) {
+        scheduleSettleCooldown();
+        return;
+      }
+      if (
+        scrollSettleStrategy === "firefox-wheel" &&
+        outwardBoundary !== null
+      ) {
+        return;
+      }
+      scheduleWheelScrollEndFallback();
     }, WHEEL_INPUT_IDLE_MS);
   }
 
@@ -2917,9 +2928,9 @@ export function createDynamicVirtualizer(
       scrollSettleStrategy === "safari-wheel"
     ) {
       const outwardBoundary = boundaryForOutwardWheel(event);
-      if (outwardBoundary && !userScrollActive) return;
       handleUserScrollStart();
-      handleWheelInputSettle();
+      if (outwardBoundary) userScrollMoved = true;
+      handleWheelInputSettle(outwardBoundary);
       return;
     }
 
