@@ -10,7 +10,7 @@ const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 8;
 const PLACEHOLDER_VELOCITY_EXIT_RATIO = 0.5;
 const PLACEHOLDER_EXIT_SAMPLE_COUNT = 3;
 const SCROLL_SETTLE_COOLDOWN_MS = 140;
-const CHROMIUM_WHEEL_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
+const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 const CHROMIUM_EDGE_SETTLE_QUIET_MS = 450;
 const SCROLL_TOP_RESIDUAL_EPSILON = 0.01;
 const MAX_SCROLL_TOP_RESIDUAL = 2;
@@ -194,7 +194,11 @@ const PRESERVE_LOGICAL_SCROLL_OFFSET: ScrollTopWriteOptions = {
   preserveLogicalOffset: true,
 };
 
-type ScrollSettleStrategy = "default" | "chromium-wheel" | "firefox-wheel";
+type ScrollSettleStrategy =
+  | "default"
+  | "chromium-wheel"
+  | "firefox-wheel"
+  | "safari-wheel";
 
 interface MountedBoundarySlot {
   key: string | null;
@@ -536,6 +540,9 @@ export function measureDynamicVirtualizerItem(
 function detectScrollSettleStrategy(): ScrollSettleStrategy {
   const userAgent = navigator.userAgent;
   if (/\bFirefox\//.test(userAgent)) return "firefox-wheel";
+  if (/\bVersion\/[\d.]+.*\bSafari\//.test(userAgent)) {
+    return "safari-wheel";
+  }
   return /\b(?:Chrome|Chromium|Edg|OPR)\//.test(userAgent)
     ? "chromium-wheel"
     : "default";
@@ -641,7 +648,7 @@ export function createDynamicVirtualizer(
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
   let nativeScrollEndPending = false;
-  let firefoxPendingNativeScrollEndTop: number | null = null;
+  let wheelPendingNativeScrollEndTop: number | null = null;
   let settleFrame = 0;
   let settleTimer = 0;
   let wheelInputActive = false;
@@ -2451,14 +2458,14 @@ export function createDynamicVirtualizer(
     const nextScrollTop = viewport.scrollTop;
     updateScrollVelocity(nextScrollTop);
     if (
-      scrollSettleStrategy === "firefox-wheel" &&
+      (scrollSettleStrategy === "firefox-wheel" ||
+        scrollSettleStrategy === "safari-wheel") &&
       nativeScrollEndPending &&
-      firefoxPendingNativeScrollEndTop !== null &&
-      Math.abs(nextScrollTop - firefoxPendingNativeScrollEndTop) >
-        measureEpsilon
+      wheelPendingNativeScrollEndTop !== null &&
+      Math.abs(nextScrollTop - wheelPendingNativeScrollEndTop) > measureEpsilon
     ) {
       nativeScrollEndPending = false;
-      firefoxPendingNativeScrollEndTop = null;
+      wheelPendingNativeScrollEndTop = null;
       cancelSettleTimer();
       cancelSettleFrame();
     }
@@ -2507,7 +2514,7 @@ export function createDynamicVirtualizer(
       inScrollRange: !isRubberBandOverscrolled(),
       strictlyInScrollRange: !isStrictlyOutOfScrollRange(),
       nativeScrollEndPending,
-      firefoxPendingNativeScrollEndTop,
+      wheelPendingNativeScrollEndTop,
       wheelInputActive,
       chromiumEdgeWheelActive,
       chromiumEdgeWheelIdle,
@@ -2552,7 +2559,8 @@ export function createDynamicVirtualizer(
   function usesWheelInputSettle(): boolean {
     return (
       scrollSettleStrategy === "chromium-wheel" ||
-      scrollSettleStrategy === "firefox-wheel"
+      scrollSettleStrategy === "firefox-wheel" ||
+      scrollSettleStrategy === "safari-wheel"
     );
   }
 
@@ -2612,7 +2620,7 @@ export function createDynamicVirtualizer(
 
   function cancelPendingUserScrollEnd(): void {
     nativeScrollEndPending = false;
-    firefoxPendingNativeScrollEndTop = null;
+    wheelPendingNativeScrollEndTop = null;
     chromiumWheelSawNativeScrollEnd = false;
     cancelSettleTimer();
     cancelSettleFrame();
@@ -2620,7 +2628,7 @@ export function createDynamicVirtualizer(
 
   function resetUserScrollState(): void {
     nativeScrollEndPending = false;
-    firefoxPendingNativeScrollEndTop = null;
+    wheelPendingNativeScrollEndTop = null;
     userScrollActive = false;
     userScrollMoved = false;
     resetScrollVelocity();
@@ -2661,7 +2669,9 @@ export function createDynamicVirtualizer(
     if (!userScrollActive || !nativeScrollEndPending) return;
     if (!canSettleUserScroll()) {
       if (
-        (scrollSettleStrategy === "firefox-wheel" && wheelInputActive) ||
+        ((scrollSettleStrategy === "firefox-wheel" ||
+          scrollSettleStrategy === "safari-wheel") &&
+          wheelInputActive) ||
         hasActiveChromiumEdgeWheel() ||
         (scrollSettleStrategy === "chromium-wheel" &&
           (chromiumWheelAwaitingFinalScrollEnd || chromiumEdgeWheelSuppressed))
@@ -2718,14 +2728,17 @@ export function createDynamicVirtualizer(
   function handleScrollEnd(): void {
     debugScrollSettleEvent("native-scrollend");
 
-    if (scrollSettleStrategy === "firefox-wheel") {
+    if (
+      scrollSettleStrategy === "firefox-wheel" ||
+      scrollSettleStrategy === "safari-wheel"
+    ) {
       if (!userScrollActive) return;
       if (!userScrollMoved) {
         cancelUserScroll();
         return;
       }
       nativeScrollEndPending = true;
-      firefoxPendingNativeScrollEndTop = viewport.scrollTop;
+      wheelPendingNativeScrollEndTop = viewport.scrollTop;
       hydratePlaceholdersAfterNativeScrollEnd();
       scheduleSettleCooldown();
       return;
@@ -2777,7 +2790,7 @@ export function createDynamicVirtualizer(
     userScrollActive = true;
     if (!wasActive) {
       nativeScrollEndPending = false;
-      firefoxPendingNativeScrollEndTop = null;
+      wheelPendingNativeScrollEndTop = null;
       userScrollMoved = false;
       pendingBoundaryArm = needsBoundaryRender;
       resetScrollVelocity();
@@ -2785,7 +2798,10 @@ export function createDynamicVirtualizer(
       chromiumWheelAwaitingFinalScrollEnd = false;
       chromiumEdgeWheelSuppressed = false;
       cancelChromiumEdgeSettleTimer();
-    } else if (scrollSettleStrategy !== "firefox-wheel") {
+    } else if (
+      scrollSettleStrategy !== "firefox-wheel" &&
+      scrollSettleStrategy !== "safari-wheel"
+    ) {
       cancelPendingUserScrollEnd();
     }
     if (debugPlaceholder) {
@@ -2832,11 +2848,16 @@ export function createDynamicVirtualizer(
       }
       hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) scheduleSettleCooldown();
-    }, CHROMIUM_WHEEL_IDLE_MS);
+    }, WHEEL_INPUT_IDLE_MS);
   }
 
-  function handleFirefoxWheelInput(): void {
-    if (scrollSettleStrategy !== "firefox-wheel") return;
+  function handleWheelInputSettle(): void {
+    if (
+      scrollSettleStrategy !== "firefox-wheel" &&
+      scrollSettleStrategy !== "safari-wheel"
+    ) {
+      return;
+    }
     wheelInputActive = true;
     cancelWheelInputTimer();
     wheelInputTimer = window.setTimeout(() => {
@@ -2844,18 +2865,21 @@ export function createDynamicVirtualizer(
       wheelInputActive = false;
       hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) scheduleSettleCooldown();
-    }, CHROMIUM_WHEEL_IDLE_MS);
+    }, WHEEL_INPUT_IDLE_MS);
   }
 
   function handleWheel(event: WheelEvent): void {
     if (debugPlaceholder) {
       debugPlaceholderEvent("wheel", { deltaY: event.deltaY });
     }
-    if (scrollSettleStrategy === "firefox-wheel") {
+    if (
+      scrollSettleStrategy === "firefox-wheel" ||
+      scrollSettleStrategy === "safari-wheel"
+    ) {
       const outwardBoundary = boundaryForOutwardWheel(event);
       if (outwardBoundary && !userScrollActive) return;
       handleUserScrollStart();
-      handleFirefoxWheelInput();
+      handleWheelInputSettle();
       return;
     }
 

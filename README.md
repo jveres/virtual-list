@@ -317,13 +317,14 @@ with `apply`, `addedBefore`, `removedBefore`, or a count change are deferred
 until scrolling settles. Put boundary-load array mutations inside `apply` so the
 host data changes in the same step as the virtualizer's count and size model.
 
-The runtime treats `scrollend` as blocked while touch or pointer input is still
-active. In that case, a later native `scrollend` flushes deferred layout
-updates. If the browser already emitted the final `scrollend` before the input
-ended, the runtime finalizes on the next animation frame after release. This
-avoids committing deferred boundary rows while Safari is still settling a
-rubber-band edge gesture without leaving a completed load stuck in its loading
-state.
+The runtime treats `scrollend` as blocked while touch, pointer, or tracked wheel
+input is still active. In that case, a later native `scrollend` flushes deferred
+layout updates. If the browser already emitted the final `scrollend` before the
+input ended, the runtime finalizes on the next animation frame after release or
+wheel idle. This avoids committing deferred boundary rows or hydrating fast
+scroll placeholders from a premature `scrollend` while Safari is still settling
+a trackpad or rubber-band gesture without leaving a completed load stuck in its
+loading state.
 
 Only one boundary load must own the visible loading state at a time. If a new
 top or bottom load starts while any boundary load is still running or waiting

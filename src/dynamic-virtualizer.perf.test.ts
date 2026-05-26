@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createDynamicVirtualizer,
   type DynamicVirtualizer,
@@ -32,6 +32,12 @@ async function flushRaf(frames = 2): Promise<void> {
   }
 }
 
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
 function createViewport(height = 800): HTMLElement {
   const viewport = document.createElement("div");
   viewport.className = "perf-viewport";
@@ -50,6 +56,10 @@ function disposeViewport(
 ): void {
   virtualizer.dispose();
   viewport.remove();
+}
+
+function visiblePlaceholderCount(viewport: HTMLElement): number {
+  return viewport.querySelectorAll('[data-placeholder="true"]').length;
 }
 
 describe("FenwickTree perf", () => {
@@ -270,5 +280,59 @@ describe("dynamic virtualizer perf", () => {
     expect(viewport.querySelectorAll(".perf-item-placeholder").length).toBe(0);
     expect(viewport.querySelectorAll(".perf-item").length).toBeGreaterThan(0);
     disposeViewport(viewport, virtualizer);
+  });
+
+  it("does not wait for final scrollend to hydrate desktop wheel placeholders", async () => {
+    const userAgentSpy = vi
+      .spyOn(window.navigator, "userAgent", "get")
+      .mockReturnValue(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+      );
+    const viewport = createViewport();
+    const itemHeight = 50;
+    const virtualizer = createDynamicVirtualizer({
+      viewport,
+      getCount: () => 10_000,
+      getItemHeight: () => itemHeight,
+      buildItem: buildFixedHeightItem(itemHeight),
+      buildPlaceholder: buildFixedHeightPlaceholder(itemHeight),
+      placeholderVelocityThreshold: 8,
+      overscanPx: 200,
+    });
+
+    try {
+      virtualizer.setCount();
+      await virtualizer.scrollToOffset(0);
+
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 5_000 }));
+      viewport.scrollTop = 5_000;
+      viewport.dispatchEvent(new Event("scroll"));
+      await flushRaf();
+
+      expect(visiblePlaceholderCount(viewport)).toBeGreaterThan(0);
+
+      viewport.dispatchEvent(new Event("scrollend"));
+      await flushRaf();
+
+      expect(visiblePlaceholderCount(viewport)).toBeGreaterThan(0);
+
+      viewport.scrollTop = 5_500;
+      viewport.dispatchEvent(new Event("scroll"));
+      await flushRaf();
+
+      expect(visiblePlaceholderCount(viewport)).toBeGreaterThan(0);
+
+      for (let sample = 0; sample < 4; sample++) {
+        await wait(25);
+        viewport.scrollTop += 1;
+        viewport.dispatchEvent(new Event("scroll"));
+        await flushRaf();
+      }
+
+      expect(visiblePlaceholderCount(viewport)).toBe(0);
+    } finally {
+      userAgentSpy.mockRestore();
+      disposeViewport(viewport, virtualizer);
+    }
   });
 });
