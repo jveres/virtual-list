@@ -2462,6 +2462,7 @@ export function createDynamicVirtualizer(
         scrollSettleStrategy === "safari-wheel") &&
       nativeScrollEndPending &&
       wheelPendingNativeScrollEndTop !== null &&
+      !isRubberBandOverscrolled() &&
       Math.abs(nextScrollTop - wheelPendingNativeScrollEndTop) > measureEpsilon
     ) {
       nativeScrollEndPending = false;
@@ -2469,14 +2470,16 @@ export function createDynamicVirtualizer(
       cancelSettleTimer();
       cancelSettleFrame();
     }
-    if (nativeScrollEndPending) {
-      scheduleSettleCooldown();
-    }
     if (
       userScrollActive &&
       Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon
     ) {
       userScrollMoved = true;
+    }
+    if (nativeScrollEndPending) {
+      scheduleSettleCooldown();
+    } else {
+      scheduleWheelScrollEndFallback();
     }
     scheduleRender();
   }
@@ -2564,6 +2567,13 @@ export function createDynamicVirtualizer(
     );
   }
 
+  function usesWheelScrollEndFallback(): boolean {
+    return (
+      scrollSettleStrategy === "firefox-wheel" ||
+      scrollSettleStrategy === "safari-wheel"
+    );
+  }
+
   function hasActiveWheelInput(): boolean {
     return usesWheelInputSettle() && wheelInputActive;
   }
@@ -2599,6 +2609,17 @@ export function createDynamicVirtualizer(
       !hasActiveChromiumEdgeWheel() &&
       !chromiumWheelAwaitingFinalScrollEnd &&
       !isRubberBandOverscrolled()
+    );
+  }
+
+  function canScheduleWheelScrollEndFallback(): boolean {
+    return (
+      usesWheelScrollEndFallback() &&
+      userScrollActive &&
+      userScrollMoved &&
+      !nativeScrollEndPending &&
+      !hasActiveTouchOrPointerInput() &&
+      !hasActiveWheelInput()
     );
   }
 
@@ -2700,6 +2721,27 @@ export function createDynamicVirtualizer(
     }, SCROLL_SETTLE_COOLDOWN_MS);
   }
 
+  function markPendingWheelScrollEnd(): void {
+    nativeScrollEndPending = true;
+    wheelPendingNativeScrollEndTop = clamp(
+      viewport.scrollTop,
+      0,
+      nativeMaxScrollTop(),
+    );
+    hydratePlaceholdersAfterNativeScrollEnd();
+    scheduleSettleCooldown();
+  }
+
+  function scheduleWheelScrollEndFallback(): void {
+    if (!canScheduleWheelScrollEndFallback()) return;
+    cancelSettleTimer();
+    settleTimer = window.setTimeout(() => {
+      settleTimer = 0;
+      if (!canScheduleWheelScrollEndFallback()) return;
+      markPendingWheelScrollEnd();
+    }, SCROLL_SETTLE_COOLDOWN_MS);
+  }
+
   function scheduleChromiumEdgeSettleFallback(
     boundary: DynamicVirtualizerBoundary,
   ): void {
@@ -2737,10 +2779,7 @@ export function createDynamicVirtualizer(
         cancelUserScroll();
         return;
       }
-      nativeScrollEndPending = true;
-      wheelPendingNativeScrollEndTop = viewport.scrollTop;
-      hydratePlaceholdersAfterNativeScrollEnd();
-      scheduleSettleCooldown();
+      markPendingWheelScrollEnd();
       return;
     }
 
@@ -2865,6 +2904,7 @@ export function createDynamicVirtualizer(
       wheelInputActive = false;
       hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) scheduleSettleCooldown();
+      else scheduleWheelScrollEndFallback();
     }, WHEEL_INPUT_IDLE_MS);
   }
 

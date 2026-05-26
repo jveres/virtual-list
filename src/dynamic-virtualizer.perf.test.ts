@@ -335,4 +335,90 @@ describe("dynamic virtualizer perf", () => {
       disposeViewport(viewport, virtualizer);
     }
   });
+
+  it("preserves Safari wheel scrollend through edge rubber-band overscroll", async () => {
+    const userAgentSpy = vi
+      .spyOn(window.navigator, "userAgent", "get")
+      .mockReturnValue(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+      );
+    const viewport = createViewport();
+    const onScrollEnd = vi.fn();
+    const itemHeight = 50;
+    const virtualizer = createDynamicVirtualizer({
+      viewport,
+      getCount: () => 1_000,
+      getItemHeight: () => itemHeight,
+      buildItem: buildFixedHeightItem(itemHeight),
+      overscanPx: 200,
+      onScrollEnd,
+    });
+
+    try {
+      virtualizer.setCount();
+      viewport.scrollTop = 500;
+      viewport.dispatchEvent(new Event("scroll"));
+      await flushRaf();
+
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -1_000 }));
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event("scroll"));
+      viewport.scrollTop = -24;
+      viewport.dispatchEvent(new Event("scroll"));
+      viewport.dispatchEvent(new Event("scrollend"));
+
+      await wait(180);
+      await flushRaf();
+
+      expect(onScrollEnd).not.toHaveBeenCalled();
+
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event("scroll"));
+      await wait(180);
+      await flushRaf();
+
+      expect(onScrollEnd).toHaveBeenCalledTimes(1);
+    } finally {
+      userAgentSpy.mockRestore();
+      disposeViewport(viewport, virtualizer);
+    }
+  });
+
+  it("falls back when Safari misses native scrollend after wheel input", async () => {
+    const userAgentSpy = vi
+      .spyOn(window.navigator, "userAgent", "get")
+      .mockReturnValue(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
+      );
+    const viewport = createViewport();
+    const onScrollEnd = vi.fn();
+    const itemHeight = 50;
+    const virtualizer = createDynamicVirtualizer({
+      viewport,
+      getCount: () => 1_000,
+      getItemHeight: () => itemHeight,
+      buildItem: buildFixedHeightItem(itemHeight),
+      overscanPx: 200,
+      onScrollEnd,
+    });
+
+    try {
+      virtualizer.setCount();
+      viewport.scrollTop = 500;
+      viewport.dispatchEvent(new Event("scroll"));
+      await flushRaf();
+
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -1_000 }));
+      viewport.scrollTop = 0;
+      viewport.dispatchEvent(new Event("scroll"));
+
+      await wait(500);
+      await flushRaf();
+
+      expect(onScrollEnd).toHaveBeenCalledTimes(1);
+    } finally {
+      userAgentSpy.mockRestore();
+      disposeViewport(viewport, virtualizer);
+    }
+  });
 });
