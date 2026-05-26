@@ -15,15 +15,17 @@ import "./masonry.css";
 
 const TOTAL_PHOTOS = 2_400;
 const PHOTO_GAP = 4;
+const BAND_TARGET_HEIGHT = 520;
 const MAX_IMAGE_SOURCE_WIDTH = 420;
-const INITIAL_GROUPS = 240;
-const RETAIN_GROUPS = 360;
-const LOAD_GROUPS = 90;
+const INITIAL_GROUPS = 80;
+const RETAIN_GROUPS = 120;
+const LOAD_GROUPS = 30;
 const LOAD_DELAY_MS = 600;
 const BOUNDARY_SLOT_HEIGHT = 52;
 const MAX_CANVAS_WIDTH = 1180;
 const HORIZONTAL_PADDING = 32;
 const OVERSCAN_PX = 680;
+const PLACEHOLDER_VELOCITY_THRESHOLD = 10;
 
 const ASPECT_RATIOS = [0.66, 0.75, 0.9, 1, 1.18, 1.35, 1.52] as const;
 
@@ -181,59 +183,106 @@ function shortestColumnIndex(heights: readonly number[]): number {
   return column;
 }
 
+function computeFineGroups(
+  placedPhotos: readonly PlacedPhoto[],
+  totalHeight: number,
+): MasonryGroup[] {
+  const photosByTop = new Map<number, PlacedPhoto[]>();
+  for (const photo of placedPhotos) {
+    const topPhotos = photosByTop.get(photo.top);
+    if (topPhotos) {
+      topPhotos.push(photo);
+    } else {
+      photosByTop.set(photo.top, [photo]);
+    }
+  }
+
+  const groupTops = Array.from(photosByTop.keys()).sort(
+    (left, right) => left - right,
+  );
+  return groupTops.map((top, index) => ({
+    top,
+    height: Math.max(1, (groupTops[index + 1] ?? totalHeight) - top),
+    photos: photosByTop.get(top) ?? [],
+  }));
+}
+
+function combineMasonryGroups(groups: readonly MasonryGroup[]): MasonryGroup {
+  const first = groups[0] as MasonryGroup;
+  const last = groups[groups.length - 1] as MasonryGroup;
+  const bandPhotos: PlacedPhoto[] = [];
+  for (const group of groups) {
+    bandPhotos.push(...group.photos);
+  }
+  return {
+    top: first.top,
+    height: last.top + last.height - first.top,
+    photos: bandPhotos,
+  };
+}
+
+function mergeFineGroups(
+  fineGroups: readonly MasonryGroup[],
+  targetHeight: number,
+): MasonryGroup[] {
+  if (fineGroups.length === 0) return [];
+
+  const merged: MasonryGroup[] = [];
+  let chunk: MasonryGroup[] = [fineGroups[0] as MasonryGroup];
+  let chunkHeight = fineGroups[0]?.height ?? 0;
+
+  for (let index = 1; index < fineGroups.length; index++) {
+    const group = fineGroups[index] as MasonryGroup;
+    if (chunkHeight >= targetHeight) {
+      merged.push(combineMasonryGroups(chunk));
+      chunk = [group];
+      chunkHeight = group.height;
+      continue;
+    }
+    chunk.push(group);
+    chunkHeight += group.height;
+  }
+
+  if (chunk.length > 0) {
+    merged.push(combineMasonryGroups(chunk));
+  }
+  return merged;
+}
+
 function computeMasonryLayout(): MasonryLayout {
   const width = canvasWidthForViewport();
   const columns = effectiveColumns(width);
   const gap = PHOTO_GAP;
   const cardWidth = Math.max(80, (width - (columns - 1) * gap) / columns);
   const columnHeights = Array.from({ length: columns }, () => 0);
-  const photosByTop = new Map<number, PlacedPhoto[]>();
+  const placedPhotos: PlacedPhoto[] = [];
 
   for (const photo of photos) {
     const column = shortestColumnIndex(columnHeights);
     const top = columnHeights[column] ?? 0;
     const height = Math.max(88, Math.round(cardWidth * photo.aspectRatio));
     const left = column * (cardWidth + gap);
-    const placed: PlacedPhoto = {
+    placedPhotos.push({
       ...photo,
       column,
       left,
       top,
       width: cardWidth,
       height,
-    };
-
-    const topGroup = placed.top;
-    const topPhotos = photosByTop.get(topGroup);
-    if (topPhotos) {
-      topPhotos.push(placed);
-    } else {
-      photosByTop.set(topGroup, [placed]);
-    }
+    });
 
     columnHeights[column] = top + height + gap;
   }
 
   const totalHeight = Math.max(1, Math.max(...columnHeights) - gap);
-  const groupTops = Array.from(photosByTop.keys()).sort((a, b) => a - b);
-  const groups: MasonryGroup[] = [];
-
-  for (let index = 0; index < groupTops.length; index++) {
-    const top = groupTops[index] ?? 0;
-    const nextTop = groupTops[index + 1] ?? totalHeight;
-    groups.push({
-      top,
-      height: Math.max(1, nextTop - top),
-      photos: photosByTop.get(top) ?? [],
-    });
-  }
+  const fineGroups = computeFineGroups(placedPhotos, totalHeight);
 
   return {
     width,
     columns,
     gap,
     cardWidth,
-    groups,
+    groups: mergeFineGroups(fineGroups, BAND_TARGET_HEIGHT),
   };
 }
 
@@ -408,11 +457,15 @@ function buildPlaceholderCard(
   return card;
 }
 
-function buildGroup(localIndex: number): HTMLElement {
+function buildGroupShell(
+  localIndex: number,
+  className: string,
+  buildContent: (inner: HTMLElement, group: MasonryGroup) => void,
+): HTMLElement {
   const group = groupForLocalIndex(localIndex);
   const height = itemHeight(localIndex);
   const item = document.createElement("section");
-  item.className = "masonry-group";
+  item.className = className;
   item.style.height = px(height);
   item.style.contain = "layout style";
   item.style.overflow = "visible";
@@ -421,25 +474,56 @@ function buildGroup(localIndex: number): HTMLElement {
   inner.className = "masonry-group-inner";
   inner.style.width = px(layout.width);
   inner.style.height = px(height);
-
-  if (localIndex === 0) {
-    for (const placeholder of loadedBoundaryGeometry.topPlaceholders) {
-      inner.appendChild(buildPlaceholderCard(placeholder, group.top));
-    }
-  }
-
-  for (const photo of group.photos) {
-    inner.appendChild(buildPhotoCard(photo, group.top));
-  }
-
-  if (localIndex === currentCount() - 1) {
-    for (const placeholder of loadedBoundaryGeometry.bottomPlaceholders) {
-      inner.appendChild(buildPlaceholderCard(placeholder, group.top));
-    }
-  }
+  buildContent(inner, group);
 
   item.appendChild(inner);
   return item;
+}
+
+function appendRetainedEdgePlaceholders(
+  inner: HTMLElement,
+  localIndex: number,
+  groupTop: number,
+): void {
+  if (localIndex === 0) {
+    for (const placeholder of loadedBoundaryGeometry.topPlaceholders) {
+      inner.appendChild(buildPlaceholderCard(placeholder, groupTop));
+    }
+  }
+  if (localIndex === currentCount() - 1) {
+    for (const placeholder of loadedBoundaryGeometry.bottomPlaceholders) {
+      inner.appendChild(buildPlaceholderCard(placeholder, groupTop));
+    }
+  }
+}
+
+function placeholderForPhoto(photo: PlacedPhoto): MasonryPlaceholder {
+  return {
+    left: photo.left,
+    top: photo.top,
+    width: photo.width,
+    height: photo.height,
+  };
+}
+
+function buildGroup(localIndex: number): HTMLElement {
+  return buildGroupShell(localIndex, "masonry-group", (inner, group) => {
+    appendRetainedEdgePlaceholders(inner, localIndex, group.top);
+    for (const photo of group.photos) {
+      inner.appendChild(buildPhotoCard(photo, group.top));
+    }
+  });
+}
+
+function buildGroupPlaceholder(localIndex: number): HTMLElement {
+  return buildGroupShell(localIndex, "masonry-group", (inner, group) => {
+    appendRetainedEdgePlaceholders(inner, localIndex, group.top);
+    for (const photo of group.photos) {
+      inner.appendChild(
+        buildPlaceholderCard(placeholderForPhoto(photo), group.top),
+      );
+    }
+  });
 }
 
 function buildBoundarySlot(boundary: Boundary): HTMLElement {
@@ -861,6 +945,8 @@ virtualizer = createDynamicVirtualizer({
   getCount: currentCount,
   getItemHeight: itemHeight,
   buildItem: buildGroup,
+  buildPlaceholder: buildGroupPlaceholder,
+  placeholderVelocityThreshold: PLACEHOLDER_VELOCITY_THRESHOLD,
   overscanPx: OVERSCAN_PX,
   onReachTop: () => {
     startBoundaryLoad("top");
