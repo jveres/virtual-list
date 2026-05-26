@@ -59,10 +59,11 @@ const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
 const BOTTOM_FOLLOW_DURATION_MS = 300;
 const SCROLL_BUTTONS_DEBOUNCE_MS = 120;
 const MESSAGE_TOP_EPSILON_PX = 2;
-const DATA_WINDOW_FACTOR = 3;
+const DATA_WINDOW_FACTOR = 5;
 const DOM_OVERSCAN_FACTOR = 1;
 const BOUNDARY_SLOT_HEIGHT = 52;
 const LOAD_OLDER_DELAY_MS = 180;
+const INITIAL_TRANSCRIPT_COUNT = 100;
 
 type BoundarySlotKind = "none" | "idle" | "loading";
 
@@ -474,6 +475,22 @@ function appendMessagesToLoadedBottom(
   messages.push(...nextMessages);
   measureMessageRange(localStart, messages.length);
   return { startIndex: localStart, replacedWindow: false };
+}
+
+function createTemplateMessages(count: number): Message[] {
+  const start = transcript.length;
+  const nextMessages: Message[] = [];
+  for (let offset = 0; offset < count; offset++) {
+    const templateId = (start + offset) % conversation.length;
+    const sample = conversation[templateId]!;
+    nextMessages.push(
+      createMessage({
+        ...sample,
+        itemHeight: templateHeights[templateId]!,
+      }),
+    );
+  }
+  return nextMessages;
 }
 
 function refreshLoadedWindowIfReplaced(result: LoadedAppendResult): void {
@@ -1234,29 +1251,6 @@ async function handleSend(): Promise<void> {
 
 bindThemeButtons(refreshTheme);
 
-mustGet("bulk-btn", HTMLButtonElement).addEventListener("click", () => {
-  const start = transcript.length;
-  const nextMessages: Message[] = [];
-  for (let i = 0; i < 100; i++) {
-    const templateId = (start + i) % conversation.length;
-    const sample = conversation[templateId]!;
-    nextMessages.push(
-      createMessage({
-        ...sample,
-        itemHeight: templateHeights[templateId]!,
-      }),
-    );
-  }
-  const appendResult = appendMessagesToLoadedBottom(nextMessages);
-  virtualizer.setStickyIndex(null);
-  syncVirtualizerLayout();
-  refreshLoadedWindowIfReplaced(appendResult);
-  void virtualizer.scrollToBottom().then(() => {
-    syncDemoState();
-  });
-  scheduleScrollButtons();
-});
-
 scrollTopBtn.addEventListener("click", () => {
   void virtualizer.scrollToTop({ behavior: "smooth" }).then(() => {
     syncDemoState();
@@ -1291,7 +1285,7 @@ applyDocumentTheme();
 syncThemeButtons();
 autosize();
 measureTemplateHeights();
-measureExistingMessages();
+appendMessagesToLoadedBottom(createTemplateMessages(INITIAL_TRANSCRIPT_COUNT));
 
 virtualizer = createDynamicVirtualizer({
   viewport,

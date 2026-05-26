@@ -34,8 +34,8 @@ Open these pages from the dev server:
   enables render drift reports for the dynamic content demo.
 - `/demos/masonry/masonry.html` shows dynamic masonry photo loading.
 - `/demos/photo-gallery/photo-gallery.html` shows dynamic justified photo rows.
-- `/demos/streaming/streaming.html` shows append, streaming, cancel, and
-  sticky user-message scroll behavior.
+- `/demos/streaming/streaming.html` shows initial transcript loading,
+  streaming, cancel, and sticky user-message scroll behavior.
 - `/demos/streaming/streaming.html?instant` disables simulated token delays for
   faster manual testing.
 
@@ -460,11 +460,12 @@ viewport. The assistant placeholder is appended after that scroll finishes, so
 the response fills the space below the user message as it streams.
 
 The demo keeps a linear transcript outside the virtualizer and loads only a
-pixel-sized retained window into the live list. The initial bulk load uses the
-newest rows needed to cover the viewport-height factor, and top boundary loads
-prepend older rows with the same pixel-window planner. The footer shows the
-loaded transcript range, loaded height, mounted range, mounted count, and
-measured count for manual checks.
+pixel-sized retained window into the live list. Page load seeds a 100-message
+transcript, loads the newest rows needed to cover five viewport heights, and
+scrolls to the bottom. Top boundary loads prepend older rows with the same
+five-viewport-height planner. The footer shows the loaded transcript range,
+loaded height, mounted range, mounted count, and measured count for manual
+checks.
 
 The assistant status label uses:
 
