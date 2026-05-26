@@ -13,13 +13,16 @@ import "../demo-styles.css";
 import "../photo-preview.css";
 import "./masonry.css";
 
-const TOTAL_PHOTOS = 2_400;
+const FALLBACK_PHOTO_COUNT = 600;
+const PICSUM_LIST_PAGE_COUNT = 8;
+const PICSUM_LIST_PAGE_SIZE = 100;
+const PICSUM_LIST_URL = "https://picsum.photos/v2/list";
 const PHOTO_GAP = 4;
 const BAND_TARGET_HEIGHT = 520;
 const MAX_IMAGE_SOURCE_WIDTH = 420;
-const INITIAL_GROUPS = 80;
-const RETAIN_GROUPS = 120;
-const LOAD_GROUPS = 30;
+const INITIAL_GROUPS = 24;
+const RETAIN_GROUPS = 72;
+const LOAD_GROUPS = 18;
 const LOAD_DELAY_MS = 600;
 const BOUNDARY_SLOT_HEIGHT = 52;
 const MAX_CANVAS_WIDTH = 1180;
@@ -31,7 +34,11 @@ const ASPECT_RATIOS = [0.66, 0.75, 0.9, 1, 1.18, 1.35, 1.52] as const;
 
 interface Photo {
   id: number;
+  picsumId: string | null;
   aspectRatio: number;
+  sourceHeight: number;
+  sourceWidth: number;
+  author: string | null;
 }
 
 interface PlacedPhoto extends Photo {
@@ -45,6 +52,13 @@ interface PlacedPhoto extends Photo {
 interface MasonryPlaceholder {
   left: number;
   top: number;
+  width: number;
+  height: number;
+}
+
+interface PicsumPhotoMetadata {
+  id: string;
+  author?: string;
   width: number;
   height: number;
 }
@@ -77,10 +91,6 @@ const loadLabel = mustGet("load-label");
 const topBtn = mustGet("top-btn", HTMLButtonElement);
 const bottomBtn = mustGet("bottom-btn", HTMLButtonElement);
 
-const photos = Array.from({ length: TOTAL_PHOTOS }, (_, index) =>
-  createPhoto(index),
-);
-
 type Boundary = DynamicVirtualizerBoundary;
 type BoundarySlotState = "idle" | "loading" | "no-more" | "error";
 type BoundaryResolvedState = Exclude<BoundarySlotState, "loading">;
@@ -100,7 +110,14 @@ interface PendingBoundaryApply {
 }
 
 let selectedColumns = 4;
-let layout = computeMasonryLayout();
+let photos: readonly Photo[] = [];
+let layout: MasonryLayout = {
+  width: 0,
+  columns: 0,
+  gap: PHOTO_GAP,
+  cardWidth: 0,
+  groups: [],
+};
 let loadedStartGroup = 0;
 let loadedEndGroup = 0;
 let loadedBoundaryGeometry: LoadedBoundaryGeometry = {
@@ -123,12 +140,169 @@ let renderedMountedText = "";
 let renderedLayoutText = "";
 let renderedLoadText = "";
 
-function createPhoto(index: number): Photo {
+function createFallbackPhoto(index: number): Photo {
   const aspectRatio = ASPECT_RATIOS[index % ASPECT_RATIOS.length] ?? 1;
+  const sourceWidth = 1200;
   return {
     id: index + 1,
+    picsumId: null,
     aspectRatio,
+    sourceHeight: Math.round(sourceWidth * aspectRatio),
+    sourceWidth,
+    author: null,
   };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function readPositiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function readPicsumPhotoMetadata(value: unknown): PicsumPhotoMetadata | null {
+  if (!isRecord(value)) return null;
+  const id = readString(value.id);
+  const width = readPositiveNumber(value.width);
+  const height = readPositiveNumber(value.height);
+  if (!id || width === null || height === null) return null;
+  return {
+    id,
+    author: readString(value.author) ?? undefined,
+    width,
+    height,
+  };
+}
+
+function photoFromPicsumMetadata(
+  metadata: PicsumPhotoMetadata,
+  index: number,
+): Photo {
+  return {
+    id: index + 1,
+    picsumId: metadata.id,
+    aspectRatio: metadata.height / metadata.width,
+    sourceHeight: metadata.height,
+    sourceWidth: metadata.width,
+    author: metadata.author ?? null,
+  };
+}
+
+function stableHash(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index++) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function compareByStableHash(left: string, right: string): number {
+  return stableHash(left) - stableHash(right);
+}
+
+function photoStableKey(photo: Photo): string {
+  return `${photo.author ?? ""}:${photo.picsumId ?? photo.id}:${photo.sourceWidth}:${photo.sourceHeight}`;
+}
+
+function spreadPhotosByAuthor(nextPhotos: readonly Photo[]): Photo[] {
+  const groups = new Map<string, Photo[]>();
+  for (const photo of nextPhotos) {
+    const author = photo.author ?? "";
+    const group = groups.get(author);
+    if (group) {
+      group.push(photo);
+    } else {
+      groups.set(author, [photo]);
+    }
+  }
+
+  const orderedGroups = Array.from(groups.entries())
+    .sort(([left], [right]) => compareByStableHash(left, right))
+    .map(([, group]) =>
+      group.sort((left, right) =>
+        compareByStableHash(photoStableKey(left), photoStableKey(right)),
+      ),
+    );
+
+  const spread: Photo[] = [];
+  let offset = 0;
+  let hasMore = true;
+  while (hasMore) {
+    hasMore = false;
+    for (const group of orderedGroups) {
+      const photo = group[offset];
+      if (!photo) continue;
+      hasMore = true;
+      spread.push({
+        ...photo,
+        id: spread.length + 1,
+      });
+    }
+    offset++;
+  }
+  return spread;
+}
+
+async function fetchPicsumPhotoPage(page: number): Promise<Photo[]> {
+  const url = `${PICSUM_LIST_URL}?page=${page}&limit=${PICSUM_LIST_PAGE_SIZE}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Picsum metadata request failed: ${response.status}`);
+  }
+
+  const body: unknown = await response.json();
+  if (!Array.isArray(body)) {
+    throw new Error("Picsum metadata response was not a list");
+  }
+
+  return body
+    .map(readPicsumPhotoMetadata)
+    .filter((metadata): metadata is PicsumPhotoMetadata => metadata !== null)
+    .map((metadata, index) =>
+      photoFromPicsumMetadata(
+        metadata,
+        (page - 1) * PICSUM_LIST_PAGE_SIZE + index,
+      ),
+    );
+}
+
+async function loadPicsumPhotos(): Promise<Photo[]> {
+  const pages = Array.from(
+    { length: PICSUM_LIST_PAGE_COUNT },
+    (_, index) => index + 1,
+  );
+  const results = await Promise.allSettled(
+    pages.map((page) => fetchPicsumPhotoPage(page)),
+  );
+  const nextPhotos = results.flatMap((result) =>
+    result.status === "fulfilled" ? result.value : [],
+  );
+  if (nextPhotos.length === 0) {
+    const reason = results.find(
+      (result) => result.status === "rejected",
+    )?.reason;
+    throw reason instanceof Error ? reason : new Error("No Picsum photos");
+  }
+  return spreadPhotosByAuthor(nextPhotos);
+}
+
+async function loadPhotos(): Promise<readonly Photo[]> {
+  try {
+    return await loadPicsumPhotos();
+  } catch (error) {
+    console.warn("Falling back to generated masonry photo metadata", error);
+    return Array.from({ length: FALLBACK_PHOTO_COUNT }, (_, index) =>
+      createFallbackPhoto(index),
+    );
+  }
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -403,13 +577,24 @@ function imageUrl(photo: PlacedPhoto): string {
   return imageUrlForWidth(photo, imageSourceWidth(photo));
 }
 
+function imageHeightForWidth(photo: Photo, width: number): number {
+  return Math.max(1, Math.round(width * photo.aspectRatio));
+}
+
 function imageUrlForWidth(photo: Photo, width: number): string {
-  const height = Math.max(120, Math.round(width * photo.aspectRatio));
+  const height = imageHeightForWidth(photo, width);
+  if (photo.picsumId) {
+    return `https://picsum.photos/id/${encodeURIComponent(photo.picsumId)}/${width}/${height}`;
+  }
   return `https://picsum.photos/seed/virtual-list-${photo.id}/${width}/${height}`;
 }
 
 function photoDetailsText(photo: PlacedPhoto): string {
-  return `Photo ${photo.id} · ${Math.round(photo.width)}×${Math.round(photo.height)} · ${photo.aspectRatio.toFixed(2)} ratio`;
+  const source = photo.picsumId
+    ? `Picsum ${photo.picsumId}`
+    : `Photo ${photo.id}`;
+  const author = photo.author ? ` · ${photo.author}` : "";
+  return `${source}${author} · ${photo.sourceWidth}×${photo.sourceHeight} source · ${Math.round(photo.width)}×${Math.round(photo.height)} view`;
 }
 
 const photoPreview = createPhotoPreview<PlacedPhoto>({
@@ -435,7 +620,7 @@ function buildPhotoCard(photo: PlacedPhoto, groupTop: number): HTMLElement {
   image.loading = "lazy";
   const sourceWidth = imageSourceWidth(photo);
   image.width = sourceWidth;
-  image.height = Math.max(120, Math.round(sourceWidth * photo.aspectRatio));
+  image.height = imageHeightForWidth(photo, sourceWidth);
   image.src = imageUrl(photo);
 
   card.append(image);
@@ -933,6 +1118,8 @@ function handleViewportResize(): void {
   rebuildLayoutAroundCurrentGroup();
 }
 
+photos = await loadPhotos();
+layout = computeMasonryLayout();
 initializeLoadedWindow();
 bindControls();
 bindThemeButtons(refreshTheme);

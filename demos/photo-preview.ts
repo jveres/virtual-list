@@ -3,7 +3,9 @@ const PHOTO_VIEW_BLOCK_PADDING = 0;
 const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
 const PHOTO_VIEW_DURATION_MS = 420;
+const PHOTO_VIEW_IOS_DURATION_MS = 520;
 const PHOTO_VIEW_GEOMETRY_EASING = "cubic-bezier(0.18, 1.28, 0.32, 1)";
+const PHOTO_VIEW_IOS_GEOMETRY_EASING = "cubic-bezier(0.18, 1.24, 0.32, 1)";
 const PHOTO_VIEW_FADE_EASING = "cubic-bezier(0.22, 1, 0.36, 1)";
 const PHOTO_PRESS_DOWN_MS = 150;
 const PHOTO_TOUCH_PRESS_DELAY_MS = 80;
@@ -61,7 +63,6 @@ interface ActivePhotoView<T extends PhotoPreviewItem> {
   highResolutionImage: HTMLImageElement;
   details: HTMLElement;
   openingAnimations: Animation[];
-  openingHero: HTMLElement | null;
   sourceElement: HTMLElement | null;
   sourceRect: PhotoRect;
   onKeyDown: (event: KeyboardEvent) => void;
@@ -116,6 +117,23 @@ function reducedMotion(): boolean {
 
 function supportsTouchEvents(): boolean {
   return "TouchEvent" in window;
+}
+
+function isIOSLike(): boolean {
+  return (
+    /iP(ad|hone|od)/.test(navigator.platform) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1)
+  );
+}
+
+function photoViewDurationMs(): number {
+  return isIOSLike() ? PHOTO_VIEW_IOS_DURATION_MS : PHOTO_VIEW_DURATION_MS;
+}
+
+function photoViewGeometryEasing(): string {
+  return isIOSLike()
+    ? PHOTO_VIEW_IOS_GEOMETRY_EASING
+    : PHOTO_VIEW_GEOMETRY_EASING;
 }
 
 function nextAnimationFrame(): Promise<void> {
@@ -418,16 +436,11 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     return hero;
   }
 
-  function cancelPhotoViewOpeningAnimation(
-    view: ActivePhotoView<T>,
-    removeHero = true,
-  ): void {
+  function cancelPhotoViewOpeningAnimation(view: ActivePhotoView<T>): void {
     for (const animation of view.openingAnimations) {
       animation.cancel();
     }
     view.openingAnimations = [];
-    if (removeHero) view.openingHero?.remove();
-    view.openingHero = null;
   }
 
   function syncPhotoViewScrollMode(view: ActivePhotoView<T>): void {
@@ -710,10 +723,6 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     await view.highResolutionImage.decode?.().catch(() => undefined);
     if (activePhotoView !== view || view.closing) return;
     view.highResolutionImage.classList.add("is-loaded");
-    if (view.highResolutionImage.naturalWidth > 0) {
-      view.details.textContent = `${photoDetailsText(view.photo)} · source ${view.highResolutionImage.naturalWidth}×${view.highResolutionImage.naturalHeight}`;
-      syncPhotoViewScrollMode(view);
-    }
   }
 
   function cleanupPhotoView(
@@ -932,7 +941,6 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       highResolutionImage,
       details,
       openingAnimations: [],
-      openingHero: null,
       sourceElement,
       sourceRect,
       onKeyDown,
@@ -971,33 +979,36 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     await image.decode?.().catch(() => undefined);
     await nextAnimationFrame();
     if (activePhotoView !== view || view.closing) return;
-    syncPhotoViewScrollMode(view);
-    const targetRect = readRect(frame.getBoundingClientRect());
-    const hero = createPhotoHero(sourceSrc, targetRect);
-    setPhotoHeroRadius(hero, "8px");
-    hero.style.transform = photoHeroTransform(sourceRect, targetRect);
-    view.openingHero = hero;
-    overlay.append(hero);
     hidePhotoSource(sourceElement);
     document.documentElement.classList.add("photo-view-open");
+    syncPhotoViewScrollMode(view);
+    const viewDuration = photoViewDurationMs();
+    const targetRect = readRect(frame.getBoundingClientRect());
+    const openingTransform = photoHeroTransform(sourceRect, targetRect);
+    setPhotoHeroRadius(frame, "8px");
+    frame.style.transform = openingTransform;
+    frame.style.transformOrigin = "top left";
+    frame.style.willChange = "transform";
+    image.classList.add("is-visible");
     overlay.classList.remove("is-preparing");
     const backdropOpacity = photoViewBackdropOpacity(view);
 
     if (reducedMotion()) {
       backdrop.style.opacity = backdropOpacity;
-      image.classList.add("is-visible");
-      view.openingHero = null;
-      hero.remove();
+      setPhotoHeroRadius(frame, "10px");
+      frame.style.transform = "";
+      frame.style.transformOrigin = "";
+      frame.style.willChange = "";
       void revealHighResolutionImage(view);
       return;
     }
 
-    const heroAnimation = hero.animate(
+    const frameAnimation = frame.animate(
       [
         {
           borderRadius: "8px",
           clipPath: "inset(0 round 8px)",
-          transform: photoHeroTransform(sourceRect, targetRect),
+          transform: openingTransform,
         },
         {
           borderRadius: "10px",
@@ -1006,31 +1017,33 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         },
       ],
       {
-        duration: PHOTO_VIEW_DURATION_MS,
-        easing: PHOTO_VIEW_GEOMETRY_EASING,
+        duration: viewDuration,
+        easing: photoViewGeometryEasing(),
         fill: "both",
       },
     );
     const backdropAnimation = backdrop.animate(
       [{ opacity: 0 }, { opacity: backdropOpacity }],
       {
-        duration: PHOTO_VIEW_DURATION_MS,
+        duration: viewDuration,
         easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
     );
-    view.openingAnimations = [heroAnimation, backdropAnimation];
+    view.openingAnimations = [frameAnimation, backdropAnimation];
 
     await Promise.all([
-      animationFinished(heroAnimation),
+      animationFinished(frameAnimation),
       animationFinished(backdropAnimation),
     ]);
     if (activePhotoView !== view || view.closing) return;
     backdrop.style.opacity = backdropOpacity;
-    image.classList.add("is-visible");
+    setPhotoHeroRadius(frame, "10px");
+    frame.style.transform = "translate3d(0, 0, 0) scale(1)";
+    frame.style.transformOrigin = "";
+    frame.style.willChange = "";
+    backdropAnimation.cancel();
     view.openingAnimations = [];
-    view.openingHero = null;
-    hero.remove();
     void revealHighResolutionImage(view);
   }
 
@@ -1046,18 +1059,15 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       (view.sourceElement?.isConnected ? view.sourceElement : null);
     hidePhotoSource(currentSource);
 
-    const openingHero =
-      view.openingHero?.isConnected === true ? view.openingHero : null;
     const currentImage = currentPhotoViewImage(view);
-    const currentRect = readRect(
-      (openingHero ?? view.frame).getBoundingClientRect(),
+    const currentRect = readRect(view.frame.getBoundingClientRect());
+    const hero = createPhotoHero(
+      currentImage.currentSrc || currentImage.src,
+      currentRect,
     );
-    const hero =
-      openingHero ??
-      createPhotoHero(currentImage.currentSrc || currentImage.src, currentRect);
-    cancelPhotoViewOpeningAnimation(view, false);
+    cancelPhotoViewOpeningAnimation(view);
     styleFixedRect(hero, currentRect);
-    if (!hero.isConnected) view.overlay.append(hero);
+    view.overlay.append(hero);
     view.frame.style.visibility = "hidden";
     view.image.classList.remove("is-visible");
     view.highResolutionImage.classList.remove("is-loaded");
@@ -1070,6 +1080,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const targetRect = currentSource
       ? readRect(currentSource.getBoundingClientRect())
       : view.sourceRect;
+    const viewDuration = photoViewDurationMs();
     const heroBorderRadius = currentSource ? "8px" : "10px";
     const heroClipPath = `inset(0 round ${heroBorderRadius})`;
     setPhotoHeroRadius(hero, heroBorderRadius);
@@ -1093,8 +1104,8 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
               },
             ],
             {
-              duration: PHOTO_VIEW_DURATION_MS,
-              easing: PHOTO_VIEW_GEOMETRY_EASING,
+              duration: viewDuration,
+              easing: photoViewGeometryEasing(),
               fill: "both",
             },
           );
@@ -1115,7 +1126,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
             },
           ],
           {
-            duration: PHOTO_VIEW_DURATION_MS,
+            duration: viewDuration,
             easing: PHOTO_VIEW_FADE_EASING,
             fill: "both",
           },
@@ -1123,7 +1134,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const backdropAnimation = view.backdrop.animate(
       [{ opacity: currentPhotoViewBackdropOpacity(view) }, { opacity: 0 }],
       {
-        duration: PHOTO_VIEW_DURATION_MS,
+        duration: viewDuration,
         easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
@@ -1131,7 +1142,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const scrollAnimation = view.scroll.animate(
       [{ opacity: 1 }, { opacity: 0 }],
       {
-        duration: Math.round(PHOTO_VIEW_DURATION_MS * 0.72),
+        duration: Math.round(viewDuration * 0.72),
         easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
@@ -1139,7 +1150,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const closeButtonAnimation = view.closeButton.animate(
       [{ opacity: 1 }, { opacity: 0 }],
       {
-        duration: Math.round(PHOTO_VIEW_DURATION_MS * 0.72),
+        duration: Math.round(viewDuration * 0.72),
         easing: PHOTO_VIEW_FADE_EASING,
         fill: "both",
       },
