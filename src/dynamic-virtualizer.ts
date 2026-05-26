@@ -666,6 +666,8 @@ export function createDynamicVirtualizer(
   let topReachConsumed = false;
   let bottomReachConsumed = false;
   let activeSmoothScrollCancel: (() => void) | null = null;
+  let activeSmoothScrollTarget: number | null = null;
+  let activeSmoothScrollSnapThreshold = SCROLL_SNAP_THRESHOLD;
   let programmaticReachBoundary: DynamicVirtualizerBoundary | null = null;
   let reachCallbacksEnabled = false;
   let emittingChangeCallback = false;
@@ -1930,12 +1932,46 @@ export function createDynamicVirtualizer(
     return itemTop;
   }
 
+  function flushDeferredLayoutBeforeProgrammaticOperation(): void {
+    if (deferredLayoutUpdates.length === 0) return;
+    flushDeferredLayoutUpdates();
+  }
+
+  function interruptNativeScrollMomentum(): void {
+    if (!userScrollActive) return;
+
+    const currentTop = clamp(viewport.scrollTop, 0, nativeMaxScrollTop());
+    const previousOverflowY = viewport.style.overflowY;
+    viewport.scrollTo({ top: currentTop, behavior: "auto" });
+    viewport.style.overflowY = "hidden";
+    // Force the overflow change to apply so native touch momentum is cancelled.
+    void viewport.offsetHeight;
+    viewport.style.overflowY = previousOverflowY;
+    viewport.scrollTop = currentTop;
+  }
+
+  function activeSmoothScrollReachedTarget(): boolean {
+    if (activeSmoothScrollTarget === null) return true;
+    const target = clamp(activeSmoothScrollTarget, 0, nativeMaxScrollTop());
+    return (
+      Math.abs(viewport.scrollTop - target) <= activeSmoothScrollSnapThreshold
+    );
+  }
+
+  function clearActiveSmoothScrollTarget(cancel: () => void): void {
+    if (activeSmoothScrollCancel !== cancel) return;
+    activeSmoothScrollCancel = null;
+    activeSmoothScrollTarget = null;
+    activeSmoothScrollSnapThreshold = SCROLL_SNAP_THRESHOLD;
+  }
+
   function scrollToNativeTop(
     top: number,
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
     activeSmoothScrollCancel?.();
     const hydratedPlaceholders = forceHydratePlaceholders();
+    interruptNativeScrollMomentum();
     cancelUserScroll();
     const target = clamp(top, 0, nativeMaxScrollTop());
     const snapThreshold = options.snapThreshold ?? SCROLL_SNAP_THRESHOLD;
@@ -1969,9 +2005,7 @@ export function createDynamicVirtualizer(
             setScrollTop(finalTarget, ALLOW_DURING_SCROLL);
           }
         }
-        if (activeSmoothScrollCancel === cancel) {
-          activeSmoothScrollCancel = null;
-        }
+        clearActiveSmoothScrollTarget(cancel);
         viewport.removeEventListener("scrollend", handleScrollEnd);
         options.signal?.removeEventListener("abort", handleAbort);
         resolve(completed);
@@ -1983,11 +2017,24 @@ export function createDynamicVirtualizer(
         scheduleSettleCooldown();
         finish(false);
       };
-      const handleScrollEnd = () => finish(true);
+      const handleScrollEnd = () => {
+        if (options.signal?.aborted) {
+          finish(false);
+          return;
+        }
+        if (!activeSmoothScrollReachedTarget()) {
+          const currentTarget = clamp(target, 0, nativeMaxScrollTop());
+          viewport.scrollTo({ top: currentTarget, behavior: "smooth" });
+          return;
+        }
+        finish(true);
+      };
       const handleAbort = () => finish(false);
 
       activeSmoothScrollCancel = cancel;
-      viewport.addEventListener("scrollend", handleScrollEnd, { once: true });
+      activeSmoothScrollTarget = target;
+      activeSmoothScrollSnapThreshold = snapThreshold;
+      viewport.addEventListener("scrollend", handleScrollEnd);
       options.signal?.addEventListener("abort", handleAbort, { once: true });
       viewport.scrollTo({ top: target, behavior: "smooth" });
     });
@@ -2110,6 +2157,7 @@ export function createDynamicVirtualizer(
     align: DynamicVirtualizerAlign = "top",
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
+    flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
     if (count <= 0 || options.signal?.aborted) return false;
     const targetIndex = clamp(Math.floor(index), 0, count - 1);
@@ -2134,6 +2182,7 @@ export function createDynamicVirtualizer(
     offset: number,
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
+    flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
     if (options.signal?.aborted) return false;
     clearProgrammaticBoundaryReach();
@@ -2146,6 +2195,7 @@ export function createDynamicVirtualizer(
   async function scrollToTop(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
+    flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
     if (options.signal?.aborted) return false;
     syncScrollSurface();
@@ -2160,6 +2210,7 @@ export function createDynamicVirtualizer(
   async function scrollToBottom(
     options: DynamicVirtualizerScrollOptions = {},
   ): Promise<boolean> {
+    flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
     if (options.signal?.aborted) return false;
     syncScrollSurface();
@@ -2172,6 +2223,7 @@ export function createDynamicVirtualizer(
   }
 
   function setStickyIndex(index: number | null): void {
+    flushDeferredLayoutBeforeProgrammaticOperation();
     if (index === null || count === 0 || !Number.isFinite(index)) {
       stickyIndex = null;
       tailGap = 0;
@@ -2769,6 +2821,8 @@ export function createDynamicVirtualizer(
 
   function handleScrollEnd(): void {
     debugScrollSettleEvent("native-scrollend");
+
+    if (!activeSmoothScrollReachedTarget()) return;
 
     if (
       scrollSettleStrategy === "firefox-wheel" ||
