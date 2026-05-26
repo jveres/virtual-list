@@ -1500,6 +1500,16 @@ export function createDynamicVirtualizer(
       return false;
     }
 
+    if (isAtNativeScrollBoundary()) {
+      const refreshedPlaceholders = disablePlaceholderFastMode();
+      if (debugPlaceholder && refreshedPlaceholders) {
+        debugPlaceholderEvent("fast-mode-boundary-exit", {
+          velocity: scrollVelocity,
+        });
+      }
+      return false;
+    }
+
     if (scrollVelocity >= enterVelocity) {
       const wasFast = placeholderFastMode;
       hydratePlaceholdersBlocked = true;
@@ -2545,6 +2555,13 @@ export function createDynamicVirtualizer(
     const maxScrollTop = nativeMaxScrollTop();
     return (
       scrollTop < -measureEpsilon || scrollTop - maxScrollTop > measureEpsilon
+    );
+  }
+
+  function isAtNativeScrollBoundary(scrollTop = viewport.scrollTop): boolean {
+    const maxScrollTop = nativeMaxScrollTop();
+    return (
+      scrollTop <= measureEpsilon || maxScrollTop - scrollTop <= measureEpsilon
     );
   }
 
