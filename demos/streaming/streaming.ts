@@ -846,7 +846,11 @@ function syncScrollButtons(state = virtualizer.state): void {
     scrollButtonsTimer = 0;
   }
   scrollTopBtn.hidden = state.atTop;
-  scrollBottomBtn.hidden = state.atBottom || scrollTurnInProgress;
+  scrollBottomBtn.hidden =
+    state.atBottom ||
+    scrollTurnInProgress ||
+    bottomFollowArmed ||
+    bottomFollowPending;
 }
 
 function scheduleScrollButtons(): void {
