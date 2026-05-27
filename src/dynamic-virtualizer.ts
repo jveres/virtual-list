@@ -648,6 +648,7 @@ export function createDynamicVirtualizer(
   let placeholderHydrationFrame = 0;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
+  let programmaticScrollTop: number | null = null;
   let nativeScrollEndPending = false;
   let wheelPendingNativeScrollEndTop: number | null = null;
   let settleFrame = 0;
@@ -1281,7 +1282,10 @@ export function createDynamicVirtualizer(
     if (userScrollActive && options?.allowDuringScroll !== true) return false;
     const target = clamp(value, 0, nativeMaxScrollTop());
     const shouldWrite = Math.abs(viewport.scrollTop - target) > 0.5;
-    if (shouldWrite) viewport.scrollTop = target;
+    if (shouldWrite) {
+      programmaticScrollTop = target;
+      viewport.scrollTop = target;
+    }
     if (options?.preserveLogicalOffset) {
       setScrollTopResidual(target - viewport.scrollTop);
       if (userScrollActive) resetScrollVelocity(viewport.scrollTop);
@@ -2547,9 +2551,23 @@ export function createDynamicVirtualizer(
     lastScrollSampleAt = now;
   }
 
+  function consumeProgrammaticScrollWrite(scrollTop: number): boolean {
+    if (programmaticScrollTop === null) return false;
+    const expectedScrollTop = programmaticScrollTop;
+    programmaticScrollTop = null;
+    return (
+      Math.abs(scrollTop - expectedScrollTop) <= Math.max(1, measureEpsilon)
+    );
+  }
+
   function handleScroll(): void {
     const previousScrollTop = lastScrollSampleTop;
     const nextScrollTop = viewport.scrollTop;
+    const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
+    const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
+    if (!userScrollActive && moved && !programmaticScroll) {
+      handleUserScrollStart();
+    }
     updateScrollVelocity(nextScrollTop);
     if (
       (scrollSettleStrategy === "firefox-wheel" ||
@@ -2564,10 +2582,7 @@ export function createDynamicVirtualizer(
       cancelSettleTimer();
       cancelSettleFrame();
     }
-    if (
-      userScrollActive &&
-      Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon
-    ) {
+    if (userScrollActive && moved) {
       userScrollMoved = true;
     }
     if (nativeScrollEndPending) {
@@ -3068,17 +3083,53 @@ export function createDynamicVirtualizer(
     handleUserScrollMaybeEnd();
   }
 
+  function isLikelyScrollbarPointer(event: PointerEvent): boolean {
+    if (event.pointerType !== "mouse") return false;
+
+    const scrollbarGutterWidth = Math.max(
+      0,
+      viewport.offsetWidth - viewport.clientWidth,
+    );
+    if (scrollbarGutterWidth <= 0) return event.target === viewport;
+
+    const rect = viewport.getBoundingClientRect();
+    return (
+      event.clientX <= rect.left + scrollbarGutterWidth ||
+      event.clientX >= rect.right - scrollbarGutterWidth
+    );
+  }
+
   function handlePointerScrollStart(event: PointerEvent): void {
     if (event.pointerType === "touch" && supportsTouchEvents) return;
-    if (event.pointerType === "mouse") return;
+    if (event.pointerType === "mouse" && !isLikelyScrollbarPointer(event)) {
+      return;
+    }
     activePointers.add(event.pointerId);
     handleUserScrollStart();
   }
 
+  function settlePointerScrollWithoutNativeScrollEnd(): void {
+    if (
+      activePointers.size > 0 ||
+      !userScrollActive ||
+      !userScrollMoved ||
+      nativeScrollEndPending ||
+      isRubberBandOverscrolled()
+    ) {
+      return;
+    }
+
+    nativeScrollEndPending = true;
+    wheelPendingNativeScrollEndTop = null;
+  }
+
   function handlePointerScrollEnd(event: PointerEvent): void {
     if (event.pointerType === "touch" && supportsTouchEvents) return;
-    if (event.pointerType === "mouse") return;
+    if (event.pointerType === "mouse" && !activePointers.has(event.pointerId)) {
+      return;
+    }
     activePointers.delete(event.pointerId);
+    settlePointerScrollWithoutNativeScrollEnd();
     handleUserScrollMaybeEnd();
   }
 
@@ -3091,10 +3142,10 @@ export function createDynamicVirtualizer(
     viewport.addEventListener("pointerdown", handlePointerScrollStart, {
       passive: true,
     });
-    viewport.addEventListener("pointerup", handlePointerScrollEnd, {
+    window.addEventListener("pointerup", handlePointerScrollEnd, {
       passive: true,
     });
-    viewport.addEventListener("pointercancel", handlePointerScrollEnd, {
+    window.addEventListener("pointercancel", handlePointerScrollEnd, {
       passive: true,
     });
   }
@@ -3158,8 +3209,8 @@ export function createDynamicVirtualizer(
       viewport.removeEventListener("wheel", handleWheel);
       if (supportsPointerEvents) {
         viewport.removeEventListener("pointerdown", handlePointerScrollStart);
-        viewport.removeEventListener("pointerup", handlePointerScrollEnd);
-        viewport.removeEventListener("pointercancel", handlePointerScrollEnd);
+        window.removeEventListener("pointerup", handlePointerScrollEnd);
+        window.removeEventListener("pointercancel", handlePointerScrollEnd);
       }
       if (supportsTouchEvents) {
         viewport.removeEventListener("touchstart", handleTouchScrollStart);
