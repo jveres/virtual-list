@@ -1075,6 +1075,31 @@ function stopStreamingBottomFollow(): void {
   dearmStreamingBottomFollow();
 }
 
+async function handleScrollBottomClick(): Promise<void> {
+  const activeStream = streamAbort;
+  const scrollAbort = activeStream ? linkedAbortSignal(activeStream) : null;
+
+  try {
+    const completed = await virtualizer.scrollToBottom({
+      behavior: "smooth",
+      signal: scrollAbort?.signal,
+    });
+    syncDemoState();
+
+    if (
+      completed &&
+      activeStream &&
+      streamAbort === activeStream &&
+      !activeStream.cancelled
+    ) {
+      startStreamingBottomFollow(activeStream);
+      syncDemoState();
+    }
+  } finally {
+    scrollAbort?.cleanup();
+  }
+}
+
 function getMountedMessageContent(index: number): HTMLElement | null {
   const element = virtualizer.getMountedElement(index);
   if (!element) return null;
@@ -1299,9 +1324,7 @@ scrollTopBtn.addEventListener("click", () => {
 });
 
 scrollBottomBtn.addEventListener("click", () => {
-  void virtualizer.scrollToBottom({ behavior: "smooth" }).then(() => {
-    syncDemoState();
-  });
+  void handleScrollBottomClick();
 });
 
 promptInput.addEventListener("input", autosize);
