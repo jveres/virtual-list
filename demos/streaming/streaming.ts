@@ -829,6 +829,9 @@ function buildStreamingItem(index: number, message: Message): HTMLElement {
   const handle = createMarkdownViewer(host, {
     text: message.markdown,
     isStreaming: true,
+    // The viewer root rarely holds focus inside the list (the composer does), so
+    // keep a solid block cursor instead of dimming to a hollow frame.
+    unfocusedCursorStyle: "block",
   });
   streamingViewers.set(row, handle);
   return row;

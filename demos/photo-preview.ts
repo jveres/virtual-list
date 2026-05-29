@@ -907,7 +907,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     };
     const onSwipeTouchMove = (event: TouchEvent) => {
       const state = view.swipeState;
-      if (!state || state.input !== "touch") return;
+      if (state?.input !== "touch") return;
       const touch = changedTouchById(event, state.pointerId);
       if (!touch) return;
       if (
@@ -923,7 +923,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     };
     const onSwipeTouchEnd = (event: TouchEvent) => {
       const state = view.swipeState;
-      if (!state || state.input !== "touch") return;
+      if (state?.input !== "touch") return;
       const touch = changedTouchById(event, state.pointerId);
       if (!touch) return;
       if (endPhotoSwipe(view, "touch", touch.identifier))
@@ -931,7 +931,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     };
     const onSwipeTouchCancel = (event: TouchEvent) => {
       const state = view.swipeState;
-      if (!state || state.input !== "touch") return;
+      if (state?.input !== "touch") return;
       const touch = changedTouchById(event, state.pointerId);
       cancelPhotoSwipe(view, "touch", touch?.identifier ?? state.pointerId);
     };

@@ -76,7 +76,10 @@ And here's a feature matrix for the GFM extensions we're using:
 | Task list | \`- [x] done\` | Checkbox |
 | Footnote | \`text[^1]\` | Superscript link |
 | Math | \`$x^2$\` | Inline formula |
-| Superscript | \`x^2^\` | x^2^ |`,
+| Superscript | \`x^2^\` | x^2^ |
+| Subscript | \`H~2~O\` | H~2~O |
+| Highlight | \`==text==\` | ==text== |
+| Insert | \`++text++\` | ++text++ |`,
   },
   {
     role: "user",
@@ -315,7 +318,7 @@ You can combine them freely:
 - ~~Strikethrough with **bold** inside~~
 - \`code spans preserve **asterisks** literally\`
 
-Superscript renders inline too: x^2^ + y^2^ = r^2^.
+The comrak extensions add a whole row of inline styles: superscript like x^2^ + y^2^ = r^2^, subscript like H~2~O, ==highlighted== text, ++inserted++ text, and ||spoiler|| text that stays masked until you hover it. They nest freely too — ==**bold highlight**== and ++*inserted italic*++.
 
 ---
 
@@ -337,7 +340,7 @@ It's all **markdown-viewer** — comrak-wasm for the parse, highlight.js for cod
 
 \`\`\`
 markdown-viewer → rendering (comrak-wasm · highlight.js · KaTeX)
-vite           → dev server + bundling
+vite → dev server + bundling
 \`\`\`
 
 Run \`pnpm run dev\` and see it live.`,
