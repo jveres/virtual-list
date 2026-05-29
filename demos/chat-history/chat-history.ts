@@ -13,7 +13,12 @@ import {
   renderMarkdown,
 } from "../demo-markdown.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
-import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+import {
+  at,
+  bindThemeButtons,
+  mustGet,
+  syncThemeButtons,
+} from "../demo-utils.js";
 
 import "../demo-styles.css";
 
@@ -38,7 +43,7 @@ function htmlForTemplate(templateId: number): string {
   const cacheKey = `${themeKey}:${templateId}`;
   let html = htmlCache.get(cacheKey);
   if (html === undefined) {
-    html = renderMarkdown(conversation[templateId]!.markdown);
+    html = renderMarkdown(at(conversation, templateId).markdown);
     htmlCache.set(cacheKey, html);
   }
   return html;
@@ -48,7 +53,7 @@ function buildItem(index: number): HTMLElement {
   const templateId = templateIdForIndex(index);
   return buildChatItem(
     index,
-    conversation[templateId]!,
+    at(conversation, templateId),
     htmlForTemplate(templateId),
     { indexLabel: true },
   );
@@ -117,7 +122,7 @@ virtualList = createVirtualList({
   viewport,
   canvasClassName: "chat-canvas",
   getCount: () => total,
-  getItemHeight: (index) => templateHeights[templateIdForIndex(index)]!,
+  getItemHeight: (index) => at(templateHeights, templateIdForIndex(index)),
   buildItem,
   overscanPx: 900,
 });

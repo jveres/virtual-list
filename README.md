@@ -30,8 +30,8 @@ Open these pages from the dev server:
   content loading over a 10,000-row transcript window.
 - `/demos/dynamic-content/dynamic-content.html?source=bsky` shows the same
   dynamic loading path with Bluesky public feed data.
-- `/demos/dynamic-content/dynamic-content.html?source=lemmy&debugRenderDrift=1`
-  enables render drift reports for the dynamic content demo.
+- `/demos/dynamic-content/dynamic-content.html?source=lemmy` shows the same
+  dynamic loading path with Lemmy public feed data.
 - `/demos/masonry/masonry.html` shows dynamic masonry photo loading.
 - `/demos/photo-gallery/photo-gallery.html` shows dynamic justified photo rows.
 - `/demos/streaming/streaming.html` shows initial transcript loading,
@@ -273,19 +273,19 @@ placeholders while fast mode is active, placeholders keep the same modeled
 height from `getItemHeight(index)`, and placeholders are replaced with real
 `buildItem()` rows when fast mode exits or scrolling ends.
 
-`debugRenderDrift` is an optional diagnostics flag. Pass `true` to log mounted
-row drift with `console.warn`, or pass a reporter function to collect drift
-records. The runtime compares each mounted row's actual DOM rect against its
-modeled `translateY()` position and measured height. The runtime skips all drift
-reads when the option is unset or `false`, so normal scroll rendering doesn't
-call `getBoundingClientRect()` for this debug path.
+`destroyItem(index, element)` is an optional teardown hook. The runtime calls
+it whenever an element previously produced by `buildItem` is permanently
+detached — on unmount, refresh, window reindex, count shrink, offscreen
+measurement, and `dispose()`. Use it to release per-row resources such as event
+listeners, observers, or embedded components. It is not called for
+`buildPlaceholder` rows.
 
-In the dynamic content demo, add `?debugRenderDrift=1` to the URL. The console
-prints one activation line when the flag is enabled. It logs warnings only when
-at least one mounted row drifts beyond the runtime epsilon. The demo also keeps
-the last reports on `window.__vlRenderDriftReports` and increments
-`window.__vlRenderDriftCount`. Because drift checks read DOM rects, use this
-flag only for diagnostics; it is not a scroll performance mode.
+`recycleItem(index, element)` opts into element recycling. When provided, rows
+scrolled out of view are pooled and re-bound to a new index in place rather than
+rebuilt, so `buildItem` runs only when the pool is empty and `destroyItem` only
+on eviction (pool past `recyclePoolSize`, which defaults to about one viewport)
+or `dispose()`. It is intended for homogeneous rows; recycling stays inert when
+the hook is unset.
 
 ## Dynamic loading
 
@@ -447,10 +447,7 @@ such as masonry and photo gallery, use `scrollToTop()` and `scrollToBottom()`
 instead.
 
 When the list has no rows, the demo uses a placeholder slot for initial loading,
-empty results, and source errors. Use `?debugRenderDrift=1` to enable the
-runtime's mounted-row drift reporter. The demo stores the last reports on
-`window.__vlRenderDriftReports` and increments
-`window.__vlRenderDriftCount` for browser-driven checks.
+empty results, and source errors.
 
 ## Streaming chat demo
 

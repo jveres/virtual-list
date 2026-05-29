@@ -22,7 +22,12 @@ import {
   renderMarkdown,
 } from "../demo-markdown.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
-import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+import {
+  at,
+  bindThemeButtons,
+  mustGet,
+  syncThemeButtons,
+} from "../demo-utils.js";
 
 import "../demo-styles.css";
 
@@ -355,7 +360,7 @@ function cloneToolCalls(toolCalls: readonly ChatToolCall[]): ChatToolCall[] {
 }
 
 function createSimulatedToolCalls(): ChatToolCall[] {
-  const toolCalls = TOOL_CALL_SETS[nextResponse % TOOL_CALL_SETS.length]!;
+  const toolCalls = at(TOOL_CALL_SETS, nextResponse % TOOL_CALL_SETS.length);
   return cloneToolCalls(toolCalls);
 }
 
@@ -481,11 +486,11 @@ function createTemplateMessages(count: number): Message[] {
   const nextMessages: Message[] = [];
   for (let offset = 0; offset < count; offset++) {
     const templateId = (start + offset) % conversation.length;
-    const sample = conversation[templateId]!;
+    const sample = at(conversation, templateId);
     nextMessages.push(
       createMessage({
         ...sample,
-        itemHeight: templateHeights[templateId]!,
+        itemHeight: at(templateHeights, templateId),
       }),
     );
   }
@@ -862,10 +867,10 @@ function scheduleScrollButtons(): void {
 
 function pickResponse(): ReplyVariant {
   if (forceFastLongReply) {
-    return SAMPLE_RESPONSES[SAMPLE_RESPONSES.length - 1]!;
+    return at(SAMPLE_RESPONSES, SAMPLE_RESPONSES.length - 1);
   }
 
-  const response = SAMPLE_RESPONSES[nextResponse % SAMPLE_RESPONSES.length]!;
+  const response = at(SAMPLE_RESPONSES, nextResponse % SAMPLE_RESPONSES.length);
   nextResponse++;
   return response;
 }

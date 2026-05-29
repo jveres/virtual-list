@@ -17,7 +17,12 @@ import {
   renderMarkdown,
 } from "../demo-markdown.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
-import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+import {
+  at,
+  bindThemeButtons,
+  mustGet,
+  syncThemeButtons,
+} from "../demo-utils.js";
 
 import "../demo-styles.css";
 
@@ -260,7 +265,7 @@ function htmlForTemplate(templateId: number): string {
   const cacheKey = `${themeKey}:${templateId}`;
   let html = htmlCache.get(cacheKey);
   if (html === undefined) {
-    html = renderMarkdown(conversation[templateId]!.markdown);
+    html = renderMarkdown(at(conversation, templateId).markdown);
     htmlCache.set(cacheKey, html);
   }
   return html;
@@ -271,7 +276,7 @@ function createSyntheticItem(globalIndex: number): SyntheticLoadedItem {
   return {
     source: "synthetic",
     key: `synthetic:${globalIndex}`,
-    role: conversation[templateId]!.role,
+    role: at(conversation, templateId).role,
     globalIndex,
     templateId,
   };
@@ -541,7 +546,7 @@ function buildLoadedItem(
   if (item.source === "synthetic") {
     const row = buildChatItem(
       item.globalIndex,
-      conversation[item.templateId]!,
+      at(conversation, item.templateId),
       htmlForTemplate(item.templateId),
       { indexLabel: true },
     );
@@ -669,7 +674,7 @@ function appendLoadedMedia(
   grid.className = `post-media count-${mediaCount}`;
 
   for (let index = 0; index < mediaCount; index++) {
-    const media = mediaItems[index]!;
+    const media = at(mediaItems, index);
     const link = document.createElement(mode === "load" ? "a" : "span");
     link.className =
       mode === "load" ? "post-image" : "post-image post-image-placeholder";
@@ -725,11 +730,11 @@ function measureItems(nextItems: readonly LoadedItem[]): void {
     viewport,
     canvasClassName: "chat-canvas",
     buildItem: (index) =>
-      buildLoadedItem(nextItems[index]!, { mediaMode: "placeholder" }),
+      buildLoadedItem(at(nextItems, index), { mediaMode: "placeholder" }),
   });
   try {
     for (let index = 0; index < nextItems.length; index++) {
-      const item = nextItems[index]!;
+      const item = at(nextItems, index);
       measuredItemHeights.set(item.key, measurer.measure(index));
     }
   } finally {
@@ -969,11 +974,20 @@ function syncStatus(state = virtualList?.state): void {
     return;
   }
 
-  const mountedLast = Math.max(state.range.start, state.range.end - 1);
+  // state.range can briefly lead `items` here: a retain-window trim mutates
+  // `items` synchronously while the virtualizer's range only catches up on its
+  // next (possibly rAF-deferred) render. Clamp to valid indices for the status
+  // readout; the next onRangeChange re-syncs the real numbers.
+  const lastIndex = items.length - 1;
+  const startIndex = Math.min(state.range.start, lastIndex);
+  const mountedLast = Math.min(
+    Math.max(startIndex, state.range.end - 1),
+    lastIndex,
+  );
   const nextRangeStatus =
     activeSource.id !== "synthetic"
       ? "network rows pre-measured"
-      : `mounted ${activeSource.rangeLabel(itemAt(state.range.start))}-${activeSource.rangeLabel(itemAt(mountedLast))} · ${state.mountedCount} nodes`;
+      : `mounted ${activeSource.rangeLabel(itemAt(startIndex))}-${activeSource.rangeLabel(itemAt(mountedLast))} · ${state.mountedCount} nodes`;
   if (nextRangeStatus !== renderedRangeStatus) {
     renderedRangeStatus = nextRangeStatus;
     rangeStatus.textContent = nextRangeStatus;
@@ -1643,7 +1657,7 @@ async function fetchLemmyPage(
   for (const originIndex of attempts) {
     try {
       const page = await fetchLemmyPageFromOrigin(
-        LEMMY_ORIGINS[originIndex]!,
+        at(LEMMY_ORIGINS, originIndex),
         config,
         signal,
       );
@@ -1819,7 +1833,7 @@ function lemmyPostMedia(postView: LemmyPostView): LoadedMedia[] {
 }
 
 function lemmyHostLabel(): string {
-  return new URL(LEMMY_ORIGINS[lemmyOriginIndex]!).host;
+  return new URL(at(LEMMY_ORIGINS, lemmyOriginIndex)).host;
 }
 
 function isLemmyPostPage(value: unknown): value is LemmyPostPage {

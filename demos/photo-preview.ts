@@ -837,7 +837,11 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const onSwipePointerDown = (event: PointerEvent) => {
       if (event.pointerType === "touch" && supportsTouchEvents()) return;
       if (view.closing || event.button !== 0 || !event.isPrimary) return;
-      if (view.closeButton.contains(event.target as Node)) return;
+      if (
+        event.target instanceof Node &&
+        view.closeButton.contains(event.target)
+      )
+        return;
       startPhotoSwipe(
         view,
         "pointer",
@@ -886,7 +890,11 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
           cancelPhotoSwipe(view, "touch", state.pointerId);
         return;
       }
-      if (view.closeButton.contains(event.target as Node)) return;
+      if (
+        event.target instanceof Node &&
+        view.closeButton.contains(event.target)
+      )
+        return;
       const touch = event.changedTouches.item(0);
       if (!touch) return;
       startPhotoSwipe(

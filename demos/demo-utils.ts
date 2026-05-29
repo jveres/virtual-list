@@ -4,6 +4,22 @@ type HTMLElementConstructor<T extends HTMLElement> = {
   new (): T;
 };
 
+/**
+ * Indexed access that asserts the element is present. Replaces non-null `!`
+ * and `as` casts on array/tuple lookups that are known to be in range, turning
+ * an out-of-range mistake into a clear error instead of a propagating
+ * `undefined`.
+ */
+export function at<T>(items: ArrayLike<T>, index: number): T {
+  const value = items[index];
+  if (value === undefined) {
+    throw new RangeError(
+      `index ${index} out of range (length ${items.length})`,
+    );
+  }
+  return value;
+}
+
 export function mustGet(id: string): HTMLElement;
 export function mustGet<T extends HTMLElement>(
   id: string,

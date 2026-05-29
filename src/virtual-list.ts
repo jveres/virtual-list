@@ -1087,7 +1087,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function boundaryForElement(element: Element): VirtualListBoundary | null {
-    const boundary = (element as HTMLElement).dataset.boundary;
+    if (!(element instanceof HTMLElement)) return null;
+    const boundary = element.dataset.boundary;
     return boundary === "top" || boundary === "bottom" ? boundary : null;
   }
 

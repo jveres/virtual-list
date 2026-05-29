@@ -6,7 +6,12 @@ import {
   type VirtualListState,
 } from "../../src/virtual-list.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
-import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+import {
+  at,
+  bindThemeButtons,
+  mustGet,
+  syncThemeButtons,
+} from "../demo-utils.js";
 import { createPhotoPreview } from "../photo-preview.js";
 
 import "../demo-styles.css";
@@ -382,8 +387,8 @@ function computeFineGroups(
 }
 
 function combineMasonryGroups(groups: readonly MasonryGroup[]): MasonryGroup {
-  const first = groups[0] as MasonryGroup;
-  const last = groups[groups.length - 1] as MasonryGroup;
+  const first = at(groups, 0);
+  const last = at(groups, groups.length - 1);
   const bandPhotos: PlacedPhoto[] = [];
   for (const group of groups) {
     bandPhotos.push(...group.photos);
@@ -402,11 +407,11 @@ function mergeFineGroups(
   if (fineGroups.length === 0) return [];
 
   const merged: MasonryGroup[] = [];
-  let chunk: MasonryGroup[] = [fineGroups[0] as MasonryGroup];
+  let chunk: MasonryGroup[] = [at(fineGroups, 0)];
   let chunkHeight = fineGroups[0]?.height ?? 0;
 
   for (let index = 1; index < fineGroups.length; index++) {
-    const group = fineGroups[index] as MasonryGroup;
+    const group = at(fineGroups, index);
     if (chunkHeight >= targetHeight) {
       merged.push(combineMasonryGroups(chunk));
       chunk = [group];
