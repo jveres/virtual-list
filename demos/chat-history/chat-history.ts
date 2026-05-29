@@ -6,10 +6,8 @@ import {
   type VirtualList,
 } from "../../src/virtual-list.js";
 import {
-  codeThemeName,
-  hasHighlighter,
+  attachInteractions,
   initMarkdown,
-  loadHighlighter,
   renderMarkdown,
 } from "../demo-markdown.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
@@ -32,19 +30,17 @@ let measuredViewportWidth = viewport.clientWidth;
 
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
-const htmlCache = new Map<string, string>();
+const htmlCache = new Map<number, string>();
 
 function templateIdForIndex(index: number): number {
   return index % conversation.length;
 }
 
 function htmlForTemplate(templateId: number): string {
-  const themeKey = hasHighlighter() ? codeThemeName() : "plain";
-  const cacheKey = `${themeKey}:${templateId}`;
-  let html = htmlCache.get(cacheKey);
+  let html = htmlCache.get(templateId);
   if (html === undefined) {
     html = renderMarkdown(at(conversation, templateId).markdown);
-    htmlCache.set(cacheKey, html);
+    htmlCache.set(templateId, html);
   }
   return html;
 }
@@ -92,10 +88,10 @@ async function scrollToSettledBottom(passes = 3): Promise<void> {
 }
 
 function refreshTheme(): void {
+  // markdown-viewer styling is CSS-driven via the [data-theme] attribute, so a
+  // theme switch needs no re-render — just flip the document attribute.
   applyDocumentTheme();
   syncThemeButtons();
-  htmlCache.clear();
-  virtualList.refreshMounted();
 }
 
 bindThemeButtons(refreshTheme);
@@ -128,19 +124,13 @@ virtualList = createVirtualList({
 });
 const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
+// One delegated listener powers copy buttons across every mounted row.
+attachInteractions(viewport);
 
 await scrollToSettledBottom();
 document.documentElement.classList.remove("booting");
 
 watchSystemTheme(refreshTheme);
-loadHighlighter()
-  .then(async () => {
-    const keepBottom = virtualList.state.atBottom;
-    htmlCache.clear();
-    virtualList.refreshMounted();
-    if (keepBottom) await scrollToSettledBottom(2);
-  })
-  .catch(console.error);
 
 declare global {
   interface Window {

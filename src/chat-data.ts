@@ -19,28 +19,17 @@ Here's the architecture I'd suggest:
 2. **Measure** rendered heights for virtualization
 3. **Project** only visible messages into the DOM on scroll
 
-The parsing layer should support the full CommonMark + GFM spec. Let me show you what that looks like with comrak:
+The rendering layer is **markdown-viewer** — a frameworkless DOM viewer built on \`comrak-wasm\` for the parse, with syntax highlighting, math, alerts, and streaming baked in. For a static message you render straight to an HTML string:
 
 \`\`\`typescript
-import init, { mdToHtml } from "comrak-wasm";
+import { initMarkdownViewer, renderToHtml } from "markdown-viewer";
 
-await init();
+await initMarkdownViewer();
 
-const html = mdToHtml(message.markdown, {
-  extension: {
-    strikethrough: true,
-    table: true,
-    tasklist: true,
-    autolink: true,
-    alerts: true,
-    footnotes: true,
-    mathDollars: true,
-  },
-  render: { unsafe: true },
-});
+const html = renderToHtml(message.markdown);
 \`\`\`
 
-This gives us a fast, single-pass renderer that handles everything from \`inline code\` to $E = mc^2$.`,
+One call covers the full CommonMark + GFM spec — everything from \`inline code\` to $E = mc^2$ — and returns HTML ready to drop into the row.`,
   },
   {
     role: "user",
@@ -49,35 +38,17 @@ This gives us a fast, single-pass renderer that handles everything from \`inline
   },
   {
     role: "assistant",
-    markdown: `For syntax highlighting, we can plug **Shiki** directly into comrak's plugin system. Shiki uses the same TextMate grammars as VS Code, so you get identical highlighting.
+    markdown: `That's built in. markdown-viewer highlights code with **highlight.js** — the same library GitHub uses — lazy-loading a grammar per language. You just preload the languages your content uses so \`renderToHtml\` emits highlighted code synchronously:
 
 \`\`\`typescript
-import { createHighlighter } from "shiki";
+import { loadLanguages, renderToHtml } from "markdown-viewer";
 
-const shiki = await createHighlighter({
-  themes: ["github-dark"],
-  langs: ["typescript", "rust", "python", "bash"],
-});
+await loadLanguages(["typescript", "rust", "python", "bash"]);
 
-const highlighter = new SyntaxHighlighter(
-  (code, lang) => {
-    if (!lang) return code;
-    const html = shiki.codeToHtml(code, {
-      lang,
-      theme: "github-dark",
-    });
-    // Extract inner HTML from shiki's wrapper
-    const match = html.match(
-      /<pre[^>]*><code[^>]*>([\\s\\S]*?)<\\/code><\\/pre>/
-    );
-    return match?.[1] ?? code;
-  },
-  () => '<pre class="shiki">',
-  () => "<code>",
-);
+const html = renderToHtml(message.markdown);
 \`\`\`
 
-The beauty of this approach is that highlighting happens at parse time, not render time. Once a message is parsed, the highlighted HTML is cached.`,
+Highlighting happens at render time and the HTML is cached, so scrolling never re-highlights a thing.`,
   },
   {
     role: "user",
@@ -105,7 +76,7 @@ And here's a feature matrix for the GFM extensions we're using:
 | Task list | \`- [x] done\` | Checkbox |
 | Footnote | \`text[^1]\` | Superscript link |
 | Math | \`$x^2$\` | Inline formula |
-| Highlight | \`==text==\` | ==highlighted== |`,
+| Superscript | \`x^2^\` | x^2^ |`,
   },
   {
     role: "user",
@@ -114,17 +85,20 @@ And here's a feature matrix for the GFM extensions we're using:
   },
   {
     role: "assistant",
-    markdown: `This is where \`healMarkdown\` shines. It's a lightweight function that closes any unclosed delimiters before parsing:
+    markdown: `markdown-viewer has a live mode for exactly this. Set \`isStreaming\` while tokens arrive and it heals the incomplete markdown, shows a typing cursor, and morphs the DOM in place instead of replacing it:
 
 \`\`\`typescript
-import { healMarkdown, mdToHtml } from "comrak-wasm";
+import { createMarkdownViewer } from "markdown-viewer";
 
-function renderStreaming(partial: string): string {
-  // healMarkdown closes unclosed fences, bold,
-  // italic, links, math blocks, etc.
-  const healed = healMarkdown(partial);
-  return mdToHtml(healed, options);
+const viewer = createMarkdownViewer(host, { text: "", isStreaming: true });
+
+let text = "";
+for await (const chunk of stream) {
+  text += chunk;
+  viewer.update({ text, isStreaming: true });
 }
+
+viewer.update({ text, isStreaming: false });
 \`\`\`
 
 It handles all the edge cases:
@@ -137,15 +111,13 @@ It handles all the edge cases:
 - Partial HTML tags
 
 > [!TIP]
-> The \`healMarkdown\` function is pure string manipulation — no parsing involved. It runs in microseconds, so you can call it on every streaming chunk without worrying about performance.
+> The healing is pure string manipulation that runs before each parse — it closes unclosed delimiters in microseconds, so the viewer can re-render on every streaming chunk without flashing broken markup.
 
-The streaming flow looks like this:
+The streaming flow collapses to:
 
-1. Receive chunk from SSE/WebSocket
-2. Append to accumulated text
-3. \`healMarkdown(accumulated)\` → closed markdown
-4. \`mdToHtml(healed)\` → safe HTML
-5. Diff and patch the DOM`,
+1. Receive a chunk from SSE/WebSocket
+2. \`viewer.update({ text, isStreaming: true })\`
+3. markdown-viewer heals, re-parses, and morphs only what changed`,
   },
   {
     role: "user",
@@ -177,7 +149,7 @@ The streaming flow looks like this:
 - \`background: #161920\`
 - Rounded corners (10px)
 - Subtle top border for language badge
-- Shiki-highlighted with \`github-dark\` theme
+- Highlighted by highlight.js with a GitHub-style theme
 
 This creates a clear visual hierarchy where assistant responses feel like *reading an article* while user messages feel like *sending a text*.`,
   },
@@ -193,7 +165,7 @@ This creates a clear visual hierarchy where assistant responses feel like *readi
 1. **Architecture layers**
    - Parsing layer
      - Markdown tokenization (comrak)
-     - Syntax highlighting (Shiki)
+     - Syntax highlighting (highlight.js)
      - Math rendering (KaTeX)
    - Virtualization layer
      - Height prediction
@@ -206,16 +178,16 @@ This creates a clear visual hierarchy where assistant responses feel like *readi
 
 2. **Build pipeline**
    - \`comrak\` → Rust → WASM (900KB)
-   - \`shiki\` → TextMate grammars → \`codeToHtml\`
+   - \`highlight.js\` → per-language grammars → highlighted HTML
    - \`vite\` → ES modules → tree-shaken bundle
 
 And a task list for our implementation:
 
-- [x] Set up Vite project with comrak-wasm
+- [x] Set up Vite project with markdown-viewer
 - [x] Create dark theme CSS
 - [x] Implement two-lane message layout
-- [x] Add Shiki syntax highlighting
-- [x] Wire up \`healMarkdown\` for streaming
+- [x] Add highlight.js syntax highlighting
+- [x] Wire up markdown-viewer streaming mode
 - [x] Build sample conversation data
 - [ ] Add virtualization for 10k+ messages
 - [ ] Implement scroll anchoring
@@ -228,7 +200,7 @@ And a task list for our implementation:
   },
   {
     role: "assistant",
-    markdown: `Here's the Rust side of comrak-wasm — the actual WASM binding:
+    markdown: `Under the hood, markdown-viewer parses with \`comrak-wasm\`. Here's the Rust side of that engine — the actual WASM binding:
 
 \`\`\`rust
 use comrak::{markdown_to_html, Options};
@@ -283,7 +255,7 @@ done
 echo "Done! Rendered $(ls docs/*.html | wc -l) files."
 \`\`\`
 
-All three languages get proper syntax highlighting through Shiki's TextMate grammar system.`,
+All three languages get proper syntax highlighting through highlight.js's language grammars.`,
   },
   {
     role: "user",
@@ -343,9 +315,7 @@ You can combine them freely:
 - ~~Strikethrough with **bold** inside~~
 - \`code spans preserve **asterisks** literally\`
 
-Superscript and subscript: x^2^ + y^2^ = r^2^, and H~2~O is water.
-
-==Highlighted text== stands out, and ++inserted text++ shows additions.
+Superscript renders inline too: x^2^ + y^2^ = r^2^.
 
 ---
 
@@ -363,12 +333,10 @@ The recursive nature of this conversation — markdown rendered by a markdown re
     role: "assistant",
     markdown: `Done. The full demo renders this entire conversation as a scrollable, dark-themed chat — every code block highlighted, every table aligned, every alert styled.
 
-All powered by a single ~900KB WASM binary. No server, no build step beyond Vite, no runtime dependencies beyond Shiki for highlighting.
+It's all **markdown-viewer** — comrak-wasm for the parse, highlight.js for code, KaTeX for math, plus a streaming mode that heals partial markdown and shows a cursor. No server, no build step beyond Vite.
 
 \`\`\`
-comrak-wasm    → markdown parsing (WASM)
-shiki          → syntax highlighting
-healMarkdown   → streaming support
+markdown-viewer → rendering (comrak-wasm · highlight.js · KaTeX)
 vite           → dev server + bundling
 \`\`\`
 

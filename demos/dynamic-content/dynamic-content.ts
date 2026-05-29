@@ -10,10 +10,8 @@ import {
   type VirtualListRenderMode,
 } from "../../src/virtual-list.js";
 import {
-  codeThemeName,
-  hasHighlighter,
+  attachInteractions,
   initMarkdown,
-  loadHighlighter,
   renderMarkdown,
 } from "../demo-markdown.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
@@ -233,7 +231,7 @@ let renderedRangeStatus = "";
 
 const measuredItemHeights = new Map<string, number>();
 const visibleItemCache = new Map<string, HTMLElement>();
-const htmlCache = new Map<string, string>();
+const htmlCache = new Map<number, string>();
 const expandedTextKeys = new Set<string>();
 const boundarySlotStates: Record<VirtualListBoundary, BoundarySlotState> = {
   top: { kind: "none" },
@@ -261,12 +259,10 @@ function templateIdForGlobalIndex(index: number): number {
 }
 
 function htmlForTemplate(templateId: number): string {
-  const themeKey = hasHighlighter() ? codeThemeName() : "plain";
-  const cacheKey = `${themeKey}:${templateId}`;
-  let html = htmlCache.get(cacheKey);
+  let html = htmlCache.get(templateId);
   if (html === undefined) {
     html = renderMarkdown(at(conversation, templateId).markdown);
-    htmlCache.set(cacheKey, html);
+    htmlCache.set(templateId, html);
   }
   return html;
 }
@@ -995,10 +991,9 @@ function syncStatus(state = virtualList?.state): void {
 }
 
 function refreshTheme(): void {
+  // markdown-viewer theming is CSS-driven; flipping [data-theme] is enough.
   applyDocumentTheme();
   syncThemeButtons();
-  htmlCache.clear();
-  virtualList?.refreshMounted();
 }
 
 function createVirtualizer(): VirtualList {
@@ -2005,6 +2000,8 @@ sourceSelect.addEventListener("change", () => {
 
 const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
+// One delegated listener powers copy buttons across every mounted row.
+attachInteractions(viewport);
 
 document.getElementById("top-btn")?.addEventListener("click", () => {
   void virtualList?.scrollToIndex(0, "top", { behavior: "smooth" });
@@ -2027,14 +2024,6 @@ syncStatus();
 document.documentElement.classList.remove("booting");
 
 watchSystemTheme(refreshTheme);
-loadHighlighter()
-  .then(() => {
-    htmlCache.clear();
-    if (sourceId === "synthetic") {
-      virtualList?.refreshMounted();
-    }
-  })
-  .catch(console.error);
 
 declare global {
   interface Window {

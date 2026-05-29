@@ -2,6 +2,7 @@ import { conversation } from "../../src/chat-data.js";
 import {
   type AssistantStatus,
   buildChatItem,
+  buildChatRow,
   type ChatToolCall,
   setRoleLabel,
 } from "../../src/chat-ui.js";
@@ -15,10 +16,10 @@ import {
   type VirtualListState,
 } from "../../src/virtual-list.js";
 import {
-  codeThemeName,
-  hasHighlighter,
+  attachInteractions,
+  createMarkdownViewer,
   initMarkdown,
-  loadHighlighter,
+  type MarkdownViewerHandle,
   renderMarkdown,
 } from "../demo-markdown.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
@@ -107,6 +108,12 @@ const virtualListScrollEndWaiters = new Set<() => void>();
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
 const htmlCache = new Map<string, string>();
+// Live markdown-viewer instances for streaming rows, keyed by their row element
+// (not message id) so the build → destroy handoff in `refreshIndex` — which
+// builds the next element before destroying the previous — never kills the row
+// it just created. The viewport's recycle pool is off, so every unmount destroys
+// the element and fires `destroyItem`, where we tear the viewer down.
+const streamingViewers = new WeakMap<HTMLElement, MarkdownViewerHandle>();
 const transcript: Message[] = [];
 let messages: Message[] = [];
 const boundarySlotStates: Record<
@@ -735,8 +742,7 @@ function syncMetrics(state: VirtualListState): void {
 }
 
 function cacheKey(message: Message): string {
-  const themeKey = hasHighlighter() ? codeThemeName() : "plain";
-  return `${themeKey}:${message.id}`;
+  return String(message.id);
 }
 
 function htmlForMessage(message: Message): string {
@@ -800,7 +806,43 @@ function getItemHeight(index: number): number {
 function buildItem(index: number): HTMLElement {
   const message = messages[index];
   if (!message) throw new Error(`missing message ${index}`);
+  // A streaming row is a live markdown-viewer (cursor + healing + morph); every
+  // other row is a static HTML render. The status flips back to "done" on
+  // completion, so this same path rebuilds the row as static when it remounts.
+  if (message.status === "streaming") return buildStreamingItem(index, message);
   return buildChatItem(index, message, htmlForMessage(message));
+}
+
+function buildStreamingItem(index: number, message: Message): HTMLElement {
+  const { row, content } = buildChatRow(index, message);
+  // createMarkdownViewer takes over its host's children, so it gets a dedicated
+  // wrapper rather than `content` (which also holds the role label / tool calls).
+  const host = document.createElement("div");
+  host.className = "streaming-host";
+  // The live viewer binds its own copy / table-copy click handler to its root.
+  // The chat viewport also delegates those clicks (for static rows), so stop the
+  // bubble here to keep both from firing on this one row — otherwise a copy fires
+  // twice and a table menu toggles open then shut. The viewer's handler is bound
+  // deeper in the tree, so it has already run by the time the event reaches here.
+  host.addEventListener("click", (event) => event.stopPropagation());
+  content.appendChild(host);
+  const handle = createMarkdownViewer(host, {
+    text: message.markdown,
+    isStreaming: true,
+  });
+  streamingViewers.set(row, handle);
+  return row;
+}
+
+function syncRoleLabel(
+  element: HTMLElement,
+  message: Message,
+  index: number,
+): void {
+  const label = element.querySelector<HTMLElement>(".role-label");
+  if (label && label.dataset.status !== message.status) {
+    setRoleLabel(label, message, index);
+  }
 }
 
 function refreshItem(
@@ -812,6 +854,26 @@ function refreshItem(
 
   htmlCache.delete(cacheKey(message));
   const element = virtualList.getMountedElement(index);
+
+  if (message.status === "streaming") {
+    if (element) {
+      const handle = streamingViewers.get(element);
+      if (handle) {
+        syncRoleLabel(element, message, index);
+        handle.update({ text: message.markdown, isStreaming: true });
+        return;
+      }
+      // Mounted but not yet live (the row just transitioned from "thinking"):
+      // rebuild it as a live viewer.
+      virtualList.refreshIndex(index);
+      return;
+    }
+    // Offscreen rows are left alone — per-token updates skip them and the viewer
+    // is built fresh when they remount.
+    if (options.refreshUnmounted) virtualList.refreshIndex(index);
+    return;
+  }
+
   if (!element) {
     if (options.refreshUnmounted) virtualList.refreshIndex(index);
     return;
@@ -819,6 +881,9 @@ function refreshItem(
 
   const label = element.querySelector<HTMLElement>(".role-label");
   const markdown = element.querySelector<HTMLElement>(".md");
+  // No `.md` means this is a live streaming row finishing up (its content box is
+  // `.markdown`, not `.md`); rebuild it as a static row, which also disposes the
+  // viewer via `destroyItem`.
   if (!label || !markdown) {
     virtualList.refreshIndex(index);
     return;
@@ -830,18 +895,10 @@ function refreshItem(
   markdown.innerHTML = htmlForMessage(message);
 }
 
-function refreshMountedItems(): void {
-  htmlCache.clear();
-  virtualList.refreshMounted();
-  syncDemoState();
-}
-
 function refreshTheme(): void {
+  // markdown-viewer theming is CSS-driven; flipping [data-theme] is enough.
   applyDocumentTheme();
   syncThemeButtons();
-  measureExistingMessages();
-  virtualList.invalidateMeasurements();
-  refreshMountedItems();
 }
 
 function syncScrollButtons(state = virtualList.state): void {
@@ -1361,6 +1418,12 @@ virtualList = createVirtualList({
   getCount: () => messages.length,
   getItemHeight,
   buildItem,
+  destroyItem: (_index, element) => {
+    const handle = streamingViewers.get(element);
+    if (!handle) return;
+    handle.destroy();
+    streamingViewers.delete(element);
+  },
   overscanPx: domOverscanPx,
   onRangeChange: syncDemoState,
   onReachTop: loadOlderMessages,
@@ -1371,6 +1434,8 @@ setBoundarySlotIdleState("top");
 syncBoundarySlot("top");
 const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
+// One delegated listener powers copy buttons across every mounted row.
+attachInteractions(viewport);
 
 await virtualList.scrollToBottom();
 syncDemoState();
@@ -1378,11 +1443,3 @@ document.documentElement.classList.remove("booting");
 promptInput.focus();
 
 watchSystemTheme(refreshTheme);
-loadHighlighter()
-  .then(() => {
-    measureTemplateHeights();
-    measureExistingMessages();
-    virtualList.invalidateMeasurements();
-    refreshMountedItems();
-  })
-  .catch(console.error);

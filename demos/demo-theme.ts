@@ -16,7 +16,7 @@ export function getThemeChoice(): ThemeChoice {
   return themeChoice;
 }
 
-export function isDark(): boolean {
+function isDark(): boolean {
   if (themeChoice === "dark") return true;
   if (themeChoice === "light") return false;
   return matchMedia("(prefers-color-scheme: dark)").matches;

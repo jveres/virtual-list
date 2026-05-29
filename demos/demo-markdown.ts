@@ -1,116 +1,34 @@
-import init, {
-  mdToHtml,
-  mdToHtmlWithPlugins,
-  SyntaxHighlighter,
-} from "comrak-wasm";
-import type { HighlighterCore } from "shiki/core";
-import { isDark } from "./demo-theme.js";
+import {
+  attachInteractions,
+  createMarkdownViewer,
+  initMarkdownViewer,
+  loadLanguages,
+  type MarkdownViewerHandle,
+  preloadKaTeX,
+  renderToHtml,
+} from "markdown-viewer";
+import "markdown-viewer/styles.css";
+import "katex/dist/katex.css";
 
-const comrakOptions = {
-  extension: {
-    strikethrough: true,
-    table: true,
-    tasklist: true,
-    autolink: true,
-    alerts: true,
-    footnotes: true,
-    mathDollars: true,
-    mathCode: true,
-    superscript: true,
-    subscript: true,
-    underline: true,
-    highlight: true,
-    insert: true,
-    descriptionLists: true,
-  },
-  render: { unsafe: true },
-};
-
-let shiki: HighlighterCore | null = null;
-let shikiLoad: Promise<void> | null = null;
-
-export function codeThemeName(): "github-dark" | "github-light" {
-  return isDark() ? "github-dark" : "github-light";
-}
+// Languages used in the demo conversation content. Preloaded so renderMarkdown
+// (a synchronous string render) emits fully highlighted code on first paint and
+// produces stable measured heights — there is no live component to re-highlight
+// a static row after the fact.
+const DEMO_LANGUAGES = ["typescript", "rust", "python", "bash"];
 
 export async function initMarkdown(): Promise<void> {
-  await init();
-}
-
-// SyntaxHighlighter is a wasm-bindgen class; mdToHtmlWithPlugins consumes the
-// instance, so a fresh adapter must be built per render.
-function createShikiAdapter(): SyntaxHighlighter | null {
-  if (!shiki) return null;
-  const themeName = codeThemeName();
-  const bg = themeName === "github-dark" ? "#161920" : "#fafbfc";
-  const fg = themeName === "github-dark" ? "#e1e4e8" : "#1f2328";
-  return new SyntaxHighlighter(
-    (code: string, lang: string | undefined) => {
-      if (!lang || !shiki) return code;
-      try {
-        const html = shiki.codeToHtml(code, { lang, theme: themeName });
-        const match = html.match(
-          /<pre[^>]*><code[^>]*>([\s\S]*?)<\/code><\/pre>/,
-        );
-        return match?.[1] ?? code;
-      } catch {
-        return code;
-      }
-    },
-    () =>
-      `<pre class="shiki ${themeName}" style="background-color:${bg};color:${fg}">`,
-    () => "<code>",
-  );
+  await initMarkdownViewer();
+  await Promise.all([loadLanguages(DEMO_LANGUAGES), preloadKaTeX()]);
 }
 
 export function renderMarkdown(markdown: string): string {
-  const highlighter = createShikiAdapter();
-  return highlighter
-    ? mdToHtmlWithPlugins(markdown, comrakOptions, highlighter)
-    : mdToHtml(markdown, comrakOptions);
+  return renderToHtml(markdown);
 }
 
-export function hasHighlighter(): boolean {
-  return shiki !== null;
-}
-
-export function loadHighlighter(): Promise<void> {
-  if (shiki) return Promise.resolve();
-  if (shikiLoad) return shikiLoad;
-
-  shikiLoad = Promise.all([
-    import("shiki/core"),
-    import("@shikijs/engine-oniguruma").then(async (m) => {
-      const wasm = await import("shiki/onig.wasm?init");
-      return m.createOnigurumaEngine(wasm.default);
-    }),
-    import("@shikijs/themes/github-dark"),
-    import("@shikijs/themes/github-light"),
-    import("@shikijs/langs/typescript"),
-    import("@shikijs/langs/rust"),
-    import("@shikijs/langs/python"),
-    import("@shikijs/langs/bash"),
-  ])
-    .then(
-      ([
-        { createHighlighterCore },
-        engine,
-        themeDark,
-        themeLight,
-        ...langs
-      ]) => {
-        return createHighlighterCore({
-          engine,
-          themes: [themeDark.default, themeLight.default],
-          langs: langs.map((m) => m.default),
-        }).then((highlighter) => {
-          shiki = highlighter;
-        });
-      },
-    )
-    .catch((error: unknown) => {
-      shikiLoad = null;
-      throw error;
-    });
-  return shikiLoad;
-}
+// Re-export the markdown-viewer primitives a host wires up directly:
+// - attachInteractions: one delegated listener (copy buttons, table-copy menus)
+//   on the scroll viewport, covering every mounted row.
+// - createMarkdownViewer / MarkdownViewerHandle: the live component for streaming
+//   rows — heals partial markdown, shows a typing cursor, morphs the DOM in place.
+export type { MarkdownViewerHandle };
+export { attachInteractions, createMarkdownViewer };

@@ -5,15 +5,13 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: new URL("index.html", import.meta.url).pathname,
-        chatHistory: new URL(
-          "demos/chat-history/chat-history.html",
-          import.meta.url,
-        ).pathname,
+        chatHistory: new URL("demos/chat-history/index.html", import.meta.url)
+          .pathname,
         dynamicContent: new URL(
-          "demos/dynamic-content/dynamic-content.html",
+          "demos/dynamic-content/index.html",
           import.meta.url,
         ).pathname,
-        streaming: new URL("demos/streaming/streaming.html", import.meta.url)
+        streaming: new URL("demos/streaming/index.html", import.meta.url)
           .pathname,
       },
     },

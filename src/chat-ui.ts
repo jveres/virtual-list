@@ -106,12 +106,15 @@ function buildToolCalls(message: ChatMessage): HTMLElement | null {
   return tools;
 }
 
-export function buildChatItem(
+// Builds the row chrome shared by static and live rows — `article.message` →
+// `.message-content` → role label + tool calls — and returns the content host
+// the caller fills with markdown (a static `.markdown-viewer` for finished rows,
+// or a live `createMarkdownViewer` mount for a streaming row).
+export function buildChatRow(
   index: number,
   message: ChatMessage,
-  html: string,
   options: ChatItemOptions = {},
-): HTMLElement {
+): { row: HTMLElement; content: HTMLElement } {
   const row = document.createElement("article");
   row.className = `message ${message.role}`;
   row.dataset.index = String(index);
@@ -127,36 +130,27 @@ export function buildChatItem(
   const tools = buildToolCalls(message);
   if (tools) content.appendChild(tools);
 
-  const markdown = document.createElement("div");
-  markdown.className = "md";
-  markdown.innerHTML = html;
-  content.appendChild(markdown);
-
   row.appendChild(content);
-  return row;
+  return { row, content };
 }
 
-export function buildChatPlaceholder(
+export function buildChatItem(
   index: number,
-  height: number,
+  message: ChatMessage,
+  html: string,
   options: ChatItemOptions = {},
 ): HTMLElement {
-  const row = document.createElement("article");
-  row.className = "message message-placeholder";
-  row.style.height = `${Math.max(1, height)}px`;
+  const { row, content } = buildChatRow(index, message, options);
 
-  const content = document.createElement("div");
-  content.className = "message-content";
+  // markdown-viewer's stylesheet targets `.markdown-viewer > .markdown`; `.md`
+  // is kept on the inner element as the demo's JS hook and layout container.
+  const viewer = document.createElement("div");
+  viewer.className = "markdown-viewer";
+  const markdown = document.createElement("div");
+  markdown.className = "markdown md";
+  markdown.innerHTML = html;
+  viewer.appendChild(markdown);
+  content.appendChild(viewer);
 
-  const label = document.createElement("div");
-  label.className = "role-label";
-  label.textContent = options.indexLabel ? `#${index}` : "";
-
-  const line = document.createElement("div");
-  line.className = "message-placeholder-line";
-  line.setAttribute("aria-hidden", "true");
-
-  content.append(label, line);
-  row.appendChild(content);
   return row;
 }

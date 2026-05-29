@@ -18,30 +18,13 @@ body {
   --bg: #ffffff;
   --bg-surface: #f7f8fa;
   --bg-bubble: #e8ebf0;
-  --bg-code: #f0f2f5;
   --bg-code-block: #fafbfc;
   --fg: #1a1d23;
   --fg-muted: #6b7280;
   --fg-dim: #9ca3af;
   --accent: #4f6df5;
   --border: #e5e7eb;
-  --alert-note-bg: #eff6ff;
-  --alert-note-border: #3b82f6;
-  --alert-tip-bg: #f0fdf4;
-  --alert-tip-border: #22c55e;
-  --alert-important-bg: #faf5ff;
-  --alert-important-border: #a855f7;
-  --alert-warning-bg: #fffbeb;
-  --alert-warning-border: #f59e0b;
-  --alert-caution-bg: #fef2f2;
   --alert-caution-border: #ef4444;
-  --quote-border: #d1d5db;
-  --quote-fg: #6b7280;
-  --th-bg: #f3f4f6;
-  --table-border: #e5e7eb;
-  --hr-color: #e5e7eb;
-  --checkbox-bg: #e5e7eb;
-  --checkbox-checked: var(--accent);
   color-scheme: light;
 }
 
@@ -49,30 +32,13 @@ body {
   --bg: #1a1d23;
   --bg-surface: #22262e;
   --bg-bubble: #2a2f38;
-  --bg-code: #2d323c;
   --bg-code-block: #161920;
   --fg: #d5d9e1;
   --fg-muted: #8b919d;
   --fg-dim: #5c6370;
   --accent: #7c9cff;
   --border: #3a3f4a;
-  --alert-note-bg: #121d2f;
-  --alert-note-border: #4493f8;
-  --alert-tip-bg: #12261e;
-  --alert-tip-border: #3fb950;
-  --alert-important-bg: #1b1533;
-  --alert-important-border: #ab7df8;
-  --alert-warning-bg: #272115;
-  --alert-warning-border: #d29922;
-  --alert-caution-bg: #2d1215;
   --alert-caution-border: #f85149;
-  --quote-border: #3a3f4a;
-  --quote-fg: #8b919d;
-  --th-bg: #262b34;
-  --table-border: #3a3f4a;
-  --hr-color: #3a3f4a;
-  --checkbox-bg: #3a3f4a;
-  --checkbox-checked: var(--accent);
   color-scheme: dark;
 }
 
@@ -322,18 +288,6 @@ select.source-select:disabled {
   contain: layout style paint;
 }
 
-.message.message-placeholder {
-  pointer-events: none;
-}
-
-.message-placeholder-line {
-  width: min(100%, 420px);
-  height: 12px;
-  margin-top: 10px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--border) 72%, transparent);
-}
-
 @keyframes fly-in {
   from {
     opacity: 0;
@@ -540,235 +494,38 @@ select.source-select:disabled {
   }
 }
 
-.md h1,
-.md h2,
-.md h3,
-.md h4 {
-  margin-top: 1.2em;
-  margin-bottom: 0.4em;
-  color: var(--fg);
-  font-weight: 600;
-}
-
-.md h1:first-child,
-.md h2:first-child,
-.md h3:first-child {
-  margin-top: 0;
-}
-
-.md h1 {
-  font-size: 1.35em;
-}
-
-.md h2 {
-  font-size: 1.15em;
-}
-
-.md h3 {
-  font-size: 1.05em;
-}
-
-.md p {
-  margin-bottom: 0.75em;
-}
-
-.md p:last-child {
-  margin-bottom: 0;
-}
-
-.md strong {
-  font-weight: 600;
-}
-
-.md a {
-  color: var(--accent);
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
-  text-underline-offset: 2px;
-}
-
-.md :not(pre) > code {
-  border-radius: 5px;
-  background: var(--bg-code);
-  padding: 0.15em 0.4em;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
-  font-size: 0.88em;
-  font-weight: 500;
-}
-
-.md pre {
-  margin: 0.8em 0;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-code-block);
-  overflow-x: auto;
-}
-
-.md pre code {
-  display: block;
-  overflow-x: auto;
-  padding: 14px 16px;
-  font-family: "SF Mono", "Fira Code", "Cascadia Code", ui-monospace, monospace;
-  font-size: 12.5px;
-  line-height: 1.55;
-  white-space: pre;
-}
-
-.md pre.shiki code {
-  background: transparent;
-}
-
-.md {
+/* Markdown content (typography, code, tables, alerts, math) is styled by
+   markdown-viewer's bundled stylesheet on `.markdown-viewer .markdown`. This
+   rule only keeps the content box from overflowing the chat bubble — it covers
+   both static rows (`.markdown.md`) and live streaming rows (`.markdown`). */
+.markdown-viewer .markdown {
   max-width: 100%;
-  overflow-x: auto;
 }
 
-.md table {
-  width: max-content;
-  margin: 0.8em 0;
-  border-collapse: collapse;
-  font-size: 0.92em;
+/* Code blocks and tables scroll horizontally, but markdown-viewer gives them
+   `overflow: auto`, which also makes them a vertical scroll container that traps
+   wheel events and stalls list scrolling. Pin overflow-y so vertical scrolling
+   always reaches the viewport (they size to content height, so nothing clips). */
+.markdown-viewer .markdown pre,
+.markdown-viewer .markdown table {
+  overflow-y: hidden;
 }
 
-.md th,
-.md td {
-  border: 1px solid var(--table-border);
-  padding: 6px 12px;
-  text-align: left;
+/* The demo's global `button` chrome (notably height: 32px) must not distort
+   markdown-viewer's own copy / table-copy buttons, which size themselves from
+   their icon + padding. */
+.markdown-viewer button {
+  height: auto;
 }
 
-.md th {
-  background: var(--th-bg);
-  font-weight: 600;
-}
-
-.md ul,
-.md ol {
-  margin-bottom: 0.75em;
-  padding-left: 1.8em;
-}
-
-.md li {
-  margin-bottom: 0.2em;
-}
-
-.md li > ul,
-.md li > ol {
-  margin-top: 0.2em;
-  margin-bottom: 0;
-}
-
-.md li > input[type="checkbox"] {
-  position: relative;
-  top: -1px;
-  width: 15px;
-  height: 15px;
-  margin-right: 6px;
-  border: 2px solid var(--fg-dim);
-  border-radius: 3px;
-  appearance: none;
-  background: var(--checkbox-bg);
-  vertical-align: middle;
-  cursor: default;
-}
-
-.md li > input[type="checkbox"]:checked {
-  border-color: var(--checkbox-checked);
-  background: var(--checkbox-checked);
-}
-
-.md li > input[type="checkbox"]:checked::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  left: 3px;
-  width: 5px;
-  height: 8px;
-  border: solid #fff;
-  border-width: 0 2px 2px 0;
-  transform: rotate(45deg);
-}
-
-.md blockquote {
-  margin: 0.8em 0;
-  border-left: 3px solid var(--quote-border);
-  padding-left: 1em;
-  color: var(--quote-fg);
-}
-
-.md blockquote p:last-child {
-  margin-bottom: 0;
-}
-
-.md .markdown-alert {
-  margin: 0.8em 0;
-  border-left: 4px solid;
-  border-radius: 8px;
-  padding: 12px 16px;
-}
-
-.md .markdown-alert p:first-child {
-  margin-bottom: 0.3em;
-  font-weight: 600;
-}
-
-.md .markdown-alert-note {
-  background: var(--alert-note-bg);
-  border-left-color: var(--alert-note-border);
-}
-
-.md .markdown-alert-tip {
-  background: var(--alert-tip-bg);
-  border-left-color: var(--alert-tip-border);
-}
-
-.md .markdown-alert-important {
-  background: var(--alert-important-bg);
-  border-left-color: var(--alert-important-border);
-}
-
-.md .markdown-alert-warning {
-  background: var(--alert-warning-bg);
-  border-left-color: var(--alert-warning-border);
-}
-
-.md .markdown-alert-caution {
-  background: var(--alert-caution-bg);
-  border-left-color: var(--alert-caution-border);
-}
-
-.md hr {
-  margin: 1.5em 0;
-  border: none;
-  border-top: 1px solid var(--hr-color);
-}
-
-.md dl {
-  margin: 0.8em 0;
-}
-
-.md dt {
-  margin-top: 0.5em;
-  font-weight: 600;
-}
-
-.md dd {
-  margin-left: 1.5em;
-  color: var(--fg-muted);
-}
-
-.md mark {
-  border-radius: 3px;
-  background: rgba(255, 213, 0, 0.25);
-  padding: 0.1em 0.2em;
-}
-
-.md .footnotes {
-  margin-top: 1.5em;
-  border-top: 1px solid var(--hr-color);
-  padding-top: 0.8em;
-  color: var(--fg-muted);
-  font-size: 0.88em;
+/* markdown-viewer renders content with GitHub's near-white `--fgColor-default`
+   (#f0f6fc) in dark mode, which reads too hot against this demo's near-black
+   surface and out-shines the surrounding UI. Re-point its text tokens at the
+   demo's softer editorial palette so content matches the rest of the chrome.
+   The `:root` prefix keeps this above markdown-viewer's own dark-theme rule. */
+:root[data-theme="dark"] .markdown-viewer {
+  --fgColor-default: var(--fg);
+  --fgColor-muted: var(--fg-muted);
 }
 
 .statusbar {

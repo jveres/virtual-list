@@ -20,23 +20,25 @@ pnpm install
 pnpm run dev
 ```
 
-The `pnpm-workspace.yaml` file only approves the `esbuild` install script for
-pnpm 11. It doesn't pin `pnpm` or require Corepack.
+The `pnpm-workspace.yaml` file approves the `esbuild` and `markdown-viewer`
+install scripts and sets `blockExoticSubdeps: false`, so the git-hosted
+`markdown-viewer` (and its transitive `comrak-wasm`) install under pnpm 11. It
+doesn't pin `pnpm` or require Corepack.
 
 Open these pages from the dev server:
 
-- `/demos/chat-history/chat-history.html` shows 10,000 chat history rows.
-- `/demos/dynamic-content/dynamic-content.html` shows dynamic top and bottom
+- `/demos/chat-history/index.html` shows 10,000 chat history rows.
+- `/demos/dynamic-content/index.html` shows dynamic top and bottom
   content loading over a 10,000-row transcript window.
-- `/demos/dynamic-content/dynamic-content.html?source=bsky` shows the same
+- `/demos/dynamic-content/index.html?source=bsky` shows the same
   dynamic loading path with Bluesky public feed data.
-- `/demos/dynamic-content/dynamic-content.html?source=lemmy` shows the same
+- `/demos/dynamic-content/index.html?source=lemmy` shows the same
   dynamic loading path with Lemmy public feed data.
-- `/demos/masonry/masonry.html` shows dynamic masonry photo loading.
-- `/demos/photo-gallery/photo-gallery.html` shows dynamic justified photo rows.
-- `/demos/streaming/streaming.html` shows initial transcript loading,
+- `/demos/masonry/index.html` shows dynamic masonry photo loading.
+- `/demos/photo-gallery/index.html` shows dynamic justified photo rows.
+- `/demos/streaming/index.html` shows initial transcript loading,
   streaming, cancel, and sticky user-message scroll behavior.
-- `/demos/streaming/streaming.html?instant` disables simulated token delays for
+- `/demos/streaming/index.html?instant` disables simulated token delays for
   faster manual testing.
 
 ## Runtime architecture
@@ -377,8 +379,9 @@ The demo also verifies:
 - Bottom initial load.
 - Appending 100 messages.
 - Top and bottom index navigation.
-- Theme switching with markdown and code block refresh.
-- Async Shiki loading without remounting the full list.
+- Theme switching with no re-render (markdown-viewer styling is CSS-driven).
+- Markdown rendered by markdown-viewer, with one delegated listener driving
+  copy buttons across every mounted row.
 
 ## Shared demo utilities
 
@@ -505,12 +508,12 @@ The virtual list keeps scrolling work small and predictable.
 - Velocity placeholders are host-driven and only affect newly mounted rows.
 - Scroll-settle timers are lifecycle gates, not per-row render work.
 
-The demos cache rendered markdown HTML by message or template and theme. When
-the Shiki highlighter loads or the theme changes, only mounted rows are rebuilt.
-The highlighter loader is single-flight, so concurrent `loadHighlighter()` calls
-reuse the same in-flight initialization. The streaming demo uses stable
-per-message cache keys, so token updates replace the current rendered HTML
-instead of accumulating stale cache entries.
+The chat demos render markdown to a static HTML string with `markdown-viewer`'s
+`renderToHtml()` and cache it per message or template id. Theming is CSS-driven
+(via the `[data-theme]` attribute), so switching themes needs no re-render, and
+highlight.js languages plus KaTeX are preloaded before measuring so heights are
+stable. The streaming demo uses stable per-message cache keys, so token updates
+replace the current rendered HTML instead of accumulating stale cache entries.
 
 ## Browser behavior
 
