@@ -1,7 +1,4 @@
-import { defineConfig, searchForWorkspaceRoot } from "vite";
-
-const projectRoot = new URL(".", import.meta.url).pathname;
-const typefmRoot = new URL("../../typefm", import.meta.url).pathname;
+import { defineConfig } from "vite";
 
 export default defineConfig({
   build: {
@@ -23,8 +20,5 @@ export default defineConfig({
   },
   server: {
     open: true,
-    fs: {
-      allow: [searchForWorkspaceRoot(projectRoot), typefmRoot],
-    },
   },
 });

@@ -2,7 +2,7 @@ import init, {
   mdToHtml,
   mdToHtmlWithPlugins,
   SyntaxHighlighter,
-} from "@typefm/comrak-wasm";
+} from "comrak-wasm";
 import type { HighlighterCore } from "shiki/core";
 
 const THEMES = ["light", "dark", "system"] as const;

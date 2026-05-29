@@ -22,7 +22,7 @@ Here's the architecture I'd suggest:
 The parsing layer should support the full CommonMark + GFM spec. Let me show you what that looks like with comrak:
 
 \`\`\`typescript
-import init, { mdToHtml } from "@typefm/comrak-wasm";
+import init, { mdToHtml } from "comrak-wasm";
 
 await init();
 
@@ -117,7 +117,7 @@ And here's a feature matrix for the GFM extensions we're using:
     markdown: `This is where \`healMarkdown\` shines. It's a lightweight function that closes any unclosed delimiters before parsing:
 
 \`\`\`typescript
-import { healMarkdown, mdToHtml } from "@typefm/comrak-wasm";
+import { healMarkdown, mdToHtml } from "comrak-wasm";
 
 function renderStreaming(partial: string): string {
   // healMarkdown closes unclosed fences, bold,
