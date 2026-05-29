@@ -1880,10 +1880,22 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return;
     }
 
+    const scrollTopBeforeSync = viewport.scrollTop;
     recomputeTailGap();
     syncContentHeight();
+    const maxTop = nativeMaxScrollTop();
+    // If content shrank below the current scroll position, the browser clamps
+    // scrollTop down to maxTop and emits a scroll event we never initiated.
+    // Pre-record the expected landing so it isn't misread as a user scroll —
+    // which would cancel an active auto-follow mid-stream (content shrinks as
+    // streamed markdown heals/re-parses, e.g. a partial fence reflowing shorter).
+    // Use the pre-shrink scrollTop: reading viewport.scrollTop after the height
+    // write forces layout and already reflects the clamp.
+    if (scrollTopBeforeSync > maxTop + measureEpsilon) {
+      recordProgrammaticScrollTop(maxTop);
+    }
     if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
-      setScrollTop(nativeMaxScrollTop());
+      setScrollTop(maxTop);
     } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
       setScrollTop(
         logicalScrollTop() + correction,
@@ -1920,10 +1932,22 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return;
     }
 
+    const scrollTopBeforeSync = viewport.scrollTop;
     recomputeTailGap();
     syncContentHeight();
+    const maxTop = nativeMaxScrollTop();
+    // If content shrank below the current scroll position, the browser clamps
+    // scrollTop down to maxTop and emits a scroll event we never initiated.
+    // Pre-record the expected landing so it isn't misread as a user scroll —
+    // which would cancel an active auto-follow mid-stream (content shrinks as
+    // streamed markdown heals/re-parses, e.g. a partial fence reflowing shorter).
+    // Use the pre-shrink scrollTop: reading viewport.scrollTop after the height
+    // write forces layout and already reflects the clamp.
+    if (scrollTopBeforeSync > maxTop + measureEpsilon) {
+      recordProgrammaticScrollTop(maxTop);
+    }
     if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
-      setScrollTop(nativeMaxScrollTop());
+      setScrollTop(maxTop);
     } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
       setScrollTop(
         logicalScrollTop() + correction,
@@ -2000,7 +2024,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return Promise.resolve(true);
     }
 
-    handleUserScrollStart();
+    handleUserScrollStart(true);
 
     if (options.behavior !== "smooth") {
       setScrollTop(target, ALLOW_DURING_SCROLL);
@@ -2229,6 +2253,11 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
+    // Commit any settled-but-unflushed row heights so the target is the true
+    // content bottom. Without this, a streaming row that just swapped from the
+    // (throttled, lagging) live viewer to its taller final static render can
+    // leave its measurement queued, and we'd scroll to the shorter old height.
+    flushMeasurementsNow();
     if (options.signal?.aborted) return false;
     syncScrollSurface();
     armProgrammaticBoundaryReach("bottom");
@@ -2872,7 +2901,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     scheduleRender();
   }
 
-  function handleUserScrollStart(): void {
+  // `isProgrammatic` is set only by the library's own smooth-scroll driver
+  // (scrollToNativeTop). A genuine user scroll (everything else) interrupts any
+  // in-flight programmatic smooth scroll so the user can actually scroll away,
+  // instead of the library re-issuing the animation and pulling them back.
+  function handleUserScrollStart(isProgrammatic = false): void {
+    if (!isProgrammatic) {
+      activeSmoothScrollCancel?.();
+    }
     stopFollowBottom();
     clearScrollTopResidual();
     const wasActive = userScrollActive;

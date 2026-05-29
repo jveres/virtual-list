@@ -925,8 +925,11 @@ function scheduleScrollButtons(): void {
   }, SCROLL_BUTTONS_DEBOUNCE_MS);
 }
 
-function pickResponse(): ReplyVariant {
-  if (forceFastLongReply) {
+function pickResponse(prompt = ""): ReplyVariant {
+  // The fast long-form variant is the last sample. Force it via the ?fast-long
+  // URL param, or by sending a message that starts with "f" — a shortcut for
+  // testing fast streaming on demand.
+  if (forceFastLongReply || /^f/i.test(prompt)) {
     return at(SAMPLE_RESPONSES, SAMPLE_RESPONSES.length - 1);
   }
 
@@ -1098,8 +1101,16 @@ async function settleVirtualizerFrames(): Promise<void> {
   await nextAnimationFrame();
 }
 
-function beginStreamingBottomFollow(abort: StreamAbort): void {
+function beginStreamingBottomFollow(abort: StreamAbort, force = false): void {
   if (abort.cancelled) return;
+  // Auto-following on send only engages if the user is at the bottom when the
+  // response begins — if they've scrolled away, leave them there. An explicit
+  // jump-to-bottom passes force, since the user just asked to follow (and the
+  // stream may have grown past the bottom during the jump's smooth scroll).
+  if (!force && !virtualList.state.atBottom) {
+    dearmStreamingBottomFollow();
+    return;
+  }
 
   bottomFollowCleanup?.();
   const followAbort = linkedAbortSignal(abort);
@@ -1113,17 +1124,17 @@ function beginStreamingBottomFollow(abort: StreamAbort): void {
   });
 }
 
-function startStreamingBottomFollow(abort: StreamAbort): void {
+function startStreamingBottomFollow(abort: StreamAbort, force = false): void {
   if (abort.cancelled) return;
   if (!virtualListScrollActive) {
-    beginStreamingBottomFollow(abort);
+    beginStreamingBottomFollow(abort, force);
     return;
   }
 
   bottomFollowPending = true;
   void waitForVirtualizerScrollEnd(abort).then(() => {
     if (bottomFollowPending && !abort.cancelled)
-      beginStreamingBottomFollow(abort);
+      beginStreamingBottomFollow(abort, force);
   });
 }
 
@@ -1156,7 +1167,7 @@ async function handleScrollBottomClick(): Promise<void> {
       streamAbort === activeStream &&
       !activeStream.cancelled
     ) {
-      startStreamingBottomFollow(activeStream);
+      startStreamingBottomFollow(activeStream, true);
       syncDemoState();
     }
   } finally {
@@ -1345,7 +1356,7 @@ async function handleSend(): Promise<void> {
 
     startStreamingBottomFollow(abort);
 
-    const reply = pickResponse();
+    const reply = pickResponse(text);
     await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
     if (abort.cancelled) return;
 
