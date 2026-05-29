@@ -206,6 +206,11 @@ const PRESERVE_LOGICAL_SCROLL_OFFSET: ScrollTopWriteOptions = {
   preserveLogicalOffset: true,
 };
 
+// Upper bound on unmatched programmatic scroll targets kept for user-vs-self
+// scroll classification. One follow frame writes at most twice, and a scroll
+// event matches within a frame or two, so this only guards against runaway.
+const MAX_PENDING_PROGRAMMATIC_SCROLLS = 8;
+
 type ScrollSettleStrategy =
   | "default"
   | "chromium-wheel"
@@ -649,7 +654,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let placeholderHydrationFrame = 0;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
-  let programmaticScrollTop: number | null = null;
+  // Targets written by programmatic scrolls (follow, scrollToIndex, measurement
+  // corrections) that haven't been matched to a scroll event yet. A single frame
+  // can write more than once (e.g. a measurement correction plus a follow chase)
+  // and the browser may emit a scroll event per write, so we match an incoming
+  // scroll against ANY pending target instead of a single, easily-clobbered slot.
+  // Without this a follow-scroll's own event can look like a user scroll and tear
+  // down auto-follow mid-stream.
+  const programmaticScrollTops: number[] = [];
   let nativeScrollEndPending = false;
   let wheelPendingNativeScrollEndTop: number | null = null;
   let settleFrame = 0;
@@ -1273,7 +1285,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     const target = clamp(value, 0, nativeMaxScrollTop());
     const shouldWrite = Math.abs(viewport.scrollTop - target) > 0.5;
     if (shouldWrite) {
-      programmaticScrollTop = target;
+      recordProgrammaticScrollTop(target);
       viewport.scrollTop = target;
     }
     if (options?.preserveLogicalOffset) {
@@ -2503,13 +2515,31 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     lastScrollSampleAt = now;
   }
 
+  function recordProgrammaticScrollTop(target: number): void {
+    programmaticScrollTops.push(target);
+    // Bound the buffer; pending writes are matched within a frame or two, so a
+    // few entries is plenty. Drop the oldest if it somehow accumulates.
+    if (programmaticScrollTops.length > MAX_PENDING_PROGRAMMATIC_SCROLLS) {
+      programmaticScrollTops.shift();
+    }
+  }
+
   function consumeProgrammaticScrollWrite(scrollTop: number): boolean {
-    if (programmaticScrollTop === null) return false;
-    const expectedScrollTop = programmaticScrollTop;
-    programmaticScrollTop = null;
-    return (
-      Math.abs(scrollTop - expectedScrollTop) <= Math.max(1, measureEpsilon)
+    if (programmaticScrollTops.length === 0) return false;
+    const tolerance = Math.max(1, measureEpsilon);
+    const matchIndex = programmaticScrollTops.findIndex(
+      (target) => Math.abs(scrollTop - target) <= tolerance,
     );
+    if (matchIndex === -1) {
+      // The scroll landed on no pending programmatic target — a real user scroll
+      // took over. Drop the stale targets so they can't shadow later events.
+      programmaticScrollTops.length = 0;
+      return false;
+    }
+    // Discard this target and any older ones it superseded (the scroll has caught
+    // up to here); keep newer writes for their own events.
+    programmaticScrollTops.splice(0, matchIndex + 1);
+    return true;
   }
 
   function handleScroll(): void {
