@@ -1,29 +1,27 @@
 import {
-  createDynamicVirtualizer,
-  type DynamicVirtualizer,
-  type DynamicVirtualizerBoundary,
-  type DynamicVirtualizerBoundarySlot,
-  type DynamicVirtualizerRenderDrift,
-  type DynamicVirtualizerRenderMode,
-  type DynamicVirtualizerState,
-} from "../../src/dynamic-virtualizer.js";
+  createVirtualList,
+  type VirtualList,
+  type VirtualListBoundary,
+  type VirtualListBoundarySlot,
+  type VirtualListRenderMode,
+  type VirtualListState,
+} from "../../src/virtual-list.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
 
 import "../demo-styles.css";
-import "./virtualizer-state.css";
+import "./virtual-list-state.css";
 
 interface DemoOptions {
   boundarySlots: boolean;
   count: number;
-  debugRenderDrift: boolean;
   itemBaseHeight: number;
   itemVariance: number;
   measureEpsilon: number;
   overscanPx: number;
   placeholderVelocityThreshold: number;
   placeholders: boolean;
-  renderMode: DynamicVirtualizerRenderMode;
+  renderMode: VirtualListRenderMode;
 }
 
 type StateEvent =
@@ -39,7 +37,6 @@ type StateEvent =
 const DEFAULT_OPTIONS: DemoOptions = {
   boundarySlots: true,
   count: 1_200,
-  debugRenderDrift: false,
   itemBaseHeight: 118,
   itemVariance: 120,
   measureEpsilon: 0.5,
@@ -59,7 +56,6 @@ const stateScroll = mustGet("state-scroll");
 const stateTotal = mustGet("state-total");
 const stateEdges = mustGet("state-edges");
 const stateEvent = mustGet("state-event");
-const stateDrift = mustGet("state-drift");
 const statusSummary = mustGet("status-summary");
 const statusCallback = mustGet("status-callback");
 
@@ -84,13 +80,11 @@ const placeholderThresholdValue = mustGet(
 const renderModeSelect = mustGet("render-mode-select", HTMLSelectElement);
 const placeholderToggle = mustGet("placeholder-toggle", HTMLInputElement);
 const boundaryToggle = mustGet("boundary-toggle", HTMLInputElement);
-const driftToggle = mustGet("drift-toggle", HTMLInputElement);
 
 let options: DemoOptions = { ...DEFAULT_OPTIONS };
-let virtualizer: DynamicVirtualizer | null = null;
+let virtualList: VirtualList | null = null;
 let optionFrame = 0;
 let stateFrame = 0;
-let driftCount = 0;
 let lastEvent: StateEvent = "init";
 let lastStateText = "";
 
@@ -193,8 +187,8 @@ function buildPlaceholder(index: number): HTMLElement {
 }
 
 function boundarySlot(
-  boundary: DynamicVirtualizerBoundary,
-): DynamicVirtualizerBoundarySlot | null {
+  boundary: VirtualListBoundary,
+): VirtualListBoundarySlot | null {
   if (!options.boundarySlots) return null;
   return {
     key: `${boundary}:state-demo`,
@@ -210,12 +204,12 @@ function boundarySlot(
 }
 
 function syncBoundarySlots(): void {
-  virtualizer?.setBoundarySlot("top", boundarySlot("top"));
-  virtualizer?.setBoundarySlot("bottom", boundarySlot("bottom"));
+  virtualList?.setBoundarySlot("top", boundarySlot("top"));
+  virtualList?.setBoundarySlot("bottom", boundarySlot("bottom"));
 }
 
 function syncEmptySlot(): void {
-  virtualizer?.setPlaceholderSlot({
+  virtualList?.setPlaceholderSlot({
     key: "state-empty",
     build: () => {
       const element = document.createElement("div");
@@ -226,7 +220,7 @@ function syncEmptySlot(): void {
   });
 }
 
-function stateEdgeText(state: DynamicVirtualizerState): string {
+function stateEdgeText(state: VirtualListState): string {
   if (state.atTop && state.atBottom) return "top + bottom";
   if (state.atTop) return "top";
   if (state.atBottom) return "bottom";
@@ -234,7 +228,7 @@ function stateEdgeText(state: DynamicVirtualizerState): string {
 }
 
 function renderState(
-  state: DynamicVirtualizerState,
+  state: VirtualListState,
   event: StateEvent = lastEvent,
 ): void {
   lastEvent = event;
@@ -244,7 +238,6 @@ function renderState(
   const scrollText = `${px(state.scrollTop)} / ${px(state.scrollMax)}`;
   const totalText = px(state.totalSize);
   const edgesText = stateEdgeText(state);
-  const driftText = driftCount.toLocaleString();
   const statusText = `${state.count.toLocaleString()} items · ${options.renderMode} · ${options.overscanPx}px overscan`;
   const signature = [
     rangeText,
@@ -254,7 +247,6 @@ function renderState(
     totalText,
     edgesText,
     event,
-    driftText,
     statusText,
   ].join("|");
 
@@ -267,7 +259,6 @@ function renderState(
   setText(stateTotal, totalText);
   setText(stateEdges, edgesText);
   setText(stateEvent, event);
-  setText(stateDrift, driftText);
   setText(statusSummary, statusText);
   setText(statusCallback, event);
 }
@@ -277,13 +268,8 @@ function scheduleStateRender(event: StateEvent = lastEvent): void {
   if (stateFrame) return;
   stateFrame = requestAnimationFrame(() => {
     stateFrame = 0;
-    if (virtualizer) renderState(virtualizer.state, lastEvent);
+    if (virtualList) renderState(virtualList.state, lastEvent);
   });
-}
-
-function reportRenderDrift(drifts: readonly DynamicVirtualizerRenderDrift[]) {
-  driftCount += drifts.length;
-  scheduleStateRender("range");
 }
 
 function effectivePlaceholderThreshold(): number {
@@ -296,9 +282,8 @@ function createVirtualizer(
   keepScrollTop = 0,
   event: StateEvent = "init",
 ): void {
-  virtualizer?.dispose();
-  driftCount = 0;
-  virtualizer = createDynamicVirtualizer({
+  virtualList?.dispose();
+  virtualList = createVirtualList({
     viewport,
     canvasClassName: "state-canvas",
     getCount: () => options.count,
@@ -309,7 +294,6 @@ function createVirtualizer(
     overscanPx: () => options.overscanPx,
     renderMode: options.renderMode,
     measureEpsilon: options.measureEpsilon,
-    debugRenderDrift: options.debugRenderDrift ? reportRenderDrift : false,
     onRangeChange: (state) => renderState(state, "range"),
     onReachTop: (state) => renderState(state, "boundary:top"),
     onReachBottom: (state) => renderState(state, "boundary:bottom"),
@@ -318,8 +302,8 @@ function createVirtualizer(
   });
   syncBoundarySlots();
   syncEmptySlot();
-  void virtualizer
-    .scrollToOffset(clamp(keepScrollTop, 0, virtualizer.state.scrollMax))
+  void virtualList
+    .scrollToOffset(clamp(keepScrollTop, 0, virtualList.state.scrollMax))
     .then(() => scheduleStateRender(event));
 }
 
@@ -335,7 +319,6 @@ function syncControlValues(): void {
   renderModeSelect.value = options.renderMode;
   placeholderToggle.checked = options.placeholders;
   boundaryToggle.checked = options.boundarySlots;
-  driftToggle.checked = options.debugRenderDrift;
 
   countValue.textContent = options.count.toLocaleString();
   overscanValue.textContent = `${options.overscanPx}px`;
@@ -350,7 +333,6 @@ function readOptionsFromControls(): DemoOptions {
   return {
     boundarySlots: boundaryToggle.checked,
     count: Math.round(numericInputValue(countInput, options.count)),
-    debugRenderDrift: driftToggle.checked,
     itemBaseHeight: Math.round(
       numericInputValue(baseHeightInput, options.itemBaseHeight),
     ),
@@ -380,7 +362,6 @@ function optionsEqual(a: DemoOptions, b: DemoOptions): boolean {
   return (
     a.boundarySlots === b.boundarySlots &&
     a.count === b.count &&
-    a.debugRenderDrift === b.debugRenderDrift &&
     a.itemBaseHeight === b.itemBaseHeight &&
     a.itemVariance === b.itemVariance &&
     a.measureEpsilon === b.measureEpsilon &&
@@ -404,7 +385,6 @@ function scheduleOptionApply(): void {
   const onlyPlaceholderOptionsChanged =
     previousOptions.boundarySlots === options.boundarySlots &&
     previousOptions.count === options.count &&
-    previousOptions.debugRenderDrift === options.debugRenderDrift &&
     previousOptions.itemBaseHeight === options.itemBaseHeight &&
     previousOptions.itemVariance === options.itemVariance &&
     previousOptions.measureEpsilon === options.measureEpsilon &&
@@ -414,10 +394,10 @@ function scheduleOptionApply(): void {
       previousOptions.placeholderVelocityThreshold !==
         options.placeholderVelocityThreshold);
 
-  if (onlyPlaceholderOptionsChanged && virtualizer) {
+  if (onlyPlaceholderOptionsChanged && virtualList) {
     if (!options.placeholders) {
-      virtualizer.refreshMounted();
-      void virtualizer.scrollToOffset(virtualizer.state.scrollTop);
+      virtualList.refreshMounted();
+      void virtualList.scrollToOffset(virtualList.state.scrollTop);
     }
     scheduleStateRender("options");
     return;
@@ -426,7 +406,7 @@ function scheduleOptionApply(): void {
   if (optionFrame) cancelAnimationFrame(optionFrame);
   optionFrame = requestAnimationFrame(() => {
     optionFrame = 0;
-    const keepScrollTop = virtualizer?.state.scrollTop ?? viewport.scrollTop;
+    const keepScrollTop = virtualList?.state.scrollTop ?? viewport.scrollTop;
     createVirtualizer(keepScrollTop, "options");
   });
 }
@@ -442,7 +422,6 @@ function bindControls(): void {
     renderModeSelect,
     placeholderToggle,
     boundaryToggle,
-    driftToggle,
   ];
 
   for (const input of optionInputs) {
@@ -451,10 +430,10 @@ function bindControls(): void {
   }
 
   topBtn.addEventListener("click", () => {
-    void virtualizer?.scrollToTop({ behavior: "smooth" });
+    void virtualList?.scrollToTop({ behavior: "smooth" });
   });
   bottomBtn.addEventListener("click", () => {
-    void virtualizer?.scrollToBottom({ behavior: "smooth" });
+    void virtualList?.scrollToBottom({ behavior: "smooth" });
   });
   viewport.addEventListener(
     "scroll",
@@ -483,20 +462,20 @@ watchSystemTheme(refreshTheme);
 
 declare global {
   interface Window {
-    virtualizerStateDemo: {
+    virtualListStateDemo: {
       get options(): DemoOptions;
-      get virtualizer(): DynamicVirtualizer | null;
+      get virtualList(): VirtualList | null;
       setOptions(next: Partial<DemoOptions>): void;
     };
   }
 }
 
-window.virtualizerStateDemo = {
+window.virtualListStateDemo = {
   get options() {
     return { ...options };
   },
-  get virtualizer() {
-    return virtualizer;
+  get virtualList() {
+    return virtualList;
   },
   setOptions(next) {
     options = { ...options, ...next };

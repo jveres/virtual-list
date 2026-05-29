@@ -1,15 +1,14 @@
 import { conversation } from "../../src/chat-data.js";
 import { buildChatItem, type ChatRole } from "../../src/chat-ui.js";
 import {
-  createDynamicVirtualizer,
-  createDynamicVirtualizerItemMeasurer,
-  type DynamicVirtualizer,
-  type DynamicVirtualizerBoundary,
-  type DynamicVirtualizerBoundarySlot,
-  type DynamicVirtualizerPlaceholderSlot,
-  type DynamicVirtualizerRenderDrift,
-  type DynamicVirtualizerRenderMode,
-} from "../../src/dynamic-virtualizer.js";
+  createVirtualList,
+  createVirtualListItemMeasurer,
+  type VirtualList,
+  type VirtualListBoundary,
+  type VirtualListBoundarySlot,
+  type VirtualListPlaceholderSlot,
+  type VirtualListRenderMode,
+} from "../../src/virtual-list.js";
 import {
   codeThemeName,
   hasHighlighter,
@@ -25,7 +24,7 @@ import "../demo-styles.css";
 const TOTAL_AVAILABLE = 10_000;
 const DEFAULT_RETAINED_COUNT = 100;
 const DEFAULT_CHUNK_SIZE = 50;
-const DEFAULT_RENDER_MODE: DynamicVirtualizerRenderMode = "virtual";
+const DEFAULT_RENDER_MODE: VirtualListRenderMode = "virtual";
 const DEFAULT_SOURCE: SourceId = "synthetic";
 const BOUNDARY_SLOT_HEIGHT = 52;
 const SYNTHETIC_OVERSCAN_PX = 900;
@@ -45,15 +44,10 @@ const LEMMY_ORIGINS = [
 ];
 
 type SourceId = "synthetic" | "bsky" | "lemmy";
-type DemoRenderMode = DynamicVirtualizerRenderMode;
+type DemoRenderMode = VirtualListRenderMode;
 type BoundarySlotKind = "none" | "idle" | "loading" | "no-more" | "error";
 type PlaceholderSlotKind = "loading" | "empty" | "error";
 type MediaRenderMode = "load" | "placeholder";
-
-type RenderDriftDebugWindow = Window & {
-  __vlRenderDriftCount?: number;
-  __vlRenderDriftReports?: unknown[];
-};
 
 interface BaseLoadedItem {
   key: string;
@@ -107,7 +101,7 @@ interface ChunkSource {
   statusLabel(currentItems: readonly LoadedItem[]): string;
   rangeLabel(item: LoadedItem): string;
   boundaryLabel(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
     kind: Exclude<BoundarySlotKind, "none" | "idle">,
   ): string;
 }
@@ -117,7 +111,7 @@ interface BoundarySlotState {
 }
 
 interface BoundaryLoadToken {
-  boundary: DynamicVirtualizerBoundary;
+  boundary: VirtualListBoundary;
   sequence: number;
   controller: AbortController;
 }
@@ -195,13 +189,6 @@ const retainedCount = readPositiveInt("retain", DEFAULT_RETAINED_COUNT);
 const chunkSize = readPositiveInt("chunk", DEFAULT_CHUNK_SIZE);
 const configuredRenderMode = params.get("render");
 const configuredSource = params.get("source");
-const renderDriftDebug = readBooleanFlag("debugRenderDrift");
-if (renderDriftDebug) {
-  const debugWindow = window as RenderDriftDebugWindow;
-  debugWindow.__vlRenderDriftCount = 0;
-  debugWindow.__vlRenderDriftReports = [];
-  console.info("[dynamic-content] render drift debug enabled");
-}
 
 const viewport = mustGet("viewport");
 const windowStatus = mustGet("window-status");
@@ -234,7 +221,7 @@ let bottomLoadController: AbortController | null = null;
 let topLoadSequence = 0;
 let bottomLoadSequence = 0;
 let loadSequence = 0;
-let virtualizer: DynamicVirtualizer | undefined;
+let virtualList: VirtualList | undefined;
 let measuredViewportWidth = viewport.clientWidth;
 let renderedWindowStatus = "";
 let renderedRangeStatus = "";
@@ -243,10 +230,7 @@ const measuredItemHeights = new Map<string, number>();
 const visibleItemCache = new Map<string, HTMLElement>();
 const htmlCache = new Map<string, string>();
 const expandedTextKeys = new Set<string>();
-const boundarySlotStates: Record<
-  DynamicVirtualizerBoundary,
-  BoundarySlotState
-> = {
+const boundarySlotStates: Record<VirtualListBoundary, BoundarySlotState> = {
   top: { kind: "none" },
   bottom: { kind: "none" },
 };
@@ -255,11 +239,6 @@ function readPositiveInt(name: string, fallback: number): number {
   const value = Number(params.get(name));
   if (!Number.isFinite(value) || value < 1) return fallback;
   return Math.max(1, Math.floor(value));
-}
-
-function readBooleanFlag(name: string): boolean {
-  const value = params.get(name);
-  return value !== null && value !== "0" && value !== "false";
 }
 
 function isRenderMode(
@@ -742,7 +721,7 @@ function getItemHeight(localIndex: number): number {
 function measureItems(nextItems: readonly LoadedItem[]): void {
   if (nextItems.length === 0) return;
 
-  const measurer = createDynamicVirtualizerItemMeasurer({
+  const measurer = createVirtualListItemMeasurer({
     viewport,
     canvasClassName: "chat-canvas",
     buildItem: (index) =>
@@ -762,7 +741,7 @@ function remeasureForViewportWidth(): void {
   if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
   measuredViewportWidth = viewport.clientWidth;
   measureItems(items);
-  virtualizer?.invalidateMeasurements();
+  virtualList?.invalidateMeasurements();
 }
 
 function pruneMeasuredHeights(): void {
@@ -779,13 +758,13 @@ function pruneMeasuredHeights(): void {
 }
 
 function setBoundarySlotState(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   kind: BoundarySlotKind,
 ): void {
   boundarySlotStates[boundary] = { kind };
 }
 
-function clearBoundarySlotState(boundary: DynamicVirtualizerBoundary): void {
+function clearBoundarySlotState(boundary: VirtualListBoundary): void {
   setBoundarySlotState(boundary, "none");
 }
 
@@ -795,7 +774,7 @@ function clearBoundarySlotStates(): void {
 }
 
 function boundarySlotLabel(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   kind: BoundarySlotKind,
 ): string {
   return kind === "none" || kind === "idle"
@@ -803,7 +782,7 @@ function boundarySlotLabel(
     : activeSource.boundaryLabel(boundary, kind);
 }
 
-function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
+function buildBoundarySlot(boundary: VirtualListBoundary): HTMLElement {
   const element = document.createElement("div");
   element.className = "boundary-slot";
   element.dataset.boundaryContent = boundary;
@@ -822,7 +801,7 @@ function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
 
 function updateBoundarySlotElement(
   container: HTMLElement,
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
 ): void {
   const element = container.matches(".boundary-slot")
     ? container
@@ -858,15 +837,15 @@ function updateBoundarySlotElement(
 }
 
 function visibleBoundarySlotKind(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
 ): Exclude<BoundarySlotKind, "none"> {
   const kind = boundarySlotStates[boundary].kind;
   return kind === "none" ? "idle" : kind;
 }
 
 function boundarySlotFor(
-  boundary: DynamicVirtualizerBoundary,
-): DynamicVirtualizerBoundarySlot | null {
+  boundary: VirtualListBoundary,
+): VirtualListBoundarySlot | null {
   if (items.length === 0) return null;
 
   return {
@@ -897,7 +876,7 @@ function buildPlaceholderSlot(
   return element;
 }
 
-function placeholderSlotFor(): DynamicVirtualizerPlaceholderSlot | null {
+function placeholderSlotFor(): VirtualListPlaceholderSlot | null {
   if (items.length > 0) return null;
 
   if (sourceLoading) {
@@ -922,14 +901,14 @@ function placeholderSlotFor(): DynamicVirtualizerPlaceholderSlot | null {
   };
 }
 
-function syncBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
-  virtualizer?.setBoundarySlot(boundary, boundarySlotFor(boundary));
-  const element = virtualizer?.getBoundaryElement(boundary);
+function syncBoundarySlot(boundary: VirtualListBoundary): void {
+  virtualList?.setBoundarySlot(boundary, boundarySlotFor(boundary));
+  const element = virtualList?.getBoundaryElement(boundary);
   if (element) updateBoundarySlotElement(element, boundary);
 }
 
 function syncBoundarySlots(): void {
-  virtualizer?.syncLayout({
+  virtualList?.syncLayout({
     topSlot: boundarySlotFor("top"),
     bottomSlot: boundarySlotFor("bottom"),
     placeholderSlot: placeholderSlotFor(),
@@ -941,7 +920,7 @@ function syncBoundarySlots(): void {
 
 function refreshBoundarySlotElements(): void {
   for (const boundary of ["top", "bottom"] as const) {
-    const element = virtualizer?.getBoundaryElement(boundary);
+    const element = virtualList?.getBoundaryElement(boundary);
     if (element) updateBoundarySlotElement(element, boundary);
   }
 }
@@ -963,7 +942,7 @@ function syncSourceSelect(): void {
   renderModeButton.disabled = hasActiveBoundaryLoad();
 }
 
-function syncStatus(state = virtualizer?.state): void {
+function syncStatus(state = virtualList?.state): void {
   renderModeButton.disabled = hasActiveBoundaryLoad();
   const pending = [
     sourceLoading ? "source loading" : "",
@@ -1005,28 +984,11 @@ function refreshTheme(): void {
   applyDocumentTheme();
   syncThemeButtons();
   htmlCache.clear();
-  virtualizer?.refreshMounted();
+  virtualList?.refreshMounted();
 }
 
-function reportRenderDrift(
-  drifts: readonly DynamicVirtualizerRenderDrift[],
-): void {
-  const debugWindow = window as RenderDriftDebugWindow;
-  debugWindow.__vlRenderDriftCount =
-    (debugWindow.__vlRenderDriftCount ?? 0) + drifts.length;
-  const reports = debugWindow.__vlRenderDriftReports ?? [];
-  reports.push({
-    source: sourceId,
-    scrollTop: virtualizer?.state.scrollTop ?? 0,
-    count: drifts.length,
-    drifts,
-  });
-  debugWindow.__vlRenderDriftReports = reports.slice(-20);
-  console.warn("[dynamic-content] render drift", reports.at(-1));
-}
-
-function createVirtualizer(): DynamicVirtualizer {
-  return createDynamicVirtualizer({
+function createVirtualizer(): VirtualList {
+  return createVirtualList({
     viewport,
     canvasClassName: "chat-canvas",
     getCount: () => items.length,
@@ -1037,7 +999,6 @@ function createVirtualizer(): DynamicVirtualizer {
         ? SYNTHETIC_OVERSCAN_PX
         : NETWORK_OVERSCAN_PX,
     renderMode,
-    debugRenderDrift: renderDriftDebug ? reportRenderDrift : false,
     onRangeChange: syncStatus,
     onReachTop: loadTopChunk,
     onReachBottom: loadBottomChunk,
@@ -1045,12 +1006,12 @@ function createVirtualizer(): DynamicVirtualizer {
 }
 
 function controllerForBoundary(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
 ): AbortController | null {
   return boundary === "top" ? topLoadController : bottomLoadController;
 }
 
-function sequenceForBoundary(boundary: DynamicVirtualizerBoundary): number {
+function sequenceForBoundary(boundary: VirtualListBoundary): number {
   return boundary === "top" ? topLoadSequence : bottomLoadSequence;
 }
 
@@ -1075,7 +1036,7 @@ function clearBoundaryLoadToken(token: BoundaryLoadToken): void {
   }
 }
 
-function clearBoundaryLoadState(boundary: DynamicVirtualizerBoundary): void {
+function clearBoundaryLoadState(boundary: VirtualListBoundary): void {
   if (boundary === "top") {
     topLoadController = null;
     topLoadSequence = 0;
@@ -1108,9 +1069,7 @@ function isCurrentBoundaryLoad(token: BoundaryLoadToken): boolean {
   );
 }
 
-function beginBoundaryLoad(
-  boundary: DynamicVirtualizerBoundary,
-): BoundaryLoadToken {
+function beginBoundaryLoad(boundary: VirtualListBoundary): BoundaryLoadToken {
   const token: BoundaryLoadToken = {
     boundary,
     sequence: ++loadSequence,
@@ -1120,7 +1079,7 @@ function beginBoundaryLoad(
   return token;
 }
 
-function cancelBoundaryLoad(boundary: DynamicVirtualizerBoundary): void {
+function cancelBoundaryLoad(boundary: VirtualListBoundary): void {
   const hasLoad =
     controllerForBoundary(boundary) !== null ||
     (boundary === "top"
@@ -1151,9 +1110,9 @@ function loadTopChunk(): void {
 }
 
 async function commitTopChunk(): Promise<void> {
-  if (sourceLoading || !virtualizer || !activeSource.canLoadTop(items)) {
+  if (sourceLoading || !virtualList || !activeSource.canLoadTop(items)) {
     pendingTopLoad = false;
-    if (virtualizer && !activeSource.canLoadTop(items)) {
+    if (virtualList && !activeSource.canLoadTop(items)) {
       setBoundarySlotState("top", "no-more");
       syncBoundarySlot("top");
     }
@@ -1209,9 +1168,9 @@ function loadBottomChunk(): void {
 }
 
 async function commitBottomChunk(): Promise<void> {
-  if (sourceLoading || !virtualizer || !activeSource.canLoadBottom(items)) {
+  if (sourceLoading || !virtualList || !activeSource.canLoadBottom(items)) {
     pendingBottomLoad = false;
-    if (virtualizer && !activeSource.canLoadBottom(items)) {
+    if (virtualList && !activeSource.canLoadBottom(items)) {
       setBoundarySlotState("bottom", "no-more");
       syncBoundarySlot("bottom");
     }
@@ -1266,7 +1225,7 @@ function applyTopChunk(
   addedItems: readonly LoadedItem[],
   token: BoundaryLoadToken,
 ): void {
-  if (!virtualizer) return;
+  if (!virtualList) return;
 
   if (addedItems.length === 0) {
     finishBoundaryLoad(token);
@@ -1276,7 +1235,7 @@ function applyTopChunk(
   }
 
   measureItems(addedItems);
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     addedBefore: addedItems.length,
     topSlot: boundarySlotFor("top"),
     apply: () => {
@@ -1303,7 +1262,7 @@ function applyBottomChunk(
   addedItems: readonly LoadedItem[],
   token: BoundaryLoadToken,
 ): void {
-  if (!virtualizer) return;
+  if (!virtualList) return;
 
   if (addedItems.length === 0) {
     finishBoundaryLoad(token);
@@ -1313,7 +1272,7 @@ function applyBottomChunk(
   }
 
   measureItems(addedItems);
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     bottomSlot: boundarySlotFor("bottom"),
     apply: () => {
       if (!isCurrentBoundaryLoad(token)) {
@@ -1338,19 +1297,19 @@ function applyBottomChunk(
 function setRenderMode(nextRenderMode: DemoRenderMode): void {
   if (nextRenderMode === renderMode || hasActiveBoundaryLoad()) return;
 
-  const keepScrollTop = virtualizer?.state.scrollTop ?? 0;
+  const keepScrollTop = virtualList?.state.scrollTop ?? 0;
   renderMode = nextRenderMode;
   syncRenderModeButton();
-  virtualizer?.dispose();
-  virtualizer = createVirtualizer();
+  virtualList?.dispose();
+  virtualList = createVirtualizer();
   syncBoundarySlots();
-  virtualizer.setCount();
-  void virtualizer.scrollToOffset(keepScrollTop);
+  virtualList.setCount();
+  void virtualList.scrollToOffset(keepScrollTop);
   syncStatus();
 }
 
 function trimRetainedWindow(): void {
-  if (!virtualizer || !pendingTrimSide) return;
+  if (!virtualList || !pendingTrimSide) return;
 
   const excess = Math.max(0, items.length - retainedCount);
   if (excess <= 0) {
@@ -1358,14 +1317,14 @@ function trimRetainedWindow(): void {
     return;
   }
 
-  const { range } = virtualizer.state;
+  const { range } = virtualList.state;
   if (pendingTrimSide === "top") {
     const removedBefore =
       renderMode === "full" ? excess : Math.min(excess, range.start);
     if (removedBefore <= 0) return;
 
     items = items.slice(removedBefore);
-    virtualizer.setCount({ removedBefore });
+    virtualList.setCount({ removedBefore });
   } else {
     const removedAfter =
       renderMode === "full"
@@ -1374,7 +1333,7 @@ function trimRetainedWindow(): void {
     if (removedAfter <= 0) return;
 
     items = items.slice(0, items.length - removedAfter);
-    virtualizer.setCount();
+    virtualList.setCount();
   }
 
   pruneMeasuredHeights();
@@ -1391,8 +1350,8 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
   sourceId = nextSourceId;
   pendingSourceId = nextSourceId;
   activeSource = nextSource;
-  virtualizer?.dispose();
-  virtualizer = undefined;
+  virtualList?.dispose();
+  virtualList = undefined;
   items = [];
   sourceError = "";
   pendingTrimSide = null;
@@ -1404,7 +1363,7 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
   clearBoundarySlotStates();
   renderedWindowStatus = "";
   renderedRangeStatus = "";
-  virtualizer = createVirtualizer();
+  virtualList = createVirtualizer();
   syncBoundarySlots();
   syncSourceSelect();
   syncStatus();
@@ -1419,9 +1378,9 @@ async function resetSource(nextSourceId: SourceId): Promise<void> {
     syncBoundarySlots();
     if (items.length === 0) return;
     if (activeSource.id === "synthetic") {
-      await virtualizer.scrollToIndex(Math.floor(items.length / 2), "center");
+      await virtualList.scrollToIndex(Math.floor(items.length / 2), "center");
     } else {
-      await virtualizer.scrollToIndex(0, "top");
+      await virtualList.scrollToIndex(0, "top");
     }
   } catch (error) {
     if (version === sourceVersion) {
@@ -2034,11 +1993,11 @@ const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
 
 document.getElementById("top-btn")?.addEventListener("click", () => {
-  void virtualizer?.scrollToIndex(0, "top", { behavior: "smooth" });
+  void virtualList?.scrollToIndex(0, "top", { behavior: "smooth" });
 });
 
 document.getElementById("bottom-btn")?.addEventListener("click", () => {
-  void virtualizer?.scrollToIndex(items.length - 1, "bottom", {
+  void virtualList?.scrollToIndex(items.length - 1, "bottom", {
     behavior: "smooth",
   });
 });
@@ -2058,7 +2017,7 @@ loadHighlighter()
   .then(() => {
     htmlCache.clear();
     if (sourceId === "synthetic") {
-      virtualizer?.refreshMounted();
+      virtualList?.refreshMounted();
     }
   })
   .catch(console.error);
@@ -2066,7 +2025,7 @@ loadHighlighter()
 declare global {
   interface Window {
     dynamicContent: {
-      virtualizer: DynamicVirtualizer | undefined;
+      virtualList: VirtualList | undefined;
       loadTop: () => void;
       loadBottom: () => void;
       loadOlder: () => void;
@@ -2078,8 +2037,8 @@ declare global {
 }
 
 window.dynamicContent = {
-  get virtualizer() {
-    return virtualizer;
+  get virtualList() {
+    return virtualList;
   },
   loadTop: loadTopChunk,
   loadBottom: loadBottomChunk,

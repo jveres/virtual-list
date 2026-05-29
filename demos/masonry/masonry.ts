@@ -1,10 +1,10 @@
 import {
-  createDynamicVirtualizer,
-  type DynamicVirtualizer,
-  type DynamicVirtualizerBoundary,
-  type DynamicVirtualizerBoundarySlot,
-  type DynamicVirtualizerState,
-} from "../../src/dynamic-virtualizer.js";
+  createVirtualList,
+  type VirtualList,
+  type VirtualListBoundary,
+  type VirtualListBoundarySlot,
+  type VirtualListState,
+} from "../../src/virtual-list.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
 import { createPhotoPreview } from "../photo-preview.js";
@@ -91,7 +91,7 @@ const loadLabel = mustGet("load-label");
 const topBtn = mustGet("top-btn", HTMLButtonElement);
 const bottomBtn = mustGet("bottom-btn", HTMLButtonElement);
 
-type Boundary = DynamicVirtualizerBoundary;
+type Boundary = VirtualListBoundary;
 type BoundarySlotState = "idle" | "loading" | "no-more" | "error";
 type BoundaryResolvedState = Exclude<BoundarySlotState, "loading">;
 
@@ -134,7 +134,7 @@ let activeBoundaryLoad: ActiveBoundaryLoad | null = null;
 let pendingBoundaryApply: PendingBoundaryApply | null = null;
 let scrollEnded = true;
 let measuredViewportWidth = viewport.clientWidth;
-let virtualizer: DynamicVirtualizer;
+let virtualList: VirtualList;
 let renderedRangeText = "";
 let renderedMountedText = "";
 let renderedLayoutText = "";
@@ -757,7 +757,7 @@ function updateBoundarySlotElement(
   }
 }
 
-function boundarySlotFor(boundary: Boundary): DynamicVirtualizerBoundarySlot {
+function boundarySlotFor(boundary: Boundary): VirtualListBoundarySlot {
   return {
     key: boundary,
     height: BOUNDARY_SLOT_HEIGHT,
@@ -766,7 +766,7 @@ function boundarySlotFor(boundary: Boundary): DynamicVirtualizerBoundarySlot {
 }
 
 function refreshBoundarySlot(boundary: Boundary): void {
-  const element = virtualizer.getBoundaryElement(boundary);
+  const element = virtualList.getBoundaryElement(boundary);
   if (element) updateBoundarySlotElement(element, boundary);
 }
 
@@ -776,7 +776,7 @@ function refreshBoundarySlots(): void {
 }
 
 function syncBoundarySlots(): void {
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     topSlot: boundarySlotFor("top"),
     bottomSlot: boundarySlotFor("bottom"),
     after: () => {
@@ -814,7 +814,7 @@ function syncLoadLabel(): void {
   }
 }
 
-function updateInfo(state: DynamicVirtualizerState = virtualizer.state): void {
+function updateInfo(state: VirtualListState = virtualList.state): void {
   const firstGroup = loadedStartGroup + state.range.start + 1;
   const lastGroup = loadedStartGroup + state.range.end;
   const rangeText = `${firstGroup}-${lastGroup} / ${layout.groups.length} groups`;
@@ -970,13 +970,13 @@ function applyPendingBoundaryLoad(): void {
       ? { topSlot: boundarySlotFor("top") }
       : { bottomSlot: boundarySlotFor("bottom") };
 
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     ...slot,
     addedBefore: pending.addedBefore,
     removedBefore: pending.removedBefore,
     apply: pending.apply,
     after: () => {
-      virtualizer.invalidateMeasurements();
+      virtualList.invalidateMeasurements();
       refreshBoundarySlots();
       updateInfo();
     },
@@ -1057,7 +1057,7 @@ function syncControlButtons(): void {
 }
 
 function rebuildLayoutAroundCurrentGroup(): void {
-  const current = virtualizer.state;
+  const current = virtualList.state;
   const anchorGroup = clamp(
     loadedStartGroup + current.range.start,
     0,
@@ -1073,7 +1073,7 @@ function rebuildLayoutAroundCurrentGroup(): void {
   loadedEndGroup = Math.min(layout.groups.length, loadedStartGroup + retained);
   recomputeLoadedBoundaryGeometry();
   resetBoundaryLoading();
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     topSlot: boundarySlotFor("top"),
     bottomSlot: boundarySlotFor("bottom"),
     after: () => {
@@ -1081,8 +1081,8 @@ function rebuildLayoutAroundCurrentGroup(): void {
       updateInfo();
     },
   });
-  virtualizer.refreshMounted();
-  virtualizer.invalidateMeasurements();
+  virtualList.refreshMounted();
+  virtualList.invalidateMeasurements();
   updateInfo();
 }
 
@@ -1100,10 +1100,10 @@ function bindControls(): void {
   }
 
   topBtn.addEventListener("click", () => {
-    void virtualizer.scrollToTop({ behavior: "smooth" });
+    void virtualList.scrollToTop({ behavior: "smooth" });
   });
   bottomBtn.addEventListener("click", () => {
-    void virtualizer.scrollToBottom({ behavior: "smooth" });
+    void virtualList.scrollToBottom({ behavior: "smooth" });
   });
 }
 
@@ -1126,7 +1126,7 @@ bindThemeButtons(refreshTheme);
 syncControlButtons();
 refreshTheme();
 
-virtualizer = createDynamicVirtualizer({
+virtualList = createVirtualList({
   viewport,
   canvasClassName: "masonry-canvas",
   getCount: currentCount,

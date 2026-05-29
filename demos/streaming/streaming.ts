@@ -6,14 +6,14 @@ import {
   setRoleLabel,
 } from "../../src/chat-ui.js";
 import {
-  createDynamicVirtualizer,
-  type DynamicVirtualizer,
-  type DynamicVirtualizerBoundary,
-  type DynamicVirtualizerBoundarySlot,
-  type DynamicVirtualizerState,
-  measureDynamicVirtualizerItem,
-  planDynamicVirtualizerPixelWindowFromEnd,
-} from "../../src/dynamic-virtualizer.js";
+  createVirtualList,
+  measureVirtualListItem,
+  planVirtualListPixelWindowFromEnd,
+  type VirtualList,
+  type VirtualListBoundary,
+  type VirtualListBoundarySlot,
+  type VirtualListState,
+} from "../../src/virtual-list.js";
 import {
   codeThemeName,
   hasHighlighter,
@@ -78,13 +78,13 @@ const sendBtn = mustGet("send-btn", HTMLButtonElement);
 const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
 const scrollBottomBtn = mustGet("scroll-bottom-btn", HTMLButtonElement);
 const windowStatus = mustGet("window-status");
-const virtualizerStatus = mustGet("virtualizer-status");
+const virtualListStatus = mustGet("virtual-list-status");
 const composerMinHeight = Math.max(
   COMPOSER_FALLBACK_MIN_HEIGHT,
   promptInput.getBoundingClientRect().height,
 );
 
-let virtualizer: DynamicVirtualizer;
+let virtualList: VirtualList;
 let measuredViewportWidth = viewport.clientWidth;
 let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
@@ -94,10 +94,10 @@ let nextResponse = 0;
 let bottomFollowArmed = false;
 let bottomFollowPending = false;
 let bottomFollowCleanup: (() => void) | null = null;
-let virtualizerScrollActive = false;
+let virtualListScrollActive = false;
 let loadedStart = 0;
 let loadingTop = false;
-const virtualizerScrollEndWaiters = new Set<() => void>();
+const virtualListScrollEndWaiters = new Set<() => void>();
 
 const templateHeights = new Float64Array(conversation.length);
 templateHeights.fill(180);
@@ -105,7 +105,7 @@ const htmlCache = new Map<string, string>();
 const transcript: Message[] = [];
 let messages: Message[] = [];
 const boundarySlotStates: Record<
-  DynamicVirtualizerBoundary,
+  VirtualListBoundary,
   { kind: BoundarySlotKind }
 > = {
   top: { kind: "none" },
@@ -158,7 +158,7 @@ messages[idx].markdown += tok;
 refreshItem(idx);
 \`\`\`
 
-The virtualizer observes the row and maintains scroll geometry from browser
+The virtualList observes the row and maintains scroll geometry from browser
 measurements.`,
 ];
 
@@ -251,7 +251,7 @@ function correctionForAnchor(measurement: Measurement, anchorIndex: number) {
 }
 \`\`\`
 
-When the row grows below the viewport, the virtualizer must not hide the bottom
+When the row grows below the viewport, the virtualList must not hide the bottom
 button just because streaming is still active. The button state has to come from
 the true scroll range, not from the existence of an active stream.
 
@@ -445,7 +445,7 @@ function setLoadedWindow(start: number, end: number): void {
 }
 
 function setNewestLoadedWindow(): void {
-  const plan = planDynamicVirtualizerPixelWindowFromEnd({
+  const plan = planVirtualListPixelWindowFromEnd({
     count: transcript.length,
     minimumPx: dataWindowPx(),
     getItemHeight: transcriptItemHeight,
@@ -494,8 +494,8 @@ function createTemplateMessages(count: number): Message[] {
 
 function refreshLoadedWindowIfReplaced(result: LoadedAppendResult): void {
   if (!result.replacedWindow) return;
-  virtualizer.invalidateMeasurements();
-  virtualizer.refreshMounted();
+  virtualList.invalidateMeasurements();
+  virtualList.refreshMounted();
 }
 
 interface BoundarySlotContext {
@@ -513,14 +513,14 @@ function currentBoundarySlotContext(): BoundarySlotContext {
 }
 
 function visibleBoundarySlotKind(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
 ): Exclude<BoundarySlotKind, "none"> {
   const kind = boundarySlotStates[boundary].kind;
   return kind === "none" ? "idle" : kind;
 }
 
 function boundarySlotLabel(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   kind: BoundarySlotKind,
 ): string {
   if (boundary !== "top") return "";
@@ -529,7 +529,7 @@ function boundarySlotLabel(
   return "";
 }
 
-function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
+function buildBoundarySlot(boundary: VirtualListBoundary): HTMLElement {
   const element = document.createElement("div");
   element.className = "boundary-slot";
   element.dataset.boundaryContent = boundary;
@@ -548,7 +548,7 @@ function buildBoundarySlot(boundary: DynamicVirtualizerBoundary): HTMLElement {
 
 function updateBoundarySlotElement(
   container: HTMLElement,
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
 ): void {
   const element = container.matches(".boundary-slot")
     ? container
@@ -583,7 +583,7 @@ function updateBoundarySlotElement(
 }
 
 function shouldMountBoundarySlot(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   context = currentBoundarySlotContext(),
 ): boolean {
   if (boundary === "bottom") return false;
@@ -591,9 +591,9 @@ function shouldMountBoundarySlot(
 }
 
 function boundarySlotFor(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   context = currentBoundarySlotContext(),
-): DynamicVirtualizerBoundarySlot | null {
+): VirtualListBoundarySlot | null {
   if (!shouldMountBoundarySlot(boundary, context)) return null;
 
   return {
@@ -604,14 +604,14 @@ function boundarySlotFor(
 }
 
 function setBoundarySlotState(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   kind: BoundarySlotKind,
 ): void {
   boundarySlotStates[boundary] = { kind };
 }
 
 function idleBoundarySlotState(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   context = currentBoundarySlotContext(),
 ): BoundarySlotKind {
   if (boundary === "bottom" || context.loadedCount === 0) return "none";
@@ -619,19 +619,19 @@ function idleBoundarySlotState(
 }
 
 function setBoundarySlotIdleState(
-  boundary: DynamicVirtualizerBoundary,
+  boundary: VirtualListBoundary,
   context = currentBoundarySlotContext(),
 ): void {
   setBoundarySlotState(boundary, idleBoundarySlotState(boundary, context));
 }
 
-function refreshBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
-  const element = virtualizer.getBoundaryElement(boundary);
+function refreshBoundarySlot(boundary: VirtualListBoundary): void {
+  const element = virtualList.getBoundaryElement(boundary);
   if (element) updateBoundarySlotElement(element, boundary);
 }
 
-function syncBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
-  virtualizer.setBoundarySlot(boundary, boundarySlotFor(boundary));
+function syncBoundarySlot(boundary: VirtualListBoundary): void {
+  virtualList.setBoundarySlot(boundary, boundarySlotFor(boundary));
   refreshBoundarySlot(boundary);
 }
 
@@ -641,7 +641,7 @@ function updateRenderedBoundarySlots(): void {
 
 function syncVirtualizerLayout(options?: { addedBefore?: number }): void {
   if (!loadingTop) setBoundarySlotIdleState("top");
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     ...options,
     topSlot: boundarySlotFor("top"),
     after: () => {
@@ -667,7 +667,7 @@ function loadOlderMessages(): void {
   syncDemoState();
 
   window.setTimeout(() => {
-    const plan = planDynamicVirtualizerPixelWindowFromEnd({
+    const plan = planVirtualListPixelWindowFromEnd({
       count: transcript.length,
       end: loadedStart,
       minimumPx: dataWindowPx(),
@@ -690,7 +690,7 @@ function loadOlderMessages(): void {
       loadingTop: false,
     };
 
-    virtualizer.syncLayout({
+    virtualList.syncLayout({
       addedBefore: addedMessages.length,
       topSlot: boundarySlotFor("top", nextContext),
       apply: () => {
@@ -708,12 +708,12 @@ function loadOlderMessages(): void {
   }, LOAD_OLDER_DELAY_MS);
 }
 
-function syncDemoState(state = virtualizer.state): void {
+function syncDemoState(state = virtualList.state): void {
   syncScrollButtons(state);
   syncMetrics(state);
 }
 
-function syncMetrics(state: DynamicVirtualizerState): void {
+function syncMetrics(state: VirtualListState): void {
   const loadedRange =
     messages.length === 0
       ? "loaded 0-0/0"
@@ -726,7 +726,7 @@ function syncMetrics(state: DynamicVirtualizerState): void {
   const mountedEnd = Math.max(state.range.start, state.range.end - 1);
 
   windowStatus.textContent = `${loadedRange} · height ${formatPx(loadedHeight())}/${formatPx(dataWindowPx())} · load ${topStatus}`;
-  virtualizerStatus.textContent = `dom ${formatCount(state.mountedCount)}/${formatCount(state.count)} · measured ${formatCount(state.measuredCount)} · mounted ${formatCount(state.range.start)}-${formatCount(mountedEnd)}`;
+  virtualListStatus.textContent = `dom ${formatCount(state.mountedCount)}/${formatCount(state.count)} · measured ${formatCount(state.measuredCount)} · mounted ${formatCount(state.range.start)}-${formatCount(mountedEnd)}`;
 }
 
 function cacheKey(message: Message): string {
@@ -747,7 +747,7 @@ function htmlForMessage(message: Message): string {
 function measureTemplateHeights(): void {
   measuredViewportWidth = viewport.clientWidth;
   for (let templateId = 0; templateId < conversation.length; templateId++) {
-    templateHeights[templateId] = measureDynamicVirtualizerItem({
+    templateHeights[templateId] = measureVirtualListItem({
       viewport,
       canvasClassName: "chat-canvas",
       index: templateId,
@@ -760,7 +760,7 @@ function remeasureForViewportWidth(): void {
   if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
   measureTemplateHeights();
   measureExistingMessages();
-  virtualizer.invalidateMeasurements();
+  virtualList.invalidateMeasurements();
   syncDemoState();
 }
 
@@ -771,7 +771,7 @@ function buildTemplateItem(index: number): HTMLElement {
 }
 
 function measureMessageHeight(index: number, message: Message): number {
-  return measureDynamicVirtualizerItem({
+  return measureVirtualListItem({
     viewport,
     canvasClassName: "chat-canvas",
     index,
@@ -806,16 +806,16 @@ function refreshItem(
   if (!message) return;
 
   htmlCache.delete(cacheKey(message));
-  const element = virtualizer.getMountedElement(index);
+  const element = virtualList.getMountedElement(index);
   if (!element) {
-    if (options.refreshUnmounted) virtualizer.refreshIndex(index);
+    if (options.refreshUnmounted) virtualList.refreshIndex(index);
     return;
   }
 
   const label = element.querySelector<HTMLElement>(".role-label");
   const markdown = element.querySelector<HTMLElement>(".md");
   if (!label || !markdown) {
-    virtualizer.refreshIndex(index);
+    virtualList.refreshIndex(index);
     return;
   }
 
@@ -827,7 +827,7 @@ function refreshItem(
 
 function refreshMountedItems(): void {
   htmlCache.clear();
-  virtualizer.refreshMounted();
+  virtualList.refreshMounted();
   syncDemoState();
 }
 
@@ -835,11 +835,11 @@ function refreshTheme(): void {
   applyDocumentTheme();
   syncThemeButtons();
   measureExistingMessages();
-  virtualizer.invalidateMeasurements();
+  virtualList.invalidateMeasurements();
   refreshMountedItems();
 }
 
-function syncScrollButtons(state = virtualizer.state): void {
+function syncScrollButtons(state = virtualList.state): void {
   if (scrollButtonsTimer) {
     window.clearTimeout(scrollButtonsTimer);
     scrollButtonsTimer = 0;
@@ -1005,7 +1005,7 @@ function waitForMountedMessageTop(
       return;
     }
 
-    const element = virtualizer.getMountedElement(index);
+    const element = virtualList.getMountedElement(index);
     if (element) {
       const viewportTop = viewport.getBoundingClientRect().top;
       const itemTop = element.getBoundingClientRect().top;
@@ -1041,7 +1041,7 @@ function beginStreamingBottomFollow(abort: StreamAbort): void {
   bottomFollowPending = false;
   bottomFollowArmed = true;
   bottomFollowCleanup = followAbort.cleanup;
-  virtualizer.followBottom({
+  virtualList.followBottom({
     behavior: "smooth",
     duration: BOTTOM_FOLLOW_DURATION_MS,
     signal: followAbort.signal,
@@ -1050,7 +1050,7 @@ function beginStreamingBottomFollow(abort: StreamAbort): void {
 
 function startStreamingBottomFollow(abort: StreamAbort): void {
   if (abort.cancelled) return;
-  if (!virtualizerScrollActive) {
+  if (!virtualListScrollActive) {
     beginStreamingBottomFollow(abort);
     return;
   }
@@ -1070,7 +1070,7 @@ function dearmStreamingBottomFollow(): void {
 }
 
 function stopStreamingBottomFollow(): void {
-  virtualizer.stopFollowBottom();
+  virtualList.stopFollowBottom();
   dearmStreamingBottomFollow();
 }
 
@@ -1079,7 +1079,7 @@ async function handleScrollBottomClick(): Promise<void> {
   const scrollAbort = activeStream ? linkedAbortSignal(activeStream) : null;
 
   try {
-    const completed = await virtualizer.scrollToBottom({
+    const completed = await virtualList.scrollToBottom({
       behavior: "smooth",
       signal: scrollAbort?.signal,
     });
@@ -1100,7 +1100,7 @@ async function handleScrollBottomClick(): Promise<void> {
 }
 
 function getMountedMessageContent(index: number): HTMLElement | null {
-  const element = virtualizer.getMountedElement(index);
+  const element = virtualList.getMountedElement(index);
   if (!element) return null;
   return element.querySelector<HTMLElement>(".message-content") ?? element;
 }
@@ -1163,15 +1163,15 @@ function fadeInMountedItems(
 }
 
 function handleVirtualizerScrollStart(): void {
-  virtualizerScrollActive = true;
+  virtualListScrollActive = true;
   if (!bottomFollowArmed && !bottomFollowPending) return;
   dearmStreamingBottomFollow();
 }
 
 function finishVirtualizerScrollTracking(): void {
-  virtualizerScrollActive = false;
-  for (const resolve of virtualizerScrollEndWaiters) resolve();
-  virtualizerScrollEndWaiters.clear();
+  virtualListScrollActive = false;
+  for (const resolve of virtualListScrollEndWaiters) resolve();
+  virtualListScrollEndWaiters.clear();
 }
 
 function handleVirtualizerScrollEnd(): void {
@@ -1180,21 +1180,21 @@ function handleVirtualizerScrollEnd(): void {
 }
 
 function waitForVirtualizerScrollEnd(abort: StreamAbort): Promise<void> {
-  if (!virtualizerScrollActive || abort.cancelled) return Promise.resolve();
+  if (!virtualListScrollActive || abort.cancelled) return Promise.resolve();
 
   return new Promise((resolve) => {
     let done = false;
     const finish = () => {
       if (done) return;
       done = true;
-      virtualizerScrollEndWaiters.delete(finish);
+      virtualListScrollEndWaiters.delete(finish);
       abort.onCancel.delete(finish);
       resolve();
     };
 
-    virtualizerScrollEndWaiters.add(finish);
+    virtualListScrollEndWaiters.add(finish);
     abort.onCancel.add(finish);
-    if (!virtualizerScrollActive || abort.cancelled) finish();
+    if (!virtualListScrollActive || abort.cancelled) finish();
   });
 }
 
@@ -1209,7 +1209,7 @@ async function scrollMessageToTop(
   scheduleScrollButtons();
   try {
     targetAtTop = waitForMountedMessageTop(index, abort);
-    const scroll = virtualizer.scrollToIndex(index, "top", {
+    const scroll = virtualList.scrollToIndex(index, "top", {
       behavior: "smooth",
       signal: abortLink.signal,
     });
@@ -1251,7 +1251,7 @@ async function handleSend(): Promise<void> {
     syncVirtualizerLayout();
     refreshLoadedWindowIfReplaced(userAppend);
     const userIndex = userAppend.startIndex;
-    virtualizer.setStickyIndex(userIndex);
+    virtualList.setStickyIndex(userIndex);
     await scrollMessageToTop(
       userIndex,
       abort,
@@ -1303,7 +1303,7 @@ async function handleSend(): Promise<void> {
     if (!abort.cancelled) {
       await settleVirtualizerFrames();
       if (bottomFollowArmed) {
-        await virtualizer.scrollToBottom();
+        await virtualList.scrollToBottom();
       }
     }
     stopStreamingBottomFollow();
@@ -1317,7 +1317,7 @@ async function handleSend(): Promise<void> {
 bindThemeButtons(refreshTheme);
 
 scrollTopBtn.addEventListener("click", () => {
-  void virtualizer.scrollToTop({ behavior: "smooth" }).then(() => {
+  void virtualList.scrollToTop({ behavior: "smooth" }).then(() => {
     syncDemoState();
   });
 });
@@ -1350,7 +1350,7 @@ autosize();
 measureTemplateHeights();
 appendMessagesToLoadedBottom(createTemplateMessages(INITIAL_TRANSCRIPT_COUNT));
 
-virtualizer = createDynamicVirtualizer({
+virtualList = createVirtualList({
   viewport,
   canvasClassName: "chat-canvas",
   getCount: () => messages.length,
@@ -1367,7 +1367,7 @@ syncBoundarySlot("top");
 const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
 
-await virtualizer.scrollToBottom();
+await virtualList.scrollToBottom();
 syncDemoState();
 document.documentElement.classList.remove("booting");
 promptInput.focus();
@@ -1377,7 +1377,7 @@ loadHighlighter()
   .then(() => {
     measureTemplateHeights();
     measureExistingMessages();
-    virtualizer.invalidateMeasurements();
+    virtualList.invalidateMeasurements();
     refreshMountedItems();
   })
   .catch(console.error);

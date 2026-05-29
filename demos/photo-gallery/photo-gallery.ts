@@ -1,10 +1,10 @@
 import {
-  createDynamicVirtualizer,
-  type DynamicVirtualizer,
-  type DynamicVirtualizerBoundary,
-  type DynamicVirtualizerBoundarySlot,
-  type DynamicVirtualizerState,
-} from "../../src/dynamic-virtualizer.js";
+  createVirtualList,
+  type VirtualList,
+  type VirtualListBoundary,
+  type VirtualListBoundarySlot,
+  type VirtualListState,
+} from "../../src/virtual-list.js";
 import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
 import { createPhotoPreview } from "../photo-preview.js";
@@ -54,7 +54,7 @@ interface GalleryLayout {
   photoRowIndexes: Int32Array;
 }
 
-type Boundary = DynamicVirtualizerBoundary;
+type Boundary = VirtualListBoundary;
 type BoundarySlotState = "idle" | "loading" | "no-more" | "error";
 type BoundaryResolvedState = Exclude<BoundarySlotState, "loading">;
 
@@ -97,7 +97,7 @@ let activeBoundaryLoad: ActiveBoundaryLoad | null = null;
 let pendingBoundaryApply: PendingBoundaryApply | null = null;
 let scrollEnded = true;
 let measuredViewportWidth = viewport.clientWidth;
-let virtualizer: DynamicVirtualizer;
+let virtualList: VirtualList;
 let renderedRangeText = "";
 let renderedMountedText = "";
 let renderedLayoutText = "";
@@ -361,7 +361,7 @@ function updateBoundarySlotElement(
   }
 }
 
-function boundarySlotFor(boundary: Boundary): DynamicVirtualizerBoundarySlot {
+function boundarySlotFor(boundary: Boundary): VirtualListBoundarySlot {
   return {
     key: `${boundary}:slot`,
     height: BOUNDARY_SLOT_HEIGHT,
@@ -370,7 +370,7 @@ function boundarySlotFor(boundary: Boundary): DynamicVirtualizerBoundarySlot {
 }
 
 function refreshBoundarySlot(boundary: Boundary): void {
-  const element = virtualizer.getBoundaryElement(boundary);
+  const element = virtualList.getBoundaryElement(boundary);
   if (element) updateBoundarySlotElement(element, boundary);
 }
 
@@ -380,7 +380,7 @@ function refreshBoundarySlots(): void {
 }
 
 function syncBoundarySlots(): void {
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     topSlot: boundarySlotFor("top"),
     bottomSlot: boundarySlotFor("bottom"),
     after: () => {
@@ -418,7 +418,7 @@ function syncLoadLabel(): void {
   }
 }
 
-function updateInfo(state: DynamicVirtualizerState = virtualizer.state): void {
+function updateInfo(state: VirtualListState = virtualList.state): void {
   const firstRow = loadedStartRow + state.range.start + 1;
   const lastRow = loadedStartRow + state.range.end;
   const rangeText = `${firstRow}-${lastRow} / ${layout.rows.length} rows`;
@@ -564,7 +564,7 @@ function applyPendingBoundaryLoad(): void {
   pendingBoundaryApply = null;
   boundaryStates[pending.boundary] = pending.state;
 
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     addedBefore: pending.addedBefore,
     removedBefore: pending.removedBefore,
     topSlot: boundarySlotFor("top"),
@@ -652,7 +652,7 @@ function syncControlButtons(): void {
 
 function firstVisiblePhotoId(): number {
   const rowIndex = clamp(
-    loadedStartRow + virtualizer.state.range.start,
+    loadedStartRow + virtualList.state.range.start,
     0,
     Math.max(0, layout.rows.length - 1),
   );
@@ -669,7 +669,7 @@ function rowIndexForPhotoId(photoId: number): number {
 
 function rebuildLayoutAroundCurrentPhoto(): void {
   const anchorPhotoId = firstVisiblePhotoId();
-  const previousLocalStart = virtualizer.state.range.start;
+  const previousLocalStart = virtualList.state.range.start;
   layout = computeGalleryLayout();
 
   const retained = Math.min(RETAIN_ROWS, layout.rows.length);
@@ -683,12 +683,12 @@ function rebuildLayoutAroundCurrentPhoto(): void {
   loadedEndRow = Math.min(layout.rows.length, loadedStartRow + retained);
   resetBoundaryLoading();
 
-  virtualizer.syncLayout({
+  virtualList.syncLayout({
     topSlot: boundarySlotFor("top"),
     bottomSlot: boundarySlotFor("bottom"),
     after: () => {
-      virtualizer.invalidateMeasurements();
-      virtualizer.refreshMounted();
+      virtualList.invalidateMeasurements();
+      virtualList.refreshMounted();
       refreshBoundarySlots();
       updateInfo();
     },
@@ -710,10 +710,10 @@ function bindControls(): void {
   }
 
   topBtn.addEventListener("click", () => {
-    void virtualizer.scrollToTop({ behavior: "smooth" });
+    void virtualList.scrollToTop({ behavior: "smooth" });
   });
   bottomBtn.addEventListener("click", () => {
-    void virtualizer.scrollToBottom({ behavior: "smooth" });
+    void virtualList.scrollToBottom({ behavior: "smooth" });
   });
 }
 
@@ -734,7 +734,7 @@ bindThemeButtons(refreshTheme);
 syncControlButtons();
 refreshTheme();
 
-virtualizer = createDynamicVirtualizer({
+virtualList = createVirtualList({
   viewport,
   canvasClassName: "gallery-canvas",
   getCount: currentCount,

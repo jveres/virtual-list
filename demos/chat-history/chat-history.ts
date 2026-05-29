@@ -1,10 +1,10 @@
 import { conversation } from "../../src/chat-data.js";
 import { buildChatItem } from "../../src/chat-ui.js";
 import {
-  createDynamicVirtualizer,
-  type DynamicVirtualizer,
-  measureDynamicVirtualizerItem,
-} from "../../src/dynamic-virtualizer.js";
+  createVirtualList,
+  measureVirtualListItem,
+  type VirtualList,
+} from "../../src/virtual-list.js";
 import {
   codeThemeName,
   hasHighlighter,
@@ -22,7 +22,7 @@ const TOTAL_INITIAL = 10_000;
 const viewport = mustGet("viewport");
 
 let total = TOTAL_INITIAL;
-let virtualizer: DynamicVirtualizer;
+let virtualList: VirtualList;
 let measuredViewportWidth = viewport.clientWidth;
 
 const templateHeights = new Float64Array(conversation.length);
@@ -57,7 +57,7 @@ function buildItem(index: number): HTMLElement {
 function measureTemplateHeights(): void {
   measuredViewportWidth = viewport.clientWidth;
   for (let templateId = 0; templateId < conversation.length; templateId++) {
-    templateHeights[templateId] = measureDynamicVirtualizerItem({
+    templateHeights[templateId] = measureVirtualListItem({
       viewport,
       canvasClassName: "chat-canvas",
       index: templateId,
@@ -69,7 +69,7 @@ function measureTemplateHeights(): void {
 function remeasureForViewportWidth(): void {
   if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
   measureTemplateHeights();
-  virtualizer.invalidateMeasurements();
+  virtualList.invalidateMeasurements();
 }
 
 function nextFrame(): Promise<void> {
@@ -80,32 +80,32 @@ function nextFrame(): Promise<void> {
 
 async function scrollToSettledBottom(passes = 3): Promise<void> {
   for (let pass = 0; pass < passes; pass++) {
-    await virtualizer.scrollToBottom();
+    await virtualList.scrollToBottom();
     await nextFrame();
   }
-  await virtualizer.scrollToBottom();
+  await virtualList.scrollToBottom();
 }
 
 function refreshTheme(): void {
   applyDocumentTheme();
   syncThemeButtons();
   htmlCache.clear();
-  virtualizer.refreshMounted();
+  virtualList.refreshMounted();
 }
 
 bindThemeButtons(refreshTheme);
 
 document.getElementById("top-btn")?.addEventListener("click", () => {
-  void virtualizer.scrollToTop();
+  void virtualList.scrollToTop();
 });
 
 document.getElementById("bottom-btn")?.addEventListener("click", () => {
-  void virtualizer.scrollToBottom();
+  void virtualList.scrollToBottom();
 });
 
 document.getElementById("add-btn")?.addEventListener("click", () => {
   total += 100;
-  virtualizer.setCount();
+  virtualList.setCount();
 });
 
 await Promise.all([initMarkdown(), document.fonts.ready]);
@@ -113,7 +113,7 @@ applyDocumentTheme();
 syncThemeButtons();
 measureTemplateHeights();
 
-virtualizer = createDynamicVirtualizer({
+virtualList = createVirtualList({
   viewport,
   canvasClassName: "chat-canvas",
   getCount: () => total,
@@ -130,9 +130,9 @@ document.documentElement.classList.remove("booting");
 watchSystemTheme(refreshTheme);
 loadHighlighter()
   .then(async () => {
-    const keepBottom = virtualizer.state.atBottom;
+    const keepBottom = virtualList.state.atBottom;
     htmlCache.clear();
-    virtualizer.refreshMounted();
+    virtualList.refreshMounted();
     if (keepBottom) await scrollToSettledBottom(2);
   })
   .catch(console.error);
@@ -140,7 +140,7 @@ loadHighlighter()
 declare global {
   interface Window {
     chatHistory: {
-      virtualizer: DynamicVirtualizer;
+      virtualList: VirtualList;
       append: (count?: number) => void;
       total: () => number;
     };
@@ -148,10 +148,10 @@ declare global {
 }
 
 window.chatHistory = {
-  virtualizer,
+  virtualList,
   append: (count = 100) => {
     total += count;
-    virtualizer.setCount();
+    virtualList.setCount();
   },
   total: () => total,
 };

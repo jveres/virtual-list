@@ -6,7 +6,7 @@
   width: 100%;
 }
 
-.gallery-row.dv-item {
+.gallery-row.vl-item {
   overflow: visible;
   contain: layout style;
   pointer-events: none;

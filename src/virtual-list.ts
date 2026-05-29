@@ -1,10 +1,10 @@
-const STYLE_ID = "dynamic-virtualizer-styles";
+const STYLE_ID = "virtual-list-styles";
 const DEFAULT_OVERSCAN_PX = 900;
 const DEFAULT_MEASURE_EPSILON = 0.5;
+const DEFAULT_RECYCLE_POOL_FLOOR = 8;
 const SCROLL_SNAP_THRESHOLD = 1;
 const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
 const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
-const DEFAULT_RENDER_DRIFT_EPSILON = 1;
 const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
 const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 8;
 const PLACEHOLDER_VELOCITY_EXIT_RATIO = 0.5;
@@ -15,25 +15,25 @@ const CHROMIUM_EDGE_SETTLE_QUIET_MS = 450;
 const SCROLL_TOP_RESIDUAL_EPSILON = 0.01;
 const MAX_SCROLL_TOP_RESIDUAL = 2;
 const CSS = `
-.dv-viewport {
+.vl-viewport {
   overflow-y: auto;
   overscroll-behavior-y: contain;
   overflow-anchor: none;
   -webkit-overflow-scrolling: touch;
 }
-.minimal-scrollbar {
+.vl-scrollbar {
   isolation: isolate;
   scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
   will-change: scroll-position;
 }
-.dv-content {
+.vl-content {
   position: relative;
   width: 100%;
   min-height: 100%;
   overflow-anchor: none;
 }
-.dv-item {
+.vl-item {
   position: absolute;
   top: 0;
   left: 0;
@@ -41,13 +41,13 @@ const CSS = `
   contain: layout paint;
   overflow-anchor: none;
 }
-.dv-boundary-slot {
+.vl-boundary-slot {
   position: absolute;
   left: 0;
   right: 0;
   overflow-anchor: none;
 }
-.dv-placeholder-slot {
+.vl-placeholder-slot {
   position: absolute;
   top: 0;
   left: 0;
@@ -56,12 +56,12 @@ const CSS = `
 }
 `;
 
-export type DynamicVirtualizerAlign = "top" | "center" | "bottom" | number;
-export type DynamicVirtualizerBoundary = "top" | "bottom";
-export type DynamicVirtualizerRenderMode = "virtual" | "full";
-export type DynamicVirtualizerNumberOption = number | (() => number);
+export type VirtualListAlign = "top" | "center" | "bottom" | number;
+export type VirtualListBoundary = "top" | "bottom";
+export type VirtualListRenderMode = "virtual" | "full";
+export type VirtualListNumberOption = number | (() => number);
 
-export interface DynamicVirtualizerConfig {
+export interface VirtualListConfig {
   viewport: HTMLElement;
   canvasClassName?: string;
   getCount: () => number;
@@ -69,87 +69,99 @@ export interface DynamicVirtualizerConfig {
   buildItem: (index: number) => HTMLElement;
   /**
    * Called when an element previously produced by `buildItem` is permanently
-   * detached by the virtualizer — on unmount, refresh-swap, window reindex,
+   * detached by the virtual list — on unmount, refresh-swap, window reindex,
    * count shrink, measurement teardown, and `dispose`. Use it to destroy
    * per-row stateful resources (event listeners, observers, embedded
    * components). Not called for `buildPlaceholder` elements.
    */
   destroyItem?: (index: number, element: HTMLElement) => void;
+  /**
+   * Re-binds a previously pooled element (originally from `buildItem`) to
+   * represent `index`, mutating it in place. Providing this enables element
+   * recycling: rows scrolled out of view are pooled and re-bound instead of
+   * discarded, so `buildItem` runs only when the pool is empty and
+   * `destroyItem` only on eviction (pool over capacity) or `dispose`. Intended
+   * for homogeneous rows.
+   */
+  recycleItem?: (index: number, element: HTMLElement) => void;
   buildPlaceholder?: (index: number) => HTMLElement;
-  placeholderVelocityThreshold?: DynamicVirtualizerNumberOption;
+  placeholderVelocityThreshold?: VirtualListNumberOption;
   overscanPx?: number | (() => number);
-  renderMode?: DynamicVirtualizerRenderMode;
+  renderMode?: VirtualListRenderMode;
   measureEpsilon?: number;
-  debugRenderDrift?: boolean | DynamicVirtualizerRenderDriftReporter;
-  onRangeChange?: (state: DynamicVirtualizerState) => void;
-  onReachTop?: (state: DynamicVirtualizerState) => void;
-  onReachBottom?: (state: DynamicVirtualizerState) => void;
-  onScrollStart?: (state: DynamicVirtualizerState) => void;
-  onScrollEnd?: (state: DynamicVirtualizerState) => void;
+  /**
+   * Maximum number of idle elements retained for recycling. Defaults to about
+   * one viewport's worth of rows. Ignored unless `recycleItem` is set.
+   */
+  recyclePoolSize?: number;
+  onRangeChange?: (state: VirtualListState) => void;
+  onReachTop?: (state: VirtualListState) => void;
+  onReachBottom?: (state: VirtualListState) => void;
+  onScrollStart?: (state: VirtualListState) => void;
+  onScrollEnd?: (state: VirtualListState) => void;
 }
 
-export interface DynamicVirtualizerItemMeasurerConfig {
+export interface VirtualListItemMeasurerConfig {
   viewport: HTMLElement;
   canvasClassName?: string;
   buildItem: (index: number) => HTMLElement;
   /**
    * Called with each element after it has been measured and detached, so
    * transient per-row resources built for measurement can be destroyed.
-   * Mirrors `buildItem`'s lifecycle counterpart in the virtualizer config.
+   * Mirrors `buildItem`'s lifecycle counterpart in the virtual list config.
    */
   destroyItem?: (index: number, element: HTMLElement) => void;
 }
 
-export interface DynamicVirtualizerMeasureItemConfig
-  extends DynamicVirtualizerItemMeasurerConfig {
+export interface VirtualListMeasureItemConfig
+  extends VirtualListItemMeasurerConfig {
   index: number;
 }
 
-export interface DynamicVirtualizerItemMeasurer {
+export interface VirtualListItemMeasurer {
   measure(index: number): number;
   dispose(): void;
 }
 
-export interface DynamicVirtualizerScrollOptions {
+export interface VirtualListScrollOptions {
   behavior?: ScrollBehavior;
   duration?: number;
   signal?: AbortSignal;
   snapThreshold?: number;
 }
 
-export interface DynamicVirtualizerSetCountOptions {
+export interface VirtualListSetCountOptions {
   addedBefore?: number;
   removedBefore?: number;
 }
 
-export interface DynamicVirtualizerBoundarySlot {
+export interface VirtualListBoundarySlot {
   key: string;
   height: number;
   build: () => HTMLElement;
 }
 
-export interface DynamicVirtualizerPlaceholderSlot {
+export interface VirtualListPlaceholderSlot {
   key: string;
   build: () => HTMLElement;
 }
 
-export interface DynamicVirtualizerLayoutUpdate
-  extends DynamicVirtualizerSetCountOptions {
-  topSlot?: DynamicVirtualizerBoundarySlot | null;
-  bottomSlot?: DynamicVirtualizerBoundarySlot | null;
-  placeholderSlot?: DynamicVirtualizerPlaceholderSlot | null;
+export interface VirtualListLayoutUpdate extends VirtualListSetCountOptions {
+  topSlot?: VirtualListBoundarySlot | null;
+  bottomSlot?: VirtualListBoundarySlot | null;
+  placeholderSlot?: VirtualListPlaceholderSlot | null;
   apply?: () => boolean | undefined;
   after?: () => void;
 }
 
-export interface DynamicVirtualizerPixelWindowPlan {
+export interface VirtualListPixelWindowPlan {
   start: number;
   end: number;
   count: number;
   height: number;
 }
 
-export interface DynamicVirtualizerPixelWindowConfig {
+export interface VirtualListPixelWindowConfig {
   count: number;
   minimumPx: number;
   getItemHeight: (index: number) => number;
@@ -157,17 +169,17 @@ export interface DynamicVirtualizerPixelWindowConfig {
   maxItems?: number;
 }
 
-export interface DynamicVirtualizerPixelWindowFromStartConfig
-  extends DynamicVirtualizerPixelWindowConfig {
+export interface VirtualListPixelWindowFromStartConfig
+  extends VirtualListPixelWindowConfig {
   start?: number;
 }
 
-export interface DynamicVirtualizerPixelWindowFromEndConfig
-  extends DynamicVirtualizerPixelWindowConfig {
+export interface VirtualListPixelWindowFromEndConfig
+  extends VirtualListPixelWindowConfig {
   end?: number;
 }
 
-export interface DynamicVirtualizerState {
+export interface VirtualListState {
   count: number;
   range: { start: number; end: number };
   mountedCount: number;
@@ -179,20 +191,6 @@ export interface DynamicVirtualizerState {
   atTop: boolean;
   atBottom: boolean;
 }
-
-export interface DynamicVirtualizerRenderDrift {
-  index: number;
-  actualHeight: number;
-  expectedHeight: number;
-  heightDrift: number;
-  actualTop: number;
-  expectedTop: number;
-  topDrift: number;
-}
-
-export type DynamicVirtualizerRenderDriftReporter = (
-  drifts: readonly DynamicVirtualizerRenderDrift[],
-) => void;
 
 interface ScrollTopWriteOptions {
   allowDuringScroll?: boolean;
@@ -224,36 +222,36 @@ interface MountedBoundarySlot {
   observed: boolean;
 }
 
-interface MountedPlaceholderSlot extends DynamicVirtualizerPlaceholderSlot {
+interface MountedPlaceholderSlot extends VirtualListPlaceholderSlot {
   element: HTMLElement | null;
   renderedHeight: number;
 }
 
-export interface DynamicVirtualizer {
-  readonly state: DynamicVirtualizerState;
+export interface VirtualList {
+  readonly state: VirtualListState;
 
   invalidateMeasurements(): void;
-  setCount(options?: DynamicVirtualizerSetCountOptions): void;
-  syncLayout(update?: DynamicVirtualizerLayoutUpdate): void;
+  setCount(options?: VirtualListSetCountOptions): void;
+  syncLayout(update?: VirtualListLayoutUpdate): void;
   setBoundarySlot(
-    boundary: DynamicVirtualizerBoundary,
-    slot: DynamicVirtualizerBoundarySlot | null,
+    boundary: VirtualListBoundary,
+    slot: VirtualListBoundarySlot | null,
   ): void;
-  getBoundaryElement(boundary: DynamicVirtualizerBoundary): HTMLElement | null;
-  setPlaceholderSlot(slot: DynamicVirtualizerPlaceholderSlot | null): void;
+  getBoundaryElement(boundary: VirtualListBoundary): HTMLElement | null;
+  setPlaceholderSlot(slot: VirtualListPlaceholderSlot | null): void;
   getPlaceholderElement(): HTMLElement | null;
   scrollToIndex(
     index: number,
-    align?: DynamicVirtualizerAlign,
-    options?: DynamicVirtualizerScrollOptions,
+    align?: VirtualListAlign,
+    options?: VirtualListScrollOptions,
   ): Promise<boolean>;
   scrollToOffset(
     offset: number,
-    options?: DynamicVirtualizerScrollOptions,
+    options?: VirtualListScrollOptions,
   ): Promise<boolean>;
-  scrollToTop(options?: DynamicVirtualizerScrollOptions): Promise<boolean>;
-  scrollToBottom(options?: DynamicVirtualizerScrollOptions): Promise<boolean>;
-  followBottom(options?: DynamicVirtualizerScrollOptions): void;
+  scrollToTop(options?: VirtualListScrollOptions): Promise<boolean>;
+  scrollToBottom(options?: VirtualListScrollOptions): Promise<boolean>;
+  followBottom(options?: VirtualListScrollOptions): void;
   stopFollowBottom(): void;
   setStickyIndex(index: number | null): void;
   getMountedElement(index: number): HTMLElement | null;
@@ -357,9 +355,9 @@ function shouldCollectPixelWindowItem(
   return itemCount < minItems || height < minimumPx;
 }
 
-export function planDynamicVirtualizerPixelWindowFromEnd(
-  config: DynamicVirtualizerPixelWindowFromEndConfig,
-): DynamicVirtualizerPixelWindowPlan {
+export function planVirtualListPixelWindowFromEnd(
+  config: VirtualListPixelWindowFromEndConfig,
+): VirtualListPixelWindowPlan {
   const count = nonNegativeInteger(config.count);
   const end = clamp(normalizedWindowItemLimit(config.end, count), 0, count);
   const minimumPx = nonNegativeSize(config.minimumPx);
@@ -391,9 +389,9 @@ export function planDynamicVirtualizerPixelWindowFromEnd(
   return { start, end, count: end - start, height };
 }
 
-export function planDynamicVirtualizerPixelWindowFromStart(
-  config: DynamicVirtualizerPixelWindowFromStartConfig,
-): DynamicVirtualizerPixelWindowPlan {
+export function planVirtualListPixelWindowFromStart(
+  config: VirtualListPixelWindowFromStartConfig,
+): VirtualListPixelWindowPlan {
   const count = nonNegativeInteger(config.count);
   const start = clamp(normalizedWindowItemLimit(config.start, 0), 0, count);
   const minimumPx = nonNegativeSize(config.minimumPx);
@@ -469,7 +467,7 @@ function translateYTransform(top: number): string {
 }
 
 function prepareMeasuredItem(element: HTMLElement): HTMLElement {
-  element.classList.remove("dv-item");
+  element.classList.remove("vl-item");
   element.style.position = "absolute";
   element.style.transform = "none";
   element.style.top = "0";
@@ -483,7 +481,7 @@ function createMeasurementRoot(
   canvasClassName: string | undefined,
 ): HTMLDivElement {
   const measureRoot = document.createElement("div");
-  measureRoot.className = "dv-content";
+  measureRoot.className = "vl-content";
   addClassNames(measureRoot, canvasClassName);
   Object.assign(measureRoot.style, {
     position: "fixed",
@@ -508,9 +506,9 @@ function syncMeasurementRootWidth(
   measureRoot.style.width = viewportWidth > 0 ? `${viewportWidth}px` : "100%";
 }
 
-export function createDynamicVirtualizerItemMeasurer(
-  config: DynamicVirtualizerItemMeasurerConfig,
-): DynamicVirtualizerItemMeasurer {
+export function createVirtualListItemMeasurer(
+  config: VirtualListItemMeasurerConfig,
+): VirtualListItemMeasurer {
   injectStyles();
   const { viewport, canvasClassName, buildItem, destroyItem } = config;
   const measureRoot = createMeasurementRoot(viewport, canvasClassName);
@@ -540,11 +538,11 @@ export function createDynamicVirtualizerItemMeasurer(
   };
 }
 
-export function measureDynamicVirtualizerItem(
-  config: DynamicVirtualizerMeasureItemConfig,
+export function measureVirtualListItem(
+  config: VirtualListMeasureItemConfig,
 ): number {
   const { index, ...measurerConfig } = config;
-  const measurer = createDynamicVirtualizerItemMeasurer(measurerConfig);
+  const measurer = createVirtualListItemMeasurer(measurerConfig);
   try {
     return measurer.measure(index);
   } finally {
@@ -563,9 +561,7 @@ function detectScrollSettleStrategy(): ScrollSettleStrategy {
     : "default";
 }
 
-export function createDynamicVirtualizer(
-  config: DynamicVirtualizerConfig,
-): DynamicVirtualizer {
+export function createVirtualList(config: VirtualListConfig): VirtualList {
   injectStyles();
 
   const {
@@ -573,6 +569,7 @@ export function createDynamicVirtualizer(
     canvasClassName,
     buildItem,
     destroyItem,
+    recycleItem,
     buildPlaceholder,
     getCount,
     getItemHeight,
@@ -604,19 +601,6 @@ export function createDynamicVirtualizer(
   const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
   const scrollSettleStrategy = detectScrollSettleStrategy();
-  const urlSearchParams = new URLSearchParams(window.location.search);
-  const debugScrollSettle = urlSearchParams.has("debugScrollSettle");
-  const debugPlaceholder =
-    urlSearchParams.has("debugPlaceholder") ||
-    urlSearchParams.has("debugPlaceholders");
-  const renderDriftReporter =
-    typeof config.debugRenderDrift === "function"
-      ? config.debugRenderDrift
-      : config.debugRenderDrift === true
-        ? (drifts: readonly DynamicVirtualizerRenderDrift[]) => {
-            console.warn("[dynamic-virtualizer] render drift", drifts);
-          }
-        : null;
   let count = 0;
   let sizes = new Float64Array(0);
   let measured = new Uint8Array(0);
@@ -625,6 +609,7 @@ export function createDynamicVirtualizer(
   let measuredCount = 0;
   let mounted = new Map<number, HTMLElement>();
   let mountedPlaceholders = new Set<number>();
+  const recyclePool: HTMLElement[] = [];
   let rangeStart = 0;
   let rangeEnd = 0;
   let renderFrame = 0;
@@ -671,7 +656,7 @@ export function createDynamicVirtualizer(
   let settleTimer = 0;
   let wheelInputActive = false;
   let wheelInputTimer = 0;
-  let chromiumEdgeWheelActive: DynamicVirtualizerBoundary | null = null;
+  let chromiumEdgeWheelActive: VirtualListBoundary | null = null;
   let chromiumEdgeWheelIdle = false;
   let chromiumWheelSawNativeScrollEnd = false;
   let chromiumWheelAwaitingFinalScrollEnd = false;
@@ -686,17 +671,17 @@ export function createDynamicVirtualizer(
   let activeSmoothScrollCancel: (() => void) | null = null;
   let activeSmoothScrollTarget: number | null = null;
   let activeSmoothScrollSnapThreshold = SCROLL_SNAP_THRESHOLD;
-  let programmaticReachBoundary: DynamicVirtualizerBoundary | null = null;
+  let programmaticReachBoundary: VirtualListBoundary | null = null;
   let reachCallbacksEnabled = false;
   let emittingChangeCallback = false;
   let emittingReachCallback = false;
   let pendingBoundaryArm = false;
   let boundaryIntersectionObserver: IntersectionObserver | null = null;
-  let itemMeasurer: DynamicVirtualizerItemMeasurer | null = null;
+  let itemMeasurer: VirtualListItemMeasurer | null = null;
   let disposed = false;
 
   const pendingMeasurements = new Map<number, number>();
-  const deferredLayoutUpdates: DynamicVirtualizerLayoutUpdate[] = [];
+  const deferredLayoutUpdates: VirtualListLayoutUpdate[] = [];
   const content = document.createElement("div");
   const computedRange = { start: 0, end: 0 };
 
@@ -715,9 +700,9 @@ export function createDynamicVirtualizer(
     handleViewportResize();
   });
 
-  content.className = "dv-content";
+  content.className = "vl-content";
   addClassNames(content, canvasClassName);
-  viewport.classList.add("dv-viewport", "minimal-scrollbar");
+  viewport.classList.add("vl-viewport", "vl-scrollbar");
   viewport.appendChild(content);
 
   function nativeMaxScrollTop(): number {
@@ -768,7 +753,7 @@ export function createDynamicVirtualizer(
     totalSize = contentTotalSize(),
     scrollTop = logicalScrollTop(),
     viewportHeight = lastViewportHeight,
-  ): DynamicVirtualizerState {
+  ): VirtualListState {
     const scrollHeight = Math.max(viewportHeight, totalSize);
     const scrollMax = Math.max(0, scrollHeight - viewportHeight);
     return {
@@ -786,8 +771,8 @@ export function createDynamicVirtualizer(
   }
 
   function callReachCallback(
-    callback: ((state: DynamicVirtualizerState) => void) | undefined,
-    state: DynamicVirtualizerState,
+    callback: ((state: VirtualListState) => void) | undefined,
+    state: VirtualListState,
   ): void {
     if (!callback) return;
     emittingReachCallback = true;
@@ -816,7 +801,7 @@ export function createDynamicVirtualizer(
     );
   }
 
-  function rememberEmittedRange(state: DynamicVirtualizerState): void {
+  function rememberEmittedRange(state: VirtualListState): void {
     emittedRangeStart = state.range.start;
     emittedRangeEnd = state.range.end;
     emittedMountedCount = state.mountedCount;
@@ -850,7 +835,7 @@ export function createDynamicVirtualizer(
     }
   }
 
-  function canEmitBoundaryReach(boundary: DynamicVirtualizerBoundary): boolean {
+  function canEmitBoundaryReach(boundary: VirtualListBoundary): boolean {
     return (
       reachCallbacksEnabled &&
       !emittingReachCallback &&
@@ -859,18 +844,16 @@ export function createDynamicVirtualizer(
     );
   }
 
-  function armedForBoundary(boundary: DynamicVirtualizerBoundary): boolean {
+  function armedForBoundary(boundary: VirtualListBoundary): boolean {
     return boundary === "top" ? reachTopArmed : reachBottomArmed;
   }
 
-  function reachConsumedForBoundary(
-    boundary: DynamicVirtualizerBoundary,
-  ): boolean {
+  function reachConsumedForBoundary(boundary: VirtualListBoundary): boolean {
     return boundary === "top" ? topReachConsumed : bottomReachConsumed;
   }
 
   function setReachConsumed(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
     consumed: boolean,
   ): void {
     if (boundary === "top") {
@@ -881,7 +864,7 @@ export function createDynamicVirtualizer(
   }
 
   function setBoundaryArmed(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
     armed: boolean,
   ): void {
     const wasArmed = armedForBoundary(boundary);
@@ -893,22 +876,20 @@ export function createDynamicVirtualizer(
     }
   }
 
-  function armProgrammaticBoundaryReach(
-    boundary: DynamicVirtualizerBoundary,
-  ): void {
+  function armProgrammaticBoundaryReach(boundary: VirtualListBoundary): void {
     programmaticReachBoundary = boundary;
     setBoundaryArmed(boundary, true);
   }
 
   function clearProgrammaticBoundaryReach(
-    boundary: DynamicVirtualizerBoundary | null = null,
+    boundary: VirtualListBoundary | null = null,
   ): void {
     if (boundary === null || programmaticReachBoundary === boundary) {
       programmaticReachBoundary = null;
     }
   }
 
-  function emitBoundaryReach(boundary: DynamicVirtualizerBoundary): void {
+  function emitBoundaryReach(boundary: VirtualListBoundary): void {
     if (!canEmitBoundaryReach(boundary)) return;
     if (!armedForBoundary(boundary)) return;
 
@@ -937,7 +918,7 @@ export function createDynamicVirtualizer(
   }
 
   function normalizePlaceholderSlot(
-    slot: DynamicVirtualizerPlaceholderSlot,
+    slot: VirtualListPlaceholderSlot,
   ): MountedPlaceholderSlot {
     return {
       key: String(slot.key),
@@ -948,13 +929,13 @@ export function createDynamicVirtualizer(
   }
 
   function currentBoundarySlot(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
   ): MountedBoundarySlot | null {
     return boundary === "top" ? topSlot : bottomSlot;
   }
 
   function setCurrentBoundarySlot(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
     slot: MountedBoundarySlot | null,
   ): void {
     if (boundary === "top") {
@@ -964,28 +945,24 @@ export function createDynamicVirtualizer(
     }
   }
 
-  function shouldKeepBoundarySlot(
-    boundary: DynamicVirtualizerBoundary,
-  ): boolean {
+  function shouldKeepBoundarySlot(boundary: VirtualListBoundary): boolean {
     return boundary === "top" ? Boolean(onReachTop) : Boolean(onReachBottom);
   }
 
-  function emptyBoundarySlotHeight(
-    boundary: DynamicVirtualizerBoundary,
-  ): number {
+  function emptyBoundarySlotHeight(boundary: VirtualListBoundary): number {
     return shouldKeepBoundarySlot(boundary)
       ? DEFAULT_BOUNDARY_SENTINEL_HEIGHT
       : 0;
   }
 
   function ensureBoundarySlot(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
   ): MountedBoundarySlot {
     const current = currentBoundarySlot(boundary);
     if (current) return current;
 
     const element = document.createElement("div");
-    element.classList.add("dv-boundary-slot", `dv-boundary-${boundary}`);
+    element.classList.add("vl-boundary-slot", `vl-boundary-${boundary}`);
     element.dataset.boundary = boundary;
 
     const next: MountedBoundarySlot = {
@@ -1002,7 +979,7 @@ export function createDynamicVirtualizer(
     return next;
   }
 
-  function removeBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
+  function removeBoundarySlot(boundary: VirtualListBoundary): void {
     const current = currentBoundarySlot(boundary);
     if (!current) return;
     boundaryIntersectionObserver?.unobserve(current.element);
@@ -1012,8 +989,8 @@ export function createDynamicVirtualizer(
   }
 
   function applyBoundarySlotUpdate(
-    boundary: DynamicVirtualizerBoundary,
-    slot: DynamicVirtualizerBoundarySlot | null | undefined,
+    boundary: VirtualListBoundary,
+    slot: VirtualListBoundarySlot | null | undefined,
   ): boolean {
     if (slot === undefined) return false;
 
@@ -1050,7 +1027,7 @@ export function createDynamicVirtualizer(
   }
 
   function applyPlaceholderSlotUpdate(
-    slot: DynamicVirtualizerPlaceholderSlot | null | undefined,
+    slot: VirtualListPlaceholderSlot | null | undefined,
   ): boolean {
     if (slot === undefined) return false;
 
@@ -1074,11 +1051,11 @@ export function createDynamicVirtualizer(
     return true;
   }
 
-  function boundarySlotTop(boundary: DynamicVirtualizerBoundary): number {
+  function boundarySlotTop(boundary: VirtualListBoundary): number {
     return boundary === "top" ? 0 : topSlotHeight() + itemTotalSize();
   }
 
-  function renderBoundarySlot(boundary: DynamicVirtualizerBoundary): void {
+  function renderBoundarySlot(boundary: VirtualListBoundary): void {
     const slot = currentBoundarySlot(boundary);
     if (!slot) return;
 
@@ -1109,9 +1086,7 @@ export function createDynamicVirtualizer(
     syncBoundaryIntersectionObserver();
   }
 
-  function boundaryForElement(
-    element: Element,
-  ): DynamicVirtualizerBoundary | null {
+  function boundaryForElement(element: Element): VirtualListBoundary | null {
     const boundary = (element as HTMLElement).dataset.boundary;
     return boundary === "top" || boundary === "bottom" ? boundary : null;
   }
@@ -1140,7 +1115,7 @@ export function createDynamicVirtualizer(
     }
   }
 
-  function boundarySlotVisible(boundary: DynamicVirtualizerBoundary): boolean {
+  function boundarySlotVisible(boundary: VirtualListBoundary): boolean {
     const slot = currentBoundarySlot(boundary);
     if (!slot?.element.isConnected || slot.height <= 0) return false;
 
@@ -1163,7 +1138,7 @@ export function createDynamicVirtualizer(
   }
 
   function emitVisibleBoundaryReach(
-    boundary: DynamicVirtualizerBoundary | null,
+    boundary: VirtualListBoundary | null,
   ): void {
     if (!boundary) return;
     const visible = boundarySlotVisible(boundary);
@@ -1171,9 +1146,7 @@ export function createDynamicVirtualizer(
     emitBoundaryReach(boundary);
   }
 
-  function armCoveredBoundaryForScroll(
-    boundary: DynamicVirtualizerBoundary,
-  ): void {
+  function armCoveredBoundaryForScroll(boundary: VirtualListBoundary): void {
     if (boundarySlotVisible(boundary)) return;
     setReachConsumed(boundary, false);
     setBoundaryArmed(boundary, true);
@@ -1210,7 +1183,7 @@ export function createDynamicVirtualizer(
 
   function preparePlaceholderSlot(slot: MountedPlaceholderSlot): HTMLElement {
     const element = slot.build();
-    element.classList.add("dv-placeholder-slot");
+    element.classList.add("vl-placeholder-slot");
     return element;
   }
 
@@ -1433,7 +1406,7 @@ export function createDynamicVirtualizer(
     offset = topSlotHeight(),
   ): HTMLElement {
     element.dataset.index = String(index);
-    element.classList.add("dv-item");
+    element.classList.add("vl-item");
     positionItem(index, element, offset);
     return element;
   }
@@ -1457,42 +1430,6 @@ export function createDynamicVirtualizer(
         : DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD;
     }
     return Math.max(0, value);
-  }
-
-  function mountedPlaceholderCount(): number {
-    return mountedPlaceholders.size;
-  }
-
-  function mountedRealCount(): number {
-    return Math.max(0, mounted.size - mountedPlaceholderCount());
-  }
-
-  function debugPlaceholderEvent(
-    event: string,
-    detail: Record<string, unknown> = {},
-  ): void {
-    if (!debugPlaceholder) return;
-    console.info("[vl-placeholder]", {
-      event,
-      scrollTop: viewport.scrollTop,
-      scrollMax: nativeMaxScrollTop(),
-      scrollVelocity,
-      currentVelocity: currentScrollVelocity(),
-      lastScrollSampleDelta,
-      placeholderFastMode,
-      hydratePlaceholdersBlocked,
-      placeholderLowVelocitySamples,
-      mountedPlaceholders: mountedPlaceholderCount(),
-      mountedReal: mountedRealCount(),
-      userScrollActive,
-      userScrollMoved,
-      nativeScrollEndPending,
-      wheelInputActive,
-      touchInputActive,
-      activePointers: activePointers.size,
-      range: { start: rangeStart, end: rangeEnd },
-      ...detail,
-    });
   }
 
   function cancelPlaceholderHydrationCheck(): void {
@@ -1552,24 +1489,15 @@ export function createDynamicVirtualizer(
     const velocity = currentScrollVelocity();
 
     if (isAtNativeScrollBoundary()) {
-      const refreshedPlaceholders = disablePlaceholderFastMode();
-      if (debugPlaceholder && refreshedPlaceholders) {
-        debugPlaceholderEvent("fast-mode-boundary-exit", {
-          velocity,
-        });
-      }
+      disablePlaceholderFastMode();
       return false;
     }
 
     if (velocity >= enterVelocity) {
-      const wasFast = placeholderFastMode;
       hydratePlaceholdersBlocked = true;
       placeholderFastMode = true;
       placeholderLowVelocitySamples = 0;
       schedulePlaceholderHydrationCheck();
-      if (!wasFast && debugPlaceholder) {
-        debugPlaceholderEvent("fast-mode-enter", { velocity });
-      }
     } else if (placeholderFastMode) {
       const exitVelocity = enterVelocity * PLACEHOLDER_VELOCITY_EXIT_RATIO;
       if (lastScrollSampleDelta > measureEpsilon && velocity <= exitVelocity) {
@@ -1581,11 +1509,6 @@ export function createDynamicVirtualizer(
         hydratePlaceholdersBlocked = false;
         placeholderFastMode = false;
         placeholderLowVelocitySamples = 0;
-        if (debugPlaceholder) {
-          debugPlaceholderEvent("fast-mode-exit", {
-            velocity,
-          });
-        }
       } else {
         schedulePlaceholderHydrationCheck();
       }
@@ -1604,7 +1527,7 @@ export function createDynamicVirtualizer(
     const element =
       usePlaceholder && buildPlaceholder
         ? prepareItem(index, buildPlaceholder(index), offset)
-        : prepareItem(index, buildItem(index), offset);
+        : prepareItem(index, acquireElement(index), offset);
 
     if (usePlaceholder && buildPlaceholder) {
       element.dataset.placeholder = "true";
@@ -1625,7 +1548,7 @@ export function createDynamicVirtualizer(
       return false;
     }
 
-    const next = prepareItem(index, buildItem(index));
+    const next = prepareItem(index, acquireElement(index));
     itemResizeObserver.observe(next);
     previous.replaceWith(next);
     itemResizeObserver.unobserve(previous);
@@ -1638,16 +1561,9 @@ export function createDynamicVirtualizer(
     if (mountedPlaceholders.size === 0) return false;
 
     let refreshed = false;
-    let refreshedCount = 0;
     for (const index of Array.from(mountedPlaceholders)) {
       if (refreshMountedPlaceholder(index)) {
         refreshed = true;
-        refreshedCount++;
-      }
-    }
-    if (refreshedCount > 0) {
-      if (debugPlaceholder) {
-        debugPlaceholderEvent("hydrate-range", { refreshedCount });
       }
     }
     return refreshed;
@@ -1664,45 +1580,7 @@ export function createDynamicVirtualizer(
     if (!canSettleUserScroll()) return;
     const refreshedPlaceholders = forceHydratePlaceholders();
     if (!refreshedPlaceholders) return;
-    if (debugPlaceholder) debugPlaceholderEvent("hydrate-scrollend");
     renderNow(logicalScrollTop());
-  }
-
-  function inspectRenderDrift(): void {
-    if (!renderDriftReporter || mounted.size === 0) return;
-
-    const drifts: DynamicVirtualizerRenderDrift[] = [];
-    const offset = topSlotHeight();
-    const contentTop = content.getBoundingClientRect().top;
-
-    for (const [index, element] of mounted) {
-      const expectedTop = offset + sizeTree.prefix(index);
-      const actualRect = element.getBoundingClientRect();
-      const actualTop = actualRect.top - contentTop;
-      const expectedHeight = sizes[index] ?? modeledItemHeight(index);
-      const actualHeight = actualRect.height;
-      const topDrift = actualTop - expectedTop;
-      const heightDrift = actualHeight - expectedHeight;
-
-      if (
-        Math.abs(topDrift) <= DEFAULT_RENDER_DRIFT_EPSILON &&
-        Math.abs(heightDrift) <= DEFAULT_RENDER_DRIFT_EPSILON
-      ) {
-        continue;
-      }
-
-      drifts.push({
-        index,
-        actualHeight,
-        expectedHeight,
-        heightDrift,
-        actualTop,
-        expectedTop,
-        topDrift,
-      });
-    }
-
-    if (drifts.length > 0) renderDriftReporter(drifts);
   }
 
   function syncRenderChrome(): number {
@@ -1728,10 +1606,51 @@ export function createDynamicVirtualizer(
     element.remove();
   }
 
+  function recyclePoolCapacity(): number {
+    const configured = config.recyclePoolSize;
+    if (configured !== undefined) return Math.max(0, Math.floor(configured));
+    return Math.max(DEFAULT_RECYCLE_POOL_FLOOR, rangeEnd - rangeStart);
+  }
+
+  function trimRecyclePool(): void {
+    const capacity = recyclePoolCapacity();
+    while (recyclePool.length > capacity) {
+      const evicted = recyclePool.shift();
+      if (!evicted) break;
+      notifyDestroyItem(Number(evicted.dataset.index), evicted);
+    }
+  }
+
+  // Pool a real (non-placeholder) element for reuse when recycling is enabled;
+  // otherwise discard it. Mirrors discardElement's call sites so every
+  // permanent-detach path participates in the pool.
+  function recycleOrDiscard(index: number, element: HTMLElement): void {
+    if (recycleItem && element.dataset.placeholder !== "true") {
+      itemResizeObserver.unobserve(element);
+      element.remove();
+      recyclePool.push(element);
+      trimRecyclePool();
+      return;
+    }
+    discardElement(index, element);
+  }
+
+  // Reuse a pooled element (re-bound via recycleItem) or build a fresh one.
+  function acquireElement(index: number): HTMLElement {
+    if (recycleItem) {
+      const pooled = recyclePool.pop();
+      if (pooled) {
+        recycleItem(index, pooled);
+        return pooled;
+      }
+    }
+    return buildItem(index);
+  }
+
   function unmountIndex(index: number): void {
     const element = mounted.get(index);
     if (!element) return;
-    discardElement(index, element);
+    recycleOrDiscard(index, element);
     mounted.delete(index);
     mountedPlaceholders.delete(index);
   }
@@ -1784,7 +1703,6 @@ export function createDynamicVirtualizer(
           ? false
           : refreshMountedPlaceholders();
       if (!layoutDirty && !refreshedMountedItems) {
-        inspectRenderDrift();
         emitViewportChange(totalSize, actualScrollTop, viewportHeight);
         return;
       }
@@ -1802,7 +1720,6 @@ export function createDynamicVirtualizer(
       }
       if (complete) {
         renderedLayoutVersion = layoutVersion;
-        inspectRenderDrift();
         emitViewportChange(totalSize, actualScrollTop, viewportHeight);
         return;
       }
@@ -1832,7 +1749,6 @@ export function createDynamicVirtualizer(
     if (newItems) content.appendChild(newItems);
 
     renderedLayoutVersion = layoutVersion;
-    inspectRenderDrift();
     emitViewportChange(totalSize, actualScrollTop, viewportHeight);
   }
 
@@ -1993,7 +1909,7 @@ export function createDynamicVirtualizer(
 
   function scrollTopForIndex(
     index: number,
-    align: DynamicVirtualizerAlign = "top",
+    align: VirtualListAlign = "top",
   ): number {
     const itemTop = topSlotHeight() + sizeTree.prefix(index);
     const itemHeight = sizes[index] ?? modeledItemHeight(index);
@@ -2040,7 +1956,7 @@ export function createDynamicVirtualizer(
 
   function scrollToNativeTop(
     top: number,
-    options: DynamicVirtualizerScrollOptions = {},
+    options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     activeSmoothScrollCancel?.();
     const hydratedPlaceholders = forceHydratePlaceholders();
@@ -2199,7 +2115,7 @@ export function createDynamicVirtualizer(
     scheduleBottomFollowFrame();
   }
 
-  function followBottom(options: DynamicVirtualizerScrollOptions = {}): void {
+  function followBottom(options: VirtualListScrollOptions = {}): void {
     stopFollowBottom();
     if (count <= 0 || options.signal?.aborted) return;
 
@@ -2227,8 +2143,8 @@ export function createDynamicVirtualizer(
 
   async function scrollToIndex(
     index: number,
-    align: DynamicVirtualizerAlign = "top",
-    options: DynamicVirtualizerScrollOptions = {},
+    align: VirtualListAlign = "top",
+    options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
@@ -2253,7 +2169,7 @@ export function createDynamicVirtualizer(
 
   async function scrollToOffset(
     offset: number,
-    options: DynamicVirtualizerScrollOptions = {},
+    options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
@@ -2266,7 +2182,7 @@ export function createDynamicVirtualizer(
   }
 
   async function scrollToTop(
-    options: DynamicVirtualizerScrollOptions = {},
+    options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
@@ -2281,7 +2197,7 @@ export function createDynamicVirtualizer(
   }
 
   async function scrollToBottom(
-    options: DynamicVirtualizerScrollOptions = {},
+    options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
     stopFollowBottom();
@@ -2312,7 +2228,7 @@ export function createDynamicVirtualizer(
   }
 
   function measureUnmountedItem(index: number): number {
-    itemMeasurer ??= createDynamicVirtualizerItemMeasurer({
+    itemMeasurer ??= createVirtualListItemMeasurer({
       viewport,
       canvasClassName,
       buildItem,
@@ -2359,14 +2275,14 @@ export function createDynamicVirtualizer(
     const nextMountedPlaceholders = new Set<number>();
     for (const [index, element] of mounted) {
       if (index < removedBefore) {
-        discardElement(index, element);
+        recycleOrDiscard(index, element);
         mountedPlaceholders.delete(index);
         continue;
       }
 
       const nextIndex = index - removedBefore + addedBefore;
       if (nextIndex < 0 || nextIndex >= count) {
-        discardElement(index, element);
+        recycleOrDiscard(index, element);
         mountedPlaceholders.delete(index);
         continue;
       }
@@ -2399,9 +2315,7 @@ export function createDynamicVirtualizer(
     return true;
   }
 
-  function shouldDeferLayoutUpdate(
-    update: DynamicVirtualizerLayoutUpdate,
-  ): boolean {
+  function shouldDeferLayoutUpdate(update: VirtualListLayoutUpdate): boolean {
     if (!userScrollActive) return false;
     if (update.apply) return true;
     if (
@@ -2413,9 +2327,7 @@ export function createDynamicVirtualizer(
     return nonNegativeInteger(getCount()) !== count;
   }
 
-  function applyLayoutUpdate(
-    update: DynamicVirtualizerLayoutUpdate = {},
-  ): void {
+  function applyLayoutUpdate(update: VirtualListLayoutUpdate = {}): void {
     if (update.apply?.() === false) return;
 
     ensureReachBoundarySlots();
@@ -2473,7 +2385,7 @@ export function createDynamicVirtualizer(
     } else {
       for (const [index, element] of mounted) {
         if (index >= count) {
-          discardElement(index, element);
+          recycleOrDiscard(index, element);
           mounted.delete(index);
           mountedPlaceholders.delete(index);
         }
@@ -2495,7 +2407,7 @@ export function createDynamicVirtualizer(
     update.after?.();
   }
 
-  function syncLayout(update: DynamicVirtualizerLayoutUpdate = {}): void {
+  function syncLayout(update: VirtualListLayoutUpdate = {}): void {
     if (shouldDeferLayoutUpdate(update)) {
       deferredLayoutUpdates.push(update);
       return;
@@ -2503,13 +2415,13 @@ export function createDynamicVirtualizer(
     applyLayoutUpdate(update);
   }
 
-  function setCount(options?: DynamicVirtualizerSetCountOptions): void {
+  function setCount(options?: VirtualListSetCountOptions): void {
     syncLayout(options);
   }
 
   function setBoundarySlot(
-    boundary: DynamicVirtualizerBoundary,
-    slot: DynamicVirtualizerBoundarySlot | null,
+    boundary: VirtualListBoundary,
+    slot: VirtualListBoundarySlot | null,
   ): void {
     const update =
       boundary === "top" ? { topSlot: slot } : { bottomSlot: slot };
@@ -2517,14 +2429,12 @@ export function createDynamicVirtualizer(
   }
 
   function getBoundaryElement(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
   ): HTMLElement | null {
     return currentBoundarySlot(boundary)?.element ?? null;
   }
 
-  function setPlaceholderSlot(
-    slot: DynamicVirtualizerPlaceholderSlot | null,
-  ): void {
+  function setPlaceholderSlot(slot: VirtualListPlaceholderSlot | null): void {
     syncLayout({ placeholderSlot: slot });
   }
 
@@ -2638,45 +2548,6 @@ export function createDynamicVirtualizer(
     );
   }
 
-  function isStrictlyOutOfScrollRange(): boolean {
-    const scrollTop = viewport.scrollTop;
-    return scrollTop < 0 || scrollTop > nativeMaxScrollTop();
-  }
-
-  function debugScrollSettleEvent(
-    event: "native-scrollend" | "scrollend",
-  ): void {
-    if (!debugScrollSettle) return;
-    console.info("[vl-scroll-settle]", {
-      event,
-      strategy: scrollSettleStrategy,
-      scrollTop: viewport.scrollTop,
-      scrollMax: nativeMaxScrollTop(),
-      scrollHeight: viewport.scrollHeight,
-      clientHeight: viewport.clientHeight,
-      scrollVelocity,
-      placeholderFastMode,
-      inScrollRange: !isRubberBandOverscrolled(),
-      strictlyInScrollRange: !isStrictlyOutOfScrollRange(),
-      nativeScrollEndPending,
-      wheelPendingNativeScrollEndTop,
-      wheelInputActive,
-      chromiumEdgeWheelActive,
-      chromiumEdgeWheelIdle,
-      chromiumWheelSawNativeScrollEnd,
-      chromiumWheelAwaitingFinalScrollEnd,
-      chromiumEdgeWheelSuppressed,
-      chromiumEdgeSettleTimerActive: chromiumEdgeSettleTimer !== 0,
-      touchInputActive,
-      activePointers: activePointers.size,
-      rubberBandOverscrolled: isRubberBandOverscrolled(),
-    });
-  }
-
-  function debugScrollEnd(): void {
-    debugScrollSettleEvent("scrollend");
-  }
-
   function cancelSettleFrame(): void {
     if (!settleFrame) return;
     cancelAnimationFrame(settleFrame);
@@ -2729,7 +2600,7 @@ export function createDynamicVirtualizer(
 
   function boundaryForOutwardWheel(
     event: WheelEvent,
-  ): DynamicVirtualizerBoundary | null {
+  ): VirtualListBoundary | null {
     const scrollTop = viewport.scrollTop;
     if (event.deltaY < 0 && scrollTop <= measureEpsilon) return "top";
     if (event.deltaY <= 0) return null;
@@ -2800,23 +2671,14 @@ export function createDynamicVirtualizer(
   }
 
   function finishUserScroll(): void {
-    if (debugPlaceholder) debugPlaceholderEvent("finish-attempt");
     cancelUserScrollTimers();
     resetScrollSettleState();
-    debugScrollEnd();
     resetUserScrollState();
     const flushedLayout = flushDeferredLayoutUpdates();
     const flushedMeasurements = flushMeasurementsNow();
     const refreshedPlaceholders = refreshMountedPlaceholders();
     if (refreshedPlaceholders || (!flushedLayout && !flushedMeasurements)) {
       renderNow(viewport.scrollTop);
-    }
-    if (debugPlaceholder) {
-      debugPlaceholderEvent("finish-commit", {
-        flushedLayout,
-        flushedMeasurements,
-        refreshedPlaceholders,
-      });
     }
     const state = getState();
     onScrollEnd?.(state);
@@ -2885,7 +2747,7 @@ export function createDynamicVirtualizer(
   }
 
   function scheduleChromiumEdgeSettleFallback(
-    boundary: DynamicVirtualizerBoundary,
+    boundary: VirtualListBoundary,
   ): void {
     cancelChromiumEdgeSettleTimer();
     chromiumEdgeSettleTimer = window.setTimeout(() => {
@@ -2910,8 +2772,6 @@ export function createDynamicVirtualizer(
   }
 
   function handleScrollEnd(): void {
-    debugScrollSettleEvent("native-scrollend");
-
     if (!activeSmoothScrollReachedTarget()) return;
 
     if (
@@ -2987,9 +2847,6 @@ export function createDynamicVirtualizer(
     ) {
       cancelPendingUserScrollEnd();
     }
-    if (debugPlaceholder) {
-      debugPlaceholderEvent(wasActive ? "scroll-start-active" : "scroll-start");
-    }
     if (!wasActive) {
       onScrollStart?.(getState());
     }
@@ -3035,7 +2892,7 @@ export function createDynamicVirtualizer(
   }
 
   function handleWheelInputSettle(
-    outwardBoundary: DynamicVirtualizerBoundary | null = null,
+    outwardBoundary: VirtualListBoundary | null = null,
   ): void {
     if (
       scrollSettleStrategy !== "firefox-wheel" &&
@@ -3064,9 +2921,6 @@ export function createDynamicVirtualizer(
   }
 
   function handleWheel(event: WheelEvent): void {
-    if (debugPlaceholder) {
-      debugPlaceholderEvent("wheel", { deltaY: event.deltaY });
-    }
     if (
       scrollSettleStrategy === "firefox-wheel" ||
       scrollSettleStrategy === "safari-wheel"
@@ -3244,10 +3098,14 @@ export function createDynamicVirtualizer(
         viewport.removeEventListener("touchend", handleTouchScrollEnd);
         viewport.removeEventListener("touchcancel", handleTouchScrollEnd);
       }
-      viewport.classList.remove("dv-viewport", "minimal-scrollbar");
+      viewport.classList.remove("vl-viewport", "vl-scrollbar");
       for (const [index, element] of mounted) {
         notifyDestroyItem(index, element);
       }
+      for (const element of recyclePool) {
+        notifyDestroyItem(Number(element.dataset.index), element);
+      }
+      recyclePool.length = 0;
       content.remove();
       mounted.clear();
       mountedPlaceholders.clear();

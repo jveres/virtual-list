@@ -41,7 +41,7 @@ Open these pages from the dev server:
 
 ## Runtime architecture
 
-The virtualizer lives in `src/dynamic-virtualizer.ts`. It owns the scroll
+The virtual list lives in `src/virtual-list.ts`. It owns the scroll
 viewport, injects a single content layer, and mounts only the rows that overlap
 the viewport plus pixel overscan.
 
@@ -71,12 +71,12 @@ keep a retained data window can trim their own arrays with `setCount()` or
 
 Every row starts with `getItemHeight(index)`. This value is the host's current
 known height for the row, not a loose estimate. The host must pre-measure rows
-before adding them to the virtualizer when scroll stability matters.
+before adding them to the virtual list when scroll stability matters.
 
-Use `createDynamicVirtualizerItemMeasurer()` when the host wants
+Use `createVirtualListItemMeasurer()` when the host wants
 runtime-compatible pre-measurement without duplicating the hidden measurement
 DOM. The measurer builds one item at a time, measures it at the current
-viewport width, applies the same `dv-content` and `canvasClassName` styling as
+viewport width, applies the same `vl-content` and `canvasClassName` styling as
 the visible list, normalizes the result, and removes the hidden node before
 returning.
 
@@ -122,11 +122,11 @@ message move to the top before the assistant response fills the space below it.
 
 ## Public API
 
-Measure rows before insertion with `createDynamicVirtualizerItemMeasurer`, then
-create a virtualizer with `createDynamicVirtualizer`.
+Measure rows before insertion with `createVirtualListItemMeasurer`, then
+create a virtual list with `createVirtualList`.
 
 ```ts
-const itemMeasurer = createDynamicVirtualizerItemMeasurer({
+const itemMeasurer = createVirtualListItemMeasurer({
   viewport,
   canvasClassName: "chat-canvas",
   buildItem: (index) => buildMessageElement(index),
@@ -137,7 +137,7 @@ let measuredMessageHeights = messages.map((_, index) =>
 );
 itemMeasurer.dispose();
 
-const virtualizer = createDynamicVirtualizer({
+const virtualList = createVirtualList({
   viewport,
   canvasClassName: "chat-canvas",
   getCount: () => messages.length,
@@ -148,10 +148,10 @@ const virtualizer = createDynamicVirtualizer({
     updateControls(state.atTop, state.atBottom);
   },
   onReachTop: async () => {
-    virtualizer.setBoundarySlot("top", loadingSlot);
+    virtualList.setBoundarySlot("top", loadingSlot);
     const olderMessages = await loadOlderMessages();
     const olderHeights = measureMessages(olderMessages);
-    virtualizer.syncLayout({
+    virtualList.syncLayout({
       addedBefore: olderMessages.length,
       topSlot: null,
       apply: () => {
@@ -162,10 +162,10 @@ const virtualizer = createDynamicVirtualizer({
     });
   },
   onReachBottom: async () => {
-    virtualizer.setBoundarySlot("bottom", loadingSlot);
+    virtualList.setBoundarySlot("bottom", loadingSlot);
     const newerMessages = await loadNewerMessages();
     const newerHeights = measureMessages(newerMessages);
-    virtualizer.syncLayout({
+    virtualList.syncLayout({
       bottomSlot: null,
       apply: () => {
         messages = [...messages, ...newerMessages];
@@ -190,7 +190,7 @@ The returned object exposes:
 - `setCount()` after append, remove, or replace operations.
 - `syncLayout(update)` after count changes that need to be applied atomically
   with boundary slot changes. Use `apply` for host data mutations that must be
-  committed with the virtualizer layout update. Return `false` from `apply` to
+  committed with the virtual list layout update. Return `false` from `apply` to
   cancel the update.
 - `setCount({ addedBefore })` after prepending rows before the current first row
   outside an active boundary load. Use `syncLayout({ addedBefore, apply })` for
@@ -229,14 +229,14 @@ The config also accepts host callbacks:
 - `onScrollStart(state)` and `onScrollEnd(state)` for runtime scroll lifecycle
   boundaries.
 
-The module also exports `measureDynamicVirtualizerItem(config)` as a one-shot
+The module also exports `measureVirtualListItem(config)` as a one-shot
 wrapper for single-row measurement. Both measurement APIs are intentionally
 separate from the live instance so the host can measure rows before the
-virtualizer exists, before appending a new message, or before loading a chunk
+virtual list exists, before appending a new message, or before loading a chunk
 into an existing list.
 
-Use `planDynamicVirtualizerPixelWindowFromStart()` and
-`planDynamicVirtualizerPixelWindowFromEnd()` when a retained host window needs
+Use `planVirtualListPixelWindowFromStart()` and
+`planVirtualListPixelWindowFromEnd()` when a retained host window needs
 to load enough rows to cover a target pixel height instead of a fixed row
 count. The streaming demo uses this to load roughly a viewport-height multiple
 from the newest transcript tail and to prepend older messages in similarly
@@ -315,7 +315,7 @@ Slot-only updates apply immediately while native scrolling is active. This lets
 the host show a loading spinner as soon as a boundary is reached. Layout updates
 with `apply`, `addedBefore`, `removedBefore`, or a count change are deferred
 until scrolling settles. Put boundary-load array mutations inside `apply` so the
-host data changes in the same step as the virtualizer's count and size model.
+host data changes in the same step as the virtual list's count and size model.
 
 The runtime treats `scrollend` as blocked while touch, pointer, or tracked wheel
 input is still active. In that case, a later native `scrollend` flushes deferred
@@ -366,7 +366,7 @@ removed rows.
 
 The chat history demo is the large-list baseline. It repeats the shared sample
 conversation to create 10,000 rows and pre-measures those templates once before
-initializing the virtualizer.
+initializing the virtual list.
 
 That template measurement satisfies the runtime height contract for repeated
 rows. The runtime continues to refine mounted row sizes as mounted rows report
@@ -392,18 +392,18 @@ The shared helpers cover:
 - Theme button synchronization and event binding.
 
 Hidden row measurement is handled by the runtime module. Demo helpers remain
-demo-only plumbing and are not part of the virtualizer API.
+demo-only plumbing and are not part of the virtual list API.
 
 ## Dynamic content demo
 
-The dynamic content demo keeps a target window of rows loaded in the virtualizer.
+The dynamic content demo keeps a target window of rows loaded in the virtual list.
 It defaults to a retained target of 100 rows and 50-row load chunks. You can
 change those values with `?retain=300&chunk=50`. The header source selector can
 switch between the local synthetic transcript, Bluesky's public Discover feed,
 and Lemmy public post lists. Network sources start at the natural top of the
 loaded feed, while the synthetic transcript starts near the middle so both
 directions have data immediately. All sources pre-measure every loaded row
-before exposing it to the virtualizer.
+before exposing it to the virtual list.
 
 The render mode button switches the runtime between virtual rows and full
 retained DOM rows. You can also use `?render=full`. Full mode keeps every row
@@ -433,8 +433,8 @@ current view.
 
 The status bar shows the loaded global index window and mounted global index
 range. The host still provides near-exact row heights through
-`getItemHeight(index)` before each chunk enters the virtualizer. The demo uses
-`createDynamicVirtualizerItemMeasurer()` to keep chunk heights in the same CSS
+`getItemHeight(index)` before each chunk enters the virtual list. The demo uses
+`createVirtualListItemMeasurer()` to keep chunk heights in the same CSS
 context as the visible list. Network posts render text as sanitized or escaped
 HTML and render images as reserved-aspect media blocks so image loading doesn't
 change the measured row height.
@@ -460,7 +460,7 @@ mounted. Sending a message appends the user row first, calls
 viewport. The assistant placeholder is appended after that scroll finishes, so
 the response fills the space below the user message as it streams.
 
-The demo keeps a linear transcript outside the virtualizer and loads only a
+The demo keeps a linear transcript outside the virtual list and loads only a
 pixel-sized retained window into the live list. Page load seeds a 100-message
 transcript, loads the newest rows needed to cover five viewport heights, and
 scrolls to the bottom. Top boundary loads prepend older rows with the same
@@ -476,12 +476,12 @@ The assistant status label uses:
 - A red dot when the stream is cancelled.
 
 The streaming delays are demo simulation code. They are not part of the
-virtualizer hot path.
+virtual list hot path.
 
 ## Masonry demo
 
 The masonry demo exercises variable-position image groups in a single
-virtualizer instance. The host precomputes group heights, keeps fixed-height
+virtual list instance. The host precomputes group heights, keeps fixed-height
 boundary slots at the top and bottom, and uses the runtime `onReachTop`,
 `onReachBottom`, `onScrollStart`, and `onScrollEnd` callbacks for loading.
 
@@ -495,7 +495,7 @@ loads only from the runtime `onScrollEnd` callback.
 
 ## Performance notes
 
-The virtualizer keeps scrolling work small and predictable.
+The virtual list keeps scrolling work small and predictable.
 
 - Scroll events schedule a single render frame.
 - ResizeObserver entries are batched into a single measurement frame.

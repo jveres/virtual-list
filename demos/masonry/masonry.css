@@ -9,7 +9,7 @@
   width: 100%;
 }
 
-.masonry-group.dv-item {
+.masonry-group.vl-item {
   overflow: visible;
   contain: layout style;
   pointer-events: none;

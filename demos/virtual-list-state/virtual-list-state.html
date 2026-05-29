@@ -49,14 +49,14 @@
         matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
       );
     </script>
-    <title>virtual-list · virtualizer state</title>
+    <title>virtual-list · virtual list state</title>
   </head>
   <body>
     <div class="shell">
       <div class="header">
         <span class="header-title">
           <a href="/" title="Back to demos">virtual-list</a>
-          <span class="sep">·</span>virtualizer-state
+          <span class="sep">·</span>virtual-list-state
         </span>
         <div class="header-actions">
           <div class="theme-group" aria-label="Theme">
@@ -163,7 +163,7 @@
       </div>
       <div class="viewport-wrap state-demo-wrap">
         <div class="viewport state-viewport" id="viewport"></div>
-        <aside class="state-overlay" aria-label="Virtualizer controls">
+        <aside class="state-overlay" aria-label="Virtual list controls">
           <section class="state-panel">
             <div class="panel-title">State</div>
             <dl class="state-grid">
@@ -181,8 +181,6 @@
               <dd id="state-edges">top</dd>
               <dt>event</dt>
               <dd id="state-event">init</dd>
-              <dt>drift</dt>
-              <dd id="state-drift">0</dd>
             </dl>
           </section>
           <section class="state-panel">
@@ -269,10 +267,6 @@
                 <input id="boundary-toggle" type="checkbox" />
                 <span>boundary slots</span>
               </label>
-              <label class="check-row">
-                <input id="drift-toggle" type="checkbox" />
-                <span>drift reporter</span>
-              </label>
             </div>
           </section>
         </aside>
@@ -285,6 +279,6 @@
         </div>
       </div>
     </div>
-    <script type="module" src="./virtualizer-state.ts"></script>
+    <script type="module" src="./virtual-list-state.ts"></script>
   </body>
 </html>
