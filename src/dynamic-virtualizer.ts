@@ -67,6 +67,14 @@ export interface DynamicVirtualizerConfig {
   getCount: () => number;
   getItemHeight: (index: number) => number;
   buildItem: (index: number) => HTMLElement;
+  /**
+   * Called when an element previously produced by `buildItem` is permanently
+   * detached by the virtualizer — on unmount, refresh-swap, window reindex,
+   * count shrink, measurement teardown, and `dispose`. Use it to destroy
+   * per-row stateful resources (event listeners, observers, embedded
+   * components). Not called for `buildPlaceholder` elements.
+   */
+  destroyItem?: (index: number, element: HTMLElement) => void;
   buildPlaceholder?: (index: number) => HTMLElement;
   placeholderVelocityThreshold?: DynamicVirtualizerNumberOption;
   overscanPx?: number | (() => number);
@@ -84,6 +92,12 @@ export interface DynamicVirtualizerItemMeasurerConfig {
   viewport: HTMLElement;
   canvasClassName?: string;
   buildItem: (index: number) => HTMLElement;
+  /**
+   * Called with each element after it has been measured and detached, so
+   * transient per-row resources built for measurement can be destroyed.
+   * Mirrors `buildItem`'s lifecycle counterpart in the virtualizer config.
+   */
+  destroyItem?: (index: number, element: HTMLElement) => void;
 }
 
 export interface DynamicVirtualizerMeasureItemConfig
@@ -498,7 +512,7 @@ export function createDynamicVirtualizerItemMeasurer(
   config: DynamicVirtualizerItemMeasurerConfig,
 ): DynamicVirtualizerItemMeasurer {
   injectStyles();
-  const { viewport, canvasClassName, buildItem } = config;
+  const { viewport, canvasClassName, buildItem, destroyItem } = config;
   const measureRoot = createMeasurementRoot(viewport, canvasClassName);
 
   let disposed = false;
@@ -515,6 +529,7 @@ export function createDynamicVirtualizerItemMeasurer(
       measureRoot.appendChild(element);
       const height = positiveSize(element.getBoundingClientRect().height);
       measureRoot.replaceChildren();
+      destroyItem?.(index, element);
       return height;
     },
     dispose() {
@@ -557,6 +572,7 @@ export function createDynamicVirtualizer(
     viewport,
     canvasClassName,
     buildItem,
+    destroyItem,
     buildPlaceholder,
     getCount,
     getItemHeight,
@@ -1700,11 +1716,22 @@ export function createDynamicVirtualizer(
     return syncContentHeight();
   }
 
+  function notifyDestroyItem(index: number, element: HTMLElement): void {
+    if (!destroyItem) return;
+    if (element.dataset.placeholder === "true") return;
+    destroyItem(index, element);
+  }
+
+  function discardElement(index: number, element: HTMLElement): void {
+    itemResizeObserver.unobserve(element);
+    notifyDestroyItem(index, element);
+    element.remove();
+  }
+
   function unmountIndex(index: number): void {
     const element = mounted.get(index);
     if (!element) return;
-    itemResizeObserver.unobserve(element);
-    element.remove();
+    discardElement(index, element);
     mounted.delete(index);
     mountedPlaceholders.delete(index);
   }
@@ -2289,6 +2316,7 @@ export function createDynamicVirtualizer(
       viewport,
       canvasClassName,
       buildItem,
+      destroyItem,
     });
     return itemMeasurer.measure(index);
   }
@@ -2313,6 +2341,7 @@ export function createDynamicVirtualizer(
     itemResizeObserver.observe(next);
     previous.replaceWith(next);
     itemResizeObserver.unobserve(previous);
+    notifyDestroyItem(targetIndex, previous);
     mounted.set(targetIndex, next);
     mountedPlaceholders.delete(targetIndex);
     emitViewportChange();
@@ -2330,16 +2359,14 @@ export function createDynamicVirtualizer(
     const nextMountedPlaceholders = new Set<number>();
     for (const [index, element] of mounted) {
       if (index < removedBefore) {
-        itemResizeObserver.unobserve(element);
-        element.remove();
+        discardElement(index, element);
         mountedPlaceholders.delete(index);
         continue;
       }
 
       const nextIndex = index - removedBefore + addedBefore;
       if (nextIndex < 0 || nextIndex >= count) {
-        itemResizeObserver.unobserve(element);
-        element.remove();
+        discardElement(index, element);
         mountedPlaceholders.delete(index);
         continue;
       }
@@ -2446,8 +2473,7 @@ export function createDynamicVirtualizer(
     } else {
       for (const [index, element] of mounted) {
         if (index >= count) {
-          itemResizeObserver.unobserve(element);
-          element.remove();
+          discardElement(index, element);
           mounted.delete(index);
           mountedPlaceholders.delete(index);
         }
@@ -3219,6 +3245,9 @@ export function createDynamicVirtualizer(
         viewport.removeEventListener("touchcancel", handleTouchScrollEnd);
       }
       viewport.classList.remove("dv-viewport", "minimal-scrollbar");
+      for (const [index, element] of mounted) {
+        notifyDestroyItem(index, element);
+      }
       content.remove();
       mounted.clear();
       mountedPlaceholders.clear();

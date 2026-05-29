@@ -15,14 +15,13 @@ import {
   planDynamicVirtualizerPixelWindowFromEnd,
 } from "../../src/dynamic-virtualizer.js";
 import {
-  applyDocumentTheme,
   codeThemeName,
   hasHighlighter,
   initMarkdown,
   loadHighlighter,
   renderMarkdown,
-  watchSystemTheme,
-} from "../../src/markdown.js";
+} from "../demo-markdown.js";
+import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
 
 import "../demo-styles.css";

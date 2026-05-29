@@ -1,8 +1,4 @@
-import {
-  getThemeChoice,
-  isThemeChoice,
-  setThemeChoice,
-} from "../src/markdown.js";
+import { getThemeChoice, isThemeChoice, setThemeChoice } from "./demo-theme.js";
 
 type HTMLElementConstructor<T extends HTMLElement> = {
   new (): T;

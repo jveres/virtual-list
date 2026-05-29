@@ -5,7 +5,7 @@ import {
   type DynamicVirtualizerBoundarySlot,
   type DynamicVirtualizerState,
 } from "../../src/dynamic-virtualizer.js";
-import { applyDocumentTheme, watchSystemTheme } from "../../src/markdown.js";
+import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
 import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
 import { createPhotoPreview } from "../photo-preview.js";
 

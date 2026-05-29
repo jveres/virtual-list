@@ -4,13 +4,7 @@ import init, {
   SyntaxHighlighter,
 } from "comrak-wasm";
 import type { HighlighterCore } from "shiki/core";
-
-const THEMES = ["light", "dark", "system"] as const;
-export type ThemeChoice = (typeof THEMES)[number];
-
-export function isThemeChoice(value: string | undefined): value is ThemeChoice {
-  return value !== undefined && (THEMES as readonly string[]).includes(value);
-}
+import { isDark } from "./demo-theme.js";
 
 const comrakOptions = {
   extension: {
@@ -32,34 +26,11 @@ const comrakOptions = {
   render: { unsafe: true },
 };
 
-let themeChoice: ThemeChoice = "system";
 let shiki: HighlighterCore | null = null;
 let shikiLoad: Promise<void> | null = null;
 
-export function setThemeChoice(next: ThemeChoice): void {
-  themeChoice = next;
-  applyDocumentTheme();
-}
-
-export function getThemeChoice(): ThemeChoice {
-  return themeChoice;
-}
-
-export function isDark(): boolean {
-  if (themeChoice === "dark") return true;
-  if (themeChoice === "light") return false;
-  return matchMedia("(prefers-color-scheme: dark)").matches;
-}
-
 export function codeThemeName(): "github-dark" | "github-light" {
   return isDark() ? "github-dark" : "github-light";
-}
-
-export function applyDocumentTheme(): void {
-  document.documentElement.setAttribute(
-    "data-theme",
-    isDark() ? "dark" : "light",
-  );
 }
 
 export async function initMarkdown(): Promise<void> {
@@ -142,12 +113,4 @@ export function loadHighlighter(): Promise<void> {
       throw error;
     });
   return shikiLoad;
-}
-
-export function watchSystemTheme(onChange: () => void): void {
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    if (themeChoice !== "system") return;
-    applyDocumentTheme();
-    onChange();
-  });
 }
