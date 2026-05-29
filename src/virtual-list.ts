@@ -1792,7 +1792,20 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
   function scheduleMeasurementFlush(): void {
     if (measurementFrame || disposed) return;
-    measurementFrame = requestAnimationFrame(flushMeasurements);
+    measurementFrame = requestAnimationFrame(runScheduledMeasurementFlush);
+  }
+
+  // rAF body for the deferred measurement flush. While bottom-follow is
+  // animating (e.g. streaming follow) it already drains pending measurements via
+  // flushMeasurementsNow and runs a single scroll+render pass per frame, so hand
+  // off to it instead of running a second flush+scroll+render the same frame.
+  function runScheduledMeasurementFlush(): void {
+    measurementFrame = 0;
+    if (bottomFollowActive && !userScrollActive) {
+      wakeBottomFollow();
+      return;
+    }
+    flushMeasurements();
   }
 
   function flushMeasurementsNow(): boolean {
@@ -2045,6 +2058,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       bottomFollowFrame = 0;
     }
     clearBottomFollowSignal();
+    // Drain any measurements that were deferred to the follow loop while it ran.
+    if (pendingMeasurements.size > 0) scheduleMeasurementFlush();
   }
 
   function wakeBottomFollow(): void {
