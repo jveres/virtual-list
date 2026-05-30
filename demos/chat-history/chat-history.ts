@@ -4,6 +4,7 @@ import {
   createVirtualList,
   measureVirtualListItem,
   type VirtualList,
+  type VirtualListAlign,
 } from "../../src/virtual-list.js";
 import {
   attachInteractions,
@@ -107,6 +108,29 @@ document.getElementById("bottom-btn")?.addEventListener("click", () => {
 document.getElementById("add-btn")?.addEventListener("click", () => {
   total += 100;
   virtualList.setCount();
+});
+
+const indexInput = mustGet("index-input", HTMLInputElement);
+const alignSelect = mustGet("align-select", HTMLSelectElement);
+const behaviorSelect = mustGet("behavior-select", HTMLSelectElement);
+
+function scrollToTypedIndex(): void {
+  const parsed = Number.parseInt(indexInput.value, 10);
+  const index = Number.isFinite(parsed)
+    ? Math.min(Math.max(parsed, 0), total - 1)
+    : 0;
+  indexInput.value = String(index);
+  void virtualList.scrollToIndex(index, alignSelect.value as VirtualListAlign, {
+    behavior: behaviorSelect.value as ScrollBehavior,
+  });
+}
+
+mustGet("goto-btn").addEventListener("click", scrollToTypedIndex);
+indexInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    scrollToTypedIndex();
+  }
 });
 
 await Promise.all([initMarkdown(), document.fonts.ready]);

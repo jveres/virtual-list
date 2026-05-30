@@ -180,6 +180,31 @@
       <div class="viewport-wrap">
         <div class="viewport" id="viewport"></div>
       </div>
+      <div class="scroll-footer">
+        <label class="scroll-footer-label" for="index-input">Scroll to #</label>
+        <input
+          type="number"
+          id="index-input"
+          class="scroll-index-input"
+          min="0"
+          value="0"
+          aria-label="Item index"
+        />
+        <select id="align-select" class="source-select" aria-label="Alignment">
+          <option value="top">Top</option>
+          <option value="center">Center</option>
+          <option value="bottom">Bottom</option>
+        </select>
+        <select
+          id="behavior-select"
+          class="source-select"
+          aria-label="Scroll behavior"
+        >
+          <option value="smooth">Smooth</option>
+          <option value="instant">Instant</option>
+        </select>
+        <button type="button" id="goto-btn">Go</button>
+      </div>
     </div>
     <script type="module" src="./chat-history.ts"></script>
   </body>

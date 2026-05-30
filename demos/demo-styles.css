@@ -143,6 +143,42 @@ select.source-select:disabled {
   opacity: 0.6;
 }
 
+/* chat-history "scroll to index" footer control */
+.scroll-footer {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.scroll-footer-label {
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.scroll-index-input {
+  height: 32px;
+  width: 96px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-surface);
+  color: var(--fg);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.scroll-index-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 .icon-btn {
   display: flex;
   align-items: center;
