@@ -1,0 +1,287 @@
+.np-viewport-wrap {
+  background: var(--bg);
+}
+
+.np-canvas {
+  width: 100%;
+}
+
+/* Blocks size to their content; padding-bottom is the gap between cards. This
+   must NOT be scoped to .vl-item — measureVirtualListItem builds the block
+   before the virtualizer adds that class, so scoping it there would measure a
+   gap-less height and the spacing would only appear after a settle correction. */
+.np-block {
+  contain: layout style;
+  padding-bottom: 18px;
+}
+
+.np-card {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0 auto;
+  padding: 28px;
+  overflow: hidden;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  /* Editorial accent for category labels, tuned per theme. */
+  --np-accent: #c0392b;
+}
+
+html[data-theme="dark"] .np-card {
+  --np-accent: #ef7468;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .np-card {
+    --np-accent: #ef7468;
+  }
+}
+
+/* Typography ----------------------------------------------------------------*/
+
+.np-headline {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: inherit;
+}
+
+.np-headline-xl {
+  font-size: 32px;
+}
+
+.np-headline-lg {
+  font-size: 23px;
+}
+
+.np-headline-sm {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.np-headline-xs {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+@media (min-width: 640px) {
+  .np-headline-xl {
+    font-size: 38px;
+  }
+}
+
+.np-deck {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-style: italic;
+  font-size: 16px;
+  color: var(--fg-muted);
+}
+
+.np-body {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-size: 15px;
+  color: inherit;
+}
+
+.np-byline {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-muted);
+}
+
+.np-category {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--np-accent);
+}
+
+.np-section-label {
+  margin: 0 0 14px;
+  padding-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  border-bottom: 2px solid var(--border);
+}
+
+.np-figure {
+  width: 100%;
+  overflow: hidden;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-surface) 86%, var(--border));
+}
+
+.np-figure-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* Block templates -----------------------------------------------------------*/
+
+.np-masthead .np-card {
+  background: transparent;
+  border: none;
+  border-bottom: 3px double var(--border);
+  border-radius: 0;
+  text-align: center;
+}
+
+.np-masthead-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 0;
+}
+
+.np-masthead-title {
+  margin: 0;
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-size: 42px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.np-masthead-dateline {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.np-feature-inner,
+.np-columns-inner {
+  display: flex;
+  flex-direction: column;
+}
+
+.np-feature-inner .np-category,
+.np-columns-inner .np-category,
+.np-split-text .np-category {
+  margin-bottom: 8px;
+}
+
+.np-feature-inner .np-figure {
+  margin: 14px 0 16px;
+}
+
+.np-feature-inner .np-deck,
+.np-feature-inner .np-body {
+  margin-bottom: 12px;
+}
+
+.np-columns-inner .np-deck {
+  margin: 12px 0 16px;
+}
+
+.np-column-body {
+  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-size: 14.5px;
+  color: inherit;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.np-split-inner {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+}
+
+.np-split-reverse {
+  flex-direction: row-reverse;
+}
+
+.np-split-figure {
+  flex: 0 0 auto;
+  width: var(--np-fig-width, 46%);
+}
+
+.np-split-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.np-split-text .np-deck {
+  margin: 10px 0 12px;
+}
+
+.np-split-text .np-body {
+  margin-bottom: 12px;
+}
+
+.np-grid-inner,
+.np-briefs-inner {
+  display: flex;
+  flex-direction: column;
+}
+
+.np-grid-row {
+  display: flex;
+  align-items: flex-start;
+}
+
+.np-grid-card {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.np-grid-card .np-figure {
+  margin-bottom: 12px;
+}
+
+.np-grid-card .np-category {
+  margin-bottom: 6px;
+}
+
+.np-grid-card .np-headline {
+  margin-bottom: 8px;
+}
+
+.np-grid-card .np-body {
+  margin-bottom: 8px;
+}
+
+.np-brief {
+  padding: 12px 0 6px;
+  border-top: 1px solid var(--border);
+}
+
+/* The section label already draws a rule, so the first brief doesn't need one. */
+.np-section-label + .np-brief {
+  padding-top: 4px;
+  border-top: none;
+}
+
+.np-brief .np-headline {
+  margin-bottom: 4px;
+}
+
+@media (max-width: 600px) {
+  .np-split-inner {
+    flex-direction: column;
+  }
+
+  .np-split-figure {
+    width: 100%;
+  }
+}

@@ -7,8 +7,8 @@ runtime.
 
 The current focus is preserving native scroll behavior while rows are measured,
 loaded, trimmed, and corrected at runtime. The demos cover chat transcripts,
-streaming messages, dynamic network-backed loading, and an image gallery with
-masonry and justified layouts.
+streaming messages, dynamic network-backed loading, an image gallery with
+masonry and justified layouts, and a newspaper/magazine layout.
 
 ## Run the demos
 
@@ -36,6 +36,8 @@ Open these pages from the dev server:
   dynamic loading path with Lemmy public feed data.
 - `/demos/gallery/index.html` shows an image gallery with a runtime layout
   toggle between masonry columns and justified rows.
+- `/demos/newspaper/index.html` shows a newspaper/magazine layout built from
+  variable-height editorial blocks.
 - `/demos/streaming/index.html` shows initial transcript loading,
   streaming, cancel, and sticky user-message scroll behavior.
 - `/demos/streaming/index.html?instant` disables simulated token delays for
@@ -551,6 +553,23 @@ and bottom, uses `onReachTop`/`onReachBottom` to start loads and
 fast-scroll velocity placeholders through `buildPlaceholder`. Switching layout,
 density, or viewport width recomputes the layout and re-anchors on the first
 visible photo.
+
+## Newspaper demo
+
+The newspaper demo virtualizes a magazine/newspaper layout as a feed of
+editorial blocks. Each block is one variable-height virtual-list item built from
+a template — masthead, hero feature, multi-column article, image split, card
+grid, or briefs list — and the templates cycle through a fixed rhythm over a
+synthetic but deterministic (seeded) set of articles.
+
+Block heights are precomputed from the canvas width, so the runtime gets exact
+`getItemHeight` values with no measurement correction: each block element is
+sized explicitly with its content clipped (`overflow: hidden`, line-clamped
+text), so the measured height always matches the modeled one. There is no
+boundary loading — the whole feed is a fixed corpus, like the chat-history
+baseline. Resizing recomputes the per-width heights and calls
+`invalidateMeasurements()` plus `refreshMounted()`, which keeps the scroll
+anchor stable because the block structure itself is width-independent.
 
 ## Performance notes
 
