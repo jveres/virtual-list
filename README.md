@@ -122,6 +122,26 @@ cleared when the real content provides enough scroll range. This keeps short
 conversations from creating blank scroll space while still letting a newly sent
 message move to the top before the assistant response fills the space below it.
 
+## Sticky section headers
+
+Sticky group/section headers (for example date separators in a transcript) are a
+companion to the core runtime in `src/sticky-headers.ts`. The virtual list stays
+unaware of grouping: the host interleaves header rows into its own item index
+space (so they scroll inline like any other row), then points
+`createStickyHeaders` at the same viewport, the ascending header layout indices,
+and the list's `getItemOffset`. The only core hook the overlay needs is
+`getItemOffset(index)`; everything else is host-level.
+
+A floating overlay pins the current group to the top. As the next group's inline
+header scrolls up, its pill rises in a second slot stacked above the pinned one,
+covering it, and becomes the pinned header once it reaches the top — so the new
+header scrolls *over* the outgoing one rather than pushing it out. The pinned
+group's own inline header is hidden while it's pinned so it never shows twice.
+Offsets are read live from `getItemOffset`, so the overlay always tracks the
+virtualizer's measured row positions, and the overlay can be toggled off for an
+inline-only mode. The chat-history demo wires this up over day-grouped messages
+with a Sticky toggle.
+
 ## Public API
 
 Measure rows before insertion with `createVirtualListItemMeasurer`, then
@@ -209,7 +229,10 @@ The returned object exposes:
 - `scrollToIndex(index, align, options)` for item navigation. This targets the
   item itself, so `scrollToIndex(0, "top")` keeps the top boundary slot above
   the viewport and `scrollToIndex(count - 1, "bottom")` keeps the bottom
-  boundary slot below the viewport.
+  boundary slot below the viewport. `align` accepts `"top"`, `"center"`,
+  `"bottom"`, or a pixel offset; center alignment pins an item's top instead of
+  its center when the item is taller than the viewport, so it reads from the
+  start.
 - `scrollToOffset(offset, options)` for absolute scroll-offset navigation
   through the runtime.
 - `scrollToTop(options)` and `scrollToBottom(options)` for boundary navigation.
@@ -219,6 +242,9 @@ The returned object exposes:
 - `stopFollowBottom()` to cancel an active bottom follow.
 - `setStickyIndex(index)` to reserve trailing space for top alignment.
 - `getMountedElement(index)` for direct mounted-row updates.
+- `getItemOffset(index)` for the content-space (scroll) top of a row, where
+  `index === count` returns the content bottom. Useful for overlays that track
+  row positions, such as the sticky section headers below.
 - `refreshIndex(index)` and `refreshMounted()` for rebuilding row DOM.
 - `dispose()` for cleanup.
 
@@ -288,6 +314,23 @@ rebuilt, so `buildItem` runs only when the pool is empty and `destroyItem` only
 on eviction (pool past `recyclePoolSize`, which defaults to about one viewport)
 or `dispose()`. It is intended for homogeneous rows; recycling stays inert when
 the hook is unset.
+
+## Smooth scrolling
+
+Programmatic scrolls (`scrollToIndex`, `scrollToOffset`, `scrollToTop`,
+`scrollToBottom`) with `behavior: "smooth"` are driven by the runtime's own
+`requestAnimationFrame` ease, not the browser's native
+`scrollTo({ behavior: "smooth" })`. The native animator owns the easing curve and
+re-segments differently per engine (Firefox in particular fires `scrollend`
+before settling), so a self-driven loop is identical across Chrome, Firefox, and
+Safari and lets the runtime honor the `duration` option.
+
+The curve is an ease-out quint: a quick launch into a soft landing. Without an
+explicit `duration`, the glide scales with distance, so short hops are quick and
+long jumps take a little longer. A very long jump covers the excess distance
+instantly and eases only the final few viewports in, so the arrival velocity
+stays gentle and consistent no matter how far the target is. A user gesture
+(wheel, touch, or scrollbar drag) cancels an in-flight smooth scroll.
 
 ## Dynamic loading
 
@@ -374,11 +417,19 @@ That template measurement satisfies the runtime height contract for repeated
 rows. The runtime continues to refine mounted row sizes as mounted rows report
 real heights.
 
+Messages are grouped into synthetic day sections, with a date header interleaved
+into the layout before each group. A footer control scrolls to a typed message
+number with selectable alignment (top, center, bottom) and behavior (smooth,
+instant), and a header Sticky toggle switches between pinned and inline-only
+section headers.
+
 The demo also verifies:
 
 - Bottom initial load.
 - Appending 100 messages.
-- Top and bottom index navigation.
+- Top and bottom index navigation, plus scroll-to-index from the footer.
+- Sticky section headers (see [Sticky section headers](#sticky-section-headers))
+  over the day-grouped messages, toggleable to inline-only.
 - Theme switching with no re-render (markdown-viewer styling is CSS-driven).
 - Markdown rendered by markdown-viewer, with one delegated listener driving
   copy buttons across every mounted row.
