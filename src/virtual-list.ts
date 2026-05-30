@@ -685,6 +685,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let activeSmoothScrollCancel: (() => void) | null = null;
   let activeSmoothScrollTarget: number | null = null;
   let activeSmoothScrollSnapThreshold = SCROLL_SNAP_THRESHOLD;
+  // True while our own smooth-scroll driver is animating. Boundary-reach
+  // callbacks are deferred until it settles so a mid-flight load doesn't make
+  // the scroll chase the growing content or flash an empty boundary slot.
+  let programmaticScrollAnimating = false;
   let programmaticReachBoundary: VirtualListBoundary | null = null;
   let reachCallbacksEnabled = false;
   let emittingChangeCallback = false;
@@ -853,6 +857,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return (
       reachCallbacksEnabled &&
       !emittingReachCallback &&
+      !programmaticScrollAnimating &&
       count > 0 &&
       (boundary === "top" ? Boolean(onReachTop) : Boolean(onReachBottom))
     );
@@ -1968,7 +1973,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (typeof align === "number") return itemTop - align;
     if (align === "bottom") return itemTop + itemHeight - viewport.clientHeight;
     if (align === "center") {
-      return itemTop + itemHeight / 2 - viewport.clientHeight / 2;
+      const viewportHeight = viewport.clientHeight;
+      // An item taller than the viewport can't be centered usefully — centering
+      // would push its top above the fold and reveal only its middle. Pin its
+      // top instead so it reads from the start.
+      if (itemHeight > viewportHeight) return itemTop;
+      return itemTop + itemHeight / 2 - viewportHeight / 2;
     }
     return itemTop;
   }
@@ -2035,49 +2045,102 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return Promise.resolve(true);
     }
 
+    return animateScrollTop(target, options, snapThreshold);
+  }
+
+  // One-shot smooth scroll, driven by rAF instead of the browser's native
+  // `scrollTo({ behavior: "smooth" })`. The native animator owns the easing curve
+  // and re-segments differently per engine — Firefox fires `scrollend` before
+  // settling into our target, so the old `scrollend`-retargeting path re-issued
+  // multiple native segments (visible "steps"/speed changes). A self-driven loop
+  // is identical across engines and honors `duration`.
+  //
+  // It runs WITH `userScrollActive` already true (set by the caller's
+  // `handleUserScrollStart(true)`), exactly like the old native path: that keeps
+  // the scroll handler from misreading our own programmatic writes as a user
+  // scroll (Firefox coalesces/rounds large per-frame jumps, so value-matching
+  // alone is unreliable), and lets the normal settle apply deferred measurements
+  // at the end. The target is fixed and the motion is a bounded ease over
+  // `duration` (no asymptotic tail), so boundary loads fire only after it
+  // settles. A user gesture (or superseding scroll) calls `cancel`.
+  function animateScrollTop(
+    target: number,
+    options: VirtualListScrollOptions,
+    snapThreshold: number,
+  ): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
+      const duration = Math.max(
+        1,
+        options.duration ?? DEFAULT_SMOOTH_SCROLL_DURATION,
+      );
+      const startTop = viewport.scrollTop;
+      let startTime = 0;
+      let frame = 0;
       let finished = false;
-      const finish = (completed: boolean) => {
+
+      const finish = (completed: boolean): void => {
         if (finished) return;
         finished = true;
-        if (completed && !options.signal?.aborted) {
-          const finalTarget = clamp(target, 0, nativeMaxScrollTop());
-          if (Math.abs(viewport.scrollTop - finalTarget) <= snapThreshold) {
-            setScrollTop(finalTarget, ALLOW_DURING_SCROLL);
-          }
-        }
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+        programmaticScrollAnimating = false;
         clearActiveSmoothScrollTarget(cancel);
-        viewport.removeEventListener("scrollend", handleScrollEnd);
-        options.signal?.removeEventListener("abort", handleAbort);
+        options.signal?.removeEventListener("abort", onAbort);
+        if (completed) {
+          setScrollTop(
+            clamp(target, 0, nativeMaxScrollTop()),
+            ALLOW_DURING_SCROLL,
+          );
+          finishUserScroll();
+        } else {
+          nativeScrollEndPending = true;
+          scheduleSettleCooldown();
+        }
         resolve(completed);
       };
-      const cancel = () => {
-        const currentTop = viewport.scrollTop;
-        viewport.scrollTo({ top: currentTop, behavior: "auto" });
-        nativeScrollEndPending = true;
-        scheduleSettleCooldown();
-        finish(false);
-      };
-      const handleScrollEnd = () => {
-        if (options.signal?.aborted) {
+      const cancel = (): void => finish(false);
+      const onAbort = (): void => finish(false);
+
+      // Cubic ease-in-out: gentle acceleration and deceleration, no abrupt start.
+      const ease = (t: number): number =>
+        t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
+
+      const tick = (now: number): void => {
+        frame = 0;
+        if (finished) return;
+        if (disposed || count <= 0 || options.signal?.aborted) {
           finish(false);
           return;
         }
-        if (!activeSmoothScrollReachedTarget()) {
-          const currentTarget = clamp(target, 0, nativeMaxScrollTop());
-          viewport.scrollTo({ top: currentTarget, behavior: "smooth" });
+        if (startTime === 0) startTime = now;
+
+        const clampedTarget = clamp(target, 0, nativeMaxScrollTop());
+        activeSmoothScrollTarget = clampedTarget;
+        const t = clamp((now - startTime) / duration, 0, 1);
+        const nextTop = clamp(
+          startTop + (clampedTarget - startTop) * ease(t),
+          0,
+          nativeMaxScrollTop(),
+        );
+        if (setScrollTop(nextTop, ALLOW_DURING_SCROLL)) {
+          renderNow(viewport.scrollTop);
+        }
+        if (
+          t >= 1 ||
+          Math.abs(viewport.scrollTop - clampedTarget) <= snapThreshold
+        ) {
+          finish(true);
           return;
         }
-        finish(true);
+        frame = requestAnimationFrame(tick);
       };
-      const handleAbort = () => finish(false);
 
+      programmaticScrollAnimating = true;
       activeSmoothScrollCancel = cancel;
-      activeSmoothScrollTarget = target;
+      activeSmoothScrollTarget = clamp(target, 0, nativeMaxScrollTop());
       activeSmoothScrollSnapThreshold = snapThreshold;
-      viewport.addEventListener("scrollend", handleScrollEnd);
-      options.signal?.addEventListener("abort", handleAbort, { once: true });
-      viewport.scrollTo({ top: target, behavior: "smooth" });
+      options.signal?.addEventListener("abort", onAbort, { once: true });
+      frame = requestAnimationFrame(tick);
     });
   }
 
