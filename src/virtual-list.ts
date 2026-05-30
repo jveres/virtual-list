@@ -260,6 +260,8 @@ export interface VirtualList {
   stopFollowBottom(): void;
   setStickyIndex(index: number | null): void;
   getMountedElement(index: number): HTMLElement | null;
+  /** Top of an item in content (scroll) space; `index === count` is the bottom. */
+  getItemOffset(index: number): number;
   refreshIndex(index: number): void;
   refreshMounted(): void;
   dispose(): void;
@@ -2284,6 +2286,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return mounted.get(index) ?? null;
   }
 
+  // Top of an item in content (scroll) space: the position its mounted element
+  // is transform-translated to. `index === count` returns the content bottom.
+  // Useful for overlays that track item positions (e.g. sticky group headers).
+  function getItemOffset(index: number): number {
+    const clamped = clamp(Math.floor(index), 0, Math.max(0, count));
+    return topSlotHeight() + sizeTree.prefix(clamped);
+  }
+
   function measureUnmountedItem(index: number): number {
     itemMeasurer ??= createVirtualListItemMeasurer({
       viewport,
@@ -3149,6 +3159,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     stopFollowBottom,
     setStickyIndex,
     getMountedElement,
+    getItemOffset,
     refreshIndex,
     refreshMounted,
     dispose() {

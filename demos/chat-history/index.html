@@ -127,6 +127,15 @@
           </div>
           <button
             type="button"
+            id="sticky-toggle"
+            class="active"
+            title="Toggle sticky headers"
+            aria-pressed="true"
+          >
+            Sticky
+          </button>
+          <button
+            type="button"
             class="icon-btn"
             id="top-btn"
             title="Scroll to top"
@@ -177,7 +186,7 @@
           </button>
         </div>
       </div>
-      <div class="viewport-wrap">
+      <div class="viewport-wrap" id="viewport-wrap">
         <div class="viewport" id="viewport"></div>
       </div>
       <div class="scroll-footer">

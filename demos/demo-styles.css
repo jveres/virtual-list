@@ -143,6 +143,32 @@ select.source-select:disabled {
   opacity: 0.6;
 }
 
+/* Section / date headers — shared by in-flow rows and the sticky overlay so a
+   pinned header and its in-flow twin look identical. */
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+}
+
+.section-header-pill {
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 8%);
+}
+
+/* The floating overlay's recycled slots (layout/visibility only; the header
+   content reuses .section-header above). */
+.vl-sticky-header .sticky-group {
+  top: 0;
+}
+
 /* chat-history "scroll to index" footer control */
 .scroll-footer {
   flex-shrink: 0;

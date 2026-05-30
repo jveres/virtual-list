@@ -134,6 +134,19 @@ export function buildChatRow(
   return { row, content };
 }
 
+// A section / group header row (e.g. a date separator). The same markup is
+// reused by the sticky-headers overlay, so a header rendered in-flow and pinned
+// at the top look identical.
+export function buildSectionHeader(label: string): HTMLElement {
+  const header = document.createElement("div");
+  header.className = "section-header";
+  const pill = document.createElement("span");
+  pill.className = "section-header-pill";
+  pill.textContent = label;
+  header.appendChild(pill);
+  return header;
+}
+
 export function buildChatItem(
   index: number,
   message: ChatMessage,
