@@ -882,11 +882,19 @@ function refreshItem(
     return;
   }
 
+  // Stream just ended on a still-live row: finalize the viewer in place
+  // (isStreaming:false morphs the DOM rather than replacing it) instead of
+  // swapping to a static row, so a text selection inside the message survives.
+  // The row stays a live viewer until it unmounts, then remounts static.
+  const liveHandle = streamingViewers.get(element);
+  if (liveHandle) {
+    syncRoleLabel(element, message, index);
+    liveHandle.update({ text: message.markdown, isStreaming: false });
+    return;
+  }
+
   const label = element.querySelector<HTMLElement>(".role-label");
   const markdown = element.querySelector<HTMLElement>(".md");
-  // No `.md` means this is a live streaming row finishing up (its content box is
-  // `.markdown`, not `.md`); rebuild it as a static row, which also disposes the
-  // viewer via `destroyItem`.
   if (!label || !markdown) {
     virtualList.refreshIndex(index);
     return;
@@ -1386,7 +1394,10 @@ async function handleSend(): Promise<void> {
     streamAbort = null;
     setStreamingUI(false);
     scheduleScrollButtons();
-    promptInput.focus();
+    // Focusing the composer collapses any text selection, so skip it while the
+    // user is selecting text in a message — otherwise stream end clears it.
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) promptInput.focus();
   }
 }
 
