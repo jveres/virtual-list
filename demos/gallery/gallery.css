@@ -1,21 +1,18 @@
-.masonry-viewport-wrap {
-  background:
-    linear-gradient(var(--bg), color-mix(in srgb, var(--bg) 92%, transparent))
-    top / 100% 42px no-repeat,
-    var(--bg);
+.gallery-viewport-wrap {
+  background: var(--bg);
 }
 
-.masonry-canvas {
+.gallery-canvas {
   width: 100%;
 }
 
-.masonry-group.vl-item {
+.gallery-band.vl-item {
   overflow: visible;
   contain: layout style;
   pointer-events: none;
 }
 
-.masonry-group-inner {
+.gallery-band-inner {
   position: relative;
   height: 100%;
   margin: 0 auto;
@@ -23,33 +20,17 @@
   pointer-events: none;
 }
 
-.masonry-photo {
+.gallery-photo {
   position: absolute;
   display: block;
   contain: layout paint;
   overflow: hidden;
-  padding: 0;
   border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-surface) 88%, var(--border));
   pointer-events: auto;
 }
 
-.masonry-placeholder {
-  position: absolute;
-  display: block;
-  contain: layout paint;
-  overflow: hidden;
-  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
-  border-radius: 8px;
-  background: linear-gradient(
-    135deg,
-    color-mix(in srgb, var(--bg-surface) 94%, var(--border)),
-    color-mix(in srgb, var(--bg-surface) 84%, var(--border))
-  );
-  opacity: 0.72;
-  pointer-events: none;
-}
-
-.masonry-photo-img {
+.gallery-photo-img {
   position: absolute;
   inset: 0;
   display: block;
@@ -59,18 +40,41 @@
   object-fit: cover;
 }
 
-.masonry-control-group {
+/* Ragged-edge fillers (masonry) and fast-scroll velocity placeholders. */
+.gallery-photo-placeholder {
+  position: absolute;
+  display: block;
+  contain: layout paint;
+  overflow: hidden;
+  border-radius: 8px;
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--bg-surface) 94%, var(--border)),
+    color-mix(in srgb, var(--bg-surface) 84%, var(--border))
+  );
+  pointer-events: none;
+}
+
+.gallery-control-group {
   display: flex;
   gap: 4px;
 }
 
-.masonry-control-group button {
+.gallery-control-group[hidden] {
+  display: none;
+}
+
+.gallery-density-group button {
   width: 32px;
   padding: 0;
 }
 
+.gallery-layout-group button {
+  padding: 0 10px;
+}
+
 @media (max-width: 720px) {
-  .masonry-control-group {
+  .gallery-density-group {
     display: none;
   }
 }

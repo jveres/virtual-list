@@ -49,17 +49,39 @@
         matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
       );
     </script>
-    <title>virtual-list · photo gallery</title>
+    <title>virtual-list · gallery</title>
   </head>
   <body>
     <div class="shell">
       <div class="header">
         <span class="header-title">
           <a href="/" title="Back to demos">virtual-list</a>
-          <span class="sep">·</span>photo gallery
+          <span class="sep">·</span>gallery
         </span>
         <div class="header-actions">
-          <div class="gallery-control-group" aria-label="Row height">
+          <div
+            class="gallery-control-group gallery-layout-group"
+            aria-label="Layout"
+          >
+            <button type="button" data-layout="masonry">Masonry</button>
+            <button type="button" data-layout="justified">Rows</button>
+          </div>
+          <div
+            class="gallery-control-group gallery-density-group"
+            data-control="masonry"
+            aria-label="Columns"
+          >
+            <button type="button" data-columns="3">3</button>
+            <button type="button" data-columns="4">4</button>
+            <button type="button" data-columns="5">5</button>
+            <button type="button" data-columns="6">6</button>
+          </div>
+          <div
+            class="gallery-control-group gallery-density-group"
+            data-control="justified"
+            aria-label="Row height"
+            hidden
+          >
             <button type="button" data-row-height="150">S</button>
             <button type="button" data-row-height="190">M</button>
             <button type="button" data-row-height="240">L</button>
@@ -175,11 +197,11 @@
           <span class="sep">·</span>
           <span id="mounted-label">0 mounted</span>
           <span class="sep">·</span>
-          <span id="layout-label">0 rows</span>
+          <span id="layout-label">0 columns</span>
         </div>
         <div id="load-label">idle</div>
       </div>
     </div>
-    <script type="module" src="./photo-gallery.ts"></script>
+    <script type="module" src="./gallery.ts"></script>
   </body>
 </html>

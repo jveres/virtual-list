@@ -7,8 +7,8 @@ runtime.
 
 The current focus is preserving native scroll behavior while rows are measured,
 loaded, trimmed, and corrected at runtime. The demos cover chat transcripts,
-streaming messages, dynamic network-backed loading, masonry images, and
-justified photo rows.
+streaming messages, dynamic network-backed loading, and an image gallery with
+masonry and justified layouts.
 
 ## Run the demos
 
@@ -34,8 +34,8 @@ Open these pages from the dev server:
   dynamic loading path with Bluesky public feed data.
 - `/demos/dynamic-content/index.html?source=lemmy` shows the same
   dynamic loading path with Lemmy public feed data.
-- `/demos/masonry/index.html` shows dynamic masonry photo loading.
-- `/demos/photo-gallery/index.html` shows dynamic justified photo rows.
+- `/demos/gallery/index.html` shows an image gallery with a runtime layout
+  toggle between masonry columns and justified rows.
 - `/demos/streaming/index.html` shows initial transcript loading,
   streaming, cancel, and sticky user-message scroll behavior.
 - `/demos/streaming/index.html?instant` disables simulated token delays for
@@ -498,8 +498,7 @@ The top and bottom toolbar buttons use `scrollToIndex()` with smooth scrolling
 because they jump to the loaded item window, not to the boundary slots. That
 keeps the top spinner slot above the first loaded row and the bottom spinner
 slot below the last loaded row. Demos that need to inspect the boundary slots,
-such as masonry and photo gallery, use `scrollToTop()` and `scrollToBottom()`
-instead.
+such as the gallery, use `scrollToTop()` and `scrollToBottom()` instead.
 
 When the list has no rows, the demo uses a placeholder slot for initial loading,
 empty results, and source errors.
@@ -530,20 +529,28 @@ The assistant status label uses:
 The streaming delays are demo simulation code. They are not part of the
 virtual list hot path.
 
-## Masonry demo
+## Gallery demo
 
-The masonry demo exercises variable-position image groups in a single
-virtual list instance. The host precomputes group heights, keeps fixed-height
-boundary slots at the top and bottom, and uses the runtime `onReachTop`,
-`onReachBottom`, `onScrollStart`, and `onScrollEnd` callbacks for loading.
+The gallery demo runs both image layouts in one virtual list with a runtime
+layout toggle. Both engines emit the same shape — a list of variable-height
+bands of absolutely-positioned photos — so the host shares the virtual list,
+retained window, boundary loading, and photo preview, and only the layout
+computation differs:
 
-## Photo gallery demo
+- **Masonry** packs photos into balanced columns, then slices the column layout
+  into horizontal bands (one virtualized item per band). Because a retained
+  window has ragged column edges, the host fills those edges with placeholder
+  cards and pads the last band so the tallest column's overflow is covered.
+- **Rows (justified)** packs photos into justified rows; each band is one
+  complete photo strip with precomputed height, so the runtime mounts and
+  unmounts clean row bands.
 
-The photo gallery demo uses justified rows instead of masonry columns. Each
-virtualized row is one complete photo strip with precomputed height, so the
-runtime mounts and unmounts row bands rather than independent column fragments.
-The host keeps fixed-height boundary slots and commits pending top or bottom
-loads only from the runtime `onScrollEnd` callback.
+The host precomputes band heights, keeps fixed-height boundary slots at the top
+and bottom, uses `onReachTop`/`onReachBottom` to start loads and
+`onScrollStart`/`onScrollEnd` to commit them once scrolling settles, and feeds
+fast-scroll velocity placeholders through `buildPlaceholder`. Switching layout,
+density, or viewport width recomputes the layout and re-anchors on the first
+visible photo.
 
 ## Performance notes
 
