@@ -326,11 +326,12 @@ before settling), so a self-driven loop is identical across Chrome, Firefox, and
 Safari and lets the runtime honor the `duration` option.
 
 The curve is an ease-out quint: a quick launch into a soft landing. Without an
-explicit `duration`, the glide scales with distance, so short hops are quick and
-long jumps take a little longer. A very long jump covers the excess distance
-instantly and eases only the final few viewports in, so the arrival velocity
-stays gentle and consistent no matter how far the target is. A user gesture
-(wheel, touch, or scrollbar drag) cancels an in-flight smooth scroll.
+explicit `duration`, the glide scales with distance over a base floor, so short
+hops stay brisk yet keep enough time to decelerate gently, while long jumps take
+a little longer. A very long jump covers the excess distance instantly and eases
+only the final few viewports in, so the arrival velocity stays gentle and
+consistent no matter how far the target is. A user gesture (wheel, touch, or
+scrollbar drag) cancels an in-flight smooth scroll.
 
 ## Dynamic loading
 

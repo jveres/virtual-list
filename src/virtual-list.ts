@@ -342,16 +342,21 @@ function easeOutQuint(t: number): number {
   return 1 - (1 - t) ** 5;
 }
 
-// Glide duration scales (sqrt) with the eased distance: short hops are quick,
+// Glide duration scales (sqrt) with the eased distance: short hops are quicker,
 // longer ones take more time. Scaled against the *capped* eased distance (see
 // SMOOTH_SCROLL_MAX_GLIDE_VIEWPORTS), not the raw distance — so every long jump
-// shares the same duration and so the same gentle arrival velocity. Override per
-// call via `options.duration`.
-const SMOOTH_SCROLL_MIN_DURATION = 180;
-const SMOOTH_SCROLL_MAX_DURATION = 750;
+// shares the same duration and so the same gentle arrival velocity.
+//
+// The base term keeps short hops from getting *too* quick: with a tiny duration,
+// ease-out-quint launches fast and its soft tail is compressed into a few frames,
+// so the landing reads as abrupt. The base gives every scroll enough time to
+// decelerate gently. Override per call via `options.duration`.
+const SMOOTH_SCROLL_BASE_DURATION = 280;
+const SMOOTH_SCROLL_MIN_DURATION = 320;
+const SMOOTH_SCROLL_MAX_DURATION = 700;
 function smoothScrollDuration(distance: number): number {
   return clamp(
-    Math.sqrt(distance) * 14,
+    SMOOTH_SCROLL_BASE_DURATION + Math.sqrt(distance) * 8,
     SMOOTH_SCROLL_MIN_DURATION,
     SMOOTH_SCROLL_MAX_DURATION,
   );
