@@ -13,7 +13,7 @@ importers:
         version: 0.17.0
       markdown-viewer:
         specifier: github:jveres/markdown-viewer
-        version: https://codeload.github.com/jveres/markdown-viewer/tar.gz/cc16cc57f36d15bcce678ba1ee81afabd06a7362
+        version: https://codeload.github.com/jveres/markdown-viewer/tar.gz/cfac322a38ff2bccb00d45e13f5f1ac85be1b734
     devDependencies:
       '@biomejs/biome':
         specifier: 2.4.16
@@ -314,8 +314,8 @@ packages:
     resolution: {integrity: sha512-NXYBzinNrblfraPGyrbPoD19C1h9lfI/1mzgWYvXUTe414Gz/X1FD2XBZSZM7rRTrMA8JL3OtAaGifrIKhQ5yQ==}
     engines: {node: '>= 12.0.0'}
 
-  markdown-viewer@https://codeload.github.com/jveres/markdown-viewer/tar.gz/cc16cc57f36d15bcce678ba1ee81afabd06a7362:
-    resolution: {gitHosted: true, integrity: sha512-0XoksmXMg35xclTyKftVIlgH2fDqeqmvlDcj4zMJNh0ihFO64Pr3ZNJFpqu4l5QwNyKHynxVASQaMLCHLAeP9A==, tarball: https://codeload.github.com/jveres/markdown-viewer/tar.gz/cc16cc57f36d15bcce678ba1ee81afabd06a7362}
+  markdown-viewer@https://codeload.github.com/jveres/markdown-viewer/tar.gz/cfac322a38ff2bccb00d45e13f5f1ac85be1b734:
+    resolution: {gitHosted: true, integrity: sha512-X7t13CFCamqFAD6usr+1epgrenjO9ywwgLbWG2iNgseF+x/2A5Kom1ebQ2PQtXxJOUXnaIth86KEHZ38mO8PvQ==, tarball: https://codeload.github.com/jveres/markdown-viewer/tar.gz/cfac322a38ff2bccb00d45e13f5f1ac85be1b734}
     version: 0.0.0
 
   nanoid@3.3.12:
@@ -586,7 +586,7 @@ snapshots:
       lightningcss-win32-arm64-msvc: 1.32.0
       lightningcss-win32-x64-msvc: 1.32.0
 
-  markdown-viewer@https://codeload.github.com/jveres/markdown-viewer/tar.gz/cc16cc57f36d15bcce678ba1ee81afabd06a7362:
+  markdown-viewer@https://codeload.github.com/jveres/markdown-viewer/tar.gz/cfac322a38ff2bccb00d45e13f5f1ac85be1b734:
     dependencies:
       comrak-wasm: https://codeload.github.com/jveres/comrak-wasm/tar.gz/d1980e37444508f854477f6a3419b17771fc6330
       highlight.js: 11.11.1
