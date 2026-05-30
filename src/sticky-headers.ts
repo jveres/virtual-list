@@ -193,11 +193,17 @@ export function createStickyHeaders(
   };
 
   let frame = 0;
+  let pendingScroll = 0;
   const onScroll = (): void => {
+    // Don't even schedule a frame while disabled (inline-only mode).
+    if (!enabled) return;
+    // Sample scrollTop now (at event time, before any render writes this frame)
+    // so the rAF never reads it after a DOM write and forces a layout flush.
+    pendingScroll = viewport.scrollTop;
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
-      update(viewport.scrollTop);
+      update(pendingScroll);
     });
   };
 
