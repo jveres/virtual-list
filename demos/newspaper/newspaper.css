@@ -1,125 +1,197 @@
+/* ============================================================================
+   Newspaper demo — "refined editorial broadsheet"
+   Warm paper & ink, Fraunces display + Newsreader body + Archivo labels,
+   hairline-ruled sections instead of boxed cards, drop caps and column rules.
+   The shell's design tokens are overridden on .np-body so the whole page
+   (header, status bar, content) shares the paper palette.
+   ============================================================================ */
+
+.np-body {
+  --bg: #f4efe4;
+  --bg-surface: #efe9dc;
+  --bg-bubble: #e8e1d1;
+  --fg: #221d15;
+  --fg-muted: #6f6757;
+  --fg-dim: #9c937f;
+  --accent: #b0271c;
+  --border: #d7cfbc;
+
+  --np-display: "Fraunces", Georgia, "Times New Roman", serif;
+  --np-body: "Newsreader", Georgia, "Times New Roman", serif;
+  --np-label: "Archivo", system-ui, -apple-system, sans-serif;
+  --np-rule: var(--border);
+}
+
+html[data-theme="dark"] .np-body {
+  --bg: #14120c;
+  --bg-surface: #1b180f;
+  --bg-bubble: #221e13;
+  --fg: #ece6d6;
+  --fg-muted: #9b9482;
+  --fg-dim: #6a6450;
+  --accent: #e27c70;
+  --border: #322d20;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .np-body {
+    --bg: #14120c;
+    --bg-surface: #1b180f;
+    --bg-bubble: #221e13;
+    --fg: #ece6d6;
+    --fg-muted: #9b9482;
+    --fg-dim: #6a6450;
+    --accent: #e27c70;
+    --border: #322d20;
+  }
+}
+
 .np-viewport-wrap {
-  background: var(--bg);
+  background:
+    radial-gradient(
+      120% 80% at 50% -10%,
+      color-mix(in srgb, var(--fg) 4%, transparent),
+      transparent 60%
+    ),
+    var(--bg);
 }
 
 .np-canvas {
   width: 100%;
 }
 
-/* Blocks size to their content; padding-bottom is the gap between cards. This
-   must NOT be scoped to .vl-item — measureVirtualListItem builds the block
-   before the virtualizer adds that class, so scoping it there would measure a
-   gap-less height and the spacing would only appear after a settle correction. */
+/* Each block is a "page section": a hairline rule on top, content below. The
+   gap (padding-bottom) is part of the measured height, so it stays on .np-block
+   (not .vl-item, which measureVirtualListItem hasn't added yet). */
 .np-block {
   contain: layout style;
-  padding-bottom: 18px;
+  padding-bottom: 30px;
 }
 
 .np-card {
   box-sizing: border-box;
   width: 100%;
   margin: 0 auto;
-  padding: 28px;
-  overflow: hidden;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  /* Editorial accent for category labels, tuned per theme. */
-  --np-accent: #c0392b;
-}
-
-html[data-theme="dark"] .np-card {
-  --np-accent: #ef7468;
-}
-
-@media (prefers-color-scheme: dark) {
-  html:not([data-theme="light"]) .np-card {
-    --np-accent: #ef7468;
-  }
+  padding-top: 30px;
+  border-top: 1px solid var(--np-rule);
+  color: var(--fg);
+  font-feature-settings:
+    "liga" 1,
+    "onum" 1,
+    "kern" 1;
 }
 
 /* Typography ----------------------------------------------------------------*/
 
 .np-headline {
   margin: 0;
-  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: inherit;
+  font-family: var(--np-display);
+  font-weight: 600;
+  line-height: 1.04;
+  letter-spacing: -0.012em;
+  color: var(--fg);
+  transition: color 140ms ease;
 }
 
 .np-headline-xl {
-  font-size: 32px;
+  font-size: 33px;
+  font-weight: 600;
 }
 
 .np-headline-lg {
-  font-size: 23px;
+  font-size: 24px;
 }
 
 .np-headline-sm {
-  font-size: 17px;
-  font-weight: 600;
+  font-size: 18px;
 }
 
 .np-headline-xs {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 17px;
 }
 
-@media (min-width: 640px) {
+@media (min-width: 700px) {
   .np-headline-xl {
-    font-size: 38px;
+    font-size: 42px;
   }
+}
+
+/* Headlines read as links. */
+.np-feature-inner:hover .np-headline,
+.np-split-text:hover .np-headline,
+.np-grid-card:hover .np-headline,
+.np-brief:hover .np-headline,
+.np-columns-inner:hover .np-headline {
+  color: var(--accent);
+  cursor: pointer;
 }
 
 .np-deck {
   margin: 0;
-  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-family: var(--np-body);
   font-style: italic;
-  font-size: 16px;
+  font-size: 17px;
+  line-height: 1.42;
   color: var(--fg-muted);
 }
 
 .np-body {
   margin: 0;
-  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
-  font-size: 15px;
-  color: inherit;
+  font-family: var(--np-body);
+  font-size: 15.5px;
+  line-height: 1.6;
+  color: color-mix(in srgb, var(--fg) 92%, transparent);
 }
 
 .np-byline {
   margin: 0;
-  font-size: 12px;
+  font-family: var(--np-label);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--fg-muted);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
 }
 
 .np-category {
   display: block;
+  font-family: var(--np-label);
   font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.09em;
+  letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: var(--np-accent);
+  color: var(--accent);
 }
 
 .np-section-label {
-  margin: 0 0 14px;
-  padding-bottom: 8px;
+  margin: 0 0 18px;
+  padding-bottom: 9px;
+  font-family: var(--np-label);
   font-size: 12px;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.18em;
   text-transform: uppercase;
   color: var(--fg-muted);
-  border-bottom: 2px solid var(--border);
+  border-bottom: 2px solid var(--fg);
 }
+
+/* Drop cap on the feature lede. */
+.np-dropcap::first-letter {
+  float: left;
+  margin: 7px 9px 0 0;
+  font-family: var(--np-display);
+  font-weight: 900;
+  font-size: 3.2em;
+  line-height: 0.72;
+  color: var(--fg);
+}
+
+/* Imagery -------------------------------------------------------------------*/
 
 .np-figure {
   width: 100%;
   overflow: hidden;
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--bg-surface) 86%, var(--border));
+  background: color-mix(in srgb, var(--bg) 80%, var(--fg) 6%);
 }
 
 .np-figure-img {
@@ -127,79 +199,137 @@ html[data-theme="dark"] .np-card {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  filter: grayscale(0.18) contrast(1.03);
+  transition: filter 320ms ease;
 }
 
-/* Block templates -----------------------------------------------------------*/
+.np-feature-inner:hover .np-figure-img,
+.np-split-text:hover .np-figure-img,
+.np-grid-card:hover .np-figure-img {
+  filter: grayscale(0) contrast(1);
+}
+
+/* Masthead ------------------------------------------------------------------*/
 
 .np-masthead .np-card {
-  background: transparent;
-  border: none;
-  border-bottom: 3px double var(--border);
-  border-radius: 0;
+  padding-top: 8px;
+  padding-bottom: 18px;
+  border-top: none;
+  border-bottom: 4px double var(--fg);
   text-align: center;
+}
+
+/* The masthead's double rule already separates it from the first story. */
+.np-flush-top .np-card {
+  border-top: none;
 }
 
 .np-masthead-inner {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   align-items: center;
-  padding: 8px 0;
 }
 
 .np-masthead-title {
   margin: 0;
-  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
-  font-size: 42px;
-  font-weight: 800;
-  letter-spacing: 0.01em;
+  font-family: var(--np-display);
+  font-optical-sizing: auto;
+  font-size: clamp(40px, 9vw, 76px);
+  font-weight: 900;
+  line-height: 0.96;
+  letter-spacing: -0.015em;
+}
+
+.np-masthead-meta {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  width: 100%;
+}
+
+.np-masthead-rule {
+  flex: 1 1 auto;
+  max-width: 130px;
+  height: 1px;
+  background: var(--fg);
+  opacity: 0.55;
 }
 
 .np-masthead-dateline {
-  margin: 0;
-  font-size: 12px;
+  flex: 0 0 auto;
+  font-family: var(--np-label);
+  font-size: 11px;
   font-weight: 600;
-  letter-spacing: 0.16em;
+  letter-spacing: 0.22em;
   text-transform: uppercase;
   color: var(--fg-muted);
+  white-space: nowrap;
 }
 
-.np-feature-inner,
+/* Feature -------------------------------------------------------------------*/
+
+.np-feature-inner {
+  display: flex;
+  flex-direction: column;
+}
+
+.np-feature-inner .np-category {
+  margin-bottom: 12px;
+}
+
+.np-feature-inner .np-figure {
+  margin: 18px 0 18px;
+}
+
+.np-feature-inner .np-deck {
+  max-width: 660px;
+  margin-bottom: 14px;
+  font-size: 19px;
+}
+
+.np-feature-inner .np-body {
+  max-width: 640px;
+  margin-bottom: 14px;
+}
+
+.np-feature-inner .np-byline {
+  max-width: 640px;
+}
+
+/* Columns -------------------------------------------------------------------*/
+
 .np-columns-inner {
   display: flex;
   flex-direction: column;
 }
 
-.np-feature-inner .np-category,
-.np-columns-inner .np-category,
-.np-split-text .np-category {
-  margin-bottom: 8px;
-}
-
-.np-feature-inner .np-figure {
-  margin: 14px 0 16px;
-}
-
-.np-feature-inner .np-deck,
-.np-feature-inner .np-body {
-  margin-bottom: 12px;
+.np-columns-inner .np-category {
+  margin-bottom: 10px;
 }
 
 .np-columns-inner .np-deck {
-  margin: 12px 0 16px;
+  margin: 12px 0 18px;
+  max-width: 720px;
 }
 
 .np-column-body {
-  font-family: Georgia, "Times New Roman", "Noto Serif", serif;
+  font-family: var(--np-body);
   font-size: 14.5px;
-  color: inherit;
+  color: color-mix(in srgb, var(--fg) 90%, transparent);
   overflow: hidden;
-  margin-bottom: 14px;
+  margin-bottom: 16px;
+  column-rule: 1px solid var(--np-rule);
+  text-align: justify;
+  hyphens: auto;
 }
+
+/* Split ---------------------------------------------------------------------*/
 
 .np-split-inner {
   display: flex;
-  gap: 24px;
+  gap: 28px;
   align-items: flex-start;
 }
 
@@ -219,13 +349,19 @@ html[data-theme="dark"] .np-card {
   min-width: 0;
 }
 
+.np-split-text .np-category {
+  margin-bottom: 10px;
+}
+
 .np-split-text .np-deck {
   margin: 10px 0 12px;
 }
 
 .np-split-text .np-body {
-  margin-bottom: 12px;
+  margin-bottom: 14px;
 }
+
+/* Grid ----------------------------------------------------------------------*/
 
 .np-grid-inner,
 .np-briefs-inner {
@@ -246,37 +382,38 @@ html[data-theme="dark"] .np-card {
 }
 
 .np-grid-card .np-figure {
-  margin-bottom: 12px;
+  margin-bottom: 13px;
 }
 
 .np-grid-card .np-category {
-  margin-bottom: 6px;
+  margin-bottom: 7px;
 }
 
 .np-grid-card .np-headline {
-  margin-bottom: 8px;
+  margin-bottom: 9px;
 }
 
 .np-grid-card .np-body {
-  margin-bottom: 8px;
+  margin-bottom: 10px;
 }
+
+/* Briefs --------------------------------------------------------------------*/
 
 .np-brief {
-  padding: 12px 0 6px;
-  border-top: 1px solid var(--border);
+  padding: 14px 0 7px;
+  border-top: 1px solid var(--np-rule);
 }
 
-/* The section label already draws a rule, so the first brief doesn't need one. */
 .np-section-label + .np-brief {
-  padding-top: 4px;
+  padding-top: 2px;
   border-top: none;
 }
 
 .np-brief .np-headline {
-  margin-bottom: 4px;
+  margin-bottom: 5px;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 620px) {
   .np-split-inner {
     flex-direction: column;
   }

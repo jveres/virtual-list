@@ -20,13 +20,12 @@ import "./newspaper.css";
 
 const TOTAL_ARTICLES = 1_400;
 const MAX_BLOCKS = 720;
-const CONTENT_MAX_WIDTH = 1100;
+const CONTENT_MAX_WIDTH = 1040;
 const HORIZONTAL_PADDING = 32;
-const CARD_PADDING = 28;
-const COLUMN_GAP = 24;
+const COLUMN_GAP = 26;
 const OVERSCAN_PX = 900;
 const MASTHEAD_TITLE = "The Virtual Times";
-const MASTHEAD_DATELINE = "Weekend Edition · Rendered on demand";
+const MASTHEAD_DATELINE = "Vol. MMXXVI · No. 1 · Rendered on demand";
 
 const CATEGORIES = [
   "World",
@@ -291,7 +290,14 @@ function words(
   rng: () => number,
 ): string {
   const out: string[] = [];
-  for (let index = 0; index < count; index++) out.push(pick(pool, rng()));
+  for (let index = 0; index < count; index++) {
+    let word = pick(pool, rng());
+    // Avoid adjacent duplicates ("the the", "long long"), which read as broken.
+    for (let guard = 0; word === out[out.length - 1] && guard < 4; guard++) {
+      word = pick(pool, rng());
+    }
+    out.push(word);
+  }
   return out.join(" ");
 }
 
@@ -303,12 +309,33 @@ function titleCase(text: string): string {
   return text.replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
+const HEADLINE_TRIM = new Set([
+  "the",
+  "a",
+  "as",
+  "of",
+  "in",
+  "for",
+  "and",
+  "to",
+]);
+
+// A headline that doesn't open or close on a bare function word.
+function headlineText(rng: () => number): string {
+  const parts = words(HEADLINE_WORDS, 5 + Math.floor(rng() * 5), rng).split(
+    " ",
+  );
+  while (parts.length > 3 && HEADLINE_TRIM.has(parts[0] ?? "")) parts.shift();
+  while (parts.length > 3 && HEADLINE_TRIM.has(parts.at(-1) ?? "")) parts.pop();
+  return titleCase(parts.join(" "));
+}
+
 function createArticle(id: number): Article {
   const rng = mulberry32(Math.imul(id + 1, 2654435761));
   return {
     id,
     category: pick(CATEGORIES, rng()),
-    headline: titleCase(words(HEADLINE_WORDS, 5 + Math.floor(rng() * 5), rng)),
+    headline: headlineText(rng),
     deck: `${capitalize(words(BODY_WORDS, 16 + Math.floor(rng() * 10), rng))}.`,
     body: `${capitalize(words(BODY_WORDS, 90 + Math.floor(rng() * 50), rng))}.`,
     byline: `By ${pick(AUTHORS, rng())}`,
@@ -372,7 +399,7 @@ function canvasWidthForViewport(): number {
 }
 
 function innerWidth(): number {
-  return contentWidth - CARD_PADDING * 2;
+  return contentWidth;
 }
 
 function featureHeadlineLineHeight(): number {
@@ -400,6 +427,23 @@ function clampText(
   el.style.display = "-webkit-box";
   el.style.setProperty("-webkit-box-orient", "vertical");
   el.style.setProperty("-webkit-line-clamp", String(lines));
+  el.style.overflow = "hidden";
+  return el;
+}
+
+// A fixed-height paragraph without the line-clamp box, so a CSS drop cap can
+// float within it (the lede). Overflow is clipped at the fixed height.
+function fixedText(
+  className: string,
+  text: string,
+  lines: number,
+  lineHeight: number,
+): HTMLElement {
+  const el = document.createElement("p");
+  el.className = className;
+  el.textContent = text;
+  el.style.lineHeight = `${lineHeight}px`;
+  el.style.height = px(lines * lineHeight);
   el.style.overflow = "hidden";
   return el;
 }
@@ -446,13 +490,23 @@ function buildImage(seed: number, width: number, height: number): HTMLElement {
 function buildMasthead(): HTMLElement {
   const inner = document.createElement("div");
   inner.className = "np-masthead-inner";
+
   const title = document.createElement("h1");
   title.className = "np-masthead-title";
   title.textContent = MASTHEAD_TITLE;
-  const dateline = document.createElement("p");
+
+  const meta = document.createElement("div");
+  meta.className = "np-masthead-meta";
+  const leftRule = document.createElement("span");
+  leftRule.className = "np-masthead-rule";
+  const dateline = document.createElement("span");
   dateline.className = "np-masthead-dateline";
   dateline.textContent = MASTHEAD_DATELINE;
-  inner.append(title, dateline);
+  const rightRule = document.createElement("span");
+  rightRule.className = "np-masthead-rule";
+  meta.append(leftRule, dateline, rightRule);
+
+  inner.append(title, meta);
   return inner;
 }
 
@@ -473,11 +527,10 @@ function buildFeature(article: Article): HTMLElement {
   inner.append(picture(article.id, innerWidth(), imageH));
   inner.append(clampText("p", "np-deck", article.deck, 2, LH_DECK));
   inner.append(
-    clampText(
-      "p",
-      "np-body",
+    fixedText(
+      "np-body np-dropcap",
       article.body,
-      contentWidth < 640 ? 3 : 4,
+      contentWidth < 640 ? 4 : 5,
       LH_BODY,
     ),
   );
@@ -605,6 +658,9 @@ function buildItem(index: number): HTMLElement {
 
   const item = document.createElement("section");
   item.className = `np-block np-${block.kind}`;
+  // The masthead (index 0) ends in a double rule, so the first story (index 1)
+  // skips its own top rule to avoid stacking dividers.
+  if (index === 1) item.classList.add("np-flush-top");
 
   const card = document.createElement("article");
   card.className = "np-card";
@@ -695,7 +751,18 @@ function handleViewportResize(): void {
 bindControls();
 bindThemeButtons(refreshTheme);
 refreshTheme();
+
+// Heights are measured from rendered text, so the editorial fonts must be in
+// before the first measurement — otherwise blocks would be sized with the
+// fallback metrics and shift once Fraunces/Newsreader swap in.
 await document.fonts.ready;
+await Promise.all([
+  document.fonts.load("900 64px Fraunces"),
+  document.fonts.load("600 40px Fraunces"),
+  document.fonts.load("400 16px Newsreader"),
+  document.fonts.load("italic 400 18px Newsreader"),
+  document.fonts.load("600 12px Archivo"),
+]).catch(() => undefined);
 measureTemplateHeights();
 
 virtualList = createVirtualList({

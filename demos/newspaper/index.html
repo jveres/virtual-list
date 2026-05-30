@@ -6,10 +6,16 @@
       name="viewport"
       content="width=device-width, initial-scale=1, maximum-scale=1"
     />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700&family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,900;1,9..144,400&family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&display=swap"
+      rel="stylesheet"
+    />
     <style>
       html {
-        background: #ffffff;
-        color: #1a1d23;
+        background: #f4efe4;
+        color: #221d15;
         color-scheme: light;
       }
 
@@ -24,21 +30,21 @@
 
       @media (prefers-color-scheme: dark) {
         html {
-          background: #1a1d23;
-          color: #d5d9e1;
+          background: #14120c;
+          color: #ece6d6;
           color-scheme: dark;
         }
       }
 
       html[data-theme="light"] {
-        background: #ffffff;
-        color: #1a1d23;
+        background: #f4efe4;
+        color: #221d15;
         color-scheme: light;
       }
 
       html[data-theme="dark"] {
-        background: #1a1d23;
-        color: #d5d9e1;
+        background: #14120c;
+        color: #ece6d6;
         color-scheme: dark;
       }
     </style>
@@ -51,7 +57,7 @@
     </script>
     <title>virtual-list · newspaper</title>
   </head>
-  <body>
+  <body class="np-body">
     <div class="shell">
       <div class="header">
         <span class="header-title">
@@ -172,7 +178,7 @@
           <span class="sep">·</span>
           <span id="layout-label">0px wide</span>
         </div>
-        <div id="load-label">virtualized editorial layout</div>
+        <div id="load-label">virtualized broadsheet</div>
       </div>
     </div>
     <script type="module" src="./newspaper.ts"></script>
