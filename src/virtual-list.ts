@@ -334,6 +334,25 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+// Ease-out quart: a quick launch into a long, soft deceleration tail. Resembles
+// native browser smooth-scroll feel (notably Firefox) better than an
+// ease-in-out, whose slow start reads as sluggish.
+function easeOutQuart(t: number): number {
+  return 1 - (1 - t) ** 4;
+}
+
+// Smooth-scroll glide: sqrt-scaled duration (clamped) so short hops stay snappy
+// and long jumps don't drag — matched to native browser behaviour.
+const SMOOTH_SCROLL_MIN_DURATION = 150;
+const SMOOTH_SCROLL_MAX_DURATION = 1000;
+function smoothScrollDuration(distance: number): number {
+  return clamp(
+    SMOOTH_SCROLL_MIN_DURATION + Math.sqrt(distance) * 25,
+    SMOOTH_SCROLL_MIN_DURATION,
+    SMOOTH_SCROLL_MAX_DURATION,
+  );
+}
+
 function nonNegativeInteger(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
@@ -685,10 +704,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let activeSmoothScrollCancel: (() => void) | null = null;
   let activeSmoothScrollTarget: number | null = null;
   let activeSmoothScrollSnapThreshold = SCROLL_SNAP_THRESHOLD;
-  // True while our own smooth-scroll driver is animating. Boundary-reach
-  // callbacks are deferred until it settles so a mid-flight load doesn't make
-  // the scroll chase the growing content or flash an empty boundary slot.
-  let programmaticScrollAnimating = false;
   let programmaticReachBoundary: VirtualListBoundary | null = null;
   let reachCallbacksEnabled = false;
   let emittingChangeCallback = false;
@@ -857,7 +872,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return (
       reachCallbacksEnabled &&
       !emittingReachCallback &&
-      !programmaticScrollAnimating &&
       count > 0 &&
       (boundary === "top" ? Boolean(onReachTop) : Boolean(onReachBottom))
     );
@@ -2060,20 +2074,24 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   // the scroll handler from misreading our own programmatic writes as a user
   // scroll (Firefox coalesces/rounds large per-frame jumps, so value-matching
   // alone is unreliable), and lets the normal settle apply deferred measurements
-  // at the end. The target is fixed and the motion is a bounded ease over
-  // `duration` (no asymptotic tail), so boundary loads fire only after it
-  // settles. A user gesture (or superseding scroll) calls `cancel`.
+  // at the end. The target is a fixed snapshot, so reaching a boundary mid-scroll
+  // fires its `onReach` (the loading slot shows during the scroll) without the
+  // scroll then chasing the content the load appends. A user gesture (or
+  // superseding scroll) calls `cancel`.
   function animateScrollTop(
     target: number,
     options: VirtualListScrollOptions,
     snapThreshold: number,
   ): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
+      const startTop = viewport.scrollTop;
+      const distance = Math.abs(
+        clamp(target, 0, nativeMaxScrollTop()) - startTop,
+      );
       const duration = Math.max(
         1,
-        options.duration ?? DEFAULT_SMOOTH_SCROLL_DURATION,
+        options.duration ?? smoothScrollDuration(distance),
       );
-      const startTop = viewport.scrollTop;
       let startTime = 0;
       let frame = 0;
       let finished = false;
@@ -2083,7 +2101,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         finished = true;
         if (frame) cancelAnimationFrame(frame);
         frame = 0;
-        programmaticScrollAnimating = false;
         clearActiveSmoothScrollTarget(cancel);
         options.signal?.removeEventListener("abort", onAbort);
         if (completed) {
@@ -2101,10 +2118,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       const cancel = (): void => finish(false);
       const onAbort = (): void => finish(false);
 
-      // Cubic ease-in-out: gentle acceleration and deceleration, no abrupt start.
-      const ease = (t: number): number =>
-        t < 0.5 ? 4 * t * t * t : 1 - (-2 * t + 2) ** 3 / 2;
-
       const tick = (now: number): void => {
         frame = 0;
         if (finished) return;
@@ -2118,7 +2131,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         activeSmoothScrollTarget = clampedTarget;
         const t = clamp((now - startTime) / duration, 0, 1);
         const nextTop = clamp(
-          startTop + (clampedTarget - startTop) * ease(t),
+          startTop + (clampedTarget - startTop) * easeOutQuart(t),
           0,
           nativeMaxScrollTop(),
         );
@@ -2135,7 +2148,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         frame = requestAnimationFrame(tick);
       };
 
-      programmaticScrollAnimating = true;
       activeSmoothScrollCancel = cancel;
       activeSmoothScrollTarget = clamp(target, 0, nativeMaxScrollTop());
       activeSmoothScrollSnapThreshold = snapThreshold;
