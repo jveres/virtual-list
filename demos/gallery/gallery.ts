@@ -211,12 +211,14 @@ function targetRowHeightForWidth(width: number): number {
   return selectedRowHeight;
 }
 
-function justifiedHeight(rowPhotos: readonly Photo[], width: number): number {
-  const available = width - Math.max(0, rowPhotos.length - 1) * PHOTO_GAP;
-  let widthFactor = 0;
-  for (const photo of rowPhotos) {
-    widthFactor += 1 / photo.aspectRatio;
-  }
+// Justified row height from a running sum of 1/aspectRatio and the photo count,
+// so the packing loop computes it incrementally instead of re-summing each add.
+function justifiedRowHeight(
+  widthFactor: number,
+  photoCount: number,
+  width: number,
+): number {
+  const available = width - Math.max(0, photoCount - 1) * PHOTO_GAP;
   return available / Math.max(0.01, widthFactor);
 }
 
@@ -255,6 +257,7 @@ function computeJustifiedLayout(width: number): Layout {
   const bands: Band[] = [];
   const photoBandIndex = new Int32Array(photos.length);
   const currentPhotos: Photo[] = [];
+  let widthFactor = 0;
   let top = 0;
 
   function flush(rowHeight: number, justify: boolean): void {
@@ -273,12 +276,18 @@ function computeJustifiedLayout(width: number): Layout {
     }
     top += tileHeight;
     currentPhotos.length = 0;
+    widthFactor = 0;
   }
 
   for (const photo of photos) {
     currentPhotos.push(photo);
+    widthFactor += 1 / photo.aspectRatio;
     if (currentPhotos.length < 2) continue;
-    const rowHeight = justifiedHeight(currentPhotos, width);
+    const rowHeight = justifiedRowHeight(
+      widthFactor,
+      currentPhotos.length,
+      width,
+    );
     if (rowHeight <= targetHeight) flush(rowHeight, true);
   }
   if (currentPhotos.length > 0) flush(targetHeight, false);
@@ -575,7 +584,7 @@ function buildPhotoFrame(photo: PlacedPhoto, bandTop: number): HTMLElement {
   const sourceWidth = imageSourceWidth(photo);
   image.width = sourceWidth;
   image.height = Math.max(120, Math.round(sourceWidth * photo.aspectRatio));
-  image.src = imageUrl(photo);
+  image.src = imageUrlForWidth(photo, sourceWidth);
 
   frame.append(image);
   photoPreview.bind(frame, photo);
