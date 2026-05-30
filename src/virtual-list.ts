@@ -334,24 +334,35 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-// Ease-out quart: a quick launch into a long, soft deceleration tail. Resembles
+// Ease-out quint: a quick launch into a long, very soft deceleration tail, so
+// the scroll settles in gently rather than braking hard at the end. Resembles
 // native browser smooth-scroll feel (notably Firefox) better than an
 // ease-in-out, whose slow start reads as sluggish.
-function easeOutQuart(t: number): number {
-  return 1 - (1 - t) ** 4;
+function easeOutQuint(t: number): number {
+  return 1 - (1 - t) ** 5;
 }
 
-// Smooth-scroll glide: sqrt-scaled duration (clamped) so short hops stay snappy
-// and long jumps don't drag — matched to native browser behaviour.
-const SMOOTH_SCROLL_MIN_DURATION = 150;
-const SMOOTH_SCROLL_MAX_DURATION = 1000;
+// Glide duration scales (sqrt) with the eased distance: short hops are quick,
+// longer ones take more time. Scaled against the *capped* eased distance (see
+// SMOOTH_SCROLL_MAX_GLIDE_VIEWPORTS), not the raw distance — so every long jump
+// shares the same duration and so the same gentle arrival velocity. Override per
+// call via `options.duration`.
+const SMOOTH_SCROLL_MIN_DURATION = 180;
+const SMOOTH_SCROLL_MAX_DURATION = 750;
 function smoothScrollDuration(distance: number): number {
   return clamp(
-    SMOOTH_SCROLL_MIN_DURATION + Math.sqrt(distance) * 25,
+    Math.sqrt(distance) * 14,
     SMOOTH_SCROLL_MIN_DURATION,
     SMOOTH_SCROLL_MAX_DURATION,
   );
 }
+
+// Cap the eased travel to this many viewports. The duration is clamped, so
+// without a cap a very long jump would compress a huge distance into a bounded
+// time and still be racing when the target comes into view — no smooth end.
+// Beyond the cap we cover the excess instantly and ease only the final stretch,
+// so every long jump glides its last screens in at the same gentle speed.
+const SMOOTH_SCROLL_MAX_GLIDE_VIEWPORTS = 2.5;
 
 function nonNegativeInteger(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
@@ -2084,13 +2095,25 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     snapThreshold: number,
   ): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
-      const startTop = viewport.scrollTop;
-      const distance = Math.abs(
-        clamp(target, 0, nativeMaxScrollTop()) - startTop,
-      );
+      const finalTarget = clamp(target, 0, nativeMaxScrollTop());
+      // Bound the eased distance so the arrival velocity is the same for a near
+      // and a far target: jump the excess beyond the cap instantly, then ease
+      // only the final stretch in.
+      const maxGlide =
+        viewport.clientHeight * SMOOTH_SCROLL_MAX_GLIDE_VIEWPORTS;
+      let startTop = viewport.scrollTop;
+      if (maxGlide > 0 && Math.abs(finalTarget - startTop) > maxGlide) {
+        startTop =
+          finalTarget + (startTop > finalTarget ? maxGlide : -maxGlide);
+        setScrollTop(startTop, ALLOW_DURING_SCROLL);
+        renderNow(viewport.scrollTop);
+      }
+      // Duration follows the eased (post-cap) distance: quick for short hops,
+      // longer for far ones — but identical across all capped long jumps.
       const duration = Math.max(
         1,
-        options.duration ?? smoothScrollDuration(distance),
+        options.duration ??
+          smoothScrollDuration(Math.abs(finalTarget - startTop)),
       );
       let startTime = 0;
       let frame = 0;
@@ -2131,7 +2154,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         activeSmoothScrollTarget = clampedTarget;
         const t = clamp((now - startTime) / duration, 0, 1);
         const nextTop = clamp(
-          startTop + (clampedTarget - startTop) * easeOutQuart(t),
+          startTop + (clampedTarget - startTop) * easeOutQuint(t),
           0,
           nativeMaxScrollTop(),
         );
