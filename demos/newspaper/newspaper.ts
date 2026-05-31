@@ -11,16 +11,21 @@ import "../demo-styles.css";
 import "./newspaper.css";
 
 // A newspaper / magazine layout virtualized as a feed of editorial "blocks".
-// Each block is one virtual-list item built from a template (hero feature,
-// multi-column article, image split, card grid, briefs list). Every text region
-// is line-clamped to a fixed line count, so a block's height depends only on its
-// template and the canvas width, not on the (synthetic, deterministic) article
-// text. That lets the host measure one representative block per template and
-// reuse the height for every block of that kind — exact heights, no clipping.
+// The header select swaps between genuinely different *layouts* — each defines
+// its own block templates, rhythm, and typography:
+//   Broadsheet — the classic editorial mix (hero, columns, split, grid, briefs)
+//   Modular    — a gridded magazine (mosaic, triptych, side-by-side pairs)
+//   Reader     — a calm single column (one image-forward story per band)
+// Every text region is line-clamped to a fixed line count, so a block's height
+// depends only on its template and the canvas width, not the (synthetic,
+// deterministic) text. The host measures one representative block per template
+// and reuses the height — exact heights, no clipping. Switching layout rebuilds
+// the feed and re-measures.
 
 const TOTAL_ARTICLES = 1_400;
 const MAX_BLOCKS = 720;
 const CONTENT_MAX_WIDTH = 1040;
+const READER_MAX_WIDTH = 700;
 const HORIZONTAL_PADDING = 32;
 const COLUMN_GAP = 26;
 const OVERSCAN_PX = 900;
@@ -217,50 +222,33 @@ interface Article {
   byline: string;
 }
 
-const BLOCK_KINDS = [
-  "masthead",
-  "feature",
-  "columns",
-  "split",
-  "grid",
-  "briefs",
-] as const;
-type BlockKind = (typeof BLOCK_KINDS)[number];
-type ArticleKind = Exclude<BlockKind, "masthead">;
-
 interface Block {
-  kind: BlockKind;
+  kind: string;
   articles: readonly Article[];
 }
 
-// Rhythm of templates. The masthead is prepended once; from there blocks cycle
-// through this pattern, so a hero feature recurs roughly every seven blocks.
-const RHYTHM: readonly ArticleKind[] = [
-  "feature",
-  "split",
-  "grid",
-  "columns",
-  "briefs",
-  "split",
-  "grid",
-];
+interface LayoutDef {
+  label: string;
+  fonts: readonly string[];
+  rhythm: readonly string[];
+  perBlock: Readonly<Record<string, number>>;
+  render: (kind: string, block: Block) => HTMLElement;
+}
 
-const ARTICLES_PER_BLOCK: Record<ArticleKind, number> = {
-  feature: 1,
-  columns: 1,
-  split: 1,
-  grid: 3,
-  briefs: 4,
-};
+const VARIANTS = ["broadsheet", "modular", "reader"] as const;
+type Variant = (typeof VARIANTS)[number];
 
 const viewport = mustGet("viewport");
 const rangeLabel = mustGet("range-label");
 const mountedLabel = mustGet("mounted-label");
 const layoutLabel = mustGet("layout-label");
+const loadLabel = mustGet("load-label");
 const topBtn = mustGet("top-btn", HTMLButtonElement);
 const bottomBtn = mustGet("bottom-btn", HTMLButtonElement);
+const variantSelect = mustGet("variant-select", HTMLSelectElement);
 
-const heightByKind = {} as Record<BlockKind, number>;
+const heightByKind: Record<string, number> = {};
+let variant: Variant = "broadsheet";
 let contentWidth = 0;
 let measuredViewportWidth = viewport.clientWidth;
 let virtualList: VirtualList;
@@ -347,41 +335,13 @@ const articles: readonly Article[] = Array.from(
   (_, index) => createArticle(index + 1),
 );
 
-function buildBlocks(): Block[] {
-  const blocks: Block[] = [{ kind: "masthead", articles: [] }];
-  let cursor = 0;
-  let rhythmIndex = 0;
-  while (blocks.length < MAX_BLOCKS) {
-    const kind = RHYTHM[rhythmIndex % RHYTHM.length]!;
-    rhythmIndex++;
-    const need = ARTICLES_PER_BLOCK[kind];
-    if (cursor + need > articles.length) break;
-    blocks.push({ kind, articles: articles.slice(cursor, cursor + need) });
-    cursor += need;
-  }
-  return blocks;
-}
-
-const blocks: readonly Block[] = buildBlocks();
-
-const firstIndexByKind = {} as Record<BlockKind, number>;
-blocks.forEach((block, index) => {
-  if (firstIndexByKind[block.kind] === undefined) {
-    firstIndexByKind[block.kind] = index;
-  }
-});
-
-// --- Rendering ---------------------------------------------------------------
-// Line heights are applied inline so each clamped text region is exactly
-// `lines * lineHeight` tall, independent of the text it holds.
+// --- Shared rendering helpers ------------------------------------------------
 
 const LH_BODY = 25;
 const LH_DECK = 24;
 const LH_META = 18;
-const LH_GRID_HEAD = 23;
-const LH_GRID_TEXT = 22;
-const LH_BRIEF_HEAD = 23;
-const LH_BRIEF_TEXT = 21;
+const LH_HEAD_SM = 23;
+const LH_HEAD_TEXT = 22;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -391,6 +351,12 @@ function px(value: number): string {
   return `${Math.round(value)}px`;
 }
 
+function el(tag: string, className: string): HTMLElement {
+  const node = document.createElement(tag);
+  node.className = className;
+  return node;
+}
+
 function canvasWidthForViewport(): number {
   return Math.max(
     260,
@@ -398,12 +364,15 @@ function canvasWidthForViewport(): number {
   );
 }
 
-function innerWidth(): number {
-  return contentWidth;
+// The effective content column width (Reader is a narrow centered measure).
+function columnWidth(): number {
+  return variant === "reader"
+    ? Math.min(contentWidth, READER_MAX_WIDTH)
+    : contentWidth;
 }
 
-function featureHeadlineLineHeight(): number {
-  return contentWidth < 640 ? 34 : 46;
+function bigHeadlineLineHeight(): number {
+  return columnWidth() < 640 ? 34 : 46;
 }
 
 function imageUrl(seed: number, width: number, height: number): string {
@@ -419,16 +388,15 @@ function clampText(
   lines: number,
   lineHeight: number,
 ): HTMLElement {
-  const el = document.createElement(tag);
-  el.className = className;
-  el.textContent = text;
-  el.style.lineHeight = `${lineHeight}px`;
-  el.style.height = px(lines * lineHeight);
-  el.style.display = "-webkit-box";
-  el.style.setProperty("-webkit-box-orient", "vertical");
-  el.style.setProperty("-webkit-line-clamp", String(lines));
-  el.style.overflow = "hidden";
-  return el;
+  const node = el(tag, className);
+  node.textContent = text;
+  node.style.lineHeight = `${lineHeight}px`;
+  node.style.height = px(lines * lineHeight);
+  node.style.display = "-webkit-box";
+  node.style.setProperty("-webkit-box-orient", "vertical");
+  node.style.setProperty("-webkit-line-clamp", String(lines));
+  node.style.overflow = "hidden";
+  return node;
 }
 
 // A fixed-height paragraph without the line-clamp box, so a CSS drop cap can
@@ -439,38 +407,26 @@ function fixedText(
   lines: number,
   lineHeight: number,
 ): HTMLElement {
-  const el = document.createElement("p");
-  el.className = className;
-  el.textContent = text;
-  el.style.lineHeight = `${lineHeight}px`;
-  el.style.height = px(lines * lineHeight);
-  el.style.overflow = "hidden";
-  return el;
+  const node = el("p", className);
+  node.textContent = text;
+  node.style.lineHeight = `${lineHeight}px`;
+  node.style.height = px(lines * lineHeight);
+  node.style.overflow = "hidden";
+  return node;
 }
 
 function categoryChip(article: Article): HTMLElement {
-  const chip = document.createElement("span");
-  chip.className = "np-category";
+  const chip = el("span", "np-category");
   chip.textContent = article.category;
   return chip;
 }
 
 function bylineEl(article: Article): HTMLElement {
-  const el = document.createElement("p");
-  el.className = "np-byline";
-  el.style.lineHeight = `${LH_META}px`;
-  el.style.height = px(LH_META);
-  el.textContent = `${article.byline} · No. ${article.id}`;
-  return el;
-}
-
-// A fixed-height figure (feature/grid thumbnails).
-function picture(seed: number, width: number, height: number): HTMLElement {
-  const figure = document.createElement("div");
-  figure.className = "np-figure";
-  figure.style.height = px(height);
-  figure.append(buildImage(seed, width, height));
-  return figure;
+  const node = el("p", "np-byline");
+  node.style.lineHeight = `${LH_META}px`;
+  node.style.height = px(LH_META);
+  node.textContent = `${article.byline} · No. ${article.id}`;
+  return node;
 }
 
 function buildImage(seed: number, width: number, height: number): HTMLElement {
@@ -487,33 +443,36 @@ function buildImage(seed: number, width: number, height: number): HTMLElement {
   return image;
 }
 
-function buildMasthead(): HTMLElement {
-  const inner = document.createElement("div");
-  inner.className = "np-masthead-inner";
+// A fixed-height figure.
+function picture(seed: number, width: number, height: number): HTMLElement {
+  const figure = el("div", "np-figure");
+  figure.style.height = px(height);
+  figure.append(buildImage(seed, width, height));
+  return figure;
+}
 
-  const title = document.createElement("h1");
-  title.className = "np-masthead-title";
+function buildMasthead(): HTMLElement {
+  const inner = el("div", "np-masthead-inner");
+
+  const title = el("h1", "np-masthead-title");
   title.textContent = MASTHEAD_TITLE;
 
-  const meta = document.createElement("div");
-  meta.className = "np-masthead-meta";
-  const leftRule = document.createElement("span");
-  leftRule.className = "np-masthead-rule";
-  const dateline = document.createElement("span");
-  dateline.className = "np-masthead-dateline";
+  const meta = el("div", "np-masthead-meta");
+  const leftRule = el("span", "np-masthead-rule");
+  const dateline = el("span", "np-masthead-dateline");
   dateline.textContent = MASTHEAD_DATELINE;
-  const rightRule = document.createElement("span");
-  rightRule.className = "np-masthead-rule";
+  const rightRule = el("span", "np-masthead-rule");
   meta.append(leftRule, dateline, rightRule);
 
   inner.append(title, meta);
   return inner;
 }
 
+// --- Broadsheet templates ----------------------------------------------------
+
 function buildFeature(article: Article): HTMLElement {
-  const inner = document.createElement("div");
-  inner.className = "np-feature-inner";
-  const imageH = clamp(Math.round(innerWidth() * 0.46), 220, 440);
+  const inner = el("div", "np-feature-inner");
+  const imageH = clamp(Math.round(columnWidth() * 0.46), 220, 440);
   inner.append(categoryChip(article));
   inner.append(
     clampText(
@@ -521,16 +480,16 @@ function buildFeature(article: Article): HTMLElement {
       "np-headline np-headline-xl",
       article.headline,
       2,
-      featureHeadlineLineHeight(),
+      bigHeadlineLineHeight(),
     ),
   );
-  inner.append(picture(article.id, innerWidth(), imageH));
+  inner.append(picture(article.id, columnWidth(), imageH));
   inner.append(clampText("p", "np-deck", article.deck, 2, LH_DECK));
   inner.append(
     fixedText(
       "np-body np-dropcap",
       article.body,
-      contentWidth < 640 ? 4 : 5,
+      columnWidth() < 640 ? 4 : 5,
       LH_BODY,
     ),
   );
@@ -539,17 +498,15 @@ function buildFeature(article: Article): HTMLElement {
 }
 
 function buildColumns(article: Article): HTMLElement {
-  const inner = document.createElement("div");
-  inner.className = "np-columns-inner";
+  const inner = el("div", "np-columns-inner");
   inner.append(categoryChip(article));
   inner.append(
     clampText("h2", "np-headline np-headline-lg", article.headline, 2, 30),
   );
   inner.append(clampText("p", "np-deck", article.deck, 1, LH_DECK));
 
-  const body = document.createElement("div");
-  body.className = "np-column-body";
-  body.style.columnCount = String(contentWidth < 560 ? 2 : 3);
+  const body = el("div", "np-column-body");
+  body.style.columnCount = String(columnWidth() < 560 ? 2 : 3);
   body.style.columnGap = `${COLUMN_GAP}px`;
   body.style.height = "200px";
   body.style.lineHeight = `${LH_BODY}px`;
@@ -560,20 +517,17 @@ function buildColumns(article: Article): HTMLElement {
 }
 
 function buildSplit(article: Article): HTMLElement {
-  const inner = document.createElement("div");
-  inner.className = "np-split-inner";
+  const inner = el("div", "np-split-inner");
   if (article.id % 2 === 0) inner.classList.add("np-split-reverse");
 
-  const figureWidth = Math.round((innerWidth() - COLUMN_GAP) * 0.46);
+  const figureWidth = Math.round((columnWidth() - COLUMN_GAP) * 0.46);
   const figureHeight = clamp(Math.round(figureWidth * 0.72), 220, 320);
-  const figure = document.createElement("div");
-  figure.className = "np-figure np-split-figure";
+  const figure = el("div", "np-figure np-split-figure");
   figure.style.setProperty("--np-fig-width", px(figureWidth));
   figure.style.height = px(figureHeight);
   figure.append(buildImage(article.id, figureWidth, figureHeight));
 
-  const text = document.createElement("div");
-  text.className = "np-split-text";
+  const text = el("div", "np-split-text");
   text.append(categoryChip(article));
   text.append(
     clampText("h2", "np-headline np-headline-lg", article.headline, 3, 30),
@@ -586,10 +540,14 @@ function buildSplit(article: Article): HTMLElement {
   return inner;
 }
 
-function buildGridCard(article: Article, cardWidth: number): HTMLElement {
-  const card = document.createElement("div");
-  card.className = "np-grid-card";
-  card.append(picture(article.id, cardWidth, Math.round(cardWidth * 0.66)));
+function buildCard(
+  article: Article,
+  cardWidth: number,
+  aspect: number,
+  className: string,
+): HTMLElement {
+  const card = el("div", className);
+  card.append(picture(article.id, cardWidth, Math.round(cardWidth * aspect)));
   card.append(categoryChip(article));
   card.append(
     clampText(
@@ -597,83 +555,252 @@ function buildGridCard(article: Article, cardWidth: number): HTMLElement {
       "np-headline np-headline-sm",
       article.headline,
       2,
-      LH_GRID_HEAD,
+      LH_HEAD_SM,
     ),
   );
-  card.append(clampText("p", "np-body", article.deck, 2, LH_GRID_TEXT));
+  card.append(clampText("p", "np-body", article.deck, 2, LH_HEAD_TEXT));
   card.append(bylineEl(article));
   return card;
 }
 
 function buildGrid(block: Block): HTMLElement {
-  const inner = document.createElement("div");
-  inner.className = "np-grid-inner";
-
-  const label = document.createElement("p");
-  label.className = "np-section-label";
+  const inner = el("div", "np-grid-inner");
+  const label = el("p", "np-section-label");
   label.textContent = "More from the desk";
   inner.append(label);
 
-  const row = document.createElement("div");
-  row.className = "np-grid-row";
+  const row = el("div", "np-grid-row");
   row.style.gap = `${COLUMN_GAP}px`;
-  const cardWidth = (innerWidth() - COLUMN_GAP * 2) / 3;
+  const cardWidth = (columnWidth() - COLUMN_GAP * 2) / 3;
   for (const article of block.articles) {
-    row.append(buildGridCard(article, cardWidth));
+    row.append(buildCard(article, cardWidth, 0.66, "np-grid-card"));
   }
   inner.append(row);
   return inner;
 }
 
 function buildBriefs(block: Block): HTMLElement {
-  const inner = document.createElement("div");
-  inner.className = "np-briefs-inner";
-
-  const label = document.createElement("p");
-  label.className = "np-section-label";
+  const inner = el("div", "np-briefs-inner");
+  const label = el("p", "np-section-label");
   label.textContent = "In brief";
   inner.append(label);
 
   for (const article of block.articles) {
-    const brief = document.createElement("div");
-    brief.className = "np-brief";
+    const brief = el("div", "np-brief");
     brief.append(
       clampText(
         "h3",
         "np-headline np-headline-xs",
         article.headline,
         1,
-        LH_BRIEF_HEAD,
+        LH_HEAD_SM,
       ),
     );
-    brief.append(clampText("p", "np-body", article.deck, 2, LH_BRIEF_TEXT));
+    brief.append(clampText("p", "np-body", article.deck, 2, LH_HEAD_TEXT));
     inner.append(brief);
   }
   return inner;
 }
 
+function broadsheetRender(kind: string, block: Block): HTMLElement {
+  const lead = block.articles[0];
+  if (kind === "feature" && lead) return buildFeature(lead);
+  if (kind === "columns" && lead) return buildColumns(lead);
+  if (kind === "split" && lead) return buildSplit(lead);
+  if (kind === "grid") return buildGrid(block);
+  if (kind === "briefs") return buildBriefs(block);
+  return el("div", "");
+}
+
+// --- Modular templates -------------------------------------------------------
+
+function buildMosaic(block: Block): HTMLElement {
+  const lead = block.articles[0]!;
+  const inner = el("div", "np-mosaic-inner");
+  inner.style.gap = `${COLUMN_GAP}px`;
+
+  const main = el("div", "np-mosaic-main");
+  const mainWidth = Math.round((columnWidth() - COLUMN_GAP) * 0.6);
+  main.append(picture(lead.id, mainWidth, Math.round(mainWidth * 0.6)));
+  main.append(categoryChip(lead));
+  main.append(
+    clampText("h2", "np-headline np-headline-lg", lead.headline, 2, 30),
+  );
+  main.append(clampText("p", "np-deck", lead.deck, 2, LH_DECK));
+  main.append(bylineEl(lead));
+
+  const side = el("div", "np-mosaic-side");
+  for (const article of block.articles.slice(1)) {
+    const item = el("div", "np-mosaic-item");
+    item.append(categoryChip(article));
+    item.append(
+      clampText(
+        "h3",
+        "np-headline np-headline-sm",
+        article.headline,
+        2,
+        LH_HEAD_SM,
+      ),
+    );
+    item.append(clampText("p", "np-body", article.deck, 1, LH_HEAD_TEXT));
+    side.append(item);
+  }
+
+  inner.append(main, side);
+  return inner;
+}
+
+function buildTriptych(block: Block): HTMLElement {
+  const inner = el("div", "np-triptych-inner");
+  inner.style.gap = `${COLUMN_GAP}px`;
+  const cardWidth = (columnWidth() - COLUMN_GAP * 2) / 3;
+  for (const article of block.articles) {
+    inner.append(buildCard(article, cardWidth, 0.82, "np-triptych-card"));
+  }
+  return inner;
+}
+
+function buildPair(block: Block): HTMLElement {
+  const inner = el("div", "np-pair-inner");
+  inner.style.gap = `${COLUMN_GAP}px`;
+  const cardWidth = (columnWidth() - COLUMN_GAP) / 2;
+  for (const article of block.articles) {
+    const card = el("div", "np-pair-card");
+    card.append(picture(article.id, cardWidth, Math.round(cardWidth * 0.58)));
+    card.append(categoryChip(article));
+    card.append(
+      clampText("h2", "np-headline np-headline-lg", article.headline, 2, 30),
+    );
+    card.append(clampText("p", "np-deck", article.deck, 2, LH_DECK));
+    card.append(clampText("p", "np-body", article.body, 2, LH_BODY));
+    card.append(bylineEl(article));
+    inner.append(card);
+  }
+  return inner;
+}
+
+function modularRender(kind: string, block: Block): HTMLElement {
+  if (kind === "mosaic") return buildMosaic(block);
+  if (kind === "triptych") return buildTriptych(block);
+  if (kind === "pair") return buildPair(block);
+  return el("div", "");
+}
+
+// --- Reader templates --------------------------------------------------------
+
+function buildStory(block: Block): HTMLElement {
+  const article = block.articles[0]!;
+  const inner = el("div", "np-story-inner");
+  inner.append(categoryChip(article));
+  inner.append(
+    clampText(
+      "h1",
+      "np-headline np-headline-xl",
+      article.headline,
+      2,
+      bigHeadlineLineHeight(),
+    ),
+  );
+  inner.append(clampText("p", "np-deck", article.deck, 2, LH_DECK));
+  inner.append(
+    picture(article.id, columnWidth(), Math.round(columnWidth() * 0.6)),
+  );
+  inner.append(fixedText("np-body np-dropcap", article.body, 6, LH_BODY));
+  inner.append(bylineEl(article));
+  return inner;
+}
+
+function buildAside(block: Block): HTMLElement {
+  const article = block.articles[0]!;
+  const inner = el("div", "np-aside-inner");
+  inner.append(categoryChip(article));
+  inner.append(
+    clampText(
+      "h3",
+      "np-headline np-headline-sm",
+      article.headline,
+      2,
+      LH_HEAD_SM,
+    ),
+  );
+  inner.append(clampText("p", "np-body", article.deck, 2, LH_HEAD_TEXT));
+  return inner;
+}
+
+function readerRender(kind: string, block: Block): HTMLElement {
+  if (kind === "story") return buildStory(block);
+  if (kind === "aside") return buildAside(block);
+  return el("div", "");
+}
+
+// --- Layouts -----------------------------------------------------------------
+
+const LAYOUTS: Record<Variant, LayoutDef> = {
+  broadsheet: {
+    label: "Broadsheet",
+    fonts: ["600 40px Fraunces", "900 64px Fraunces", "400 16px Newsreader"],
+    rhythm: ["feature", "split", "grid", "columns", "briefs", "split", "grid"],
+    perBlock: { feature: 1, split: 1, grid: 3, columns: 1, briefs: 4 },
+    render: broadsheetRender,
+  },
+  modular: {
+    label: "Modular",
+    fonts: ["800 40px Archivo", "700 18px Archivo"],
+    rhythm: ["mosaic", "triptych", "pair", "triptych", "mosaic", "pair"],
+    perBlock: { mosaic: 4, triptych: 3, pair: 2 },
+    render: modularRender,
+  },
+  reader: {
+    label: "Reader",
+    fonts: ["500 40px Fraunces", "400 18px Newsreader"],
+    rhythm: ["story", "story", "aside", "story", "story", "aside"],
+    perBlock: { story: 1, aside: 1 },
+    render: readerRender,
+  },
+};
+
+let activeLayout: LayoutDef = LAYOUTS.broadsheet;
+let blocks: Block[] = [];
+let firstIndexByKind: Record<string, number> = {};
+
+function buildBlocks(layout: LayoutDef): Block[] {
+  const result: Block[] = [{ kind: "masthead", articles: [] }];
+  let cursor = 0;
+  let rhythmIndex = 0;
+  while (result.length < MAX_BLOCKS) {
+    const kind = layout.rhythm[rhythmIndex % layout.rhythm.length]!;
+    rhythmIndex++;
+    const need = layout.perBlock[kind] ?? 1;
+    if (cursor + need > articles.length) break;
+    result.push({ kind, articles: articles.slice(cursor, cursor + need) });
+    cursor += need;
+  }
+  return result;
+}
+
+function indexKinds(): void {
+  firstIndexByKind = {};
+  blocks.forEach((block, index) => {
+    if (firstIndexByKind[block.kind] === undefined) {
+      firstIndexByKind[block.kind] = index;
+    }
+  });
+}
+
 function buildItem(index: number): HTMLElement {
   const block = blocks[index]!;
-  const article = block.articles[0];
-
-  const item = document.createElement("section");
-  item.className = `np-block np-${block.kind}`;
-  // The masthead (index 0) ends in a double rule, so the first story (index 1)
-  // skips its own top rule to avoid stacking dividers.
+  const item = el("section", `np-block np-${block.kind}`);
+  // The masthead (index 0) ends in its own rule, so the first story skips its
+  // top rule to avoid stacking dividers.
   if (index === 1) item.classList.add("np-flush-top");
 
-  const card = document.createElement("article");
-  card.className = "np-card";
-  card.style.maxWidth = px(contentWidth);
-
-  if (block.kind === "masthead") card.append(buildMasthead());
-  else if (block.kind === "feature" && article)
-    card.append(buildFeature(article));
-  else if (block.kind === "columns" && article)
-    card.append(buildColumns(article));
-  else if (block.kind === "split" && article) card.append(buildSplit(article));
-  else if (block.kind === "grid") card.append(buildGrid(block));
-  else if (block.kind === "briefs") card.append(buildBriefs(block));
+  const card = el("article", "np-card");
+  card.style.maxWidth = px(columnWidth());
+  card.append(
+    block.kind === "masthead"
+      ? buildMasthead()
+      : activeLayout.render(block.kind, block),
+  );
 
   item.append(card);
   return item;
@@ -684,7 +811,7 @@ function buildItem(index: number): HTMLElement {
 function measureTemplateHeights(): void {
   contentWidth = canvasWidthForViewport();
   measuredViewportWidth = viewport.clientWidth;
-  for (const kind of BLOCK_KINDS) {
+  for (const kind of Object.keys(firstIndexByKind)) {
     const index = firstIndexByKind[kind];
     if (index === undefined) continue;
     heightByKind[kind] = measureVirtualListItem({
@@ -697,7 +824,7 @@ function measureTemplateHeights(): void {
 }
 
 function itemHeight(index: number): number {
-  return heightByKind[blocks[index]?.kind ?? "feature"] ?? 320;
+  return heightByKind[blocks[index]?.kind ?? ""] ?? 320;
 }
 
 // --- Status bar / controls ---------------------------------------------------
@@ -718,10 +845,42 @@ function updateInfo(state: VirtualListState = virtualList.state): void {
     renderedMountedText = setTextIfChanged(mountedLabel, mountedText);
   }
 
-  const layoutText = `${Math.round(contentWidth)}px wide · ${articles.length} articles`;
+  const layoutText = `${Math.round(columnWidth())}px column · ${articles.length} articles`;
   if (layoutText !== renderedLayoutText) {
     renderedLayoutText = setTextIfChanged(layoutLabel, layoutText);
   }
+}
+
+function relayout(): void {
+  measureTemplateHeights();
+  virtualList.invalidateMeasurements();
+  virtualList.refreshMounted();
+  updateInfo();
+}
+
+async function ensureFonts(fonts: readonly string[]): Promise<void> {
+  await Promise.all(fonts.map((font) => document.fonts.load(font))).catch(
+    () => undefined,
+  );
+}
+
+async function applyVariant(next: Variant): Promise<void> {
+  if (next === variant) return;
+  variant = next;
+  activeLayout = LAYOUTS[next];
+  await ensureFonts(activeLayout.fonts);
+
+  // The whole feed changes (different templates, counts, heights), so rebuild
+  // and reset to the top.
+  document.body.dataset.variant = next;
+  blocks = buildBlocks(activeLayout);
+  indexKinds();
+  viewport.scrollTop = 0;
+  measureTemplateHeights();
+  virtualList.setCount();
+  virtualList.invalidateMeasurements();
+  virtualList.refreshMounted();
+  updateInfo();
 }
 
 function bindControls(): void {
@@ -730,6 +889,9 @@ function bindControls(): void {
   });
   bottomBtn.addEventListener("click", () => {
     void virtualList.scrollToBottom({ behavior: "smooth" });
+  });
+  variantSelect.addEventListener("change", () => {
+    void applyVariant(variantSelect.value as Variant);
   });
 }
 
@@ -740,29 +902,29 @@ function refreshTheme(): void {
 
 function handleViewportResize(): void {
   if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
-  measureTemplateHeights();
-  virtualList.invalidateMeasurements();
-  virtualList.refreshMounted();
-  updateInfo();
+  relayout();
 }
 
 // --- Boot --------------------------------------------------------------------
 
+blocks = buildBlocks(activeLayout);
+indexKinds();
+document.body.dataset.variant = variant;
+variantSelect.value = variant;
 bindControls();
 bindThemeButtons(refreshTheme);
 refreshTheme();
+loadLabel.textContent = "virtualized layouts";
 
 // Heights are measured from rendered text, so the editorial fonts must be in
-// before the first measurement — otherwise blocks would be sized with the
-// fallback metrics and shift once Fraunces/Newsreader swap in.
+// before the first measurement — otherwise blocks would be sized with fallback
+// metrics and shift once the real faces swap in.
 await document.fonts.ready;
-await Promise.all([
-  document.fonts.load("900 64px Fraunces"),
-  document.fonts.load("600 40px Fraunces"),
-  document.fonts.load("400 16px Newsreader"),
-  document.fonts.load("italic 400 18px Newsreader"),
-  document.fonts.load("600 12px Archivo"),
-]).catch(() => undefined);
+await ensureFonts([
+  ...LAYOUTS.broadsheet.fonts,
+  "italic 400 18px Newsreader",
+  "600 12px Archivo",
+]);
 measureTemplateHeights();
 
 virtualList = createVirtualList({

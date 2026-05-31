@@ -422,3 +422,242 @@ html[data-theme="dark"] .np-body {
     width: 100%;
   }
 }
+
+/* ============================================================================
+   Layout variants — selected from the header (<body data-variant>). Each is a
+   distinct layout with its own templates and typography. Templates vary font
+   family/weight/spacing only (never size/line-height), so the per-template
+   measured heights stay valid across a switch.
+   ============================================================================ */
+
+.np-variant-select {
+  height: 32px;
+  padding: 0 8px;
+  font-family: var(--np-label), system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--fg);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+/* --- Modular templates: mosaic / triptych / pair -------------------------- */
+
+.np-mosaic-inner,
+.np-triptych-inner,
+.np-pair-inner {
+  display: flex;
+  align-items: flex-start;
+}
+
+.np-mosaic-main {
+  display: flex;
+  flex: 1.55 1 0;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.np-mosaic-main .np-figure {
+  margin-bottom: 14px;
+}
+
+.np-mosaic-main .np-category {
+  margin-bottom: 8px;
+}
+
+.np-mosaic-main .np-headline {
+  margin-bottom: 10px;
+}
+
+.np-mosaic-main .np-deck {
+  margin-bottom: 12px;
+}
+
+.np-mosaic-side {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.np-mosaic-item {
+  padding: 14px 0;
+  border-top: 1px solid var(--np-rule);
+}
+
+.np-mosaic-item:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+
+.np-mosaic-item .np-category {
+  margin-bottom: 6px;
+}
+
+.np-mosaic-item .np-headline {
+  margin-bottom: 6px;
+}
+
+.np-triptych-card,
+.np-pair-card {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.np-triptych-card .np-figure {
+  margin-bottom: 13px;
+}
+
+.np-triptych-card .np-category,
+.np-pair-card .np-category {
+  margin-bottom: 7px;
+}
+
+.np-triptych-card .np-headline {
+  margin-bottom: 8px;
+}
+
+.np-triptych-card .np-body {
+  margin-bottom: 10px;
+}
+
+.np-pair-card .np-figure {
+  margin-bottom: 14px;
+}
+
+.np-pair-card .np-headline {
+  margin-bottom: 10px;
+}
+
+.np-pair-card .np-deck {
+  margin-bottom: 10px;
+}
+
+.np-pair-card .np-body {
+  margin-bottom: 12px;
+}
+
+/* --- Reader templates: story / aside -------------------------------------- */
+
+.np-story-inner,
+.np-aside-inner {
+  display: flex;
+  flex-direction: column;
+}
+
+.np-story-inner .np-category {
+  margin-bottom: 12px;
+}
+
+.np-story-inner .np-headline {
+  margin-bottom: 14px;
+}
+
+.np-story-inner .np-deck {
+  margin-bottom: 18px;
+}
+
+.np-story-inner .np-figure {
+  margin-bottom: 20px;
+}
+
+.np-story-inner .np-body {
+  margin-bottom: 16px;
+}
+
+.np-aside-inner .np-category {
+  margin-bottom: 8px;
+}
+
+.np-aside-inner .np-headline {
+  margin-bottom: 8px;
+}
+
+/* Hover affordances for the new templates. */
+.np-mosaic-main:hover .np-headline,
+.np-mosaic-item:hover .np-headline,
+.np-triptych-card:hover .np-headline,
+.np-pair-card:hover .np-headline,
+.np-story-inner:hover .np-headline,
+.np-aside-inner:hover .np-headline {
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.np-mosaic-main:hover .np-figure-img,
+.np-triptych-card:hover .np-figure-img,
+.np-pair-card:hover .np-figure-img,
+.np-story-inner:hover .np-figure-img {
+  filter: grayscale(0) contrast(1);
+}
+
+/* --- Modular layout: bold grotesque, image-forward ------------------------ */
+
+.np-body[data-variant="modular"] {
+  --np-display: "Archivo", system-ui, sans-serif;
+  --np-body: "Archivo", system-ui, sans-serif;
+  --np-label: "Archivo", system-ui, sans-serif;
+}
+
+.np-body[data-variant="modular"] .np-headline {
+  font-weight: 700;
+  letter-spacing: -0.015em;
+}
+
+.np-body[data-variant="modular"] .np-deck {
+  font-style: normal;
+}
+
+.np-body[data-variant="modular"] .np-masthead-title {
+  font-weight: 800;
+  letter-spacing: -0.02em;
+}
+
+.np-body[data-variant="modular"] .np-masthead .np-card {
+  border-bottom: 2px solid var(--fg);
+}
+
+/* Modular reads the feature lede without a drop cap. */
+.np-body[data-variant="modular"] .np-dropcap::first-letter {
+  float: none;
+  margin: 0;
+  font: inherit;
+  line-height: inherit;
+  color: inherit;
+}
+
+/* --- Reader layout: lighter serif, italic kicker -------------------------- */
+
+.np-body[data-variant="reader"] {
+  --np-label: "Newsreader", Georgia, serif;
+}
+
+.np-body[data-variant="reader"] .np-headline {
+  font-weight: 500;
+}
+
+.np-body[data-variant="reader"] .np-category {
+  font-family: var(--np-body);
+  font-style: italic;
+  font-weight: 500;
+  font-size: 14px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.np-body[data-variant="reader"] .np-masthead .np-card {
+  border-bottom: 1px solid var(--fg);
+}
+
+@media (max-width: 620px) {
+  .np-mosaic-inner,
+  .np-triptych-inner,
+  .np-pair-inner {
+    flex-direction: column;
+  }
+}
