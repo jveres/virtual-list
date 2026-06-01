@@ -2,7 +2,10 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { createVirtualList, type VirtualList } from "../../src/virtual-list";
+import {
+  cleanupHarnesses,
+  mountFullList,
+} from "../helpers/virtual-list-harness";
 
 // refreshFrom is the branch-switch primitive: rebuild the mounted tail at or
 // after an index, leave the prefix untouched. "Untouched" means the very same
@@ -10,69 +13,25 @@ import { createVirtualList, type VirtualList } from "../../src/virtual-list";
 // from repainting. renderMode "full" mounts every row regardless of layout, so
 // the reuse-vs-rebuild contract is observable in jsdom without real geometry.
 
-interface Harness {
-  list: VirtualList;
-  builds: number[];
-  destroys: number[];
-  mountedElements: () => (HTMLElement | null)[];
-}
-
-const created: Array<{ list: VirtualList; viewport: HTMLElement }> = [];
-
-function mountList(count: number): Harness {
-  const viewport = document.createElement("div");
-  document.body.appendChild(viewport);
-  const builds: number[] = [];
-  const destroys: number[] = [];
-  const list = createVirtualList({
-    viewport,
-    renderMode: "full",
-    getCount: () => count,
-    getItemHeight: () => 50,
-    buildItem: (index) => {
-      builds.push(index);
-      const element = document.createElement("div");
-      element.dataset.index = String(index);
-      element.textContent = `item ${index}`;
-      return element;
-    },
-    destroyItem: (index) => {
-      destroys.push(index);
-    },
-  });
-  created.push({ list, viewport });
-  return {
-    list,
-    builds,
-    destroys,
-    mountedElements: () =>
-      Array.from({ length: count }, (_, index) =>
-        list.getMountedElement(index),
-      ),
-  };
-}
-
 const range = (start: number, end: number): number[] =>
   Array.from({ length: end - start }, (_, i) => start + i);
 
-afterEach(() => {
-  for (const { list, viewport } of created.splice(0)) {
-    list.dispose();
-    viewport.remove();
-  }
-});
+const ascending = (values: number[]): number[] =>
+  [...values].sort((a, b) => a - b);
+
+afterEach(cleanupHarnesses);
 
 describe("createVirtualList in full render mode", () => {
-  it("mounts every item once on init", () => {
-    const { builds, mountedElements } = mountList(6);
-    expect([...builds].sort((a, b) => a - b)).toEqual(range(0, 6));
+  it("should mount every item once on init", () => {
+    const { builds, mountedElements } = mountFullList(6);
+    expect(ascending(builds)).toEqual(range(0, 6));
     expect(mountedElements().every((element) => element !== null)).toBe(true);
   });
 });
 
 describe("refreshFrom", () => {
-  it("rebuilds only the suffix and reuses the prefix by reference", () => {
-    const harness = mountList(8);
+  it("should rebuild only the suffix and reuse the prefix by reference", () => {
+    const harness = mountFullList(8);
     const before = harness.mountedElements();
     const buildsBefore = harness.builds.length;
     const destroysBefore = harness.destroys.length;
@@ -92,12 +51,12 @@ describe("refreshFrom", () => {
       expect(after[index]).not.toBe(before[index]);
       expect(after[index]).not.toBeNull();
     }
-    expect([...rebuilt].sort((a, b) => a - b)).toEqual(range(5, 8));
-    expect([...destroyed].sort((a, b) => a - b)).toEqual(range(5, 8));
+    expect(ascending(rebuilt)).toEqual(range(5, 8));
+    expect(ascending(destroyed)).toEqual(range(5, 8));
   });
 
-  it("is a no-op at or beyond the count", () => {
-    const harness = mountList(5);
+  it("should be a no-op at or beyond the count", () => {
+    const harness = mountFullList(5);
     const before = harness.mountedElements();
     const buildsBefore = harness.builds.length;
 
@@ -108,27 +67,42 @@ describe("refreshFrom", () => {
     expect(harness.mountedElements()).toEqual(before);
   });
 
-  it("rebuilds the whole list at index 0, matching refreshMounted", () => {
-    const harness = mountList(4);
+  it("should rebuild the whole list at index 0, matching refreshMounted", () => {
+    const harness = mountFullList(4);
     const before = harness.mountedElements();
     const buildsBefore = harness.builds.length;
 
     harness.list.refreshFrom(0);
 
     const rebuilt = harness.builds.slice(buildsBefore);
-    expect([...rebuilt].sort((a, b) => a - b)).toEqual(range(0, 4));
+    expect(ascending(rebuilt)).toEqual(range(0, 4));
     for (const index of range(0, 4)) {
       expect(harness.mountedElements()[index]).not.toBe(before[index]);
     }
   });
 
-  it("refreshMounted rebuilds every mounted row", () => {
-    const harness = mountList(4);
+  it("should rebuild every mounted row on refreshMounted", () => {
+    const harness = mountFullList(4);
     const buildsBefore = harness.builds.length;
 
     harness.list.refreshMounted();
 
     const rebuilt = harness.builds.slice(buildsBefore);
-    expect([...rebuilt].sort((a, b) => a - b)).toEqual(range(0, 4));
+    expect(ascending(rebuilt)).toEqual(range(0, 4));
+  });
+
+  it("should rebuild only the targeted row on refreshIndex", () => {
+    const harness = mountFullList(5);
+    const before = harness.mountedElements();
+    const buildsBefore = harness.builds.length;
+
+    harness.list.refreshIndex(2);
+
+    expect(ascending(harness.builds.slice(buildsBefore))).toEqual([2]);
+    const after = harness.mountedElements();
+    expect(after[2]).not.toBe(before[2]);
+    for (const index of [0, 1, 3, 4]) {
+      expect(after[index]).toBe(before[index]);
+    }
   });
 });

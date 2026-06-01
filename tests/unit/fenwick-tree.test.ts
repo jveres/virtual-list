@@ -9,6 +9,35 @@ import { FenwickTree } from "../../src/virtual-list";
 const tree = (values: readonly number[]): FenwickTree =>
   new FenwickTree(Float64Array.from(values));
 
+// Deterministic PRNG (mulberry32) + naive oracle so the property test is
+// reproducible run-to-run — no fast-check dependency, no wall-clock seed.
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const oraclePrefix = (values: readonly number[], count: number): number => {
+  const safe = Math.max(0, Math.min(values.length, count));
+  let sum = 0;
+  for (let i = 0; i < safe; i++) sum += values[i] ?? 0;
+  return sum;
+};
+
+const oracleIndexAt = (values: readonly number[], offset: number): number => {
+  if (values.length === 0) return 0;
+  let index = 0;
+  for (let i = 1; i <= values.length; i++) {
+    if (oraclePrefix(values, i) <= offset) index = i;
+    else break;
+  }
+  return Math.max(0, Math.min(values.length - 1, index));
+};
+
 describe("FenwickTree.prefix / total", () => {
   it("returns cumulative sums at each boundary", () => {
     const t = tree([10, 20, 30, 40]);
@@ -84,5 +113,67 @@ describe("FenwickTree.add", () => {
     expect(tree([1, 1, 1, 1]).maxBit).toBe(4);
     expect(tree([1, 1, 1, 1, 1]).maxBit).toBe(4);
     expect(tree([1, 1, 1, 1, 1, 1, 1, 1]).maxBit).toBe(8);
+  });
+});
+
+describe("FenwickTree edge cases", () => {
+  it("reflects a negative delta (row shrink) in prefix sums", () => {
+    const t = tree([10, 10, 10]);
+    t.add(1, -4); // item 1 shrinks from 10 to 6
+    expect(t.prefix(2)).toBe(16);
+    expect(t.total()).toBe(26);
+    expect(t.indexAt(15)).toBe(1);
+    expect(t.indexAt(16)).toBe(2);
+  });
+
+  it("handles a single-element tree", () => {
+    const t = tree([42]);
+    expect(t.size).toBe(1);
+    expect(t.maxBit).toBe(1);
+    expect(t.total()).toBe(42);
+    expect(t.indexAt(0)).toBe(0);
+    expect(t.indexAt(1000)).toBe(0);
+  });
+
+  it("accumulates fractional heights", () => {
+    const t = tree([0.5, 1.5, 2.25]);
+    expect(t.prefix(2)).toBeCloseTo(2.0, 10);
+    expect(t.total()).toBeCloseTo(4.25, 10);
+  });
+});
+
+describe("FenwickTree property: matches a naive oracle", () => {
+  it("property: prefix, total, and indexAt agree with the oracle across random trees and updates", () => {
+    const rng = mulberry32(0x1234_abcd);
+    const randInt = (bound: number): number => Math.floor(rng() * bound);
+
+    for (let iteration = 0; iteration < 300; iteration++) {
+      const size = 1 + randInt(40);
+      // Integer heights keep indexAt boundaries unambiguous (no float rounding).
+      const values = Array.from({ length: size }, () => randInt(200));
+      const t = new FenwickTree(Float64Array.from(values));
+
+      const assertAgreement = (): void => {
+        expect(t.total()).toBe(oraclePrefix(values, size));
+        for (let probe = 0; probe < 6; probe++) {
+          const k = randInt(size + 2);
+          expect(t.prefix(k)).toBe(oraclePrefix(values, k));
+          const offset = randInt(oraclePrefix(values, size) + 40);
+          expect(t.indexAt(offset)).toBe(oracleIndexAt(values, offset));
+        }
+      };
+
+      assertAgreement();
+
+      // Apply a few non-negative-preserving updates (a measured row changing
+      // height) and re-check, mirroring how the runtime mutates sizes.
+      for (let update = 0; update < 4; update++) {
+        const index = randInt(size);
+        const nextHeight = randInt(200);
+        t.add(index, nextHeight - (values[index] ?? 0));
+        values[index] = nextHeight;
+        assertAgreement();
+      }
+    }
   });
 });

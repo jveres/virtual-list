@@ -534,6 +534,17 @@ The assistant status label uses:
 The streaming delays are demo simulation code. They are not part of the
 virtual list hot path.
 
+The transcript is the active path through an in-demo message tree: each turn is
+a node, and a node's children are its versions (a regenerated reply, an edited
+prompt). The demo seeds two synthetic branches near the bottom — a prompt with
+two versions, each with its own reply, and a reply with three regenerations — and
+renders a per-message version navigator (`‹ 1 / 3 ›`) on any message that has
+siblings. Switching a version rewrites the active path from that node down and
+calls `refreshFrom(index)` so only the branch point and the rows below it
+repaint; every message above keeps its DOM and the scroll position stays put.
+The message tree is application code; the runtime only needs the `refreshFrom`
+tail-swap and its existing anchor preservation to keep the prefix stable.
+
 ## Gallery demo
 
 The gallery demo runs both image layouts in one virtual list with a runtime
@@ -624,3 +635,31 @@ pnpm run check
 ```
 
 The check command runs Biome and the main TypeScript config.
+
+## Tests
+
+```sh
+pnpm test        # run once
+pnpm test:watch  # watch mode
+```
+
+The suite is deterministic and covers the runtime only (not the demos), in two
+layers:
+
+- **Pure unit (node):** the `FenwickTree` offset engine — including a seeded,
+  reproducible fuzz against a naive oracle — and the pixel-window planners,
+  including non-finite / negative / zero inputs.
+- **DOM contract (jsdom):** `createVirtualList` behaviors that do not depend on
+  real geometry, run in `renderMode: "full"` with a no-op `ResizeObserver` stub:
+  `getItemOffset`, the build/reuse/destroy lifecycle across count changes and
+  window shifts (prepend/remove-before keep existing rows as the same DOM nodes),
+  `refreshFrom`/`refreshIndex`, recycling, and `dispose`.
+
+Tests live under `tests/` (outside the `tsconfig` include), so `pnpm run check`
+does not type-check them; a separate pass is used for that.
+
+Behavior that depends on real layout, scroll, and timing — scroll preservation
+on prepend/append, streaming tail precision, `scrollToIndex` alignment, and
+browser-specific quirks — is verified manually in real browsers for now. A
+real-browser automated tier is deliberately deferred until it can be made
+flake-free.

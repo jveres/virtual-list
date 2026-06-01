@@ -119,3 +119,72 @@ describe("planVirtualListPixelWindowFromStart", () => {
     expect(plan).toEqual({ start: 5, end: 5, count: 0, height: 0 });
   });
 });
+
+// Runtime values come from layout math and config, so non-finite / negative /
+// zero inputs are realistic, not just type-invalid. Pin the guards.
+describe("pixel-window planners: degenerate inputs", () => {
+  it("treats a non-finite or negative count as an empty window", () => {
+    expect(
+      planVirtualListPixelWindowFromEnd({
+        count: Number.NaN,
+        minimumPx: 500,
+        getItemHeight: uniform(100),
+      }),
+    ).toEqual({ start: 0, end: 0, count: 0, height: 0 });
+    expect(
+      planVirtualListPixelWindowFromEnd({
+        count: -5,
+        minimumPx: 500,
+        getItemHeight: uniform(100),
+      }),
+    ).toEqual({ start: 0, end: 0, count: 0, height: 0 });
+  });
+
+  it("treats non-positive row heights as a 1px floor", () => {
+    const plan = planVirtualListPixelWindowFromEnd({
+      count: 10,
+      minimumPx: 3,
+      getItemHeight: () => 0,
+    });
+    expect(plan).toEqual({ start: 7, end: 10, count: 3, height: 3 });
+  });
+
+  it("collects all rows when minItems exceeds the count", () => {
+    const plan = planVirtualListPixelWindowFromEnd({
+      count: 5,
+      minItems: 50,
+      minimumPx: 0,
+      getItemHeight: uniform(100),
+    });
+    expect(plan).toEqual({ start: 0, end: 5, count: 5, height: 500 });
+  });
+
+  it("floors maxItems to at least minItems", () => {
+    const plan = planVirtualListPixelWindowFromEnd({
+      count: 10,
+      minimumPx: 100000,
+      maxItems: 0,
+      getItemHeight: uniform(100),
+    });
+    expect(plan).toEqual({ start: 9, end: 10, count: 1, height: 100 });
+  });
+
+  it("treats a non-finite minimumPx as zero budget", () => {
+    const plan = planVirtualListPixelWindowFromEnd({
+      count: 10,
+      minimumPx: Number.NaN,
+      getItemHeight: uniform(100),
+    });
+    expect(plan).toEqual({ start: 9, end: 10, count: 1, height: 100 });
+  });
+
+  it("treats a non-finite count as empty from the start as well", () => {
+    expect(
+      planVirtualListPixelWindowFromStart({
+        count: Number.POSITIVE_INFINITY,
+        minimumPx: 500,
+        getItemHeight: uniform(100),
+      }),
+    ).toEqual({ start: 0, end: 0, count: 0, height: 0 });
+  });
+});
