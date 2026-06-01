@@ -248,6 +248,9 @@ The returned object exposes:
   `index === count` returns the content bottom. Useful for overlays that track
   row positions, such as the sticky section headers below.
 - `refreshIndex(index)` and `refreshMounted()` for rebuilding row DOM.
+- `refreshFrom(index)` rebuilds only the mounted rows at or after `index`,
+  leaving earlier rows' DOM untouched — swap the tail of the list (a switched
+  message version, a regenerated response) without repainting the stable prefix.
 - `dispose()` for cleanup.
 
 The config also accepts host callbacks:

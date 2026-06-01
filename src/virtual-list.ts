@@ -264,6 +264,13 @@ export interface VirtualList {
   getItemOffset(index: number): number;
   refreshIndex(index: number): void;
   refreshMounted(): void;
+  /**
+   * Rebuild every mounted item at or after `index`, leaving earlier items'
+   * DOM untouched. Use it to swap the tail of the list — e.g. switching a
+   * message version or regenerating a response — without repainting the stable
+   * prefix above the change point.
+   */
+  refreshFrom(index: number): void;
   dispose(): void;
 }
 
@@ -2433,9 +2440,17 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     emitViewportChange();
   }
 
+  function refreshFrom(index: number): void {
+    const from = Math.floor(index);
+    // Snapshot the keys: refreshIndex replaces a mounted element in place
+    // (same key), so iterating a copy is safe and only the suffix is rebuilt.
+    for (const mountedIndex of Array.from(mounted.keys())) {
+      if (mountedIndex >= from) refreshIndex(mountedIndex);
+    }
+  }
+
   function refreshMounted(): void {
-    const indexes = Array.from(mounted.keys());
-    for (const index of indexes) refreshIndex(index);
+    refreshFrom(0);
   }
 
   function reindexMounted(addedBefore: number, removedBefore: number): void {
@@ -3265,6 +3280,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     getItemOffset,
     refreshIndex,
     refreshMounted,
+    refreshFrom,
     dispose() {
       disposed = true;
       if (renderFrame) cancelAnimationFrame(renderFrame);
