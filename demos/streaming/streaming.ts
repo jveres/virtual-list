@@ -114,8 +114,37 @@ const htmlCache = new Map<string, string>();
 // it just created. The viewport's recycle pool is off, so every unmount destroys
 // the element and fires `destroyItem`, where we tear the viewer down.
 const streamingViewers = new WeakMap<HTMLElement, MarkdownViewerHandle>();
+// The transcript is the *active path* through the message tree: the linear
+// list the virtualizer renders. `messages` is the loaded pixel window over it.
 const transcript: Message[] = [];
 let messages: Message[] = [];
+
+// Branching messages. Each turn is a tree node; a node's `childrenIds` are the
+// versions that follow it (a regenerated response, an edited prompt) and
+// `selectedChildIndex` marks the active one. Walking `selectedChildIndex` from
+// the root sentinel yields the active path. Switching a version only rewrites
+// the path from that node down — everything above stays byte-identical, so the
+// virtualizer reuses the prefix DOM untouched (see `switchMessageVersion`).
+interface TreeNode {
+  message: Message | null; // null only for the root sentinel
+  parentId: number;
+  childrenIds: number[];
+  selectedChildIndex: number;
+}
+
+// Message ids start at 1, so 0 is free for the root sentinel.
+const TREE_ROOT_ID = 0;
+const tree = new Map<number, TreeNode>([
+  [
+    TREE_ROOT_ID,
+    {
+      message: null,
+      parentId: TREE_ROOT_ID,
+      childrenIds: [],
+      selectedChildIndex: 0,
+    },
+  ],
+]);
 const boundarySlotStates: Record<
   VirtualListBoundary,
   { kind: BoundarySlotKind }
@@ -371,6 +400,78 @@ function createSimulatedToolCalls(): ChatToolCall[] {
   return cloneToolCalls(toolCalls);
 }
 
+function addTreeChild(
+  parentId: number,
+  message: Message,
+  { select = true }: { select?: boolean } = {},
+): number {
+  const parent = tree.get(parentId);
+  if (!parent) throw new Error(`missing tree node ${parentId}`);
+  tree.set(message.id, {
+    message,
+    parentId,
+    childrenIds: [],
+    selectedChildIndex: 0,
+  });
+  parent.childrenIds.push(message.id);
+  if (select) parent.selectedChildIndex = parent.childrenIds.length - 1;
+  return message.id;
+}
+
+function selectedChildId(node: TreeNode): number | undefined {
+  return node.childrenIds[node.selectedChildIndex];
+}
+
+function activeLeafId(): number {
+  let id = TREE_ROOT_ID;
+  let node = tree.get(TREE_ROOT_ID);
+  while (node) {
+    const childId = selectedChildId(node);
+    if (childId === undefined) break;
+    const child = tree.get(childId);
+    if (!child) break;
+    id = childId;
+    node = child;
+  }
+  return id;
+}
+
+// Rewrites `transcript` in place (keeping the reference stable) to the active
+// path: the chain of selected children from the root.
+function rebuildActiveTranscript(): void {
+  transcript.length = 0;
+  let node = tree.get(TREE_ROOT_ID);
+  while (node) {
+    const childId = selectedChildId(node);
+    if (childId === undefined) break;
+    const child = tree.get(childId);
+    if (!child?.message) break;
+    transcript.push(child.message);
+    node = child;
+  }
+}
+
+// Version metadata for the navigator: a message has versions when its parent
+// holds more than one child.
+function versionInfo(
+  messageId: number,
+): { index: number; count: number } | null {
+  const node = tree.get(messageId);
+  if (!node) return null;
+  const parent = tree.get(node.parentId);
+  if (!parent || parent.childrenIds.length <= 1) return null;
+  return { index: parent.selectedChildIndex, count: parent.childrenIds.length };
+}
+
+// New sends extend the active branch: each appended message becomes the
+// selected child of the current leaf, keeping the tree and `transcript` in sync
+// without a full rebuild.
+function linkAppendedMessages(nextMessages: readonly Message[]): void {
+  for (const message of nextMessages) {
+    addTreeChild(activeLeafId(), message, { select: true });
+  }
+}
+
 function findTranscriptMessageById(id: number): Message | undefined {
   return transcript.find((message) => message.id === id);
 }
@@ -468,6 +569,7 @@ function setNewestLoadedWindow(): void {
 function appendMessagesToLoadedBottom(
   nextMessages: readonly Message[],
 ): LoadedAppendResult {
+  linkAppendedMessages(nextMessages);
   const previousTranscriptEnd = transcript.length;
   const previousLoadedEnd = loadedEnd();
   const shouldReplaceLoadedWindow =
@@ -504,10 +606,170 @@ function createTemplateMessages(count: number): Message[] {
   return nextMessages;
 }
 
+// Synthetic branches seeded onto the tail so version switching is testable
+// without first having to edit or regenerate anything.
+const BRANCH_BRIDGE_REPLY =
+  "Sure — what would you like to dig into next? I can compare rendering strategies, walk through the windowing math, or sketch an API.";
+const BRANCH_USER_V1 =
+  "Can you summarize the trade-offs between **virtual scrolling** and **pagination** for a long chat log?";
+const BRANCH_USER_V2 =
+  "Actually — compare virtual scrolling, pagination, and **infinite scroll** for a long chat log, and tell me which you'd reach for.";
+const BRANCH_REPLY_V2 = `Three options, roughly from most to least seamless:
+
+| Approach | Feels like | Cost |
+| --- | --- | --- |
+| **Virtual scroll** | one continuous log | windowing + measurement bookkeeping |
+| **Infinite scroll** | continuous, loads as you go | needs a sentinel + dedupe on prepend |
+| **Pagination** | discrete pages | simplest, but breaks the "scrollback" mental model |
+
+For a chat log I'd reach for **virtual scrolling**: the transcript is conceptually one stream, and users expect to scroll back through it without page seams. Infinite scroll is the fallback when you can't measure rows cheaply.`;
+const BRANCH_REGEN_REPLIES = [
+  `Short version:
+
+- **Virtual scrolling** keeps the whole transcript addressable and scrollable, mounting only what's on screen. You pay for measurement + offset bookkeeping, but the scrollback experience is seamless.
+- **Pagination** is far simpler to build and reason about, but it fragments one logical conversation into pages — awkward for a chat history people skim through.
+
+For a chat log, virtual scrolling wins on UX; pagination wins on implementation effort.`,
+  `Here's the trade-off as a table:
+
+| | Virtual scroll | Pagination |
+| --- | --- | --- |
+| Scrollback UX | seamless, one stream | broken into pages |
+| Implementation | windowing + measurement | trivial |
+| Memory | bounded (only mounted rows) | bounded (one page) |
+| Jump-to-message | direct (offset lookup) | needs page math |
+
+A chat log reads as one continuous thing, so virtual scrolling matches the mental model — at the cost of the windowing machinery you're looking at right now.`,
+  `It comes down to whether the conversation should *feel* continuous.
+
+**Virtual scrolling** treats the transcript as a single scrollable surface and only renders the visible slice, so scrollback is uninterrupted — at the cost of measuring rows and maintaining offsets. **Pagination** is dramatically simpler but slices one conversation into discrete pages, which fights how people actually re-read a chat.
+
+I'd pick virtual scrolling for a chat log nearly every time; pagination only when row heights are unknowable or the dataset is enormous and rarely revisited.`,
+];
+
+// Builds the linear spine from the conversation template, then grafts on the
+// synthetic version branches above. The active path becomes the transcript.
+function seedConversationTree(count: number): void {
+  for (const message of createTemplateMessages(count)) {
+    addTreeChild(activeLeafId(), message, { select: true });
+  }
+  seedSyntheticBranches();
+  rebuildActiveTranscript();
+  setNewestLoadedWindow();
+}
+
+function seedSyntheticBranches(): void {
+  // A user prompt has to follow an assistant turn; bridge if the spine ended on
+  // a user message so the seeded turn always reads naturally.
+  let anchorId = activeLeafId();
+  if (tree.get(anchorId)?.message?.role === "user") {
+    anchorId = addTreeChild(
+      anchorId,
+      createMessage({
+        role: "assistant",
+        markdown: BRANCH_BRIDGE_REPLY,
+        itemHeight: 180,
+      }),
+      { select: true },
+    );
+  }
+
+  // Edit scenario: one prompt, two versions, each with its own reply branch.
+  const userV1 = createMessage({
+    role: "user",
+    markdown: BRANCH_USER_V1,
+    itemHeight: 180,
+  });
+  const userV2 = createMessage({
+    role: "user",
+    markdown: BRANCH_USER_V2,
+    itemHeight: 180,
+  });
+  addTreeChild(anchorId, userV1, { select: true });
+  addTreeChild(anchorId, userV2, { select: false });
+
+  // userV2 → a single reply.
+  addTreeChild(
+    userV2.id,
+    createMessage({
+      role: "assistant",
+      markdown: BRANCH_REPLY_V2,
+      itemHeight: 180,
+    }),
+    { select: true },
+  );
+
+  // userV1 → a reply with three regenerations (the regenerate scenario).
+  BRANCH_REGEN_REPLIES.forEach((markdown, index) => {
+    addTreeChild(
+      userV1.id,
+      createMessage({ role: "assistant", markdown, itemHeight: 180 }),
+      { select: index === 0 },
+    );
+  });
+}
+
 function refreshLoadedWindowIfReplaced(result: LoadedAppendResult): void {
   if (!result.replacedWindow) return;
   virtualList.invalidateMeasurements();
   virtualList.refreshMounted();
+}
+
+// Switches the active version of a branched message: rewrites the active path
+// from that message down and repaints only that suffix, leaving the prefix
+// above it (DOM and scroll position) untouched.
+function switchMessageVersion(messageId: number, offset: number): void {
+  // Mid-stream switches would fight the live update loop.
+  if (streamAbort) return;
+  const node = tree.get(messageId);
+  if (!node) return;
+  const parent = tree.get(node.parentId);
+  if (!parent || parent.childrenIds.length <= 1) return;
+  const nextSelected = Math.min(
+    Math.max(0, parent.selectedChildIndex + offset),
+    parent.childrenIds.length - 1,
+  );
+  if (nextSelected === parent.selectedChildIndex) return;
+
+  // The branch point is this message's spot on the active path. Its navigator is
+  // mounted, so it sits inside the loaded window: localBranchIndex >= 0.
+  const branchIndex = transcript.findIndex(
+    (message) => message.id === messageId,
+  );
+  if (branchIndex < 0) return;
+  const localBranchIndex = branchIndex - loadedStart;
+  const previousTranscriptEnd = transcript.length;
+  const previousWindowLength = messages.length;
+  const bottomWasLoaded = loadedEnd() >= previousTranscriptEnd;
+
+  parent.selectedChildIndex = nextSelected;
+
+  virtualList.syncLayout({
+    apply: () => {
+      rebuildActiveTranscript();
+      const windowEnd = bottomWasLoaded
+        ? transcript.length
+        : Math.min(loadedStart + previousWindowLength, transcript.length);
+      messages = transcript.slice(loadedStart, windowEnd);
+      // Only the swapped tail needs (re)measuring; the prefix is identical.
+      if (localBranchIndex >= 0) {
+        measureMessageRange(localBranchIndex, messages.length);
+      } else {
+        measureExistingMessages();
+      }
+      return true;
+    },
+    topSlot: boundarySlotFor("top"),
+    after: () => {
+      updateRenderedBoundarySlots();
+      syncDemoState();
+    },
+  });
+
+  // Rebuild the branch point and everything below; the prefix keeps its DOM.
+  virtualList.refreshFrom(Math.max(0, localBranchIndex));
+  // Reconcile measured heights against the new rows, preserving the anchor.
+  virtualList.invalidateMeasurements();
 }
 
 interface BoundarySlotContext {
@@ -786,8 +1048,8 @@ function measureMessageHeight(index: number, message: Message): number {
     viewport,
     canvasClassName: "chat-canvas",
     index,
-    buildItem: (itemIndex) =>
-      buildChatItem(itemIndex, message, htmlForMessage(message)),
+    // Mirror buildItem so the version navigator is part of the measured height.
+    buildItem: (itemIndex) => buildStaticItem(itemIndex, message),
   });
 }
 
@@ -810,7 +1072,59 @@ function buildItem(index: number): HTMLElement {
   // other row is a static HTML render. The status flips back to "done" on
   // completion, so this same path rebuilds the row as static when it remounts.
   if (message.status === "streaming") return buildStreamingItem(index, message);
-  return buildChatItem(index, message, htmlForMessage(message));
+  return buildStaticItem(index, message);
+}
+
+// A finished row: the static markdown render plus, when the message has sibling
+// versions, the navigator that switches between them.
+function buildStaticItem(index: number, message: Message): HTMLElement {
+  const row = buildChatItem(index, message, htmlForMessage(message));
+  appendVersionNav(row, message);
+  return row;
+}
+
+function versionNavButton(
+  dir: "prev" | "next",
+  enabled: boolean,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "version-nav-btn";
+  button.dataset.dir = dir;
+  button.disabled = !enabled;
+  button.setAttribute(
+    "aria-label",
+    dir === "prev" ? "Previous version" : "Next version",
+  );
+  button.innerHTML =
+    dir === "prev"
+      ? '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true"><path d="M10 3 5 8l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+      : '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true"><path d="m6 3 5 5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  return button;
+}
+
+function buildVersionNav(message: Message): HTMLElement | null {
+  const info = versionInfo(message.id);
+  if (!info) return null;
+  const nav = document.createElement("div");
+  nav.className = "version-nav";
+  nav.dataset.messageId = String(message.id);
+  const count = document.createElement("span");
+  count.className = "version-nav-count";
+  count.textContent = `${info.index + 1} / ${info.count}`;
+  nav.append(
+    versionNavButton("prev", info.index > 0),
+    count,
+    versionNavButton("next", info.index < info.count - 1),
+  );
+  return nav;
+}
+
+function appendVersionNav(row: HTMLElement, message: Message): void {
+  const nav = buildVersionNav(message);
+  if (!nav) return;
+  const content = row.querySelector<HTMLElement>(".message-content") ?? row;
+  content.appendChild(nav);
 }
 
 function buildStreamingItem(index: number, message: Message): HTMLElement {
@@ -1435,7 +1749,7 @@ applyDocumentTheme();
 syncThemeButtons();
 autosize();
 measureTemplateHeights();
-appendMessagesToLoadedBottom(createTemplateMessages(INITIAL_TRANSCRIPT_COUNT));
+seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
 
 virtualList = createVirtualList({
   viewport,
@@ -1461,6 +1775,20 @@ const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
 viewportResizeObserver.observe(viewport);
 // One delegated listener powers copy buttons across every mounted row.
 attachInteractions(viewport);
+// A second delegated listener drives the per-message version navigators; it
+// survives row rebuilds because it lives on the viewport, not the rows.
+viewport.addEventListener("click", (event) => {
+  // The chevron is an inline SVG, so the click target may be an SVGElement;
+  // match on Element (closest is defined there) rather than HTMLElement.
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest<HTMLElement>(".version-nav-btn");
+  if (!button || button.hasAttribute("disabled")) return;
+  const messageId = Number(
+    button.closest<HTMLElement>(".version-nav")?.dataset.messageId,
+  );
+  if (!Number.isFinite(messageId)) return;
+  switchMessageVersion(messageId, button.dataset.dir === "prev" ? -1 : 1);
+});
 
 await virtualList.scrollToBottom();
 syncDemoState();
