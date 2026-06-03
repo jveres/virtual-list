@@ -349,32 +349,35 @@ function easeOutQuint(t: number): number {
   return 1 - (1 - t) ** 5;
 }
 
-// Glide duration scales (sqrt) with the eased distance: short hops are quicker,
-// longer ones take more time. Scaled against the *capped* eased distance (see
-// SMOOTH_SCROLL_MAX_GLIDE_VIEWPORTS), not the raw distance — so every long jump
-// shares the same duration and so the same gentle arrival velocity.
+// Glide duration caps the peak *speed*, not the distance: the scroll covers the
+// whole real distance (no teleport), so a longer list genuinely takes longer and
+// visibly travels farther, while never exceeding a comfortable reading speed.
 //
-// The base term keeps short hops from getting *too* quick: with a tiny duration,
-// ease-out-quint launches fast and its soft tail is compressed into a few frames,
-// so the landing reads as abrupt. The base gives every scroll enough time to
-// decelerate gently. Override per call via `options.duration`.
-const SMOOTH_SCROLL_BASE_DURATION = 280;
+//   duration = clamp(distance / speed, MIN, MAX)
+//
+// The speed cap is expressed in viewport-heights per second, so tall and short
+// windows feel alike. The MIN floor keeps short hops from finishing too abruptly
+// (ease-out-quint launches fast, and its soft tail needs a few frames of time to
+// read as a gentle landing). The MAX ceiling bounds even a million-row jump so it
+// never drags — past it, every long jump shares one duration but still differs by
+// its on-screen velocity, which the eye reads as distance. ease-out-quint lands
+// the arrival at zero velocity regardless. Override per call via
+// `options.duration`.
 const SMOOTH_SCROLL_MIN_DURATION = 320;
-const SMOOTH_SCROLL_MAX_DURATION = 700;
-function smoothScrollDuration(distance: number): number {
+const SMOOTH_SCROLL_MAX_DURATION = 1400;
+const SMOOTH_SCROLL_VIEWPORTS_PER_SECOND = 7;
+function smoothScrollDuration(
+  distance: number,
+  viewportHeight: number,
+): number {
+  const speed =
+    Math.max(1, viewportHeight) * SMOOTH_SCROLL_VIEWPORTS_PER_SECOND;
   return clamp(
-    SMOOTH_SCROLL_BASE_DURATION + Math.sqrt(distance) * 8,
+    (Math.abs(distance) / speed) * 1000,
     SMOOTH_SCROLL_MIN_DURATION,
     SMOOTH_SCROLL_MAX_DURATION,
   );
 }
-
-// Cap the eased travel to this many viewports. The duration is clamped, so
-// without a cap a very long jump would compress a huge distance into a bounded
-// time and still be racing when the target comes into view — no smooth end.
-// Beyond the cap we cover the excess instantly and ease only the final stretch,
-// so every long jump glides its last screens in at the same gentle speed.
-const SMOOTH_SCROLL_MAX_GLIDE_VIEWPORTS = 2.5;
 
 function nonNegativeInteger(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
@@ -2108,24 +2111,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   ): Promise<boolean> {
     return new Promise<boolean>((resolve) => {
       const finalTarget = clamp(target, 0, nativeMaxScrollTop());
-      // Bound the eased distance so the arrival velocity is the same for a near
-      // and a far target: jump the excess beyond the cap instantly, then ease
-      // only the final stretch in.
-      const maxGlide =
-        viewport.clientHeight * SMOOTH_SCROLL_MAX_GLIDE_VIEWPORTS;
-      let startTop = viewport.scrollTop;
-      if (maxGlide > 0 && Math.abs(finalTarget - startTop) > maxGlide) {
-        startTop =
-          finalTarget + (startTop > finalTarget ? maxGlide : -maxGlide);
-        setScrollTop(startTop, ALLOW_DURING_SCROLL);
-        renderNow(viewport.scrollTop);
-      }
-      // Duration follows the eased (post-cap) distance: quick for short hops,
-      // longer for far ones — but identical across all capped long jumps.
+      const startTop = viewport.scrollTop;
+      // The glide travels the full real distance (no teleport): duration follows
+      // that distance at a capped speed, so short hops are quick, long ones take
+      // longer and visibly fly the whole way, and even huge jumps stay bounded.
       const duration = Math.max(
         1,
         options.duration ??
-          smoothScrollDuration(Math.abs(finalTarget - startTop)),
+          smoothScrollDuration(finalTarget - startTop, viewport.clientHeight),
       );
       let startTime = 0;
       let frame = 0;
