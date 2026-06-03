@@ -6,10 +6,14 @@ import {
   type VirtualListRenderMode,
   type VirtualListState,
 } from "../../src/virtual-list.js";
-import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
-import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
+import {
+  bindThemeButtons,
+  mustGet,
+  syncThemeButtons,
+} from "../shared/utils.js";
 
-import "../demo-styles.css";
+import "../shared/styles.css";
 import "./virtual-list-state.css";
 
 interface DemoOptions {

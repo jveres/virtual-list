@@ -5,17 +5,17 @@ import {
   type VirtualListBoundarySlot,
   type VirtualListState,
 } from "../../src/virtual-list.js";
-import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
+import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
 import {
   at,
   bindThemeButtons,
   mustGet,
   syncThemeButtons,
-} from "../demo-utils.js";
-import { createPhotoPreview } from "../photo-preview.js";
+} from "../shared/utils.js";
+import { createPhotoPreview } from "./photo-preview.js";
 
-import "../demo-styles.css";
-import "../photo-preview.css";
+import "../shared/styles.css";
+import "./photo-preview.css";
 import "./gallery.css";
 
 // One gallery demo with a runtime layout toggle: justified rows (each band is a

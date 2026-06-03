@@ -1,11 +1,3 @@
-import { conversation } from "../../src/chat-data.js";
-import {
-  type AssistantStatus,
-  buildChatItem,
-  buildChatRow,
-  type ChatToolCall,
-  setRoleLabel,
-} from "../../src/chat-ui.js";
 import {
   createVirtualList,
   measureVirtualListItem,
@@ -15,22 +7,30 @@ import {
   type VirtualListBoundarySlot,
   type VirtualListState,
 } from "../../src/virtual-list.js";
+import { conversation } from "../shared/chat-data.js";
+import {
+  type AssistantStatus,
+  buildChatItem,
+  buildChatRow,
+  type ChatToolCall,
+  setRoleLabel,
+} from "../shared/chat-ui.js";
 import {
   attachInteractions,
   createMarkdownViewer,
   initMarkdown,
   type MarkdownViewerHandle,
   renderMarkdown,
-} from "../demo-markdown.js";
-import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
+} from "../shared/markdown.js";
+import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
 import {
   at,
   bindThemeButtons,
   mustGet,
   syncThemeButtons,
-} from "../demo-utils.js";
+} from "../shared/utils.js";
 
-import "../demo-styles.css";
+import "../shared/styles.css";
 
 interface Message {
   id: number;

@@ -1,29 +1,29 @@
-import { conversation } from "../../src/chat-data.js";
-import { buildChatItem, buildSectionHeader } from "../../src/chat-ui.js";
-import {
-  createStickyHeaders,
-  type StickyHeaders,
-} from "../../src/sticky-headers.js";
 import {
   createVirtualList,
   measureVirtualListItem,
   type VirtualList,
   type VirtualListAlign,
 } from "../../src/virtual-list.js";
+import { conversation } from "../shared/chat-data.js";
+import { buildChatItem, buildSectionHeader } from "../shared/chat-ui.js";
 import {
   attachInteractions,
   initMarkdown,
   renderMarkdown,
-} from "../demo-markdown.js";
-import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
+} from "../shared/markdown.js";
+import {
+  createStickyHeaders,
+  type StickyHeaders,
+} from "../shared/sticky-headers.js";
+import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
 import {
   at,
   bindThemeButtons,
   mustGet,
   syncThemeButtons,
-} from "../demo-utils.js";
+} from "../shared/utils.js";
 
-import "../demo-styles.css";
+import "../shared/styles.css";
 
 const TOTAL_INITIAL = 10_000;
 const MESSAGES_PER_GROUP = 8;

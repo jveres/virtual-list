@@ -1,4 +1,4 @@
-import { getThemeChoice, isThemeChoice, setThemeChoice } from "./demo-theme.js";
+import { getThemeChoice, isThemeChoice, setThemeChoice } from "./theme.js";
 
 type HTMLElementConstructor<T extends HTMLElement> = {
   new (): T;

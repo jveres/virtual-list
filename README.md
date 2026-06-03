@@ -127,7 +127,8 @@ message move to the top before the assistant response fills the space below it.
 ## Sticky section headers
 
 Sticky group/section headers (for example date separators in a transcript) are a
-companion to the core runtime in `src/sticky-headers.ts`. The virtual list stays
+host-side helper, shared by the demos in `demos/shared/sticky-headers.ts`. The
+virtual list stays
 unaware of grouping: the host interleaves header rows into its own item index
 space (so they scroll inline like any other row), then points
 `createStickyHeaders` at the same viewport, the ascending header layout indices,
@@ -442,11 +443,14 @@ The demo also verifies:
 
 ## Shared demo utilities
 
-The demo pages share a small helper module in `demos/demo-utils.ts`. It keeps
-demo-only plumbing out of the runtime source and removes duplicated code across
-the pages.
+The demo pages share their plumbing through `demos/shared/`: DOM and theme
+helpers (`utils.ts`, `theme.ts`), a markdown-viewer wrapper (`markdown.ts`), the
+chat content and row builders (`chat-data.ts`, `chat-ui.ts`), the sticky-header
+overlay (`sticky-headers.ts`), and the common stylesheet (`styles.css`). Keeping
+this under `demos/shared/` rather than `src/` keeps demo-only plumbing out of the
+runtime source and removes duplicated code across the pages.
 
-The shared helpers cover:
+The DOM and theme utilities cover:
 
 - Required DOM lookup with optional element-type validation.
 - Theme button synchronization and event binding.

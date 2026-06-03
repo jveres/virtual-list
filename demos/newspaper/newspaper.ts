@@ -4,10 +4,14 @@ import {
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
-import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
-import { bindThemeButtons, mustGet, syncThemeButtons } from "../demo-utils.js";
+import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
+import {
+  bindThemeButtons,
+  mustGet,
+  syncThemeButtons,
+} from "../shared/utils.js";
 
-import "../demo-styles.css";
+import "../shared/styles.css";
 import "./newspaper.css";
 
 // A newspaper / magazine layout virtualized as a feed of editorial "blocks".

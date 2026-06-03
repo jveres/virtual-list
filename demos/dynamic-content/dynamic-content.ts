@@ -1,5 +1,3 @@
-import { conversation } from "../../src/chat-data.js";
-import { buildChatItem, type ChatRole } from "../../src/chat-ui.js";
 import {
   createVirtualList,
   createVirtualListItemMeasurer,
@@ -9,20 +7,22 @@ import {
   type VirtualListPlaceholderSlot,
   type VirtualListRenderMode,
 } from "../../src/virtual-list.js";
+import { conversation } from "../shared/chat-data.js";
+import { buildChatItem, type ChatRole } from "../shared/chat-ui.js";
 import {
   attachInteractions,
   initMarkdown,
   renderMarkdown,
-} from "../demo-markdown.js";
-import { applyDocumentTheme, watchSystemTheme } from "../demo-theme.js";
+} from "../shared/markdown.js";
+import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
 import {
   at,
   bindThemeButtons,
   mustGet,
   syncThemeButtons,
-} from "../demo-utils.js";
+} from "../shared/utils.js";
 
-import "../demo-styles.css";
+import "../shared/styles.css";
 
 const TOTAL_AVAILABLE = 10_000;
 const DEFAULT_RETAINED_COUNT = 100;
