@@ -661,3 +661,511 @@ html[data-theme="dark"] .np-body {
     flex-direction: column;
   }
 }
+
+/* ============================================================================
+   Radar variant — a "release console" adopted from a changelog radar: bordered
+   panels, Fraunces day numerals + headlines with an italic accent, JetBrains
+   Mono metadata/chips, and an Inter synopsis. The variant pins its own token
+   set over the shell (mono labels, panel surfaces, category accents) and ships
+   both a light and a dark palette, so it follows the theme toggle like the rest
+   of the demo. The three-rule pattern below mirrors the paper palette above,
+   with [data-variant="radar"] appended for specificity.
+   ============================================================================ */
+
+/* Light palette (default) */
+.np-body[data-variant="radar"] {
+  --bg: #f6f6f7;
+  --bg-surface: #ffffff;
+  --bg-bubble: #ffffff;
+  --fg: #16161c;
+  --fg-muted: #51515b;
+  --fg-dim: #88888f;
+  --accent: #d9531e;
+  --border: rgba(0, 0, 0, 0.1);
+
+  --np-display: "Fraunces", Georgia, serif;
+  --np-body: "Inter", system-ui, -apple-system, sans-serif;
+  --np-label: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --rd-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  --rd-panel: #ffffff;
+  --rd-panel-hover: #fbfbfc;
+  --rd-panel-latest: linear-gradient(180deg, #fff7f2 0%, #ffffff 100%);
+  --rd-rail: rgba(0, 0, 0, 0.018);
+  --rd-line: rgba(0, 0, 0, 0.08);
+  --rd-line-bright: rgba(0, 0, 0, 0.16);
+  --rd-accent-soft: rgba(217, 83, 30, 0.32);
+  --rd-glow-1: rgba(217, 83, 30, 0.06);
+  --rd-glow-2: rgba(124, 92, 255, 0.05);
+  --rd-green: #0a8f5f;
+  --rd-violet: #5b3fd0;
+  --rd-blue: #1f5fd6;
+  --rd-amber: #8a5e00;
+  --rd-rose: #bd2f5d;
+}
+
+/* Dark palette (explicit toggle) */
+html[data-theme="dark"] .np-body[data-variant="radar"] {
+  --bg: #07070a;
+  --bg-surface: #0d0d12;
+  --bg-bubble: #11111a;
+  --fg: #ededf0;
+  --fg-muted: #b6b6c0;
+  --fg-dim: #6e6e7a;
+  --accent: #ff6a2e;
+  --border: rgba(255, 255, 255, 0.1);
+
+  --rd-panel: #11111a;
+  --rd-panel-hover: #14141d;
+  --rd-panel-latest: linear-gradient(180deg, #15151f 0%, #11111a 100%);
+  --rd-rail: rgba(255, 255, 255, 0.015);
+  --rd-line: rgba(255, 255, 255, 0.07);
+  --rd-line-bright: rgba(255, 255, 255, 0.14);
+  --rd-accent-soft: rgba(255, 106, 46, 0.35);
+  --rd-glow-1: rgba(255, 106, 46, 0.08);
+  --rd-glow-2: rgba(196, 181, 253, 0.045);
+  --rd-green: #6ee7b7;
+  --rd-violet: #c4b5fd;
+  --rd-blue: #93c5fd;
+  --rd-amber: #fcd34d;
+  --rd-rose: #fda4af;
+}
+
+/* Dark palette (system preference, no explicit light) */
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .np-body[data-variant="radar"] {
+    --bg: #07070a;
+    --bg-surface: #0d0d12;
+    --bg-bubble: #11111a;
+    --fg: #ededf0;
+    --fg-muted: #b6b6c0;
+    --fg-dim: #6e6e7a;
+    --accent: #ff6a2e;
+    --border: rgba(255, 255, 255, 0.1);
+
+    --rd-panel: #11111a;
+    --rd-panel-hover: #14141d;
+    --rd-panel-latest: linear-gradient(180deg, #15151f 0%, #11111a 100%);
+    --rd-rail: rgba(255, 255, 255, 0.015);
+    --rd-line: rgba(255, 255, 255, 0.07);
+    --rd-line-bright: rgba(255, 255, 255, 0.14);
+    --rd-accent-soft: rgba(255, 106, 46, 0.35);
+    --rd-glow-1: rgba(255, 106, 46, 0.08);
+    --rd-glow-2: rgba(196, 181, 253, 0.045);
+    --rd-green: #6ee7b7;
+    --rd-violet: #c4b5fd;
+    --rd-blue: #93c5fd;
+    --rd-amber: #fcd34d;
+    --rd-rose: #fda4af;
+  }
+}
+
+.np-body[data-variant="radar"] .np-viewport-wrap {
+  background:
+    radial-gradient(
+      ellipse 1100px 600px at 72% -5%,
+      var(--rd-glow-1),
+      transparent 60%
+    ),
+    radial-gradient(
+      ellipse 820px 520px at 8% 22%,
+      var(--rd-glow-2),
+      transparent 60%
+    ),
+    var(--bg);
+}
+
+/* Each block brings its own bordered panel, so the shared card wrapper is flat. */
+.np-body[data-variant="radar"] .np-card {
+  padding: 0;
+  border-top: none;
+  background: transparent;
+}
+
+.np-body[data-variant="radar"] .np-headline {
+  font-weight: 400;
+  letter-spacing: -0.022em;
+}
+
+/* Masthead → left-aligned console header. */
+.np-body[data-variant="radar"] .np-masthead .np-card {
+  padding: 6px 2px 26px;
+  border: none;
+  border-bottom: 1px solid var(--rd-line);
+  background: transparent;
+  text-align: left;
+}
+
+.np-body[data-variant="radar"] .np-masthead-inner {
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.np-body[data-variant="radar"] .np-masthead-title {
+  font-weight: 300;
+  letter-spacing: -0.03em;
+}
+
+.np-body[data-variant="radar"] .np-masthead-meta {
+  justify-content: flex-start;
+  gap: 12px;
+}
+
+.np-body[data-variant="radar"] .np-masthead-rule {
+  display: none;
+}
+
+.np-body[data-variant="radar"] .np-masthead-rule:first-child {
+  display: inline-block;
+  max-width: 28px;
+  background: var(--accent);
+  opacity: 1;
+}
+
+.np-body[data-variant="radar"] .np-masthead-dateline {
+  font-family: var(--rd-mono);
+  color: var(--accent);
+  letter-spacing: 0.16em;
+}
+
+/* --- Dispatch (release card) ----------------------------------------------- */
+
+.np-body[data-variant="radar"] .rc-grid {
+  display: grid;
+  grid-template-columns: 200px 1fr 200px;
+  background: var(--rd-panel);
+  border: 1px solid var(--rd-line);
+  overflow: hidden;
+  transition:
+    border-color 0.22s ease,
+    background 0.22s ease;
+}
+
+.np-body[data-variant="radar"] .rc-grid:hover {
+  background: var(--rd-panel-hover);
+  border-color: var(--rd-line-bright);
+}
+
+.np-body[data-variant="radar"] .rc-grid.rc-latest {
+  background: var(--rd-panel-latest);
+  border-color: var(--rd-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--rd-accent-soft);
+}
+
+.np-body[data-variant="radar"] .rc-grid-narrow {
+  grid-template-columns: 1fr;
+}
+
+.np-body[data-variant="radar"] .rc-date {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 30px 26px;
+  border-right: 1px solid var(--rd-line);
+  background: var(--rd-rail);
+}
+
+.np-body[data-variant="radar"] .rc-grid-narrow .rc-date {
+  flex-direction: row;
+  align-items: baseline;
+  border-right: none;
+  border-bottom: 1px solid var(--rd-line);
+}
+
+.np-body[data-variant="radar"] .rc-iso {
+  font-family: var(--rd-mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.np-body[data-variant="radar"] .rc-day {
+  font-family: var(--np-display);
+  font-weight: 300;
+  font-size: 52px;
+  letter-spacing: -0.04em;
+  color: var(--fg);
+}
+
+.np-body[data-variant="radar"] .rc-month {
+  font-family: var(--np-display);
+  font-style: italic;
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: -0.012em;
+  color: var(--fg-muted);
+}
+
+.np-body[data-variant="radar"] .rc-year {
+  font-family: var(--rd-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  color: var(--fg-dim);
+}
+
+.np-body[data-variant="radar"] .rc-pill {
+  align-self: flex-start;
+  padding: 5px 10px;
+  font-family: var(--rd-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+  border: 1px solid var(--rd-line-bright);
+}
+
+.np-body[data-variant="radar"] .rc-pill-latest {
+  color: var(--accent);
+  border-color: var(--rd-accent-soft);
+}
+
+.np-body[data-variant="radar"] .rc-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 30px;
+}
+
+.np-body[data-variant="radar"] .rc-theme {
+  margin-bottom: 14px;
+  font-family: var(--rd-mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.np-body[data-variant="radar"] .rc-headline {
+  margin-bottom: 16px;
+  font-size: 30px;
+  letter-spacing: -0.022em;
+  color: var(--fg);
+}
+
+.np-body[data-variant="radar"] .rc-em {
+  font-style: italic;
+  color: var(--accent);
+}
+
+.np-body[data-variant="radar"] .rc-synopsis {
+  margin: 0 0 20px;
+  font-family: var(--np-body);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+
+.np-body[data-variant="radar"] .rc-pkgs {
+  display: flex;
+  gap: 6px;
+  overflow: hidden;
+}
+
+.np-body[data-variant="radar"] .rc-pkg {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  font-family: var(--rd-mono);
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  background: var(--rd-rail);
+  border: 1px solid var(--rd-line);
+}
+
+.np-body[data-variant="radar"] .rc-pkg-v {
+  color: var(--accent);
+}
+
+.np-body[data-variant="radar"] .rc-action {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 18px;
+  padding: 30px 26px;
+  border-left: 1px solid var(--rd-line);
+  background: var(--rd-rail);
+}
+
+.np-body[data-variant="radar"] .rc-grid-narrow .rc-action {
+  border-top: 1px solid var(--rd-line);
+  border-left: none;
+}
+
+.np-body[data-variant="radar"] .rc-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--rd-mono);
+  font-size: 13px;
+  letter-spacing: 0.06em;
+  color: var(--fg);
+  transition: color 0.22s ease;
+}
+
+.np-body[data-variant="radar"] .rc-grid:hover .rc-cta {
+  color: var(--accent);
+}
+
+.np-body[data-variant="radar"] .rc-arrow {
+  position: relative;
+  width: 24px;
+  height: 1px;
+  background: currentColor;
+  transition: width 0.22s ease;
+}
+
+.np-body[data-variant="radar"] .rc-grid:hover .rc-arrow {
+  width: 36px;
+}
+
+.np-body[data-variant="radar"] .rc-arrow::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -1px;
+  width: 7px;
+  height: 7px;
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  transform: rotate(45deg);
+}
+
+.np-body[data-variant="radar"] .rc-stat {
+  font-family: var(--rd-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.np-body[data-variant="radar"] .rc-stat-line {
+  display: block;
+  font-weight: 400;
+  line-height: 18px;
+}
+
+.np-body[data-variant="radar"] strong.rc-stat-line {
+  color: var(--fg-muted);
+}
+
+/* --- Ledger (stat strip) --------------------------------------------------- */
+
+.np-body[data-variant="radar"] .rd-ledger {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  background: var(--bg-surface);
+  border: 1px solid var(--rd-line);
+}
+
+.np-body[data-variant="radar"] .rd-ledger-narrow {
+  grid-template-columns: 1fr 1fr;
+}
+
+.np-body[data-variant="radar"] .rd-cell {
+  padding: 22px;
+  border-right: 1px solid var(--rd-line);
+}
+
+.np-body[data-variant="radar"] .rd-cell:last-child {
+  border-right: none;
+}
+
+.np-body[data-variant="radar"] .rd-ledger-narrow .rd-cell:nth-child(2) {
+  border-right: none;
+}
+
+.np-body[data-variant="radar"] .rd-ledger-narrow .rd-cell:nth-child(1),
+.np-body[data-variant="radar"] .rd-ledger-narrow .rd-cell:nth-child(2) {
+  border-bottom: 1px solid var(--rd-line);
+}
+
+.np-body[data-variant="radar"] .rd-key {
+  margin-bottom: 8px;
+  font-family: var(--rd-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.np-body[data-variant="radar"] .rd-val {
+  margin-bottom: 6px;
+  font-family: var(--np-display);
+  font-weight: 400;
+  font-size: 26px;
+  letter-spacing: -0.018em;
+  color: var(--fg);
+}
+
+.np-body[data-variant="radar"] .rd-sub {
+  font-family: var(--rd-mono);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--fg-dim);
+}
+
+/* --- Note (two-column reading notes) --------------------------------------- */
+
+.np-body[data-variant="radar"] .rd-note {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  padding: 28px 32px;
+  background: var(--bg-surface);
+  border: 1px solid var(--rd-line);
+}
+
+.np-body[data-variant="radar"] .rd-note-narrow {
+  grid-template-columns: 1fr;
+  gap: 20px;
+}
+
+.np-body[data-variant="radar"] .rd-note-key {
+  margin-bottom: 10px;
+  font-family: var(--rd-mono);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.np-body[data-variant="radar"] .rd-note-body {
+  margin: 0;
+  font-family: var(--np-body);
+  font-size: 14px;
+  color: var(--fg-muted);
+}
+
+/* Per-card category accent (matches the changelog's coloured theme tags). */
+.np-body[data-variant="radar"] .rc-theme.rd-green,
+.np-body[data-variant="radar"] .rc-headline.rd-green .rc-em,
+.np-body[data-variant="radar"] .rd-cell.rd-green .rd-val {
+  color: var(--rd-green);
+}
+
+.np-body[data-variant="radar"] .rc-theme.rd-violet,
+.np-body[data-variant="radar"] .rc-headline.rd-violet .rc-em,
+.np-body[data-variant="radar"] .rd-cell.rd-violet .rd-val {
+  color: var(--rd-violet);
+}
+
+.np-body[data-variant="radar"] .rc-theme.rd-blue,
+.np-body[data-variant="radar"] .rc-headline.rd-blue .rc-em,
+.np-body[data-variant="radar"] .rd-cell.rd-blue .rd-val {
+  color: var(--rd-blue);
+}
+
+.np-body[data-variant="radar"] .rc-theme.rd-amber,
+.np-body[data-variant="radar"] .rc-headline.rd-amber .rc-em,
+.np-body[data-variant="radar"] .rd-cell.rd-amber .rd-val {
+  color: var(--rd-amber);
+}
+
+.np-body[data-variant="radar"] .rc-theme.rd-rose,
+.np-body[data-variant="radar"] .rc-headline.rd-rose .rc-em,
+.np-body[data-variant="radar"] .rd-cell.rd-rose .rd-val {
+  color: var(--rd-rose);
+}

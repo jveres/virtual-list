@@ -20,6 +20,7 @@ import "./newspaper.css";
 //   Broadsheet — the classic editorial mix (hero, columns, split, grid, briefs)
 //   Modular    — a gridded magazine (mosaic, triptych, side-by-side pairs)
 //   Reader     — a calm single column (one image-forward story per band)
+//   Radar      — a "release console" (dispatch cards, a stat ledger, notes)
 // Every text region is line-clamped to a fixed line count, so a block's height
 // depends only on its template and the canvas width, not the (synthetic,
 // deterministic) text. The host measures one representative block per template
@@ -239,7 +240,7 @@ interface LayoutDef {
   render: (kind: string, block: Block) => HTMLElement;
 }
 
-const VARIANTS = ["broadsheet", "modular", "reader"] as const;
+const VARIANTS = ["broadsheet", "modular", "reader", "radar"] as const;
 type Variant = (typeof VARIANTS)[number];
 
 const viewport = mustGet("viewport");
@@ -737,6 +738,240 @@ function readerRender(kind: string, block: Block): HTMLElement {
   return el("div", "");
 }
 
+// --- Radar templates (a "release console") -----------------------------------
+// Adopted from a changelog "release radar": bordered panels with a serif day
+// numeral and headline (italic accent), monospace metadata and package chips,
+// and an Inter synopsis. Every region is line-clamped to a fixed line count, so
+// each template measures to one exact, content-independent height. All colour
+// lives in CSS variables, so the variant follows the light/dark theme toggle.
+
+const RD_ISO = 16;
+const RD_DAY = 56;
+const RD_MONTH = 26;
+const RD_META = 18;
+const RD_THEME = 17;
+const RD_HEAD = 38;
+const RD_SYN = 24;
+const RD_CHIPS = 26;
+const RD_VAL = 30;
+const RD_KEY = 16;
+const RD_NOTE = 23;
+const RD_NARROW = 680;
+
+const RD_MONTHS = [
+  "January",
+  "February",
+  "March",
+  "April",
+  "May",
+  "June",
+  "July",
+  "August",
+  "September",
+  "October",
+  "November",
+  "December",
+] as const;
+
+const RD_DOTS = [
+  "rd-green",
+  "rd-violet",
+  "rd-blue",
+  "rd-amber",
+  "rd-rose",
+] as const;
+const RD_NOTE_KEYS = ["Reading order", "How each entry works"] as const;
+
+function pad2(value: number): string {
+  return value < 10 ? `0${value}` : String(value);
+}
+
+function dotClass(seed: number): string {
+  const index = ((seed % RD_DOTS.length) + RD_DOTS.length) % RD_DOTS.length;
+  return RD_DOTS[index] ?? "rd-green";
+}
+
+interface ReleaseMeta {
+  iso: string;
+  day: string;
+  month: string;
+  time: string;
+  version: string;
+}
+
+function releaseMeta(article: Article): ReleaseMeta {
+  const rng = mulberry32(Math.imul(article.id + 17, 2246822519));
+  const month = Math.floor(rng() * 12);
+  const day = 1 + Math.floor(rng() * 28);
+  const hour = Math.floor(rng() * 24);
+  const minute = Math.floor(rng() * 60);
+  return {
+    iso: `2026 · ${pad2(month + 1)} · ${pad2(day)}`,
+    day: pad2(day),
+    month: RD_MONTHS[month] ?? "June",
+    time: `${pad2(hour)}:${pad2(minute)} UTC`,
+    version: `0.${4 + (article.id % 16)}.${article.id % 9}`,
+  };
+}
+
+// A single fixed-height line that renders the glyph at full size — no line-clamp
+// box, so a large serif numeral is not clipped by -webkit-box metrics.
+function fixedLine(
+  tag: string,
+  className: string,
+  text: string,
+  lineHeight: number,
+): HTMLElement {
+  const node = el(tag, className);
+  node.textContent = text;
+  node.style.lineHeight = `${lineHeight}px`;
+  node.style.height = px(lineHeight);
+  node.style.whiteSpace = "nowrap";
+  node.style.overflow = "hidden";
+  return node;
+}
+
+// A headline whose trailing words carry an italic accent, built from DOM nodes
+// (no innerHTML) inside the same fixed line-clamp box used everywhere else.
+function radarHeadline(article: Article, lines: number): HTMLElement {
+  const node = el("h3", "np-headline rc-headline");
+  node.style.lineHeight = `${RD_HEAD}px`;
+  node.style.height = px(lines * RD_HEAD);
+  node.style.display = "-webkit-box";
+  node.style.setProperty("-webkit-box-orient", "vertical");
+  node.style.setProperty("-webkit-line-clamp", String(lines));
+  node.style.overflow = "hidden";
+  const parts = article.headline.split(" ");
+  const tailCount = Math.min(2, Math.max(1, parts.length - 1));
+  const head = parts.slice(0, parts.length - tailCount).join(" ");
+  if (head.length > 0) node.append(document.createTextNode(`${head} `));
+  const em = el("em", "rc-em");
+  em.textContent = `${parts.slice(parts.length - tailCount).join(" ")}.`;
+  node.append(em);
+  return node;
+}
+
+function packageChip(article: Article): HTMLElement {
+  const chip = el("span", "rc-pkg");
+  chip.append(document.createTextNode(`${article.category.toLowerCase()} `));
+  const version = el("span", "rc-pkg-v");
+  version.textContent = releaseMeta(article).version;
+  chip.append(version);
+  return chip;
+}
+
+function statLine(text: string, strong: boolean): HTMLElement {
+  const node = el(strong ? "strong" : "span", "rc-stat-line");
+  node.textContent = text;
+  return node;
+}
+
+function buildDispatch(block: Block): HTMLElement {
+  const lead = block.articles[0]!;
+  const meta = releaseMeta(lead);
+  const isLatest = lead.id === 1;
+  const dot = dotClass(lead.id);
+
+  const inner = el("div", isLatest ? "rc-grid rc-latest" : "rc-grid");
+  if (columnWidth() < RD_NARROW) inner.classList.add("rc-grid-narrow");
+
+  const date = el("div", "rc-date");
+  const dateTop = el("div", "rc-date-top");
+  dateTop.append(fixedLine("div", "rc-iso", meta.iso, RD_ISO));
+  dateTop.append(fixedLine("div", "rc-day", meta.day, RD_DAY));
+  dateTop.append(fixedLine("div", "rc-month", meta.month, RD_MONTH));
+  dateTop.append(fixedLine("div", "rc-year", meta.time, RD_META));
+  const pill = el("div", isLatest ? "rc-pill rc-pill-latest" : "rc-pill");
+  pill.textContent = isLatest ? "latest" : "archived";
+  date.append(dateTop, pill);
+
+  const body = el("div", "rc-body");
+  const theme = fixedLine(
+    "div",
+    isLatest ? "rc-theme" : `rc-theme ${dot}`,
+    `v${meta.version} · ${lead.category.toLowerCase()} release`,
+    RD_THEME,
+  );
+  const headline = radarHeadline(lead, 2);
+  if (!isLatest) headline.classList.add(dot);
+  const pkgs = el("div", "rc-pkgs");
+  pkgs.style.height = px(RD_CHIPS);
+  for (const article of block.articles.slice(0, 4)) {
+    pkgs.append(packageChip(article));
+  }
+  body.append(
+    theme,
+    headline,
+    clampText("p", "rc-synopsis", lead.body, 3, RD_SYN),
+    pkgs,
+  );
+
+  const action = el("div", "rc-action");
+  const cta = el("span", "rc-cta");
+  cta.append(document.createTextNode("Open release"));
+  cta.append(el("span", "rc-arrow"));
+  const stat = el("div", "rc-stat");
+  stat.append(
+    statLine(`${10 + (lead.id % 20)} minor changes`, false),
+    statLine(`~${12 + (lead.id % 30)} patches`, true),
+    statLine(`${block.articles.length} packages`, false),
+  );
+  action.append(cta, stat);
+
+  inner.append(date, body, action);
+  return inner;
+}
+
+function buildLedger(block: Block): HTMLElement {
+  const inner = el("div", "rd-ledger");
+  if (columnWidth() < RD_NARROW) inner.classList.add("rd-ledger-narrow");
+  block.articles.slice(0, 4).forEach((article, index) => {
+    const meta = releaseMeta(article);
+    const cell = el("div", `rd-cell ${dotClass(article.id + index)}`);
+    cell.append(fixedLine("div", "rd-key", article.category, RD_KEY));
+    cell.append(fixedLine("div", "rd-val", `v${meta.version}`, RD_VAL));
+    cell.append(
+      fixedLine(
+        "div",
+        "rd-sub",
+        `${article.byline.replace("By ", "")} · ${meta.iso}`,
+        RD_KEY,
+      ),
+    );
+    inner.append(cell);
+  });
+  return inner;
+}
+
+function buildNote(block: Block): HTMLElement {
+  const inner = el("div", "rd-note");
+  if (columnWidth() < RD_NARROW) inner.classList.add("rd-note-narrow");
+  block.articles.slice(0, 2).forEach((article, index) => {
+    const col = el("div", "rd-note-col");
+    col.append(
+      fixedLine("div", "rd-note-key", RD_NOTE_KEYS[index] ?? "Notes", RD_KEY),
+    );
+    col.append(
+      clampText(
+        "p",
+        "rd-note-body",
+        `${article.deck} ${article.body}`,
+        4,
+        RD_NOTE,
+      ),
+    );
+    inner.append(col);
+  });
+  return inner;
+}
+
+function radarRender(kind: string, block: Block): HTMLElement {
+  if (kind === "dispatch") return buildDispatch(block);
+  if (kind === "ledger") return buildLedger(block);
+  if (kind === "note") return buildNote(block);
+  return el("div", "");
+}
+
 // --- Layouts -----------------------------------------------------------------
 
 const LAYOUTS: Record<Variant, LayoutDef> = {
@@ -760,6 +995,29 @@ const LAYOUTS: Record<Variant, LayoutDef> = {
     rhythm: ["story", "story", "aside", "story", "story", "aside"],
     perBlock: { story: 1, aside: 1 },
     render: readerRender,
+  },
+  radar: {
+    label: "Radar",
+    fonts: [
+      "300 52px Fraunces",
+      "400 30px Fraunces",
+      "italic 400 22px Fraunces",
+      "400 15px Inter",
+      '500 11px "JetBrains Mono"',
+      '400 11px "JetBrains Mono"',
+    ],
+    rhythm: [
+      "dispatch",
+      "dispatch",
+      "ledger",
+      "dispatch",
+      "note",
+      "dispatch",
+      "dispatch",
+      "ledger",
+    ],
+    perBlock: { dispatch: 4, ledger: 4, note: 2 },
+    render: radarRender,
   },
 };
 

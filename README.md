@@ -576,9 +576,16 @@ visible photo.
 
 The newspaper demo virtualizes a magazine/newspaper layout as a feed of
 editorial blocks. Each block is one variable-height virtual-list item built from
-a template — masthead, hero feature, multi-column article, image split, card
-grid, or briefs list — and the templates cycle through a fixed rhythm over a
-synthetic but deterministic (seeded) set of articles.
+a template, and the templates cycle through a fixed rhythm over a synthetic but
+deterministic (seeded) set of articles.
+
+A header selector switches between four self-contained layouts, each with its own
+block templates, rhythm, and typography: **Broadsheet** (the classic editorial
+mix — hero feature, multi-column article, image split, card grid, briefs),
+**Modular** (a gridded magazine), **Reader** (a calm single column), and
+**Radar** (a "release console" of dispatch cards, a stat ledger, and reading
+notes, adopted from a changelog-radar visual style). Switching a variant rebuilds
+the feed and re-measures, and every variant follows the light/dark theme toggle.
 
 Block heights are precomputed from the canvas width, so the runtime gets exact
 `getItemHeight` values with no measurement correction: each block element is
