@@ -663,10 +663,13 @@ html[data-theme="dark"] .np-body {
 }
 
 /* ============================================================================
-   Radar variant — a "release console" adopted from a changelog radar: bordered
-   panels, Fraunces day numerals + headlines with an italic accent, JetBrains
-   Mono metadata/chips, and an Inter synopsis. The variant pins its own token
-   set over the shell (mono labels, panel surfaces, category accents) and ships
+   Radar variant — a console-style magazine adopting a changelog-radar visual
+   style: bordered panels, Fraunces day numerals + headlines with an italic
+   accent, JetBrains Mono metadata, and a Newsreader synopsis. It carries the
+   demo's editorial articles (not software releases). The variant pins its own
+   token set over the shell (mono labels, panel surfaces, category accents) and
+   ships both a light and a dark palette, so it follows the theme toggle like the
+   rest of the demo. The three-rule pattern below mirrors the paper palette above,
    both a light and a dark palette, so it follows the theme toggle like the rest
    of the demo. The three-rule pattern below mirrors the paper palette above,
    with [data-variant="radar"] appended for specificity.
@@ -684,7 +687,7 @@ html[data-theme="dark"] .np-body {
   --border: rgba(0, 0, 0, 0.1);
 
   --np-display: "Fraunces", Georgia, serif;
-  --np-body: "Inter", system-ui, -apple-system, sans-serif;
+  --np-body: "Newsreader", Georgia, "Times New Roman", serif;
   --np-label: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
   --rd-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 
@@ -828,7 +831,7 @@ html[data-theme="dark"] .np-body[data-variant="radar"] {
   letter-spacing: 0.16em;
 }
 
-/* --- Dispatch (release card) ----------------------------------------------- */
+/* --- Dispatch (dated article card) ----------------------------------------- */
 
 .np-body[data-variant="radar"] .rc-grid {
   display: grid;
@@ -957,26 +960,12 @@ html[data-theme="dark"] .np-body[data-variant="radar"] {
   color: var(--fg-muted);
 }
 
-.np-body[data-variant="radar"] .rc-pkgs {
-  display: flex;
-  gap: 6px;
-  overflow: hidden;
-}
-
-.np-body[data-variant="radar"] .rc-pkg {
-  flex: 0 0 auto;
-  padding: 4px 9px;
+.np-body[data-variant="radar"] .rc-byline {
   font-family: var(--rd-mono);
-  font-size: 10px;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  color: var(--fg-muted);
-  background: var(--rd-rail);
-  border: 1px solid var(--rd-line);
-}
-
-.np-body[data-variant="radar"] .rc-pkg-v {
-  color: var(--accent);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
 }
 
 .np-body[data-variant="radar"] .rc-action {

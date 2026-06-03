@@ -583,9 +583,10 @@ A header selector switches between four self-contained layouts, each with its ow
 block templates, rhythm, and typography: **Broadsheet** (the classic editorial
 mix — hero feature, multi-column article, image split, card grid, briefs),
 **Modular** (a gridded magazine), **Reader** (a calm single column), and
-**Radar** (a "release console" of dispatch cards, a stat ledger, and reading
-notes, adopted from a changelog-radar visual style). Switching a variant rebuilds
-the feed and re-measures, and every variant follows the light/dark theme toggle.
+**Radar** (a console-style magazine of dated dispatch cards, a ledger strip, and
+reading notes, adopting a dark/light changelog-radar visual style over the same
+editorial articles). Switching a variant rebuilds the feed and re-measures, and
+every variant follows the light/dark theme toggle.
 
 Block heights are precomputed from the canvas width, so the runtime gets exact
 `getItemHeight` values with no measurement correction: each block element is

@@ -20,7 +20,7 @@ import "./newspaper.css";
 //   Broadsheet — the classic editorial mix (hero, columns, split, grid, briefs)
 //   Modular    — a gridded magazine (mosaic, triptych, side-by-side pairs)
 //   Reader     — a calm single column (one image-forward story per band)
-//   Radar      — a "release console" (dispatch cards, a stat ledger, notes)
+//   Radar      — a console-style magazine (dispatch cards, ledger strip, notes)
 // Every text region is line-clamped to a fixed line count, so a block's height
 // depends only on its template and the canvas width, not the (synthetic,
 // deterministic) text. The host measures one representative block per template
@@ -253,7 +253,7 @@ const bottomBtn = mustGet("bottom-btn", HTMLButtonElement);
 const variantSelect = mustGet("variant-select", HTMLSelectElement);
 
 const heightByKind: Record<string, number> = {};
-let variant: Variant = "broadsheet";
+let variant: Variant = "radar";
 let contentWidth = 0;
 let measuredViewportWidth = viewport.clientWidth;
 let virtualList: VirtualList;
@@ -738,12 +738,14 @@ function readerRender(kind: string, block: Block): HTMLElement {
   return el("div", "");
 }
 
-// --- Radar templates (a "release console") -----------------------------------
-// Adopted from a changelog "release radar": bordered panels with a serif day
-// numeral and headline (italic accent), monospace metadata and package chips,
-// and an Inter synopsis. Every region is line-clamped to a fixed line count, so
-// each template measures to one exact, content-independent height. All colour
-// lives in CSS variables, so the variant follows the light/dark theme toggle.
+// --- Radar templates (a console-style magazine) ------------------------------
+// Adopts the *visual* language of a changelog "release radar" — bordered panels
+// with a serif day numeral and headline (italic accent), monospace metadata, and
+// a Newsreader synopsis — but carries the demo's own editorial articles,
+// styled as dated magazine dispatches rather than software releases. Every region
+// is line-clamped to a fixed line count, so each template measures to one exact,
+// content-independent height. Colour lives in CSS variables, so the variant
+// follows the light/dark theme toggle.
 
 const RD_ISO = 16;
 const RD_DAY = 56;
@@ -752,7 +754,6 @@ const RD_META = 18;
 const RD_THEME = 17;
 const RD_HEAD = 38;
 const RD_SYN = 24;
-const RD_CHIPS = 26;
 const RD_VAL = 30;
 const RD_KEY = 16;
 const RD_NOTE = 23;
@@ -780,7 +781,7 @@ const RD_DOTS = [
   "rd-amber",
   "rd-rose",
 ] as const;
-const RD_NOTE_KEYS = ["Reading order", "How each entry works"] as const;
+const RD_NOTE_KEYS = ["In this edition", "Editor's note"] as const;
 
 function pad2(value: number): string {
   return value < 10 ? `0${value}` : String(value);
@@ -791,26 +792,20 @@ function dotClass(seed: number): string {
   return RD_DOTS[index] ?? "rd-green";
 }
 
-interface ReleaseMeta {
+interface IssueMeta {
   iso: string;
   day: string;
   month: string;
-  time: string;
-  version: string;
 }
 
-function releaseMeta(article: Article): ReleaseMeta {
+function issueMeta(article: Article): IssueMeta {
   const rng = mulberry32(Math.imul(article.id + 17, 2246822519));
   const month = Math.floor(rng() * 12);
   const day = 1 + Math.floor(rng() * 28);
-  const hour = Math.floor(rng() * 24);
-  const minute = Math.floor(rng() * 60);
   return {
     iso: `2026 · ${pad2(month + 1)} · ${pad2(day)}`,
     day: pad2(day),
     month: RD_MONTHS[month] ?? "June",
-    time: `${pad2(hour)}:${pad2(minute)} UTC`,
-    version: `0.${4 + (article.id % 16)}.${article.id % 9}`,
   };
 }
 
@@ -851,15 +846,6 @@ function radarHeadline(article: Article, lines: number): HTMLElement {
   return node;
 }
 
-function packageChip(article: Article): HTMLElement {
-  const chip = el("span", "rc-pkg");
-  chip.append(document.createTextNode(`${article.category.toLowerCase()} `));
-  const version = el("span", "rc-pkg-v");
-  version.textContent = releaseMeta(article).version;
-  chip.append(version);
-  return chip;
-}
-
 function statLine(text: string, strong: boolean): HTMLElement {
   const node = el(strong ? "strong" : "span", "rc-stat-line");
   node.textContent = text;
@@ -868,11 +854,11 @@ function statLine(text: string, strong: boolean): HTMLElement {
 
 function buildDispatch(block: Block): HTMLElement {
   const lead = block.articles[0]!;
-  const meta = releaseMeta(lead);
-  const isLatest = lead.id === 1;
+  const meta = issueMeta(lead);
+  const isFeatured = lead.id === 1;
   const dot = dotClass(lead.id);
 
-  const inner = el("div", isLatest ? "rc-grid rc-latest" : "rc-grid");
+  const inner = el("div", isFeatured ? "rc-grid rc-latest" : "rc-grid");
   if (columnWidth() < RD_NARROW) inner.classList.add("rc-grid-narrow");
 
   const date = el("div", "rc-date");
@@ -880,41 +866,36 @@ function buildDispatch(block: Block): HTMLElement {
   dateTop.append(fixedLine("div", "rc-iso", meta.iso, RD_ISO));
   dateTop.append(fixedLine("div", "rc-day", meta.day, RD_DAY));
   dateTop.append(fixedLine("div", "rc-month", meta.month, RD_MONTH));
-  dateTop.append(fixedLine("div", "rc-year", meta.time, RD_META));
-  const pill = el("div", isLatest ? "rc-pill rc-pill-latest" : "rc-pill");
-  pill.textContent = isLatest ? "latest" : "archived";
+  dateTop.append(fixedLine("div", "rc-year", `No. ${lead.id}`, RD_META));
+  const pill = el("div", isFeatured ? "rc-pill rc-pill-latest" : "rc-pill");
+  pill.textContent = isFeatured ? "featured" : "archive";
   date.append(dateTop, pill);
 
   const body = el("div", "rc-body");
-  const theme = fixedLine(
+  const kicker = fixedLine(
     "div",
-    isLatest ? "rc-theme" : `rc-theme ${dot}`,
-    `v${meta.version} · ${lead.category.toLowerCase()} release`,
+    isFeatured ? "rc-theme" : `rc-theme ${dot}`,
+    `${lead.category} · Dispatch`,
     RD_THEME,
   );
   const headline = radarHeadline(lead, 2);
-  if (!isLatest) headline.classList.add(dot);
-  const pkgs = el("div", "rc-pkgs");
-  pkgs.style.height = px(RD_CHIPS);
-  for (const article of block.articles.slice(0, 4)) {
-    pkgs.append(packageChip(article));
-  }
+  if (!isFeatured) headline.classList.add(dot);
   body.append(
-    theme,
+    kicker,
     headline,
     clampText("p", "rc-synopsis", lead.body, 3, RD_SYN),
-    pkgs,
+    fixedLine("div", "rc-byline", lead.byline, RD_META),
   );
 
   const action = el("div", "rc-action");
   const cta = el("span", "rc-cta");
-  cta.append(document.createTextNode("Open release"));
+  cta.append(document.createTextNode("Read the story"));
   cta.append(el("span", "rc-arrow"));
   const stat = el("div", "rc-stat");
   stat.append(
-    statLine(`${10 + (lead.id % 20)} minor changes`, false),
-    statLine(`~${12 + (lead.id % 30)} patches`, true),
-    statLine(`${block.articles.length} packages`, false),
+    statLine(`${4 + (lead.id % 9)} min read`, false),
+    statLine(`~${1 + (lead.id % 5)}k words`, true),
+    statLine(lead.category, false),
   );
   action.append(cta, stat);
 
@@ -926,10 +907,10 @@ function buildLedger(block: Block): HTMLElement {
   const inner = el("div", "rd-ledger");
   if (columnWidth() < RD_NARROW) inner.classList.add("rd-ledger-narrow");
   block.articles.slice(0, 4).forEach((article, index) => {
-    const meta = releaseMeta(article);
+    const meta = issueMeta(article);
     const cell = el("div", `rd-cell ${dotClass(article.id + index)}`);
     cell.append(fixedLine("div", "rd-key", article.category, RD_KEY));
-    cell.append(fixedLine("div", "rd-val", `v${meta.version}`, RD_VAL));
+    cell.append(fixedLine("div", "rd-val", `No. ${article.id}`, RD_VAL));
     cell.append(
       fixedLine(
         "div",
@@ -1002,7 +983,7 @@ const LAYOUTS: Record<Variant, LayoutDef> = {
       "300 52px Fraunces",
       "400 30px Fraunces",
       "italic 400 22px Fraunces",
-      "400 15px Inter",
+      "400 15px Newsreader",
       '500 11px "JetBrains Mono"',
       '400 11px "JetBrains Mono"',
     ],
@@ -1021,7 +1002,7 @@ const LAYOUTS: Record<Variant, LayoutDef> = {
   },
 };
 
-let activeLayout: LayoutDef = LAYOUTS.broadsheet;
+let activeLayout: LayoutDef = LAYOUTS.radar;
 let blocks: Block[] = [];
 let firstIndexByKind: Record<string, number> = {};
 
@@ -1180,10 +1161,12 @@ loadLabel.textContent = "virtualized layouts";
 
 // Heights are measured from rendered text, so the editorial fonts must be in
 // before the first measurement — otherwise blocks would be sized with fallback
-// metrics and shift once the real faces swap in.
+// metrics and shift once the real faces swap in. Preload the default variant's
+// faces plus the few cross-variant extras so the first switch stays reflow-free.
 await document.fonts.ready;
 await ensureFonts([
-  ...LAYOUTS.broadsheet.fonts,
+  ...activeLayout.fonts,
+  "400 16px Newsreader",
   "italic 400 18px Newsreader",
   "600 12px Archivo",
 ]);
