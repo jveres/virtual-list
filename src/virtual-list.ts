@@ -240,7 +240,6 @@ interface MountedBoundarySlot {
   height: number;
   renderedHeight: number;
   renderedTop: number;
-  observed: boolean;
 }
 
 interface MountedPlaceholderSlot extends VirtualListPlaceholderSlot {
@@ -708,8 +707,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let bottomFollowSignal: AbortSignal | null = null;
   let bottomFollowAbortHandler: (() => void) | null = null;
   let scrollTopResidual = 0;
-  let layoutVersion = 0;
-  let renderedLayoutVersion = -1;
+  // First item index whose mounted position may be stale (Infinity = clean).
+  // An item's top is topSlotHeight() + prefix(index), so a size or slot change
+  // at `index` can only move items at or after it; earlier items keep their
+  // transforms. Unmounted items never hold stale transforms — they are
+  // positioned fresh on mount — so a completed render pass clears this fully.
+  let firstDirtyIndex = Number.POSITIVE_INFINITY;
   let renderedTotalSize = -1;
   let emittedRangeStart = -1;
   let emittedRangeEnd = -1;
@@ -741,7 +744,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let emittingChangeCallback = false;
   let emittingReachCallback = false;
   let pendingBoundaryArm = false;
-  let boundaryIntersectionObserver: IntersectionObserver | null = null;
   let itemMeasurer: VirtualListItemMeasurer | null = null;
   let disposed = false;
 
@@ -769,6 +771,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   addClassNames(content, canvasClassName);
   viewport.classList.add("vl-viewport", "vl-scrollbar");
   viewport.appendChild(content);
+
+  function markLayoutDirtyFrom(index: number): void {
+    if (index < firstDirtyIndex) firstDirtyIndex = index;
+  }
 
   function nativeMaxScrollTop(): number {
     return Math.max(0, viewport.scrollHeight - viewport.clientHeight);
@@ -1033,7 +1039,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     const element = document.createElement("div");
     element.classList.add("vl-boundary-slot", `vl-boundary-${boundary}`);
-    element.dataset.boundary = boundary;
 
     const next: MountedBoundarySlot = {
       key: null,
@@ -1042,20 +1047,18 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       height: emptyBoundarySlotHeight(boundary),
       renderedHeight: -1,
       renderedTop: -1,
-      observed: false,
     };
     setCurrentBoundarySlot(boundary, next);
-    layoutVersion++;
+    markLayoutDirtyFrom(boundary === "top" ? 0 : count);
     return next;
   }
 
   function removeBoundarySlot(boundary: VirtualListBoundary): void {
     const current = currentBoundarySlot(boundary);
     if (!current) return;
-    boundaryIntersectionObserver?.unobserve(current.element);
     current.element.remove();
     setCurrentBoundarySlot(boundary, null);
-    layoutVersion++;
+    markLayoutDirtyFrom(boundary === "top" ? 0 : count);
   }
 
   function applyBoundarySlotUpdate(
@@ -1078,7 +1081,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       if (Math.abs(current.height - nextHeight) <= RENDER_EPSILON_PX)
         return false;
       current.height = nextHeight;
-      layoutVersion++;
+      markLayoutDirtyFrom(boundary === "top" ? 0 : count);
       return true;
     }
 
@@ -1094,7 +1097,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (Math.abs(current.height - nextHeight) <= RENDER_EPSILON_PX)
       return false;
     current.height = nextHeight;
-    layoutVersion++;
+    markLayoutDirtyFrom(boundary === "top" ? 0 : count);
     return true;
   }
 
@@ -1107,7 +1110,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       placeholderSlot?.element?.remove();
       if (!placeholderSlot) return false;
       placeholderSlot = null;
-      layoutVersion++;
+      markLayoutDirtyFrom(count);
       return true;
     }
 
@@ -1119,7 +1122,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     placeholderSlot?.element?.remove();
     placeholderSlot = next;
-    layoutVersion++;
+    markLayoutDirtyFrom(count);
     return true;
   }
 
@@ -1155,58 +1158,26 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   function renderBoundarySlots(): void {
     renderBoundarySlot("top");
     renderBoundarySlot("bottom");
-    syncBoundaryIntersectionObserver();
   }
 
-  function boundaryForElement(element: Element): VirtualListBoundary | null {
-    if (!(element instanceof HTMLElement)) return null;
-    const boundary = element.dataset.boundary;
-    return boundary === "top" || boundary === "bottom" ? boundary : null;
-  }
-
-  function handleBoundaryIntersections(
-    entries: readonly IntersectionObserverEntry[],
-  ): void {
-    for (const entry of entries) {
-      const boundary = boundaryForElement(entry.target);
-      if (!boundary) continue;
-
-      if (
-        !entry.isIntersecting ||
-        entry.intersectionRatio < BOUNDARY_INTERSECTION_THRESHOLD
-      ) {
-        const canRearm =
-          scrollSettle.isUserScrollActive() ||
-          !reachConsumedForBoundary(boundary);
-        if (canRearm) {
-          setReachConsumed(boundary, false);
-          setBoundaryArmed(boundary, true);
-        }
-        continue;
-      }
-
-      emitBoundaryReach(boundary);
-    }
-  }
-
+  // Slot visibility from the library's own geometry, in logical scroll space —
+  // the same signal an IntersectionObserver at BOUNDARY_INTERSECTION_THRESHOLD
+  // would deliver, computed synchronously and without forcing layout. Every
+  // event that can change the answer (scroll, viewport resize, content growth,
+  // slot changes) already funnels through render().
   function boundarySlotVisible(boundary: VirtualListBoundary): boolean {
     const slot = currentBoundarySlot(boundary);
     if (!slot?.element.isConnected || slot.height <= 0) return false;
 
-    const rootRect = viewport.getBoundingClientRect();
-    const slotRect = slot.element.getBoundingClientRect();
+    const scrollTop = logicalScrollTop();
+    const slotTop = boundarySlotTop(boundary);
     const visibleHeight =
-      Math.min(slotRect.bottom, rootRect.bottom) -
-      Math.max(slotRect.top, rootRect.top);
+      Math.min(slotTop + slot.height, scrollTop + lastViewportHeight) -
+      Math.max(slotTop, scrollTop);
     if (visibleHeight <= 0) return false;
 
-    const visibleWidth =
-      Math.min(slotRect.right, rootRect.right) -
-      Math.max(slotRect.left, rootRect.left);
-    if (visibleWidth <= 0) return false;
-
     return (
-      visibleHeight / Math.max(1, slotRect.height) >=
+      visibleHeight / Math.max(1, slot.height) >=
       BOUNDARY_INTERSECTION_THRESHOLD
     );
   }
@@ -1226,33 +1197,26 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     setBoundaryArmed(boundary, true);
   }
 
-  function recreateBoundaryIntersectionObserver(): void {
-    boundaryIntersectionObserver?.disconnect();
-    boundaryIntersectionObserver = new IntersectionObserver(
-      handleBoundaryIntersections,
-      {
-        root: viewport,
-        rootMargin: "0px",
-        threshold: BOUNDARY_INTERSECTION_THRESHOLD,
-      },
-    );
-    if (topSlot) topSlot.observed = false;
-    if (bottomSlot) bottomSlot.observed = false;
-  }
-
-  function observeBoundarySlot(slot: MountedBoundarySlot | null): void {
-    if (!slot || slot.observed || !slot.element.isConnected) return;
-    boundaryIntersectionObserver?.observe(slot.element);
-    slot.observed = true;
-  }
-
-  function syncBoundaryIntersectionObserver(): void {
-    if (count <= 0 || (!onReachTop && !onReachBottom)) return;
-
-    if (!boundaryIntersectionObserver) recreateBoundaryIntersectionObserver();
-
-    observeBoundarySlot(topSlot);
-    observeBoundarySlot(bottomSlot);
+  // Advance the reach state machine from slot visibility after each render
+  // pass: a covered slot re-arms (during a user scroll, or while unconsumed),
+  // a visible armed slot fires its reach callback. emitBoundaryReach's guards
+  // make this idempotent across the many renders between transitions.
+  function syncBoundaryReach(): void {
+    if (count <= 0 || !needsBoundaryRender) return;
+    for (const boundary of ["top", "bottom"] as const) {
+      if (!currentBoundarySlot(boundary)) continue;
+      if (boundarySlotVisible(boundary)) {
+        emitBoundaryReach(boundary);
+        continue;
+      }
+      const canRearm =
+        scrollSettle.isUserScrollActive() ||
+        !reachConsumedForBoundary(boundary);
+      if (canRearm) {
+        setReachConsumed(boundary, false);
+        setBoundaryArmed(boundary, true);
+      }
+    }
   }
 
   function preparePlaceholderSlot(slot: MountedPlaceholderSlot): HTMLElement {
@@ -1413,7 +1377,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     ) {
       if (nextCount === previousCount) return 0;
       appendModeledSizes(previousCount, nextCount);
-      layoutVersion++;
+      markLayoutDirtyFrom(previousCount);
       return 0;
     }
 
@@ -1467,7 +1431,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     measured = nextMeasured;
     sizeTree = new FenwickTree(sizes);
     itemSizeTotal = sizeTree.total();
-    layoutVersion++;
+    markLayoutDirtyFrom(0);
     return beforeHeightDelta;
   }
 
@@ -1487,7 +1451,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     measuredCount = 0;
     sizeTree = new FenwickTree(sizes);
     itemSizeTotal = sizeTree.total();
-    layoutVersion++;
+    markLayoutDirtyFrom(0);
   }
 
   function computeRange(
@@ -1790,7 +1754,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
   function render(explicitScrollTop = logicalScrollTop()): void {
     if (disposed) return;
+    renderPass(explicitScrollTop);
+    // After the pass, so reach callbacks observe settled chrome and any layout
+    // they trigger re-enters via scheduleRender instead of recursing (the
+    // emittingChangeCallback guard in applyLayoutUpdate).
+    syncBoundaryReach();
+  }
 
+  function renderPass(explicitScrollTop: number): void {
     if (pendingBoundaryArm && needsBoundaryRender) {
       pendingBoundaryArm = false;
       armCoveredBoundaryForScroll("top");
@@ -1808,10 +1779,11 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     const { start, end } = computedRange;
     // An item's top is topSlotHeight() + prefix(index) — absolute in content
     // space, independent of the mounted range. Every input that moves it (size
-    // measurements, count changes, slot heights) bumps layoutVersion, so kept
-    // items only need repositioning when the layout is dirty, not on range
-    // shifts.
-    const layoutDirty = renderedLayoutVersion !== layoutVersion;
+    // measurements, count changes, slot heights) marks firstDirtyIndex, so
+    // kept items only need repositioning from that index on — never on plain
+    // range shifts.
+    const dirtyFrom = firstDirtyIndex;
+    const layoutDirty = dirtyFrom < end;
     const mountPlaceholders = updatePlaceholderMode();
     rangeStart = start;
     rangeEnd = end;
@@ -1830,6 +1802,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         !hydratePlaceholdersBlocked &&
         refreshMountedPlaceholders();
       if (!layoutDirty && !refreshedMountedItems) {
+        firstDirtyIndex = Number.POSITIVE_INFINITY;
         emitViewportChange(totalSize, actualScrollTop, viewportHeight);
         return;
       }
@@ -1841,12 +1814,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
           complete = false;
           break;
         }
-        if (layoutDirty) {
+        if (index >= dirtyFrom) {
           positionItem(index, element, itemOffset);
         }
       }
       if (complete) {
-        renderedLayoutVersion = layoutVersion;
+        firstDirtyIndex = Number.POSITIVE_INFINITY;
         emitViewportChange(totalSize, actualScrollTop, viewportHeight);
         return;
       }
@@ -1869,13 +1842,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         newItems ??= document.createDocumentFragment();
         newItems.appendChild(element);
         mounted.set(index, element);
-      } else if (layoutDirty) {
+      } else if (index >= dirtyFrom) {
         positionItem(index, element, itemOffset);
       }
     }
     if (newItems) content.appendChild(newItems);
 
-    renderedLayoutVersion = layoutVersion;
+    firstDirtyIndex = Number.POSITIVE_INFINITY;
     emitViewportChange(totalSize, actualScrollTop, viewportHeight);
   }
 
@@ -1965,7 +1938,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     sizes[index] = height;
     sizeTree.add(index, delta);
     itemSizeTotal += delta;
-    layoutVersion++;
+    markLayoutDirtyFrom(index + 1);
 
     return index < anchorIndex ? delta : 0;
   }
@@ -2797,7 +2770,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();
       itemMeasurer?.dispose();
-      boundaryIntersectionObserver?.disconnect();
       viewport.classList.remove("vl-viewport", "vl-scrollbar");
       for (const [index, element] of mounted) {
         notifyDestroyItem(index, element);
