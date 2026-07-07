@@ -1,3 +1,14 @@
+import {
+  createScrollSettleController,
+  detectScrollSettleStrategy,
+  type VirtualListScrollSettleStrategy,
+} from "./scroll-settle";
+
+export {
+  detectScrollSettleStrategy,
+  type VirtualListScrollSettleStrategy,
+} from "./scroll-settle";
+
 const STYLE_ID = "virtual-list-styles";
 const DEFAULT_OVERSCAN_PX = 900;
 const DEFAULT_MEASURE_EPSILON = 0.5;
@@ -9,9 +20,6 @@ const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
 const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 8;
 const PLACEHOLDER_VELOCITY_EXIT_RATIO = 0.5;
 const PLACEHOLDER_EXIT_SAMPLE_COUNT = 3;
-const SCROLL_SETTLE_COOLDOWN_MS = 140;
-const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
-const CHROMIUM_EDGE_SETTLE_QUIET_MS = 450;
 const SCROLL_TOP_RESIDUAL_EPSILON = 0.01;
 const MAX_SCROLL_TOP_RESIDUAL = 2;
 const CSS = `
@@ -213,17 +221,6 @@ const PRESERVE_LOGICAL_SCROLL_OFFSET: ScrollTopWriteOptions = {
   allowDuringScroll: true,
   preserveLogicalOffset: true,
 };
-
-// Upper bound on unmatched programmatic scroll targets kept for user-vs-self
-// scroll classification. One follow frame writes at most twice, and a scroll
-// event matches within a frame or two, so this only guards against runaway.
-const MAX_PENDING_PROGRAMMATIC_SCROLLS = 8;
-
-export type VirtualListScrollSettleStrategy =
-  | "default"
-  | "chromium-wheel"
-  | "firefox-wheel"
-  | "safari-wheel";
 
 interface MountedBoundarySlot {
   key: string | null;
@@ -643,18 +640,6 @@ export function measureVirtualListItem(
   }
 }
 
-export function detectScrollSettleStrategy(
-  userAgent = navigator.userAgent,
-): VirtualListScrollSettleStrategy {
-  if (/\bFirefox\//.test(userAgent)) return "firefox-wheel";
-  if (/\bVersion\/[\d.]+.*\bSafari\//.test(userAgent)) {
-    return "safari-wheel";
-  }
-  return /\b(?:Chrome|Chromium|Edg|OPR)\//.test(userAgent)
-    ? "chromium-wheel"
-    : "default";
-}
-
 export function createVirtualList(config: VirtualListConfig): VirtualList {
   injectStyles();
 
@@ -694,8 +679,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
           DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD;
   const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
-  const scrollSettleStrategy =
-    config.scrollSettleStrategy ?? detectScrollSettleStrategy();
   let count = 0;
   let sizes = new Float64Array(0);
   let measured = new Uint8Array(0);
@@ -734,38 +717,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let topSlot: MountedBoundarySlot | null = null;
   let bottomSlot: MountedBoundarySlot | null = null;
   let placeholderSlot: MountedPlaceholderSlot | null = null;
-  let userScrollActive = false;
-  let userScrollMoved = false;
-  let scrollVelocity = 0;
-  let lastScrollSampleDelta = 0;
   let placeholderFastMode = false;
   let hydratePlaceholdersBlocked = false;
   let placeholderLowVelocitySamples = 0;
   let placeholderHydrationFrame = 0;
-  let lastScrollSampleTop = viewport.scrollTop;
-  let lastScrollSampleAt = performance.now();
-  // Targets written by programmatic scrolls (follow, scrollToIndex, measurement
-  // corrections) that haven't been matched to a scroll event yet. A single frame
-  // can write more than once (e.g. a measurement correction plus a follow chase)
-  // and the browser may emit a scroll event per write, so we match an incoming
-  // scroll against ANY pending target instead of a single, easily-clobbered slot.
-  // Without this a follow-scroll's own event can look like a user scroll and tear
-  // down auto-follow mid-stream.
-  const programmaticScrollTops: number[] = [];
-  let nativeScrollEndPending = false;
-  let wheelPendingNativeScrollEndTop: number | null = null;
-  let settleFrame = 0;
-  let settleTimer = 0;
-  let wheelInputActive = false;
-  let wheelInputTimer = 0;
-  let chromiumEdgeWheelActive: VirtualListBoundary | null = null;
-  let chromiumEdgeWheelIdle = false;
-  let chromiumWheelSawNativeScrollEnd = false;
-  let chromiumWheelAwaitingFinalScrollEnd = false;
-  let chromiumEdgeWheelSuppressed = false;
-  let chromiumEdgeSettleTimer = 0;
-  const activePointers = new Set<number>();
-  let touchInputActive = false;
   let reachTopArmed = false;
   let reachBottomArmed = false;
   let topReachConsumed = false;
@@ -1206,7 +1161,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         entry.intersectionRatio < BOUNDARY_INTERSECTION_THRESHOLD
       ) {
         const canRearm =
-          userScrollActive || !reachConsumedForBoundary(boundary);
+          scrollSettle.isUserScrollActive() ||
+          !reachConsumedForBoundary(boundary);
         if (canRearm) {
           setReachConsumed(boundary, false);
           setBoundaryArmed(boundary, true);
@@ -1371,16 +1327,22 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     value: number,
     options?: ScrollTopWriteOptions,
   ): boolean {
-    if (userScrollActive && options?.allowDuringScroll !== true) return false;
+    if (
+      scrollSettle.isUserScrollActive() &&
+      options?.allowDuringScroll !== true
+    )
+      return false;
     const target = clamp(value, 0, nativeMaxScrollTop());
     const shouldWrite = Math.abs(viewport.scrollTop - target) > 0.5;
     if (shouldWrite) {
-      recordProgrammaticScrollTop(target);
+      scrollSettle.recordProgrammaticScrollTop(target);
       viewport.scrollTop = target;
     }
     if (options?.preserveLogicalOffset) {
       setScrollTopResidual(target - viewport.scrollTop);
-      if (userScrollActive) resetScrollVelocity(viewport.scrollTop);
+      if (scrollSettle.isUserScrollActive()) {
+        scrollSettle.resetVelocity(viewport.scrollTop);
+      }
     } else {
       clearScrollTopResidual();
     }
@@ -1571,13 +1533,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return renderMode !== "full" && buildPlaceholder !== undefined;
   }
 
-  function currentScrollVelocity(): number {
-    if (lastScrollSampleDelta <= 0) return scrollVelocity;
-    const elapsed = performance.now() - lastScrollSampleAt;
-    if (elapsed <= 0) return scrollVelocity;
-    return Math.min(scrollVelocity, lastScrollSampleDelta / elapsed);
-  }
-
   function placeholderEnterVelocity(): number {
     const value = getPlaceholderVelocityThreshold();
     if (!Number.isFinite(value)) {
@@ -1642,7 +1597,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return false;
     }
 
-    const velocity = currentScrollVelocity();
+    const velocity = scrollSettle.currentVelocity();
 
     if (isAtNativeScrollBoundary()) {
       disablePlaceholderFastMode();
@@ -1656,9 +1611,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       schedulePlaceholderHydrationCheck();
     } else if (placeholderFastMode) {
       const exitVelocity = enterVelocity * PLACEHOLDER_VELOCITY_EXIT_RATIO;
-      if (lastScrollSampleDelta > measureEpsilon && velocity <= exitVelocity) {
+      if (
+        scrollSettle.lastSampleDelta() > measureEpsilon &&
+        velocity <= exitVelocity
+      ) {
         placeholderLowVelocitySamples++;
-      } else if (lastScrollSampleDelta > measureEpsilon) {
+      } else if (scrollSettle.lastSampleDelta() > measureEpsilon) {
         placeholderLowVelocitySamples = 0;
       }
       if (placeholderLowVelocitySamples >= PLACEHOLDER_EXIT_SAMPLE_COUNT) {
@@ -1728,15 +1686,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   function forceHydratePlaceholders(): boolean {
     clearPlaceholderFastModeState();
     return refreshMountedPlaceholders();
-  }
-
-  function hydratePlaceholdersAfterNativeScrollEnd(): void {
-    if (mountedPlaceholders.size === 0) return;
-    if (!nativeScrollEndPending) return;
-    if (!canSettleUserScroll()) return;
-    const refreshedPlaceholders = forceHydratePlaceholders();
-    if (!refreshedPlaceholders) return;
-    renderNow(logicalScrollTop());
   }
 
   function syncRenderChrome(): number {
@@ -1944,7 +1893,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return;
     }
     pendingMeasurements.set(index, positiveSize(height));
-    if (userScrollActive) return;
+    if (scrollSettle.isUserScrollActive()) return;
     scheduleMeasurementFlush();
   }
 
@@ -1959,7 +1908,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   // off to it instead of running a second flush+scroll+render the same frame.
   function runScheduledMeasurementFlush(): void {
     measurementFrame = 0;
-    if (bottomFollowActive && !userScrollActive) {
+    if (bottomFollowActive && !scrollSettle.isUserScrollActive()) {
       wakeBottomFollow();
       return;
     }
@@ -1967,7 +1916,9 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function flushMeasurementsNow(): boolean {
-    if (pendingMeasurements.size === 0 || userScrollActive) return false;
+    if (pendingMeasurements.size === 0 || scrollSettle.isUserScrollActive()) {
+      return false;
+    }
     if (measurementFrame) {
       cancelAnimationFrame(measurementFrame);
       measurementFrame = 0;
@@ -2020,11 +1971,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     // Use the pre-shrink scrollTop: reading viewport.scrollTop after the height
     // write forces layout and already reflects the clamp.
     if (scrollTopBeforeSync > maxTop + measureEpsilon) {
-      recordProgrammaticScrollTop(maxTop);
+      scrollSettle.recordProgrammaticScrollTop(maxTop);
     }
-    if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
+    const userScrolling = scrollSettle.isUserScrollActive();
+    if (!hadStickyTail && wasAtBottom && !userScrolling && count > 0) {
       setScrollTop(maxTop);
-    } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
+    } else if (!userScrolling && Math.abs(correction) > measureEpsilon) {
       setScrollTop(
         logicalScrollTop() + correction,
         PRESERVE_LOGICAL_SCROLL_OFFSET,
@@ -2036,7 +1988,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   function flushMeasurements(): void {
     measurementFrame = 0;
     if (pendingMeasurements.size === 0) return;
-    if (userScrollActive) return;
+    if (scrollSettle.isUserScrollActive()) return;
 
     const wasAtBottom = atBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
@@ -2077,7 +2029,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     const anchorIndex = sizeTree.indexAt(
       Math.max(0, logicalScrollTop() - topSlotHeight()),
     );
-    if (userScrollActive && index < anchorIndex) {
+    if (scrollSettle.isUserScrollActive() && index < anchorIndex) {
       queueMeasurement(index, height);
       return;
     }
@@ -2117,7 +2069,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function interruptNativeScrollMomentum(): void {
-    if (!userScrollActive) return;
+    if (!scrollSettle.isUserScrollActive()) return;
 
     const currentTop = clamp(viewport.scrollTop, 0, nativeMaxScrollTop());
     const previousOverflowY = viewport.style.overflowY;
@@ -2151,7 +2103,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     activeSmoothScrollCancel?.();
     const hydratedPlaceholders = forceHydratePlaceholders();
     interruptNativeScrollMomentum();
-    cancelUserScroll();
+    scrollSettle.cancelGesture();
     const target = clamp(top, 0, nativeMaxScrollTop());
     const snapThreshold = options.snapThreshold ?? SCROLL_SNAP_THRESHOLD;
     if (options.signal?.aborted) {
@@ -2164,12 +2116,11 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return Promise.resolve(true);
     }
 
-    handleUserScrollStart(true);
+    scrollSettle.beginProgrammaticGesture();
 
     if (options.behavior !== "smooth") {
       setScrollTop(target, ALLOW_DURING_SCROLL);
-      nativeScrollEndPending = true;
-      scheduleSettleCooldown();
+      scrollSettle.markSettlePending();
       return Promise.resolve(true);
     }
 
@@ -2183,8 +2134,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   // multiple native segments (visible "steps"/speed changes). A self-driven loop
   // is identical across engines and honors `duration`.
   //
-  // It runs WITH `userScrollActive` already true (set by the caller's
-  // `handleUserScrollStart(true)`), exactly like the old native path: that keeps
+  // It runs WITH the user-scroll gesture already active (set by the caller's
+  // `beginProgrammaticGesture()`), exactly like the old native path: that keeps
   // the scroll handler from misreading our own programmatic writes as a user
   // scroll (Firefox coalesces/rounds large per-frame jumps, so value-matching
   // alone is unreliable), and lets the normal settle apply deferred measurements
@@ -2224,10 +2175,9 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
             clamp(target, 0, nativeMaxScrollTop()),
             ALLOW_DURING_SCROLL,
           );
-          finishUserScroll();
+          scrollSettle.finishGesture();
         } else {
-          nativeScrollEndPending = true;
-          scheduleSettleCooldown();
+          scrollSettle.markSettlePending();
         }
         resolve(completed);
       };
@@ -2295,7 +2245,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (
       !bottomFollowActive ||
       disposed ||
-      userScrollActive ||
+      scrollSettle.isUserScrollActive() ||
       bottomFollowSignal?.aborted ||
       count <= 0
     ) {
@@ -2324,7 +2274,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (
       disposed ||
       !bottomFollowActive ||
-      userScrollActive ||
+      scrollSettle.isUserScrollActive() ||
       bottomFollowSignal?.aborted ||
       count <= 0
     ) {
@@ -2582,7 +2532,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function shouldDeferLayoutUpdate(update: VirtualListLayoutUpdate): boolean {
-    if (!userScrollActive) return false;
+    if (!scrollSettle.isUserScrollActive()) return false;
     if (update.apply) return true;
     if (
       normalizedCountShift(update.addedBefore, Number.MAX_SAFE_INTEGER) > 0 ||
@@ -2730,361 +2680,11 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     renderNow(logicalScrollTop());
   }
 
-  function resetScrollVelocity(scrollTop = viewport.scrollTop): void {
-    scrollVelocity = 0;
-    lastScrollSampleDelta = 0;
-    lastScrollSampleTop = scrollTop;
-    lastScrollSampleAt = performance.now();
-  }
-
-  function updateScrollVelocity(scrollTop = viewport.scrollTop): void {
-    const now = performance.now();
-    const elapsed = now - lastScrollSampleAt;
-    lastScrollSampleDelta = Math.abs(scrollTop - lastScrollSampleTop);
-    if (elapsed > 0) {
-      scrollVelocity = lastScrollSampleDelta / elapsed;
-    }
-    lastScrollSampleTop = scrollTop;
-    lastScrollSampleAt = now;
-  }
-
-  function recordProgrammaticScrollTop(target: number): void {
-    programmaticScrollTops.push(target);
-    // Bound the buffer; pending writes are matched within a frame or two, so a
-    // few entries is plenty. Drop the oldest if it somehow accumulates.
-    if (programmaticScrollTops.length > MAX_PENDING_PROGRAMMATIC_SCROLLS) {
-      programmaticScrollTops.shift();
-    }
-  }
-
-  function consumeProgrammaticScrollWrite(scrollTop: number): boolean {
-    if (programmaticScrollTops.length === 0) return false;
-    const tolerance = Math.max(1, measureEpsilon);
-    const matchIndex = programmaticScrollTops.findIndex(
-      (target) => Math.abs(scrollTop - target) <= tolerance,
-    );
-    if (matchIndex === -1) {
-      // The scroll landed on no pending programmatic target — a real user scroll
-      // took over. Drop the stale targets so they can't shadow later events.
-      programmaticScrollTops.length = 0;
-      return false;
-    }
-    // Discard this target and any older ones it superseded (the scroll has caught
-    // up to here); keep newer writes for their own events.
-    programmaticScrollTops.splice(0, matchIndex + 1);
-    return true;
-  }
-
-  function handleScroll(): void {
-    const previousScrollTop = lastScrollSampleTop;
-    const nextScrollTop = viewport.scrollTop;
-    const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
-    const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
-    if (!userScrollActive && moved && !programmaticScroll) {
-      handleUserScrollStart();
-    }
-    updateScrollVelocity(nextScrollTop);
-    if (
-      (scrollSettleStrategy === "firefox-wheel" ||
-        scrollSettleStrategy === "safari-wheel") &&
-      nativeScrollEndPending &&
-      wheelPendingNativeScrollEndTop !== null &&
-      !isRubberBandOverscrolled() &&
-      Math.abs(nextScrollTop - wheelPendingNativeScrollEndTop) > measureEpsilon
-    ) {
-      nativeScrollEndPending = false;
-      wheelPendingNativeScrollEndTop = null;
-      cancelSettleTimer();
-      cancelSettleFrame();
-    }
-    if (userScrollActive && moved) {
-      userScrollMoved = true;
-    }
-    if (nativeScrollEndPending) {
-      scheduleSettleCooldown();
-    } else {
-      scheduleWheelScrollEndFallback();
-    }
-    scheduleRender();
-  }
-
-  function hasActiveTouchOrPointerInput(): boolean {
-    return touchInputActive || activePointers.size > 0;
-  }
-
-  function isRubberBandOverscrolled(): boolean {
-    const scrollTop = viewport.scrollTop;
-    const maxScrollTop = nativeMaxScrollTop();
-    return (
-      scrollTop < -measureEpsilon || scrollTop - maxScrollTop > measureEpsilon
-    );
-  }
-
   function isAtNativeScrollBoundary(scrollTop = viewport.scrollTop): boolean {
     const maxScrollTop = nativeMaxScrollTop();
     return (
       scrollTop <= measureEpsilon || maxScrollTop - scrollTop <= measureEpsilon
     );
-  }
-
-  function cancelSettleFrame(): void {
-    if (!settleFrame) return;
-    cancelAnimationFrame(settleFrame);
-    settleFrame = 0;
-  }
-
-  function cancelSettleTimer(): void {
-    if (!settleTimer) return;
-    window.clearTimeout(settleTimer);
-    settleTimer = 0;
-  }
-
-  function cancelWheelInputTimer(): void {
-    if (!wheelInputTimer) return;
-    window.clearTimeout(wheelInputTimer);
-    wheelInputTimer = 0;
-  }
-
-  function cancelChromiumEdgeSettleTimer(): void {
-    if (!chromiumEdgeSettleTimer) return;
-    window.clearTimeout(chromiumEdgeSettleTimer);
-    chromiumEdgeSettleTimer = 0;
-  }
-
-  function usesWheelInputSettle(): boolean {
-    return (
-      scrollSettleStrategy === "chromium-wheel" ||
-      scrollSettleStrategy === "firefox-wheel" ||
-      scrollSettleStrategy === "safari-wheel"
-    );
-  }
-
-  function usesWheelScrollEndFallback(): boolean {
-    return (
-      scrollSettleStrategy === "firefox-wheel" ||
-      scrollSettleStrategy === "safari-wheel"
-    );
-  }
-
-  function hasActiveWheelInput(): boolean {
-    return usesWheelInputSettle() && wheelInputActive;
-  }
-
-  function hasActiveChromiumEdgeWheel(): boolean {
-    return (
-      scrollSettleStrategy === "chromium-wheel" &&
-      chromiumEdgeWheelActive !== null
-    );
-  }
-
-  function boundaryForOutwardWheel(
-    event: WheelEvent,
-  ): VirtualListBoundary | null {
-    const scrollTop = viewport.scrollTop;
-    if (event.deltaY < 0 && scrollTop <= measureEpsilon) return "top";
-    if (event.deltaY <= 0) return null;
-
-    const maxScrollTop = nativeMaxScrollTop();
-    if (
-      maxScrollTop > measureEpsilon &&
-      maxScrollTop - scrollTop <= measureEpsilon
-    ) {
-      return "bottom";
-    }
-    return null;
-  }
-
-  function canSettleUserScroll(): boolean {
-    return (
-      !hasActiveTouchOrPointerInput() &&
-      !hasActiveWheelInput() &&
-      !hasActiveChromiumEdgeWheel() &&
-      !chromiumWheelAwaitingFinalScrollEnd &&
-      !isRubberBandOverscrolled()
-    );
-  }
-
-  function canScheduleWheelScrollEndFallback(): boolean {
-    return (
-      usesWheelScrollEndFallback() &&
-      userScrollActive &&
-      userScrollMoved &&
-      !nativeScrollEndPending &&
-      !hasActiveTouchOrPointerInput() &&
-      !hasActiveWheelInput()
-    );
-  }
-
-  function cancelUserScrollTimers(): void {
-    cancelSettleTimer();
-    cancelSettleFrame();
-    cancelWheelInputTimer();
-    cancelChromiumEdgeSettleTimer();
-  }
-
-  function resetScrollSettleState(): void {
-    wheelInputActive = false;
-    chromiumEdgeWheelActive = null;
-    chromiumEdgeWheelIdle = false;
-    chromiumWheelSawNativeScrollEnd = false;
-    chromiumWheelAwaitingFinalScrollEnd = false;
-    chromiumEdgeWheelSuppressed = false;
-  }
-
-  function cancelPendingUserScrollEnd(): void {
-    nativeScrollEndPending = false;
-    wheelPendingNativeScrollEndTop = null;
-    chromiumWheelSawNativeScrollEnd = false;
-    cancelSettleTimer();
-    cancelSettleFrame();
-  }
-
-  function resetUserScrollState(): void {
-    nativeScrollEndPending = false;
-    wheelPendingNativeScrollEndTop = null;
-    userScrollActive = false;
-    userScrollMoved = false;
-    resetScrollVelocity();
-    clearPlaceholderFastModeState();
-    placeholderLowVelocitySamples = 0;
-  }
-
-  function finishUserScroll(): void {
-    cancelUserScrollTimers();
-    resetScrollSettleState();
-    resetUserScrollState();
-    const flushedLayout = flushDeferredLayoutUpdates();
-    const flushedMeasurements = flushMeasurementsNow();
-    const refreshedPlaceholders = refreshMountedPlaceholders();
-    if (refreshedPlaceholders || (!flushedLayout && !flushedMeasurements)) {
-      renderNow(viewport.scrollTop);
-    }
-    const state = getState();
-    onScrollEnd?.(state);
-  }
-
-  function cancelUserScroll(): void {
-    cancelUserScrollTimers();
-    resetScrollSettleState();
-    resetUserScrollState();
-  }
-
-  function maybeFinishUserScroll(): void {
-    if (!userScrollActive || !nativeScrollEndPending) return;
-    if (!canSettleUserScroll()) {
-      if (
-        ((scrollSettleStrategy === "firefox-wheel" ||
-          scrollSettleStrategy === "safari-wheel") &&
-          wheelInputActive) ||
-        hasActiveChromiumEdgeWheel() ||
-        (scrollSettleStrategy === "chromium-wheel" &&
-          (chromiumWheelAwaitingFinalScrollEnd || chromiumEdgeWheelSuppressed))
-      ) {
-        return;
-      }
-      schedulePendingSettleCheck();
-      return;
-    }
-    finishUserScroll();
-  }
-
-  function schedulePendingSettleCheck(): void {
-    if (settleFrame || disposed) return;
-    settleFrame = requestAnimationFrame(() => {
-      settleFrame = 0;
-      maybeFinishUserScroll();
-    });
-  }
-
-  function scheduleSettleCooldown(): void {
-    cancelSettleTimer();
-    settleTimer = window.setTimeout(() => {
-      settleTimer = 0;
-      maybeFinishUserScroll();
-    }, SCROLL_SETTLE_COOLDOWN_MS);
-  }
-
-  function markPendingWheelScrollEnd(): void {
-    nativeScrollEndPending = true;
-    wheelPendingNativeScrollEndTop = clamp(
-      viewport.scrollTop,
-      0,
-      nativeMaxScrollTop(),
-    );
-    hydratePlaceholdersAfterNativeScrollEnd();
-    scheduleSettleCooldown();
-  }
-
-  function scheduleWheelScrollEndFallback(): void {
-    if (!canScheduleWheelScrollEndFallback()) return;
-    cancelSettleTimer();
-    settleTimer = window.setTimeout(() => {
-      settleTimer = 0;
-      if (!canScheduleWheelScrollEndFallback()) return;
-      markPendingWheelScrollEnd();
-    }, SCROLL_SETTLE_COOLDOWN_MS);
-  }
-
-  function scheduleChromiumEdgeSettleFallback(
-    boundary: VirtualListBoundary,
-  ): void {
-    cancelChromiumEdgeSettleTimer();
-    chromiumEdgeSettleTimer = window.setTimeout(() => {
-      chromiumEdgeSettleTimer = 0;
-      if (
-        disposed ||
-        !userScrollActive ||
-        wheelInputActive ||
-        !chromiumEdgeWheelSuppressed ||
-        chromiumEdgeWheelActive !== boundary ||
-        isRubberBandOverscrolled()
-      ) {
-        return;
-      }
-      chromiumWheelAwaitingFinalScrollEnd = false;
-      chromiumEdgeWheelSuppressed = false;
-      chromiumEdgeWheelActive = null;
-      chromiumEdgeWheelIdle = false;
-      nativeScrollEndPending = true;
-      scheduleSettleCooldown();
-    }, CHROMIUM_EDGE_SETTLE_QUIET_MS);
-  }
-
-  function handleScrollEnd(): void {
-    if (!activeSmoothScrollReachedTarget()) return;
-
-    if (
-      scrollSettleStrategy === "firefox-wheel" ||
-      scrollSettleStrategy === "safari-wheel"
-    ) {
-      if (!userScrollActive) return;
-      if (!userScrollMoved) {
-        cancelUserScroll();
-        return;
-      }
-      markPendingWheelScrollEnd();
-      return;
-    }
-
-    nativeScrollEndPending = true;
-    if (scrollSettleStrategy === "chromium-wheel" && userScrollActive) {
-      chromiumWheelSawNativeScrollEnd = true;
-      if (!wheelInputActive && chromiumWheelAwaitingFinalScrollEnd) {
-        chromiumWheelAwaitingFinalScrollEnd = false;
-        chromiumEdgeWheelActive = null;
-        chromiumEdgeWheelIdle = false;
-      }
-    }
-    if (
-      scrollSettleStrategy === "chromium-wheel" &&
-      chromiumEdgeWheelActive &&
-      chromiumEdgeWheelIdle
-    ) {
-      chromiumEdgeWheelActive = null;
-      chromiumEdgeWheelIdle = false;
-    }
-    hydratePlaceholdersAfterNativeScrollEnd();
-    scheduleSettleCooldown();
   }
 
   function handleViewportResize(): void {
@@ -3105,234 +2705,40 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     scheduleRender();
   }
 
-  // `isProgrammatic` is set only by the library's own smooth-scroll driver
-  // (scrollToNativeTop). A genuine user scroll (everything else) interrupts any
-  // in-flight programmatic smooth scroll so the user can actually scroll away,
-  // instead of the library re-issuing the animation and pulling them back.
-  function handleUserScrollStart(isProgrammatic = false): void {
-    if (!isProgrammatic) {
+  const scrollSettle = createScrollSettleController({
+    viewport,
+    strategy: config.scrollSettleStrategy ?? detectScrollSettleStrategy(),
+    measureEpsilon,
+    isDisposed: () => disposed,
+    cancelActiveSmoothScroll: () => {
       activeSmoothScrollCancel?.();
-    }
-    stopFollowBottom();
-    clearScrollTopResidual();
-    const wasActive = userScrollActive;
-    userScrollActive = true;
-    if (!wasActive) {
-      nativeScrollEndPending = false;
-      wheelPendingNativeScrollEndTop = null;
-      userScrollMoved = false;
+    },
+    smoothScrollReachedTarget: activeSmoothScrollReachedTarget,
+    onGestureActivity: () => {
+      stopFollowBottom();
+      clearScrollTopResidual();
+    },
+    onGestureStarted: () => {
       pendingBoundaryArm = needsBoundaryRender;
-      resetScrollVelocity();
-      chromiumWheelSawNativeScrollEnd = false;
-      chromiumWheelAwaitingFinalScrollEnd = false;
-      chromiumEdgeWheelSuppressed = false;
-      cancelChromiumEdgeSettleTimer();
-    } else if (
-      scrollSettleStrategy !== "firefox-wheel" &&
-      scrollSettleStrategy !== "safari-wheel"
-    ) {
-      cancelPendingUserScrollEnd();
-    }
-    if (!wasActive) {
       onScrollStart?.(getState());
-    }
-  }
-
-  function handleChromiumWheelInput(event: WheelEvent): void {
-    if (scrollSettleStrategy !== "chromium-wheel") return;
-    const outwardBoundary = boundaryForOutwardWheel(event);
-    chromiumWheelAwaitingFinalScrollEnd = false;
-    cancelChromiumEdgeSettleTimer();
-    if (outwardBoundary) {
-      chromiumEdgeWheelSuppressed = true;
-      nativeScrollEndPending = false;
-      chromiumWheelAwaitingFinalScrollEnd = true;
-    } else if (nativeScrollEndPending) {
-      nativeScrollEndPending = false;
-    }
-    if (!outwardBoundary) {
-      chromiumEdgeWheelActive = null;
-      chromiumEdgeWheelIdle = false;
-    } else {
-      chromiumEdgeWheelActive = outwardBoundary;
-      chromiumEdgeWheelIdle = false;
-    }
-    wheelInputActive = true;
-    cancelWheelInputTimer();
-    wheelInputTimer = window.setTimeout(() => {
-      wheelInputTimer = 0;
-      wheelInputActive = false;
-      if (outwardBoundary) {
-        chromiumEdgeWheelIdle = true;
-        chromiumWheelAwaitingFinalScrollEnd = true;
-        nativeScrollEndPending = false;
-        scheduleChromiumEdgeSettleFallback(outwardBoundary);
-      } else if (chromiumWheelSawNativeScrollEnd) {
-        nativeScrollEndPending = true;
-        chromiumWheelAwaitingFinalScrollEnd = false;
-        chromiumEdgeWheelSuppressed = false;
+    },
+    onGestureSettled: () => {
+      const flushedLayout = flushDeferredLayoutUpdates();
+      const flushedMeasurements = flushMeasurementsNow();
+      const refreshedPlaceholders = refreshMountedPlaceholders();
+      if (refreshedPlaceholders || (!flushedLayout && !flushedMeasurements)) {
+        renderNow(viewport.scrollTop);
       }
-      hydratePlaceholdersAfterNativeScrollEnd();
-      if (nativeScrollEndPending) scheduleSettleCooldown();
-    }, WHEEL_INPUT_IDLE_MS);
-  }
+      onScrollEnd?.(getState());
+    },
+    onGestureReset: clearPlaceholderFastModeState,
+    onScrollEventObserved: scheduleRender,
+    onNativeScrollEndIdle: () => {
+      if (mountedPlaceholders.size === 0) return;
+      if (forceHydratePlaceholders()) renderNow(logicalScrollTop());
+    },
+  });
 
-  function handleWheelInputSettle(
-    outwardBoundary: VirtualListBoundary | null = null,
-  ): void {
-    if (
-      scrollSettleStrategy !== "firefox-wheel" &&
-      scrollSettleStrategy !== "safari-wheel"
-    ) {
-      return;
-    }
-    wheelInputActive = true;
-    cancelWheelInputTimer();
-    wheelInputTimer = window.setTimeout(() => {
-      wheelInputTimer = 0;
-      wheelInputActive = false;
-      hydratePlaceholdersAfterNativeScrollEnd();
-      if (nativeScrollEndPending) {
-        scheduleSettleCooldown();
-        return;
-      }
-      if (
-        scrollSettleStrategy === "firefox-wheel" &&
-        outwardBoundary !== null
-      ) {
-        return;
-      }
-      scheduleWheelScrollEndFallback();
-    }, WHEEL_INPUT_IDLE_MS);
-  }
-
-  function handleWheel(event: WheelEvent): void {
-    if (
-      scrollSettleStrategy === "firefox-wheel" ||
-      scrollSettleStrategy === "safari-wheel"
-    ) {
-      const outwardBoundary = boundaryForOutwardWheel(event);
-      handleUserScrollStart();
-      if (outwardBoundary) userScrollMoved = true;
-      handleWheelInputSettle(outwardBoundary);
-      return;
-    }
-
-    handleUserScrollStart();
-    handleChromiumWheelInput(event);
-  }
-
-  function handleUserScrollMaybeEnd(): void {
-    if (hasActiveTouchOrPointerInput()) return;
-    maybeFinishUserScroll();
-    if (
-      userScrollActive &&
-      !userScrollMoved &&
-      !nativeScrollEndPending &&
-      !isRubberBandOverscrolled()
-    ) {
-      finishUserScroll();
-    }
-  }
-
-  function handleTouchScrollStart(): void {
-    touchInputActive = true;
-    handleUserScrollStart();
-  }
-
-  function handleTouchScrollMove(): void {
-    handleUserScrollStart();
-  }
-
-  function handleTouchScrollEnd(event: TouchEvent): void {
-    if (event.touches.length === 0) touchInputActive = false;
-    handleUserScrollMaybeEnd();
-  }
-
-  function isLikelyScrollbarPointer(event: PointerEvent): boolean {
-    if (event.pointerType !== "mouse") return false;
-
-    const scrollbarGutterWidth = Math.max(
-      0,
-      viewport.offsetWidth - viewport.clientWidth,
-    );
-    if (scrollbarGutterWidth <= 0) return event.target === viewport;
-
-    // The client area spans [left + clientLeft, + clientWidth) of the border
-    // box; anything outside it horizontally is scrollbar gutter (or border).
-    // Bounding at the client edges — rather than offsetting the combined gutter
-    // width from each border-box edge — keeps borders and the opposite edge's
-    // gutter from widening the zones into the content.
-    const rect = viewport.getBoundingClientRect();
-    const clientLeftEdge = rect.left + viewport.clientLeft;
-    const clientRightEdge = clientLeftEdge + viewport.clientWidth;
-    return event.clientX < clientLeftEdge || event.clientX >= clientRightEdge;
-  }
-
-  function handlePointerScrollStart(event: PointerEvent): void {
-    if (event.pointerType === "touch" && supportsTouchEvents) return;
-    if (event.pointerType === "mouse" && !isLikelyScrollbarPointer(event)) {
-      return;
-    }
-    activePointers.add(event.pointerId);
-    handleUserScrollStart();
-  }
-
-  function settlePointerScrollWithoutNativeScrollEnd(): void {
-    if (
-      activePointers.size > 0 ||
-      !userScrollActive ||
-      !userScrollMoved ||
-      nativeScrollEndPending ||
-      isRubberBandOverscrolled()
-    ) {
-      return;
-    }
-
-    nativeScrollEndPending = true;
-    wheelPendingNativeScrollEndTop = null;
-  }
-
-  function handlePointerScrollEnd(event: PointerEvent): void {
-    if (event.pointerType === "touch" && supportsTouchEvents) return;
-    if (event.pointerType === "mouse" && !activePointers.has(event.pointerId)) {
-      return;
-    }
-    activePointers.delete(event.pointerId);
-    settlePointerScrollWithoutNativeScrollEnd();
-    handleUserScrollMaybeEnd();
-  }
-
-  viewport.addEventListener("scroll", handleScroll, { passive: true });
-  viewport.addEventListener("scrollend", handleScrollEnd, { passive: true });
-  viewport.addEventListener("wheel", handleWheel, { passive: true });
-  const supportsPointerEvents = "PointerEvent" in window;
-  const supportsTouchEvents = "TouchEvent" in window;
-  if (supportsPointerEvents) {
-    viewport.addEventListener("pointerdown", handlePointerScrollStart, {
-      passive: true,
-    });
-    window.addEventListener("pointerup", handlePointerScrollEnd, {
-      passive: true,
-    });
-    window.addEventListener("pointercancel", handlePointerScrollEnd, {
-      passive: true,
-    });
-  }
-  if (supportsTouchEvents) {
-    viewport.addEventListener("touchstart", handleTouchScrollStart, {
-      passive: true,
-    });
-    viewport.addEventListener("touchmove", handleTouchScrollMove, {
-      passive: true,
-    });
-    viewport.addEventListener("touchend", handleTouchScrollEnd, {
-      passive: true,
-    });
-    viewport.addEventListener("touchcancel", handleTouchScrollEnd, {
-      passive: true,
-    });
-  }
   viewportResizeObserver.observe(viewport);
 
   setCount();
@@ -3366,30 +2772,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       if (renderFrame) cancelAnimationFrame(renderFrame);
       if (measurementFrame) cancelAnimationFrame(measurementFrame);
       cancelPlaceholderHydrationCheck();
-      cancelSettleFrame();
-      cancelSettleTimer();
-      cancelWheelInputTimer();
-      cancelChromiumEdgeSettleTimer();
       stopFollowBottom();
+      scrollSettle.dispose();
       deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();
       itemMeasurer?.dispose();
       boundaryIntersectionObserver?.disconnect();
-      viewport.removeEventListener("scroll", handleScroll);
-      viewport.removeEventListener("scrollend", handleScrollEnd);
-      viewport.removeEventListener("wheel", handleWheel);
-      if (supportsPointerEvents) {
-        viewport.removeEventListener("pointerdown", handlePointerScrollStart);
-        window.removeEventListener("pointerup", handlePointerScrollEnd);
-        window.removeEventListener("pointercancel", handlePointerScrollEnd);
-      }
-      if (supportsTouchEvents) {
-        viewport.removeEventListener("touchstart", handleTouchScrollStart);
-        viewport.removeEventListener("touchmove", handleTouchScrollMove);
-        viewport.removeEventListener("touchend", handleTouchScrollEnd);
-        viewport.removeEventListener("touchcancel", handleTouchScrollEnd);
-      }
       viewport.classList.remove("vl-viewport", "vl-scrollbar");
       for (const [index, element] of mounted) {
         notifyDestroyItem(index, element);
