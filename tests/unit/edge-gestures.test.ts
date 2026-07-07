@@ -246,6 +246,29 @@ describe("fractional-edge gestures", () => {
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
   });
 
+  it("safari: a bounce-tail event gap longer than the cooldown cannot settle at the edge", () => {
+    const harness = mountEdgeDemo("safari-wheel");
+    const max = harness.maxScrollTop();
+    momentumScrollTo(harness, max - 0.8); // reach fires; the load defers
+
+    // Early scrollend, then a bounce event after a gap that exceeds the
+    // 140ms cooldown. The old behavior settled 280ms after that event —
+    // inside the still-decaying bounce — and the settle's anchor writes
+    // (a bottom load trims the retained top) snapped the animation.
+    harness.scrollEnd();
+    vi.advanceTimersByTime(200);
+    harness.scrollTo(max - 0.5); // the bounce is still delivering events
+
+    vi.advanceTimersByTime(283); // past the old cooldown-based settle point
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+    expect(harness.applies()).toBe(0);
+
+    // 350ms of genuine scroll-event silence: the bounce is over, settle.
+    vi.advanceTimersByTime(300);
+    expect(harness.applies()).toBe(1);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
   it("safari: sub-pixel decaying motion keeps canceling a pending settle", () => {
     const harness = mountEdgeDemo("safari-wheel");
     const max = harness.maxScrollTop();

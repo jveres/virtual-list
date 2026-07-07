@@ -49,7 +49,12 @@
  * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
  *   during native motion kills the momentum animation. The contract is:
  *   never settle while rubber-banded or while any motion — even sub-pixel —
- *   continues; settle from the release scrollend or true quiet.
+ *   continues; settle from the release scrollend or true quiet. Near an
+ *   edge, settling additionally requires SAFARI_EDGE_SETTLE_QUIET_MS of
+ *   scroll-event silence: the bounce tail decays through event gaps longer
+ *   than the cooldown, and the settle's anchor-preserving writes (a bottom
+ *   load trims the retained top, which writes scrollTop) snap the bounce if
+ *   they land inside it.
  *
  * Two tolerances make this robust: EDGE_PROXIMITY_EPSILON_PX accepts the
  * fractional gap (up to ~1px, more under zoom) engines leave between a pinned
@@ -65,6 +70,11 @@ const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 // are gone (or motionless, which is indistinguishable). Long enough to
 // outlast the gaps in a decaying momentum-wheel tail.
 const EDGE_SETTLE_QUIET_MS = 450;
+// Safari settles near an edge only after this much scroll-event silence: the
+// rubber-band bounce decays through event gaps longer than the settle
+// cooldown, and a settle inside the tail performs anchor-preserving
+// scrollTop writes (window trims, prepends) that snap the animation.
+const SAFARI_EDGE_SETTLE_QUIET_MS = 350;
 // Firefox last resort: Firefox defers scrollend until the gesture truly ends
 // (fingers off, momentum spent), so the release scrollend is expected to
 // settle every edge gesture. Any timer-driven apply during a held overscroll
@@ -371,7 +381,17 @@ export function createScrollSettleController(
       !hasActiveWheelInput() &&
       !hasActiveChromiumEdgeWheel() &&
       !chromiumWheelAwaitingFinalScrollEnd &&
-      !isRubberBandOverscrolled()
+      !isRubberBandOverscrolled() &&
+      // Safari bounce tails deliver scroll events at gaps longer than the
+      // settle cooldown; wait for genuine event silence near an edge so the
+      // settle's scrollTop writes can't snap a live bounce. maybeFinish's
+      // pending-check rAF loop re-tests this every frame, so the settle
+      // lands right when the silence window closes.
+      !(
+        strategy === "safari-wheel" &&
+        isNearScrollEdge() &&
+        performance.now() - lastScrollSampleAt < SAFARI_EDGE_SETTLE_QUIET_MS
+      )
     );
   }
 
