@@ -25,5 +25,11 @@ export default defineConfig({
   },
   server: {
     open: true,
+    fs: {
+      // markdown-viewer is a link: dependency; its assets (e.g. the comrak
+      // wasm binary) resolve through the symlink into the sibling checkout,
+      // outside this project's default fs.allow root.
+      allow: [".", "../markdown-viewer"],
+    },
   },
 });
