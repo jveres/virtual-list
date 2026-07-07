@@ -9,6 +9,9 @@
 
 import { clamp } from "./layout-kernel";
 
+// Structurally identical to VirtualListScrollOptions on purpose: declaring it
+// locally keeps this module free of an import cycle with virtual-list.ts, and
+// the virtualizer's followBottom() passes its options straight through.
 export interface FollowBottomOptions {
   behavior?: ScrollBehavior;
   duration?: number;

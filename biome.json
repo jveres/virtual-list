@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": ["**", "!dist", "!.pnpm-store"]
+    "includes": ["**", "!dist", "!.pnpm-store", "!coverage"]
   },
   "formatter": {
     "enabled": true,
