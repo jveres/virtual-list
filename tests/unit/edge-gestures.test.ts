@@ -190,6 +190,47 @@ describe("fractional-edge gestures", () => {
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
   });
 
+  it("firefox: drops a mid-hold scrollend at the edge and waits for the release", () => {
+    const harness = mountEdgeDemo("firefox-wheel");
+    momentumScrollTo(harness, harness.maxScrollTop() - 0.8);
+
+    // A scrollend lands while fingers are still down (the overscroll bounce
+    // completing is one real source). It must not be treated as the release.
+    vi.advanceTimersByTime(300);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(100);
+    harness.wheel(8); // fingers demonstrably still down at the edge
+    vi.advanceTimersByTime(2000);
+    expect(harness.applies()).toBe(0);
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+
+    harness.scrollEnd(); // the actual release
+    vi.advanceTimersByTime(300);
+    expect(harness.applies()).toBe(1);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("firefox: momentum scrolls without wheel events cannot fallback-settle at the edge", () => {
+    const harness = mountEdgeDemo("firefox-wheel");
+
+    // Momentum delivered as bare scroll events (no accompanying wheels), so
+    // the generic scroll-end fallback is the only timer that could arm.
+    let top = 4300;
+    while (top < harness.maxScrollTop() - 0.8) {
+      top = Math.min(harness.maxScrollTop() - 0.8, top + 80);
+      harness.scrollTo(top);
+      vi.advanceTimersByTime(63);
+    }
+    vi.advanceTimersByTime(2000); // held at the edge, no release yet
+    expect(harness.applies()).toBe(0);
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+
+    harness.scrollEnd(); // release
+    vi.advanceTimersByTime(300);
+    expect(harness.applies()).toBe(1);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
   it("safari: sub-pixel decaying motion keeps canceling a pending settle", () => {
     const harness = mountEdgeDemo("safari-wheel");
     const max = harness.maxScrollTop();

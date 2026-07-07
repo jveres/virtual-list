@@ -25,10 +25,15 @@
  *   mid-overscroll after that delay is fine because Chromium repaints the
  *   anchored content without a visible flash.
  * - **Firefox**: applying a list update during an active overscroll visibly
- *   flashes the content, but Firefox reliably emits `scrollend` when the user
- *   actually releases the touchpad. The contract is therefore: while wheels
- *   point outward at an edge, wait indefinitely for the release scrollend and
- *   never settle from a timer.
+ *   flashes the content — and the remainder of the gesture routes to the
+ *   overscroll effect, making freshly applied content unreachable until
+ *   release. Firefox reliably emits `scrollend` when the user actually
+ *   releases the touchpad, so the contract is: while at an overscrolled
+ *   edge, wait indefinitely for the release scrollend and never settle from
+ *   a timer. Two paths could break this and are explicitly closed: the
+ *   generic wheel-scrollend fallback never arms near an edge, and a pending
+ *   settle observed at wheel-idle while outward (set by a mid-hold
+ *   scrollend or a stale fallback) is dropped rather than cooked.
  * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
  *   during native motion kills the momentum animation. The contract is:
  *   never settle while rubber-banded or while any motion — even sub-pixel —
@@ -320,6 +325,15 @@ export function createScrollSettleController(
     return null;
   }
 
+  function isNearScrollEdge(): boolean {
+    const scrollTop = viewport.scrollTop;
+    const maxScrollTop = nativeMaxScrollTop();
+    return (
+      scrollTop <= EDGE_PROXIMITY_EPSILON_PX ||
+      maxScrollTop - scrollTop <= EDGE_PROXIMITY_EPSILON_PX
+    );
+  }
+
   function canSettleUserScroll(): boolean {
     return (
       !hasActiveTouchOrPointerInput() &&
@@ -337,7 +351,13 @@ export function createScrollSettleController(
       userScrollMoved &&
       !nativeScrollEndPending &&
       !hasActiveTouchOrPointerInput() &&
-      !hasActiveWheelInput()
+      !hasActiveWheelInput() &&
+      // Firefox contract: at an edge, only the release scrollend may settle
+      // the gesture. A timer-driven settle here applies deferred loads under
+      // held fingers, which visibly flashes — and the rest of the gesture
+      // routes to the overscroll effect, so the user can't even scroll into
+      // the newly applied content until release.
+      !(strategy === "firefox-wheel" && isNearScrollEdge())
     );
   }
 
@@ -608,16 +628,21 @@ export function createScrollSettleController(
     wheelInputTimer = window.setTimeout(() => {
       wheelInputTimer = 0;
       wheelInputActive = false;
-      hydratePlaceholdersAfterNativeScrollEnd();
-      if (nativeScrollEndPending) {
-        scheduleSettleCooldown();
-        return;
-      }
       if (strategy === "firefox-wheel" && outwardBoundary !== null) {
         // Firefox contract: fingers may still be down at an overscrolled edge
         // (momentum wheels have stopped, no movement to observe), and a list
         // update now would visibly flash. Firefox reliably fires scrollend on
         // the actual release, so wait for it instead of settling on a timer.
+        // A pending settle reaching this point was set mid-hold (an early
+        // bounce-complete scrollend, or a fallback armed before the edge) —
+        // it is not the release; drop it. Skipping placeholder hydration here
+        // is deliberate: it swaps DOM and flashes just like a layout apply.
+        if (nativeScrollEndPending) cancelPendingUserScrollEnd();
+        return;
+      }
+      hydratePlaceholdersAfterNativeScrollEnd();
+      if (nativeScrollEndPending) {
+        scheduleSettleCooldown();
         return;
       }
       scheduleWheelScrollEndFallback();
