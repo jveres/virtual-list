@@ -3,7 +3,7 @@ export interface Message {
   markdown: string;
 }
 
-export const conversation: Message[] = [
+export const conversation: readonly Message[] = [
   {
     role: "user",
     markdown:

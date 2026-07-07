@@ -6,11 +6,13 @@ import {
   type VirtualListRenderMode,
   type VirtualListState,
 } from "../../src/virtual-list.js";
-import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
+import { watchSystemTheme } from "../shared/theme.js";
 import {
   bindThemeButtons,
+  clamp,
   mustGet,
-  syncThemeButtons,
+  refreshTheme,
+  setTextIfChanged,
 } from "../shared/utils.js";
 
 import "../shared/styles.css";
@@ -91,14 +93,6 @@ let optionFrame = 0;
 let stateFrame = 0;
 let lastEvent: StateEvent = "init";
 let lastStateText = "";
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function setText(element: HTMLElement, text: string): void {
-  if (element.textContent !== text) element.textContent = text;
-}
 
 function numericInputValue(input: HTMLInputElement, fallback: number): number {
   const value = Number(input.value);
@@ -256,15 +250,15 @@ function renderState(
 
   if (signature === lastStateText) return;
   lastStateText = signature;
-  setText(stateRange, rangeText);
-  setText(stateMounted, mountedText);
-  setText(stateMeasured, measuredText);
-  setText(stateScroll, scrollText);
-  setText(stateTotal, totalText);
-  setText(stateEdges, edgesText);
-  setText(stateEvent, event);
-  setText(statusSummary, statusText);
-  setText(statusCallback, event);
+  setTextIfChanged(stateRange, rangeText);
+  setTextIfChanged(stateMounted, mountedText);
+  setTextIfChanged(stateMeasured, measuredText);
+  setTextIfChanged(stateScroll, scrollText);
+  setTextIfChanged(stateTotal, totalText);
+  setTextIfChanged(stateEdges, edgesText);
+  setTextIfChanged(stateEvent, event);
+  setTextIfChanged(statusSummary, statusText);
+  setTextIfChanged(statusCallback, event);
 }
 
 function scheduleStateRender(event: StateEvent = lastEvent): void {
@@ -362,18 +356,26 @@ function readOptionsFromControls(): DemoOptions {
   };
 }
 
+// Derived from DEFAULT_OPTIONS so a new option is covered automatically
+// instead of silently escaping change detection.
+const OPTION_KEYS = Object.keys(DEFAULT_OPTIONS) as ReadonlyArray<
+  keyof DemoOptions
+>;
+// Changing only these swaps placeholder behavior without rebuilding the list.
+const PLACEHOLDER_OPTION_KEYS: ReadonlyArray<keyof DemoOptions> = [
+  "placeholders",
+  "placeholderVelocityThreshold",
+];
+
+function changedOptionKeys(
+  a: DemoOptions,
+  b: DemoOptions,
+): (keyof DemoOptions)[] {
+  return OPTION_KEYS.filter((key) => a[key] !== b[key]);
+}
+
 function optionsEqual(a: DemoOptions, b: DemoOptions): boolean {
-  return (
-    a.boundarySlots === b.boundarySlots &&
-    a.count === b.count &&
-    a.itemBaseHeight === b.itemBaseHeight &&
-    a.itemVariance === b.itemVariance &&
-    a.measureEpsilon === b.measureEpsilon &&
-    a.overscanPx === b.overscanPx &&
-    a.placeholderVelocityThreshold === b.placeholderVelocityThreshold &&
-    a.placeholders === b.placeholders &&
-    a.renderMode === b.renderMode
-  );
+  return changedOptionKeys(a, b).length === 0;
 }
 
 function scheduleOptionApply(): void {
@@ -386,17 +388,11 @@ function scheduleOptionApply(): void {
     return;
   }
 
-  const onlyPlaceholderOptionsChanged =
-    previousOptions.boundarySlots === options.boundarySlots &&
-    previousOptions.count === options.count &&
-    previousOptions.itemBaseHeight === options.itemBaseHeight &&
-    previousOptions.itemVariance === options.itemVariance &&
-    previousOptions.measureEpsilon === options.measureEpsilon &&
-    previousOptions.overscanPx === options.overscanPx &&
-    previousOptions.renderMode === options.renderMode &&
-    (previousOptions.placeholders !== options.placeholders ||
-      previousOptions.placeholderVelocityThreshold !==
-        options.placeholderVelocityThreshold);
+  // Past the equal-options return above, so at least one key changed.
+  const onlyPlaceholderOptionsChanged = changedOptionKeys(
+    previousOptions,
+    options,
+  ).every((key) => PLACEHOLDER_OPTION_KEYS.includes(key));
 
   if (onlyPlaceholderOptionsChanged && virtualList) {
     if (!options.placeholders) {
@@ -446,11 +442,6 @@ function bindControls(): void {
     },
     { passive: true },
   );
-}
-
-function refreshTheme(): void {
-  applyDocumentTheme();
-  syncThemeButtons();
 }
 
 bindControls();

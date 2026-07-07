@@ -5,12 +5,15 @@ import {
   type VirtualListBoundarySlot,
   type VirtualListState,
 } from "../../src/virtual-list.js";
-import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
+import { watchSystemTheme } from "../shared/theme.js";
 import {
   at,
   bindThemeButtons,
+  clamp,
   mustGet,
-  syncThemeButtons,
+  refreshTheme,
+  setTextIfChanged,
+  sleep,
 } from "../shared/utils.js";
 import { createPhotoPreview } from "./photo-preview.js";
 
@@ -166,30 +169,8 @@ function createPhoto(index: number): Photo {
   return { id: index + 1, aspectRatio };
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
 function px(value: number): string {
   return `${value.toFixed(3)}px`;
-}
-
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) {
-      resolve();
-      return;
-    }
-    const timeout = window.setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timeout);
-        resolve();
-      },
-      { once: true },
-    );
-  });
 }
 
 function canvasWidthForViewport(): number {
@@ -746,13 +727,6 @@ function setBoundaryState(boundary: Boundary, state: BoundarySlotState): void {
 
 // --- Status bar --------------------------------------------------------------
 
-function setTextIfChanged(element: HTMLElement, nextText: string): string {
-  if (element.textContent !== nextText) {
-    element.textContent = nextText;
-  }
-  return nextText;
-}
-
 function syncLoadLabel(): void {
   let loadText: string;
   if (boundaryStates.top === "loading") {
@@ -838,78 +812,48 @@ function resetBoundaryLoading(): void {
   syncLoadLabel();
 }
 
-function prepareTopApply(signal: AbortSignal): Promise<PendingBoundaryApply> {
-  if (loadedStart <= 0) {
-    return Promise.resolve({
-      boundary: "top",
-      state: "no-more",
-      apply: () => false,
-    });
-  }
-
-  return sleep(LOAD_DELAY_MS, signal).then(() => {
-    if (signal.aborted) {
-      return {
-        boundary: "top",
-        state: idleStateForBoundary("top"),
-        apply: () => false,
-      };
-    }
-
-    const load = windowConfig().load;
-    const retain = windowConfig().retain;
-    const addedBefore = Math.min(load, loadedStart);
-    const nextStart = loadedStart - addedBefore;
-    let nextEnd = loadedEnd;
-    const overflow = nextEnd - nextStart - retain;
-    if (overflow > 0) nextEnd -= overflow;
-
-    return {
-      boundary: "top",
-      state: nextStart <= 0 ? "no-more" : "idle",
-      addedBefore,
-      apply: () => {
-        loadedStart = nextStart;
-        loadedEnd = nextEnd;
-        recomputeBoundaryGeometry();
-        return true;
-      },
-    };
-  });
-}
-
-function prepareBottomApply(
+// One loader for both edges: "top" pulls the window start back and trims the
+// end to the retain budget; "bottom" extends the end and trims the start.
+function prepareBoundaryApply(
+  boundary: Boundary,
   signal: AbortSignal,
 ): Promise<PendingBoundaryApply> {
-  if (loadedEnd >= layout.bands.length) {
-    return Promise.resolve({
-      boundary: "bottom",
-      state: "no-more",
-      apply: () => false,
-    });
+  const exhausted =
+    boundary === "top" ? loadedStart <= 0 : loadedEnd >= layout.bands.length;
+  if (exhausted) {
+    return Promise.resolve({ boundary, state: "no-more", apply: () => false });
   }
 
   return sleep(LOAD_DELAY_MS, signal).then(() => {
     if (signal.aborted) {
       return {
-        boundary: "bottom",
-        state: idleStateForBoundary("bottom"),
+        boundary,
+        state: idleStateForBoundary(boundary),
         apply: () => false,
       };
     }
 
-    const load = windowConfig().load;
-    const retain = windowConfig().retain;
-    const appended = Math.min(load, layout.bands.length - loadedEnd);
+    const { load, retain } = windowConfig();
     let nextStart = loadedStart;
-    const nextEnd = loadedEnd + appended;
-    const overflow = nextEnd - nextStart - retain;
-    if (overflow > 0) nextStart += overflow;
+    let nextEnd = loadedEnd;
+    if (boundary === "top") {
+      nextStart -= Math.min(load, loadedStart);
+      const overflow = nextEnd - nextStart - retain;
+      if (overflow > 0) nextEnd -= overflow;
+    } else {
+      nextEnd += Math.min(load, layout.bands.length - loadedEnd);
+      const overflow = nextEnd - nextStart - retain;
+      if (overflow > 0) nextStart += overflow;
+    }
 
+    const exhaustedAfter =
+      boundary === "top" ? nextStart <= 0 : nextEnd >= layout.bands.length;
     return {
-      boundary: "bottom",
-      state: nextEnd >= layout.bands.length ? "no-more" : "idle",
-      removedBefore: nextStart - loadedStart,
+      boundary,
+      state: exhaustedAfter ? "no-more" : "idle",
+      addedBefore: boundary === "top" ? loadedStart - nextStart : undefined,
+      removedBefore:
+        boundary === "bottom" ? nextStart - loadedStart : undefined,
       apply: () => {
         loadedStart = nextStart;
         loadedEnd = nextEnd;
@@ -943,10 +887,10 @@ function applyPendingBoundaryLoad(): void {
 
 async function prepareBoundaryLoad(load: ActiveBoundaryLoad): Promise<void> {
   try {
-    const pending =
-      load.boundary === "top"
-        ? await prepareTopApply(load.controller.signal)
-        : await prepareBottomApply(load.controller.signal);
+    const pending = await prepareBoundaryApply(
+      load.boundary,
+      load.controller.signal,
+    );
     if (!isCurrentBoundaryLoad(load) || load.controller.signal.aborted) return;
 
     activeBoundaryLoad = null;
@@ -1127,11 +1071,6 @@ function bindControls(): void {
   bottomBtn.addEventListener("click", () => {
     void virtualList.scrollToBottom({ behavior: "smooth" });
   });
-}
-
-function refreshTheme(): void {
-  applyDocumentTheme();
-  syncThemeButtons();
 }
 
 function handleViewportResize(): void {

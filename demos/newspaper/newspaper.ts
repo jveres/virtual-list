@@ -4,11 +4,14 @@ import {
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
-import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
+import { watchSystemTheme } from "../shared/theme.js";
 import {
+  at,
   bindThemeButtons,
+  clamp,
   mustGet,
-  syncThemeButtons,
+  refreshTheme,
+  setTextIfChanged,
 } from "../shared/utils.js";
 
 import "../shared/styles.css";
@@ -348,10 +351,6 @@ const LH_META = 18;
 const LH_HEAD_SM = 23;
 const LH_HEAD_TEXT = 22;
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
 function px(value: number): string {
   return `${Math.round(value)}px`;
 }
@@ -620,7 +619,7 @@ function broadsheetRender(kind: string, block: Block): HTMLElement {
 // --- Modular templates -------------------------------------------------------
 
 function buildMosaic(block: Block): HTMLElement {
-  const lead = block.articles[0]!;
+  const lead = at(block.articles, 0);
   const inner = el("div", "np-mosaic-inner");
   inner.style.gap = `${COLUMN_GAP}px`;
 
@@ -694,7 +693,7 @@ function modularRender(kind: string, block: Block): HTMLElement {
 // --- Reader templates --------------------------------------------------------
 
 function buildStory(block: Block): HTMLElement {
-  const article = block.articles[0]!;
+  const article = at(block.articles, 0);
   const inner = el("div", "np-story-inner");
   inner.append(categoryChip(article));
   inner.append(
@@ -716,7 +715,7 @@ function buildStory(block: Block): HTMLElement {
 }
 
 function buildAside(block: Block): HTMLElement {
-  const article = block.articles[0]!;
+  const article = at(block.articles, 0);
   const inner = el("div", "np-aside-inner");
   inner.append(categoryChip(article));
   inner.append(
@@ -853,7 +852,7 @@ function statLine(text: string, strong: boolean): HTMLElement {
 }
 
 function buildDispatch(block: Block): HTMLElement {
-  const lead = block.articles[0]!;
+  const lead = at(block.articles, 0);
   const meta = issueMeta(lead);
   const isFeatured = lead.id === 1;
   const dot = dotClass(lead.id);
@@ -955,6 +954,10 @@ function radarRender(kind: string, block: Block): HTMLElement {
 
 // --- Layouts -----------------------------------------------------------------
 
+function isVariant(value: string): value is Variant {
+  return (VARIANTS as readonly string[]).includes(value);
+}
+
 const LAYOUTS: Record<Variant, LayoutDef> = {
   broadsheet: {
     label: "Broadsheet",
@@ -1031,7 +1034,7 @@ function indexKinds(): void {
 }
 
 function buildItem(index: number): HTMLElement {
-  const block = blocks[index]!;
+  const block = at(blocks, index);
   const item = el("section", `np-block np-${block.kind}`);
   // The masthead (index 0) ends in its own rule, so the first story skips its
   // top rule to avoid stacking dividers.
@@ -1071,11 +1074,6 @@ function itemHeight(index: number): number {
 }
 
 // --- Status bar / controls ---------------------------------------------------
-
-function setTextIfChanged(element: HTMLElement, nextText: string): string {
-  if (element.textContent !== nextText) element.textContent = nextText;
-  return nextText;
-}
 
 function updateInfo(state: VirtualListState = virtualList.state): void {
   const rangeText = `${state.range.start + 1}-${state.range.end} / ${blocks.length} blocks`;
@@ -1134,13 +1132,9 @@ function bindControls(): void {
     void virtualList.scrollToBottom({ behavior: "smooth" });
   });
   variantSelect.addEventListener("change", () => {
-    void applyVariant(variantSelect.value as Variant);
+    const next = variantSelect.value;
+    if (isVariant(next)) void applyVariant(next);
   });
-}
-
-function refreshTheme(): void {
-  applyDocumentTheme();
-  syncThemeButtons();
 }
 
 function handleViewportResize(): void {

@@ -2,7 +2,6 @@ import {
   createVirtualList,
   measureVirtualListItem,
   planVirtualListPixelWindowFromEnd,
-  type VirtualList,
   type VirtualListBoundary,
   type VirtualListBoundarySlot,
   type VirtualListState,
@@ -27,6 +26,7 @@ import {
   at,
   bindThemeButtons,
   mustGet,
+  refreshTheme,
   syncThemeButtons,
 } from "../shared/utils.js";
 
@@ -68,6 +68,8 @@ const DATA_WINDOW_FACTOR = 5;
 const DOM_OVERSCAN_FACTOR = 1;
 const BOUNDARY_SLOT_HEIGHT = 52;
 const LOAD_OLDER_DELAY_MS = 180;
+// Modeled row height before a message is measured; real heights replace it.
+const ESTIMATED_ITEM_HEIGHT = 180;
 const INITIAL_TRANSCRIPT_COUNT = 100;
 
 type BoundarySlotKind = "none" | "idle" | "loading" | "no-more";
@@ -90,7 +92,6 @@ const composerMinHeight = Math.max(
   promptInput.getBoundingClientRect().height,
 );
 
-let virtualList: VirtualList;
 let measuredViewportWidth = viewport.clientWidth;
 let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
@@ -106,7 +107,7 @@ let loadingTop = false;
 const virtualListScrollEndWaiters = new Set<() => void>();
 
 const templateHeights = new Float64Array(conversation.length);
-templateHeights.fill(180);
+templateHeights.fill(ESTIMATED_ITEM_HEIGHT);
 const htmlCache = new Map<string, string>();
 // Live markdown-viewer instances for streaming rows, keyed by their row element
 // (not message id) so the build → destroy handoff in `refreshIndex` — which
@@ -511,7 +512,7 @@ function formatPx(value: number): string {
 }
 
 function transcriptItemHeight(index: number): number {
-  return transcript[index]?.itemHeight ?? 180;
+  return transcript[index]?.itemHeight ?? ESTIMATED_ITEM_HEIGHT;
 }
 
 function loadedEnd(): number {
@@ -668,7 +669,7 @@ function seedSyntheticBranches(): void {
       createMessage({
         role: "assistant",
         markdown: BRANCH_BRIDGE_REPLY,
-        itemHeight: 180,
+        itemHeight: ESTIMATED_ITEM_HEIGHT,
       }),
       { select: true },
     );
@@ -678,12 +679,12 @@ function seedSyntheticBranches(): void {
   const userV1 = createMessage({
     role: "user",
     markdown: BRANCH_USER_V1,
-    itemHeight: 180,
+    itemHeight: ESTIMATED_ITEM_HEIGHT,
   });
   const userV2 = createMessage({
     role: "user",
     markdown: BRANCH_USER_V2,
-    itemHeight: 180,
+    itemHeight: ESTIMATED_ITEM_HEIGHT,
   });
   addTreeChild(anchorId, userV1, { select: true });
   addTreeChild(anchorId, userV2, { select: false });
@@ -694,7 +695,7 @@ function seedSyntheticBranches(): void {
     createMessage({
       role: "assistant",
       markdown: BRANCH_REPLY_V2,
-      itemHeight: 180,
+      itemHeight: ESTIMATED_ITEM_HEIGHT,
     }),
     { select: true },
   );
@@ -1062,7 +1063,7 @@ function measureExistingMessages(): void {
 }
 
 function getItemHeight(index: number): number {
-  return messages[index]?.itemHeight ?? 180;
+  return messages[index]?.itemHeight ?? ESTIMATED_ITEM_HEIGHT;
 }
 
 function buildItem(index: number): HTMLElement {
@@ -1220,12 +1221,6 @@ function refreshItem(
   markdown.innerHTML = htmlForMessage(message);
 }
 
-function refreshTheme(): void {
-  // markdown-viewer theming is CSS-driven; flipping [data-theme] is enough.
-  applyDocumentTheme();
-  syncThemeButtons();
-}
-
 function syncScrollButtons(state = virtualList.state): void {
   if (scrollButtonsTimer) {
     window.clearTimeout(scrollButtonsTimer);
@@ -1247,10 +1242,12 @@ function scheduleScrollButtons(): void {
   }, SCROLL_BUTTONS_DEBOUNCE_MS);
 }
 
-function pickResponse(prompt = ""): ReplyVariant {
+// Advances the response rotation and returns the variant to stream.
+function advanceResponse(prompt = ""): ReplyVariant {
   // The fast long-form variant is the last sample. Force it via the ?fast-long
   // URL param, or by sending a message that starts with "f" — a shortcut for
-  // testing fast streaming on demand.
+  // testing fast streaming on demand. Deliberately pinned outside the rotation:
+  // it returns without advancing nextResponse.
   if (forceFastLongReply || /^f/i.test(prompt)) {
     return at(SAMPLE_RESPONSES, SAMPLE_RESPONSES.length - 1);
   }
@@ -1643,7 +1640,7 @@ async function handleSend(): Promise<void> {
     const userMessage = createMessage({
       role: "user",
       markdown: text,
-      itemHeight: 180,
+      itemHeight: ESTIMATED_ITEM_HEIGHT,
     });
     const userAppend = appendMessagesToLoadedBottom([userMessage]);
     syncVirtualizerLayout();
@@ -1666,7 +1663,7 @@ async function handleSend(): Promise<void> {
       role: "assistant",
       markdown: "",
       status: "thinking",
-      itemHeight: 180,
+      itemHeight: ESTIMATED_ITEM_HEIGHT,
       toolCalls: createSimulatedToolCalls(),
     });
     assistantId = assistantMessage.id;
@@ -1678,7 +1675,7 @@ async function handleSend(): Promise<void> {
 
     startStreamingBottomFollow(abort);
 
-    const reply = pickResponse(text);
+    const reply = advanceResponse(text);
     await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
     if (abort.cancelled) return;
 
@@ -1751,7 +1748,7 @@ autosize();
 measureTemplateHeights();
 seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
 
-virtualList = createVirtualList({
+const virtualList = createVirtualList({
   viewport,
   canvasClassName: "chat-canvas",
   getCount: () => messages.length,

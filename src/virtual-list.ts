@@ -20,6 +20,17 @@ const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
 const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 8;
 const PLACEHOLDER_VELOCITY_EXIT_RATIO = 0.5;
 const PLACEHOLDER_EXIT_SAMPLE_COUNT = 3;
+// Float-noise threshold for rewriting a rendered style value (heights, slot
+// tops) or re-emitting state: differences at or below this are the same pixel.
+const RENDER_EPSILON_PX = 0.01;
+// scrollTop writes smaller than this are invisible; skip the forced layout.
+const SCROLL_WRITE_EPSILON_PX = 0.5;
+// state.atTop / state.atBottom tolerance in logical scroll space.
+const AT_EDGE_EPSILON_PX = 1;
+// Stick-to-bottom detection tolerance in native scroll space (browsers may
+// leave a subpixel-rounded gap after a clamp, so this is looser than the
+// logical-space AT_EDGE_EPSILON_PX).
+const NATIVE_BOTTOM_EPSILON_PX = 2;
 const SCROLL_TOP_RESIDUAL_EPSILON = 0.01;
 const MAX_SCROLL_TOP_RESIDUAL = 2;
 const CSS = `
@@ -94,7 +105,7 @@ export interface VirtualListConfig {
   recycleItem?: (index: number, element: HTMLElement) => void;
   buildPlaceholder?: (index: number) => HTMLElement;
   placeholderVelocityThreshold?: VirtualListNumberOption;
-  overscanPx?: number | (() => number);
+  overscanPx?: VirtualListNumberOption;
   renderMode?: VirtualListRenderMode;
   /**
    * Override the user-agent-detected scroll-settle strategy — the per-engine
@@ -417,6 +428,15 @@ function smoothScrollDuration(
   );
 }
 
+function toNumberGetter(
+  option: VirtualListNumberOption | undefined,
+  fallback: number,
+): () => number {
+  if (typeof option === "function") return option;
+  const value = option ?? fallback;
+  return () => value;
+}
+
 function nonNegativeInteger(value: number): number {
   return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
 }
@@ -659,24 +679,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     onScrollEnd,
   } = config;
 
-  const overscanPx = config.overscanPx;
-  const staticOverscanPx =
-    typeof overscanPx === "function"
-      ? null
-      : (overscanPx ?? DEFAULT_OVERSCAN_PX);
-  const getOverscanPx: () => number =
-    staticOverscanPx === null
-      ? (overscanPx as () => number)
-      : () => staticOverscanPx;
+  const getOverscanPx = toNumberGetter(config.overscanPx, DEFAULT_OVERSCAN_PX);
   const needsBoundaryRender = Boolean(onReachTop || onReachBottom);
-  const placeholderVelocityThresholdOption =
-    config.placeholderVelocityThreshold;
-  const getPlaceholderVelocityThreshold: () => number =
-    typeof placeholderVelocityThresholdOption === "function"
-      ? placeholderVelocityThresholdOption
-      : () =>
-          placeholderVelocityThresholdOption ??
-          DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD;
+  const getPlaceholderVelocityThreshold = toNumberGetter(
+    config.placeholderVelocityThreshold,
+    DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD,
+  );
   const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
   let count = 0;
@@ -774,8 +782,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return bottomSlot?.height ?? 0;
   }
 
-  function atBottom(): boolean {
-    return nativeMaxScrollTop() - logicalScrollTop() <= 2;
+  // Native-space stick-to-bottom check for measurement corrections; distinct
+  // from state.atBottom, which reports the logical position with a tighter
+  // tolerance.
+  function nearNativeBottom(): boolean {
+    return (
+      nativeMaxScrollTop() - logicalScrollTop() <= NATIVE_BOTTOM_EPSILON_PX
+    );
   }
 
   function modeledItemHeight(index: number): number {
@@ -822,8 +835,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       scrollHeight,
       scrollMax,
       totalSize,
-      atTop: scrollTop <= 1,
-      atBottom: scrollMax - scrollTop <= 1,
+      atTop: scrollTop <= AT_EDGE_EPSILON_PX,
+      atBottom: scrollMax - scrollTop <= AT_EDGE_EPSILON_PX,
     };
   }
 
@@ -852,7 +865,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       rangeEnd !== emittedRangeEnd ||
       mountedCount !== emittedMountedCount ||
       measuredCount !== emittedMeasuredCount ||
-      Math.abs(totalSize - emittedTotalSize) > 0.01 ||
+      Math.abs(totalSize - emittedTotalSize) > RENDER_EPSILON_PX ||
       atTop !== emittedAtTop ||
       atBottom !== emittedAtBottom
     );
@@ -876,8 +889,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (!onRangeChange) return;
 
     const scrollMax = Math.max(0, totalSize - viewportHeight);
-    const atTop = scrollTop <= 1;
-    const atBottom = scrollMax - scrollTop <= 1;
+    const atTop = scrollTop <= AT_EDGE_EPSILON_PX;
+    const atBottom = scrollMax - scrollTop <= AT_EDGE_EPSILON_PX;
     const emitRange = shouldEmitRangeChange(totalSize, atTop, atBottom);
 
     if (!emitRange) return;
@@ -966,7 +979,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
   function syncContentHeight(): number {
     const totalSize = contentTotalSize();
-    if (Math.abs(totalSize - renderedTotalSize) > 0.01) {
+    if (Math.abs(totalSize - renderedTotalSize) > RENDER_EPSILON_PX) {
       content.style.height = px(totalSize);
       renderedTotalSize = totalSize;
       wakeBottomFollow();
@@ -1062,7 +1075,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         removeBoundarySlot(boundary);
         return true;
       }
-      if (Math.abs(current.height - nextHeight) <= 0.01) return false;
+      if (Math.abs(current.height - nextHeight) <= RENDER_EPSILON_PX)
+        return false;
       current.height = nextHeight;
       layoutVersion++;
       return true;
@@ -1077,7 +1091,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     current.key = nextKey;
     current.build = slot.build;
 
-    if (Math.abs(current.height - nextHeight) <= 0.01) return false;
+    if (Math.abs(current.height - nextHeight) <= RENDER_EPSILON_PX)
+      return false;
     current.height = nextHeight;
     layoutVersion++;
     return true;
@@ -1121,11 +1136,11 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       content.appendChild(element);
     }
     const top = boundarySlotTop(boundary);
-    if (Math.abs(slot.renderedTop - top) > 0.01) {
+    if (Math.abs(slot.renderedTop - top) > RENDER_EPSILON_PX) {
       element.style.top = px(top);
       slot.renderedTop = top;
     }
-    if (Math.abs(slot.renderedHeight - slot.height) > 0.01) {
+    if (Math.abs(slot.renderedHeight - slot.height) > RENDER_EPSILON_PX) {
       element.style.height = px(slot.height);
       slot.renderedHeight = slot.height;
     }
@@ -1265,7 +1280,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     }
 
     const height = Math.max(viewport.clientHeight, contentTotalSize());
-    if (Math.abs(slot.renderedHeight - height) > 0.01) {
+    if (Math.abs(slot.renderedHeight - height) > RENDER_EPSILON_PX) {
       element.style.height = px(height);
       slot.renderedHeight = height;
     }
@@ -1333,7 +1348,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     )
       return false;
     const target = clamp(value, 0, nativeMaxScrollTop());
-    const shouldWrite = Math.abs(viewport.scrollTop - target) > 0.5;
+    const shouldWrite =
+      Math.abs(viewport.scrollTop - target) > SCROLL_WRITE_EPSILON_PX;
     if (shouldWrite) {
       scrollSettle.recordProgrammaticScrollTop(target);
       viewport.scrollTop = target;
@@ -1585,7 +1601,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return wasActive ? refreshMountedPlaceholders() : false;
   }
 
-  function shouldUsePlaceholderMode(): boolean {
+  // Advances the placeholder fast-mode state machine from the current scroll
+  // velocity (entering/exiting fast mode, scheduling hydration checks) and
+  // returns whether newly mounted items should build as placeholders.
+  function updatePlaceholderMode(): boolean {
     if (!canMountPlaceholderItems()) {
       disablePlaceholderFastMode();
       return false;
@@ -1793,7 +1812,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     // items only need repositioning when the layout is dirty, not on range
     // shifts.
     const layoutDirty = renderedLayoutVersion !== layoutVersion;
-    const mountPlaceholders = shouldUsePlaceholderMode();
+    const mountPlaceholders = updatePlaceholderMode();
     rangeStart = start;
     rangeEnd = end;
 
@@ -1990,7 +2009,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (pendingMeasurements.size === 0) return;
     if (scrollSettle.isUserScrollActive()) return;
 
-    const wasAtBottom = atBottom();
+    const wasAtBottom = nearNativeBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
       Math.max(0, logicalScrollTop() - topSlotHeight()),
@@ -2024,7 +2043,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return;
     }
 
-    const wasAtBottom = atBottom();
+    const wasAtBottom = nearNativeBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
       Math.max(0, logicalScrollTop() - topSlotHeight()),
@@ -2664,7 +2683,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       count > 0
         ? Math.max(0, previousItemOffset - sizeTree.prefix(anchorIndex))
         : 0;
-    const wasAtBottom = atBottom();
+    const wasAtBottom = nearNativeBottom();
 
     refillModeledSizes();
     recomputeTailGap();

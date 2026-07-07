@@ -19,6 +19,7 @@ import {
   at,
   bindThemeButtons,
   mustGet,
+  refreshTheme,
   syncThemeButtons,
 } from "../shared/utils.js";
 
@@ -29,6 +30,9 @@ const DEFAULT_RETAINED_COUNT = 100;
 const DEFAULT_CHUNK_SIZE = 50;
 const DEFAULT_RENDER_MODE: VirtualListRenderMode = "virtual";
 const DEFAULT_SOURCE: SourceId = "synthetic";
+// Server-side page-size caps of the public APIs.
+const BSKY_PAGE_LIMIT = 100;
+const LEMMY_PAGE_LIMIT = 50;
 const BOUNDARY_SLOT_HEIGHT = 52;
 const SYNTHETIC_OVERSCAN_PX = 900;
 const NETWORK_OVERSCAN_PX = 1200;
@@ -990,12 +994,6 @@ function syncStatus(state = virtualList?.state): void {
   }
 }
 
-function refreshTheme(): void {
-  // markdown-viewer theming is CSS-driven; flipping [data-theme] is enough.
-  applyDocumentTheme();
-  syncThemeButtons();
-}
-
 function createVirtualizer(): VirtualList {
   return createVirtualList({
     viewport,
@@ -1009,8 +1007,8 @@ function createVirtualizer(): VirtualList {
         : NETWORK_OVERSCAN_PX,
     renderMode,
     onRangeChange: syncStatus,
-    onReachTop: loadTopChunk,
-    onReachBottom: loadBottomChunk,
+    onReachTop: () => loadBoundaryChunk("top"),
+    onReachBottom: () => loadBoundaryChunk("bottom"),
   });
 }
 
@@ -1102,46 +1100,73 @@ function cancelBoundaryLoad(boundary: VirtualListBoundary): void {
   syncBoundarySlot(boundary);
 }
 
-function loadTopChunk(): void {
-  if (sourceLoading) return;
-  if (loadingTop) return;
-  cancelBoundaryLoad("bottom");
-  cancelBoundaryLoad("top");
+function canLoadBoundary(boundary: VirtualListBoundary): boolean {
+  return boundary === "top"
+    ? activeSource.canLoadTop(items)
+    : activeSource.canLoadBottom(items);
+}
 
-  if (!activeSource.canLoadTop(items)) {
-    setBoundarySlotState("top", "no-more");
-    syncBoundarySlot("top");
+function setBoundaryPending(
+  boundary: VirtualListBoundary,
+  value: boolean,
+): void {
+  if (boundary === "top") pendingTopLoad = value;
+  else pendingBottomLoad = value;
+}
+
+function setBoundaryLoading(
+  boundary: VirtualListBoundary,
+  value: boolean,
+): void {
+  if (boundary === "top") loadingTop = value;
+  else loadingBottom = value;
+}
+
+function loadBoundaryChunk(boundary: VirtualListBoundary): void {
+  if (sourceLoading) return;
+  if (boundary === "top" ? loadingTop : loadingBottom) return;
+  cancelBoundaryLoad(boundary === "top" ? "bottom" : "top");
+  cancelBoundaryLoad(boundary);
+
+  if (!canLoadBoundary(boundary)) {
+    setBoundarySlotState(boundary, "no-more");
+    syncBoundarySlot(boundary);
     syncStatus();
     return;
   }
 
-  void commitTopChunk();
+  void commitBoundaryChunk(boundary);
 }
 
-async function commitTopChunk(): Promise<void> {
-  if (sourceLoading || !virtualList || !activeSource.canLoadTop(items)) {
-    pendingTopLoad = false;
-    if (virtualList && !activeSource.canLoadTop(items)) {
-      setBoundarySlotState("top", "no-more");
-      syncBoundarySlot("top");
+async function commitBoundaryChunk(
+  boundary: VirtualListBoundary,
+): Promise<void> {
+  if (sourceLoading || !virtualList || !canLoadBoundary(boundary)) {
+    setBoundaryPending(boundary, false);
+    if (virtualList && !canLoadBoundary(boundary)) {
+      setBoundarySlotState(boundary, "no-more");
+      syncBoundarySlot(boundary);
     }
     syncStatus();
     return;
   }
 
   const version = sourceVersion;
-  const token = beginBoundaryLoad("top");
-  pendingTopLoad = true;
-  loadingTop = true;
+  const token = beginBoundaryLoad(boundary);
+  setBoundaryPending(boundary, true);
+  setBoundaryLoading(boundary, true);
   sourceError = "";
-  setBoundarySlotState("top", "loading");
-  syncBoundarySlot("top");
+  setBoundarySlotState(boundary, "loading");
+  syncBoundarySlot(boundary);
   syncStatus();
 
   try {
-    const addedItems = await activeSource.loadTop(items, token.controller);
+    const addedItems =
+      boundary === "top"
+        ? await activeSource.loadTop(items, token.controller)
+        : await activeSource.loadBottom(items, token.controller);
     if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    applyTopChunk(addedItems, token);
+    applyBoundaryChunk(boundary, addedItems, token);
   } catch (error) {
     if (
       version !== sourceVersion ||
@@ -1150,69 +1175,11 @@ async function commitTopChunk(): Promise<void> {
     ) {
       return;
     }
-    setBoundarySlotState("top", "error");
-    syncBoundarySlot("top");
+    setBoundarySlotState(boundary, "error");
+    syncBoundarySlot(boundary);
     console.error(error);
-    loadingTop = false;
-    pendingTopLoad = false;
-    clearBoundaryLoadToken(token);
-  }
-  syncStatus();
-}
-
-function loadBottomChunk(): void {
-  if (sourceLoading) return;
-  if (loadingBottom) return;
-  cancelBoundaryLoad("top");
-  cancelBoundaryLoad("bottom");
-
-  if (!activeSource.canLoadBottom(items)) {
-    setBoundarySlotState("bottom", "no-more");
-    syncBoundarySlot("bottom");
-    syncStatus();
-    return;
-  }
-
-  void commitBottomChunk();
-}
-
-async function commitBottomChunk(): Promise<void> {
-  if (sourceLoading || !virtualList || !activeSource.canLoadBottom(items)) {
-    pendingBottomLoad = false;
-    if (virtualList && !activeSource.canLoadBottom(items)) {
-      setBoundarySlotState("bottom", "no-more");
-      syncBoundarySlot("bottom");
-    }
-    syncStatus();
-    return;
-  }
-
-  const version = sourceVersion;
-  const token = beginBoundaryLoad("bottom");
-  pendingBottomLoad = true;
-  loadingBottom = true;
-  sourceError = "";
-  setBoundarySlotState("bottom", "loading");
-  syncBoundarySlot("bottom");
-  syncStatus();
-
-  try {
-    const addedItems = await activeSource.loadBottom(items, token.controller);
-    if (version !== sourceVersion || !isCurrentBoundaryLoad(token)) return;
-    applyBottomChunk(addedItems, token);
-  } catch (error) {
-    if (
-      version !== sourceVersion ||
-      !isCurrentBoundaryLoad(token) ||
-      isAbortError(error)
-    ) {
-      return;
-    }
-    setBoundarySlotState("bottom", "error");
-    syncBoundarySlot("bottom");
-    console.error(error);
-    loadingBottom = false;
-    pendingBottomLoad = false;
+    setBoundaryLoading(boundary, false);
+    setBoundaryPending(boundary, false);
     clearBoundaryLoadToken(token);
   }
   syncStatus();
@@ -1230,7 +1197,8 @@ function finishBoundaryLoad(token: BoundaryLoadToken): void {
   }
 }
 
-function applyTopChunk(
+function applyBoundaryChunk(
+  boundary: VirtualListBoundary,
   addedItems: readonly LoadedItem[],
   token: BoundaryLoadToken,
 ): void {
@@ -1238,60 +1206,31 @@ function applyTopChunk(
 
   if (addedItems.length === 0) {
     finishBoundaryLoad(token);
-    setBoundarySlotState("top", "no-more");
-    syncBoundarySlot("top");
+    setBoundarySlotState(boundary, "no-more");
+    syncBoundarySlot(boundary);
     return;
   }
 
   measureItems(addedItems);
   virtualList.syncLayout({
-    addedBefore: addedItems.length,
-    topSlot: boundarySlotFor("top"),
+    ...(boundary === "top"
+      ? { addedBefore: addedItems.length, topSlot: boundarySlotFor("top") }
+      : { bottomSlot: boundarySlotFor("bottom") }),
     apply: () => {
       if (!isCurrentBoundaryLoad(token)) {
         return false;
       }
-      items = [...addedItems, ...items];
-      pendingTrimSide = "bottom";
-      topLoads++;
-      finishBoundaryLoad(token);
-      clearBoundarySlotState("top");
-      return true;
-    },
-    after: () => {
-      refreshBoundarySlotElements();
-      pruneMeasuredHeights();
-      trimRetainedWindow();
-      syncStatus();
-    },
-  });
-}
-
-function applyBottomChunk(
-  addedItems: readonly LoadedItem[],
-  token: BoundaryLoadToken,
-): void {
-  if (!virtualList) return;
-
-  if (addedItems.length === 0) {
-    finishBoundaryLoad(token);
-    setBoundarySlotState("bottom", "no-more");
-    syncBoundarySlot("bottom");
-    return;
-  }
-
-  measureItems(addedItems);
-  virtualList.syncLayout({
-    bottomSlot: boundarySlotFor("bottom"),
-    apply: () => {
-      if (!isCurrentBoundaryLoad(token)) {
-        return false;
+      if (boundary === "top") {
+        items = [...addedItems, ...items];
+        pendingTrimSide = "bottom";
+        topLoads++;
+      } else {
+        items = [...items, ...addedItems];
+        pendingTrimSide = "top";
+        bottomLoads++;
       }
-      items = [...items, ...addedItems];
-      pendingTrimSide = "top";
-      bottomLoads++;
       finishBoundaryLoad(token);
-      clearBoundarySlotState("bottom");
+      clearBoundarySlotState(boundary);
       return true;
     },
     after: () => {
@@ -1454,14 +1393,14 @@ async function fetchBskyItems(
   paginate: boolean,
   signal?: AbortSignal,
 ): Promise<{ items: LoadedItem[]; cursor: string }> {
-  const items: LoadedItem[] = [];
+  const collected: LoadedItem[] = [];
   let nextCursor = cursor;
 
-  while (items.length < targetCount) {
+  while (collected.length < targetCount) {
     throwIfAborted(signal);
-    const limit = Math.min(100, targetCount - items.length);
+    const limit = Math.min(BSKY_PAGE_LIMIT, targetCount - collected.length);
     const page = await fetchBskyPage({ cursor: nextCursor, limit }, signal);
-    addUniqueBskyPosts(items, page.feed, excludedKeys);
+    addUniqueBskyPosts(collected, page.feed, excludedKeys);
 
     if (!page.cursor || page.cursor === nextCursor) {
       nextCursor = "";
@@ -1472,7 +1411,7 @@ async function fetchBskyItems(
     if (!paginate) break;
   }
 
-  return { items, cursor: nextCursor ?? "" };
+  return { items: collected, cursor: nextCursor ?? "" };
 }
 
 async function fetchBskyPage(
@@ -1618,14 +1557,14 @@ async function fetchLemmyItems(
   paginate: boolean,
   signal?: AbortSignal,
 ): Promise<{ items: LoadedItem[]; cursor: string }> {
-  const items: LoadedItem[] = [];
+  const collected: LoadedItem[] = [];
   let nextCursor = cursor;
 
-  while (items.length < targetCount) {
+  while (collected.length < targetCount) {
     throwIfAborted(signal);
-    const limit = Math.min(50, targetCount - items.length);
+    const limit = Math.min(LEMMY_PAGE_LIMIT, targetCount - collected.length);
     const page = await fetchLemmyPage({ cursor: nextCursor, limit }, signal);
-    addUniqueLemmyPosts(items, lemmyPostViews(page), excludedKeys);
+    addUniqueLemmyPosts(collected, lemmyPostViews(page), excludedKeys);
 
     if (!page.next_page || page.next_page === nextCursor) {
       nextCursor = "";
@@ -1636,7 +1575,7 @@ async function fetchLemmyItems(
     if (!paginate) break;
   }
 
-  return { items, cursor: nextCursor ?? "" };
+  return { items: collected, cursor: nextCursor ?? "" };
 }
 
 async function fetchLemmyPage(
@@ -1963,7 +1902,7 @@ function readSafeUrl(value: unknown): string | null {
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object";
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function textToHtml(value: string): string {
@@ -2043,10 +1982,10 @@ window.dynamicContent = {
   get virtualList() {
     return virtualList;
   },
-  loadTop: loadTopChunk,
-  loadBottom: loadBottomChunk,
-  loadOlder: loadTopChunk,
-  loadNewer: loadBottomChunk,
+  loadTop: () => loadBoundaryChunk("top"),
+  loadBottom: () => loadBoundaryChunk("bottom"),
+  loadOlder: () => loadBoundaryChunk("top"),
+  loadNewer: () => loadBoundaryChunk("bottom"),
   setSource: switchSource,
   loadedWindow: () => ({
     source: sourceId,

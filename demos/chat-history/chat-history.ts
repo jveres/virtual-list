@@ -2,7 +2,6 @@ import {
   createVirtualList,
   measureVirtualListItem,
   type VirtualList,
-  type VirtualListAlign,
 } from "../../src/virtual-list.js";
 import { conversation } from "../shared/chat-data.js";
 import { buildChatItem, buildSectionHeader } from "../shared/chat-ui.js";
@@ -20,6 +19,8 @@ import {
   at,
   bindThemeButtons,
   mustGet,
+  nextFrame,
+  refreshTheme,
   syncThemeButtons,
 } from "../shared/utils.js";
 
@@ -164,25 +165,12 @@ function remeasureForViewportWidth(): void {
   stickyHeaders.refresh();
 }
 
-function nextFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
-}
-
 async function scrollToSettledBottom(passes = 3): Promise<void> {
   for (let pass = 0; pass < passes; pass++) {
     await virtualList.scrollToBottom();
     await nextFrame();
   }
   await virtualList.scrollToBottom();
-}
-
-function refreshTheme(): void {
-  // markdown-viewer styling is CSS-driven via the [data-theme] attribute, so a
-  // theme switch needs no re-render — just flip the document attribute.
-  applyDocumentTheme();
-  syncThemeButtons();
 }
 
 bindThemeButtons(refreshTheme);
@@ -216,6 +204,14 @@ const indexInput = mustGet("index-input", HTMLInputElement);
 const alignSelect = mustGet("align-select", HTMLSelectElement);
 const behaviorSelect = mustGet("behavior-select", HTMLSelectElement);
 
+function isAlign(value: string): value is "top" | "center" | "bottom" {
+  return value === "top" || value === "center" || value === "bottom";
+}
+
+function isScrollBehavior(value: string): value is ScrollBehavior {
+  return value === "smooth" || value === "instant" || value === "auto";
+}
+
 function scrollToTypedIndex(): void {
   const parsed = Number.parseInt(indexInput.value, 10);
   // The field is a message number (matching the "#N" row label); map it to its
@@ -226,8 +222,12 @@ function scrollToTypedIndex(): void {
   indexInput.value = String(dataIndex);
   void virtualList.scrollToIndex(
     dataToLayoutIndex(dataIndex),
-    alignSelect.value as VirtualListAlign,
-    { behavior: behaviorSelect.value as ScrollBehavior },
+    isAlign(alignSelect.value) ? alignSelect.value : "top",
+    {
+      behavior: isScrollBehavior(behaviorSelect.value)
+        ? behaviorSelect.value
+        : "smooth",
+    },
   );
 }
 

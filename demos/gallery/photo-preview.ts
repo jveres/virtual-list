@@ -1,3 +1,5 @@
+import { clamp, nextFrame, sleep } from "../shared/utils.js";
+
 const PHOTO_VIEW_INLINE_PADDING = 24;
 const PHOTO_VIEW_BLOCK_PADDING = 0;
 const PHOTO_VIEW_MAX_WIDTH = 1280;
@@ -103,14 +105,6 @@ interface PhotoPressState {
   startY: number;
 }
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
 function reducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -134,10 +128,6 @@ function photoViewGeometryEasing(): string {
   return isIOSLike()
     ? PHOTO_VIEW_IOS_GEOMETRY_EASING
     : PHOTO_VIEW_GEOMETRY_EASING;
-}
-
-function nextAnimationFrame(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
 function readRect(rect: DOMRect): PhotoRect {
@@ -350,7 +340,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       };
       photoPressStates.set(card, keyboardPressState);
       applyPhotoPress(card, keyboardPressState);
-      await nextAnimationFrame();
+      await nextFrame();
       await sleep(PHOTO_PRESS_DOWN_MS);
       return;
     }
@@ -360,7 +350,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         pressState.pressTimer = null;
       }
       applyPhotoPress(card, pressState);
-      await nextAnimationFrame();
+      await nextFrame();
       await sleep(PHOTO_PRESS_DOWN_MS);
       return;
     }
@@ -380,7 +370,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     try {
       if (!reducedMotion()) {
         await holdPhotoPressForOpen(card);
-        await nextAnimationFrame();
+        await nextFrame();
       }
       if (card.isConnected) await openPhotoView(photo, card);
     } finally {
@@ -985,7 +975,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     closeButton.addEventListener("click", () => void closePhotoView());
 
     await image.decode?.().catch(() => undefined);
-    await nextAnimationFrame();
+    await nextFrame();
     if (activePhotoView !== view || view.closing) return;
     hidePhotoSource(sourceElement);
     document.documentElement.classList.add("photo-view-open");
