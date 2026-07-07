@@ -49,10 +49,11 @@ const RENDER_EPSILON_PX = 0.01;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 // state.atTop / state.atBottom tolerance in logical scroll space.
 const AT_EDGE_EPSILON_PX = 1;
-// Stick-to-bottom detection tolerance in native scroll space (browsers may
-// leave a subpixel-rounded gap after a clamp, so this is looser than the
-// logical-space AT_EDGE_EPSILON_PX).
-const NATIVE_BOTTOM_EPSILON_PX = 2;
+// Native scroll-space edge tolerance: engines may leave a fractional gap (up
+// to ~1px, more under zoom) between a pinned scroll position and the exact
+// limit, so native-edge checks are looser than the logical-space
+// AT_EDGE_EPSILON_PX.
+const NATIVE_EDGE_EPSILON_PX = 2;
 const SCROLL_TOP_RESIDUAL_EPSILON = 0.01;
 const MAX_SCROLL_TOP_RESIDUAL = 2;
 const CSS = `
@@ -587,9 +588,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   // from state.atBottom, which reports the logical position with a tighter
   // tolerance.
   function nearNativeBottom(): boolean {
-    return (
-      nativeMaxScrollTop() - logicalScrollTop() <= NATIVE_BOTTOM_EPSILON_PX
-    );
+    return nativeMaxScrollTop() - logicalScrollTop() <= NATIVE_EDGE_EPSILON_PX;
   }
 
   function modeledItemHeight(index: number): number {
@@ -2170,7 +2169,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   function isAtNativeScrollBoundary(scrollTop = viewport.scrollTop): boolean {
     const maxScrollTop = nativeMaxScrollTop();
     return (
-      scrollTop <= measureEpsilon || maxScrollTop - scrollTop <= measureEpsilon
+      scrollTop <= NATIVE_EDGE_EPSILON_PX ||
+      maxScrollTop - scrollTop <= NATIVE_EDGE_EPSILON_PX
     );
   }
 

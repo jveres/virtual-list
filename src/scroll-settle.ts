@@ -11,11 +11,49 @@
  * plain scrollend+cooldown default. The controller owns the viewport's
  * scroll/scrollend/wheel/pointer/touch listeners and all gesture state; the
  * virtualizer supplies everything else through {@link ScrollSettleHost}.
+ *
+ * ## The per-engine gesture contract at overscrolled edges
+ *
+ * Deferred list updates (boundary loads, prepends/appends) must apply only
+ * when the gesture settles, and each engine bounds what "settled" can mean:
+ *
+ * - **Chromium**: touchpad release is NOT detectable during overscroll — the
+ *   engine emits one scrollend per scroll sequence (often early, at the edge)
+ *   and momentum wheel events are indistinguishable from fingers-down input.
+ *   The accepted contract is settling after a quiet delay
+ *   (CHROMIUM_EDGE_SETTLE_QUIET_MS + the cooldown); applying a list update
+ *   mid-overscroll after that delay is fine because Chromium repaints the
+ *   anchored content without a visible flash.
+ * - **Firefox**: applying a list update during an active overscroll visibly
+ *   flashes the content, but Firefox reliably emits `scrollend` when the user
+ *   actually releases the touchpad. The contract is therefore: while wheels
+ *   point outward at an edge, wait indefinitely for the release scrollend and
+ *   never settle from a timer.
+ * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
+ *   during native motion kills the momentum animation. The contract is:
+ *   never settle while rubber-banded or while any motion — even sub-pixel —
+ *   continues; settle from the release scrollend or true quiet.
+ *
+ * Two tolerances make this robust: EDGE_PROXIMITY_EPSILON_PX accepts the
+ * fractional gap (up to ~1px, more under zoom) engines leave between a pinned
+ * scroll position and the exact limit, and SETTLE_MOTION_EPSILON_PX cancels a
+ * pending settle on any real movement so decaying momentum can't be settled
+ * into.
  */
 
 const SCROLL_SETTLE_COOLDOWN_MS = 140;
 const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 const CHROMIUM_EDGE_SETTLE_QUIET_MS = 450;
+// Engines pin an overscrolled position up to ~1px (more under zoom/DPI
+// scaling) shy of the exact scroll limit, so edge proximity must be judged
+// looser than the 0.5px measurement epsilon — a fractional miss here sends a
+// held-at-the-edge gesture down the wrong settle path (see the contract
+// above; this was the root of mid-overscroll flashes and wedged loads).
+const EDGE_PROXIMITY_EPSILON_PX = 2;
+// Any real movement at or above this cancels a pending wheel settle; decaying
+// momentum moves in sub-0.5px steps that must still count as motion, or the
+// settle (and its scrollTop write) lands mid-animation and kills it.
+const SETTLE_MOTION_EPSILON_PX = 0.05;
 
 // Upper bound on unmatched programmatic scroll targets kept for user-vs-self
 // scroll classification. One follow frame writes at most twice, and a scroll
@@ -190,7 +228,8 @@ export function createScrollSettleController(
       nativeScrollEndPending &&
       wheelPendingNativeScrollEndTop !== null &&
       !isRubberBandOverscrolled() &&
-      Math.abs(nextScrollTop - wheelPendingNativeScrollEndTop) > measureEpsilon
+      Math.abs(nextScrollTop - wheelPendingNativeScrollEndTop) >
+        SETTLE_MOTION_EPSILON_PX
     ) {
       nativeScrollEndPending = false;
       wheelPendingNativeScrollEndTop = null;
@@ -266,13 +305,15 @@ export function createScrollSettleController(
 
   function boundaryForOutwardWheel(event: WheelEvent): ScrollBoundary | null {
     const scrollTop = viewport.scrollTop;
-    if (event.deltaY < 0 && scrollTop <= measureEpsilon) return "top";
+    if (event.deltaY < 0 && scrollTop <= EDGE_PROXIMITY_EPSILON_PX) {
+      return "top";
+    }
     if (event.deltaY <= 0) return null;
 
     const maxScrollTop = nativeMaxScrollTop();
     if (
-      maxScrollTop > measureEpsilon &&
-      maxScrollTop - scrollTop <= measureEpsilon
+      maxScrollTop > EDGE_PROXIMITY_EPSILON_PX &&
+      maxScrollTop - scrollTop <= EDGE_PROXIMITY_EPSILON_PX
     ) {
       return "bottom";
     }
@@ -406,6 +447,32 @@ export function createScrollSettleController(
     }, SCROLL_SETTLE_COOLDOWN_MS);
   }
 
+  // Close the wheel-idle dead-end: when the last wheel of a gesture is judged
+  // neither outward (no edge fallback) nor preceded by an unconsumed scrollend
+  // (no cooldown), nothing else would ever settle the gesture — chromium fires
+  // only one scrollend per scroll sequence, and a trailing wheel consumed it.
+  // Without this, the gesture stays active forever and deferred boundary loads
+  // sit unapplied until the user scrolls again ("stuck" loads). Settling after
+  // the same quiet delay as the edge fallback matches the accepted chromium
+  // contract (see the module header).
+  function scheduleChromiumStallFallback(): void {
+    cancelChromiumEdgeSettleTimer();
+    chromiumEdgeSettleTimer = window.setTimeout(() => {
+      chromiumEdgeSettleTimer = 0;
+      if (
+        host.isDisposed() ||
+        !userScrollActive ||
+        wheelInputActive ||
+        nativeScrollEndPending ||
+        isRubberBandOverscrolled()
+      ) {
+        return;
+      }
+      nativeScrollEndPending = true;
+      scheduleSettleCooldown();
+    }, CHROMIUM_EDGE_SETTLE_QUIET_MS);
+  }
+
   function scheduleChromiumEdgeSettleFallback(boundary: ScrollBoundary): void {
     cancelChromiumEdgeSettleTimer();
     chromiumEdgeSettleTimer = window.setTimeout(() => {
@@ -522,6 +589,8 @@ export function createScrollSettleController(
         nativeScrollEndPending = true;
         chromiumWheelAwaitingFinalScrollEnd = false;
         chromiumEdgeWheelSuppressed = false;
+      } else {
+        scheduleChromiumStallFallback();
       }
       hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) scheduleSettleCooldown();
@@ -545,6 +614,10 @@ export function createScrollSettleController(
         return;
       }
       if (strategy === "firefox-wheel" && outwardBoundary !== null) {
+        // Firefox contract: fingers may still be down at an overscrolled edge
+        // (momentum wheels have stopped, no movement to observe), and a list
+        // update now would visibly flash. Firefox reliably fires scrollend on
+        // the actual release, so wait for it instead of settling on a timer.
         return;
       }
       scheduleWheelScrollEndFallback();
