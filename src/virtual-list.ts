@@ -88,6 +88,14 @@ export interface VirtualListConfig {
   placeholderVelocityThreshold?: VirtualListNumberOption;
   overscanPx?: number | (() => number);
   renderMode?: VirtualListRenderMode;
+  /**
+   * Override the user-agent-detected scroll-settle strategy — the per-engine
+   * heuristics for deciding when a user scroll gesture has finished (wheel
+   * idle windows, scrollend timing quirks). Detected from
+   * `navigator.userAgent` when unset. Intended for tests and unusual
+   * embeddings (e.g. webviews with mismatched user agents).
+   */
+  scrollSettleStrategy?: VirtualListScrollSettleStrategy;
   measureEpsilon?: number;
   /**
    * Maximum number of idle elements retained for recycling. Defaults to about
@@ -211,7 +219,7 @@ const PRESERVE_LOGICAL_SCROLL_OFFSET: ScrollTopWriteOptions = {
 // event matches within a frame or two, so this only guards against runaway.
 const MAX_PENDING_PROGRAMMATIC_SCROLLS = 8;
 
-type ScrollSettleStrategy =
+export type VirtualListScrollSettleStrategy =
   | "default"
   | "chromium-wheel"
   | "firefox-wheel"
@@ -635,8 +643,9 @@ export function measureVirtualListItem(
   }
 }
 
-function detectScrollSettleStrategy(): ScrollSettleStrategy {
-  const userAgent = navigator.userAgent;
+export function detectScrollSettleStrategy(
+  userAgent = navigator.userAgent,
+): VirtualListScrollSettleStrategy {
   if (/\bFirefox\//.test(userAgent)) return "firefox-wheel";
   if (/\bVersion\/[\d.]+.*\bSafari\//.test(userAgent)) {
     return "safari-wheel";
@@ -685,7 +694,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
           DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD;
   const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
-  const scrollSettleStrategy = detectScrollSettleStrategy();
+  const scrollSettleStrategy =
+    config.scrollSettleStrategy ?? detectScrollSettleStrategy();
   let count = 0;
   let sizes = new Float64Array(0);
   let measured = new Uint8Array(0);
