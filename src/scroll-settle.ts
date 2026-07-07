@@ -24,21 +24,23 @@
  *   (EDGE_SETTLE_QUIET_MS + the cooldown); applying a list update
  *   mid-overscroll after that delay is fine because Chromium repaints the
  *   anchored content without a visible flash.
- * - **Firefox**: at an overscrolled edge, settle ONLY on the release
- *   scrollend — never from a timer. Firefox implements scrollend
- *   spec-faithfully (deferred until the gesture truly ends: fingers off,
- *   momentum spent) and it is stable in practice, which makes it the
- *   authoritative release signal; the pending settle it sets survives the
- *   trailing momentum-end wheels that follow it, settling one cooldown
- *   after they go idle. Applying from a timer while the engine gesture is
+ * - **Firefox**: at an overscrolled edge, settle only from a scrollend
+ *   followed by FIREFOX_EDGE_RELEASE_GRACE_MS of wheel silence — never from
+ *   a bare timer. Firefox emits a scrollend whenever scrolling pauses, so
+ *   one can land inside a momentum-wheel gap mid-hold; wheels arriving
+ *   inside the grace postpone the settle (trailing momentum-end markers
+ *   after a real release delay it briefly, a continuing gesture pushes it
+ *   to its own release scrollend). Applying while the engine gesture is
  *   alive is unfixable, verified empirically: besides the visible flash,
  *   Firefox's async scroll machinery keeps the pre-apply scroll-limit
  *   snapshot for the remainder of the gesture — the next scroll bounces
  *   against that "ghost end" — and no main-thread reset clears it (an
  *   overflow toggle with forced reflow and a real-value scrollTop nudge
- *   were both tried). The generic 280ms fallback therefore never arms near
- *   an edge either. A loading slot simply keeps spinning through a held
- *   overscroll; a missed scrollend recovers at the next gesture's settle.
+ *   were both tried). The generic 280ms fallback never arms near an edge
+ *   either, and a scrollend-less hold never applies at all: the loading
+ *   slot keeps spinning and the next gesture's settle recovers it. A
+ *   mid-hold scrollend followed by a motionless hold longer than the grace
+ *   remains indistinguishable from a release and will apply then.
  * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
  *   during native motion kills the momentum animation. The contract is:
  *   never settle while rubber-banded or while any motion — even sub-pixel —
@@ -63,6 +65,13 @@ const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 // are gone (or motionless, which is indistinguishable). Long enough to
 // outlast the gaps in a decaying momentum-wheel tail.
 const EDGE_SETTLE_QUIET_MS = 450;
+// A firefox scrollend at an outward edge is honored only after this much
+// wheel silence: Firefox emits a scrollend whenever scrolling pauses, so one
+// can land inside a momentum-wheel gap mid-hold — applying it there flashes
+// and mints a ghost end. Wheels arriving inside the grace postpone the
+// settle: trailing momentum-end markers after a real release delay it
+// briefly; a continuing gesture pushes it out to its own release scrollend.
+const FIREFOX_EDGE_RELEASE_GRACE_MS = 600;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
 // cooldown, and a settle inside the tail performs anchor-preserving
@@ -462,12 +471,12 @@ export function createScrollSettleController(
     });
   }
 
-  function scheduleSettleCooldown(): void {
+  function scheduleSettleCooldown(delayMs = SCROLL_SETTLE_COOLDOWN_MS): void {
     cancelSettleTimer();
     settleTimer = window.setTimeout(() => {
       settleTimer = 0;
       maybeFinishUserScroll();
-    }, SCROLL_SETTLE_COOLDOWN_MS);
+    }, delayMs);
   }
 
   function hydratePlaceholdersAfterNativeScrollEnd(): void {
@@ -552,6 +561,18 @@ export function createScrollSettleController(
       if (!userScrollActive) return;
       if (!userScrollMoved) {
         cancelUserScroll();
+        return;
+      }
+      if (strategy === "firefox-wheel" && isNearScrollEdge()) {
+        // This may be the release — or a scrollend that slipped into a
+        // momentum-wheel gap mid-hold. Honor it only after the grace of
+        // wheel silence; skip placeholder hydration until then too.
+        nativeScrollEndPending = true;
+        wheelPendingNativeScrollEndTop = Math.max(
+          0,
+          Math.min(nativeMaxScrollTop(), viewport.scrollTop),
+        );
+        scheduleSettleCooldown(FIREFOX_EDGE_RELEASE_GRACE_MS);
         return;
       }
       markPendingWheelScrollEnd();
@@ -662,9 +683,11 @@ export function createScrollSettleController(
         // skipping placeholder hydration here is deliberate in both branches
         // — it swaps DOM and flashes just like a layout apply would.
         if (nativeScrollEndPending) {
-          // The release scrollend already fired; these were the trailing
-          // momentum-end wheels that follow it. The gesture is over.
-          scheduleSettleCooldown();
+          // A scrollend already fired and wheels followed it — either
+          // trailing momentum-end markers after a real release, or the
+          // gesture continuing past a momentum-gap scrollend. Re-arm the
+          // full grace; only sustained wheel silence settles at an edge.
+          scheduleSettleCooldown(FIREFOX_EDGE_RELEASE_GRACE_MS);
           return;
         }
         // No scrollend yet: fingers may still be down, and Firefox defers

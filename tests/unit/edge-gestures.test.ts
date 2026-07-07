@@ -184,8 +184,12 @@ describe("fractional-edge gestures", () => {
     expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
     // Firefox defers scrollend until the gesture truly ends: the release.
+    // At an edge it is honored after the wheel-silence grace (600ms) — a
+    // scrollend can also land inside a momentum gap mid-hold.
     harness.scrollEnd();
-    vi.advanceTimersByTime(300);
+    vi.advanceTimersByTime(400);
+    expect(harness.applies()).toBe(0); // inside the grace
+    vi.advanceTimersByTime(400);
     expect(harness.applies()).toBe(1);
     expect(harness.list.state.count).toBe(150);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
@@ -226,6 +230,11 @@ describe("fractional-edge gestures", () => {
     vi.advanceTimersByTime(40);
     harness.wheel(4);
 
+    // The trailing wheels re-arm the grace rather than destroying the
+    // pending settle (that starved the load before) or being cooked at the
+    // short cooldown (that applied mid-gesture before).
+    vi.advanceTimersByTime(400);
+    expect(harness.applies()).toBe(0); // still inside idle + grace
     vi.advanceTimersByTime(600);
     expect(harness.applies()).toBe(1);
     expect(harness.list.state.count).toBe(150);
@@ -247,8 +256,32 @@ describe("fractional-edge gestures", () => {
     expect(harness.applies()).toBe(0);
     expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    harness.scrollEnd(); // release
-    vi.advanceTimersByTime(300);
+    harness.scrollEnd(); // release, honored after the wheel-silence grace
+    vi.advanceTimersByTime(800);
+    expect(harness.applies()).toBe(1);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("firefox: a scrollend inside a momentum-wheel gap cannot settle mid-hold", () => {
+    const harness = mountEdgeDemo("firefox-wheel");
+    momentumScrollTo(harness, harness.maxScrollTop() - 0.8);
+
+    // Momentum wheels with 300ms gaps; a scrollend slips into one of the
+    // gaps (Firefox emits one whenever scrolling pauses). The old 140ms
+    // cooldown applied the load inside the gap — mid-hold, randomly.
+    harness.wheel(12);
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd(); // scrolling paused; the gesture is still alive
+    vi.advanceTimersByTime(150);
+    for (let i = 0; i < 4; i++) {
+      harness.wheel(8); // ...as these wheels prove
+      vi.advanceTimersByTime(300);
+    }
+    expect(harness.applies()).toBe(0);
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+
+    // Wheels stop for good: the grace elapses and the gesture settles.
+    vi.advanceTimersByTime(800);
     expect(harness.applies()).toBe(1);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
   });
