@@ -20,10 +20,14 @@ pnpm install
 pnpm run dev
 ```
 
-The `pnpm-workspace.yaml` file approves the `esbuild` and `markdown-viewer`
-install scripts and sets `blockExoticSubdeps: false`, so the git-hosted
-`markdown-viewer` (and its transitive `comrak-wasm`) install under pnpm 11. It
-doesn't pin `pnpm` or require Corepack.
+`markdown-viewer` is a `link:` dependency on a sibling checkout: clone
+[markdown-viewer](https://github.com/jveres/markdown-viewer) next to this
+repository (as `../markdown-viewer`) before running `pnpm install`. The
+`pnpm-workspace.yaml` file approves the `esbuild` and `markdown-viewer`
+install scripts and sets `blockExoticSubdeps: false` so the transitive
+`comrak-wasm` installs under pnpm 11, and the Vite dev server allows
+`../markdown-viewer` in `server.fs` so the wasm binary is served through the
+symlink. The repo doesn't pin `pnpm` or require Corepack.
 
 Open these pages from the dev server:
 
@@ -42,12 +46,29 @@ Open these pages from the dev server:
   streaming, cancel, and sticky user-message scroll behavior.
 - `/demos/streaming/index.html?instant` disables simulated token delays for
   faster manual testing.
+- `/demos/virtual-list-state/index.html` shows a live state inspector with
+  runtime-tunable options (count, row heights, measure epsilon, overscan,
+  placeholders, render mode).
 
 ## Runtime architecture
 
-The virtual list lives in `src/virtual-list.ts`. It owns the scroll
-viewport, injects a single content layer, and mounts only the rows that overlap
-the viewport plus pixel overscan.
+The runtime is a small set of focused modules under `src/`. The orchestrator
+in `virtual-list.ts` owns the scroll viewport, injects a single content layer,
+and mounts only the rows that overlap the viewport plus pixel overscan. Each
+subsystem with its own lifecycle lives in its own module behind a narrow host
+interface:
+
+- `fenwick.ts` — the offset engine: a Fenwick tree over row heights for prefix
+  sums, index lookup, and O(log n) appends against capacity headroom.
+- `layout-kernel.ts` — pure layout math (render-range planning, pixel-window
+  planning, slot visibility) with no DOM, state, or side effects.
+- `scroll-settle.ts` — per-engine gesture classification: when a user scroll
+  has finished, and which scrolls are the runtime's own writes.
+- `follow-bottom.ts` — the rAF chase loop that pins the viewport to growing
+  content while rows stream in.
+- `placeholder-mode.ts` — the velocity-driven fast-scroll placeholder state
+  machine and its hydration loop.
+- `measurement-queue.ts` — batching and defer rules for measured row heights.
 
 The runtime uses these pieces:
 
@@ -58,8 +79,8 @@ The runtime uses these pieces:
   height.
 - Absolutely positioned rows placed at their modeled prefix offset with
   `translateY()`.
-- A `Float64Array` of row sizes backed by a Fenwick tree for prefix sums and
-  index lookup.
+- A Fenwick tree as the single source of truth for row heights, prefix sums,
+  and index lookup.
 - A `ResizeObserver` on mounted rows to replace estimates with real border-box
   heights.
 - A viewport `ResizeObserver` to keep the current anchor stable when the list
@@ -263,6 +284,13 @@ The config also accepts host callbacks:
 - `onScrollStart(state)` and `onScrollEnd(state)` for runtime scroll lifecycle
   boundaries.
 
+The config also accepts `scrollSettleStrategy` to override the user-agent
+detection of the scroll-settle strategy — the per-engine heuristics that decide
+when a user scroll gesture has finished. The module exports
+`detectScrollSettleStrategy(userAgent)` and the
+`VirtualListScrollSettleStrategy` type; use the override for tests and for
+embeddings with mismatched user agents.
+
 The module also exports `measureVirtualListItem(config)` as a one-shot
 wrapper for single-row measurement. Both measurement APIs are intentionally
 separate from the live instance so the host can measure rows before the
@@ -346,8 +374,10 @@ scroll.
 
 Hosts can keep only part of a data set in memory and load more rows when the
 native viewport reaches either boundary. Use `onReachTop` and `onReachBottom`
-for boundary notifications. The runtime detects those boundaries with stable
-top and bottom boundary slots observed by `IntersectionObserver`.
+for boundary notifications. The runtime detects those boundaries from its own
+scroll geometry: after each render it checks whether a stable top or bottom
+boundary slot overlaps the viewport, with no observers and no forced layout
+reads.
 
 The reach callbacks fire once per visible boundary-slot entry. They re-arm after
 the slot leaves the viewport, so the host doesn't receive a callback on every
@@ -607,6 +637,10 @@ The virtual list keeps scrolling work small and predictable.
 - Scroll events schedule a single render frame.
 - ResizeObserver entries are batched into a single measurement frame.
 - Prefix offset reads and index lookup are `O(log n)` through the Fenwick tree.
+- Pure appends extend the size model in place (amortized `O(1)` per row);
+  prepends and window shifts rebuild it once, linearly.
+- Repositioning is bounded from the first changed index: a measured row only
+  moves the rows after it, never the stable prefix above.
 - DOM updates are bounded to the mounted range plus overscan.
 - Existing mounted elements are reused when the range overlaps.
 - Range changes are incremental: rows leaving the buffered range are removed,
@@ -658,20 +692,27 @@ pnpm test        # run once
 pnpm test:watch  # watch mode
 ```
 
-The suite is deterministic and covers the runtime only (not the demos), in two
-layers:
+The suite is deterministic and covers the runtime only (not the demos), in
+three layers:
 
 - **Pure unit (node):** the `FenwickTree` offset engine — including a seeded,
-  reproducible fuzz against a naive oracle — and the pixel-window planners,
-  including non-finite / negative / zero inputs.
+  reproducible fuzz against a naive oracle for prefix sums, index lookup,
+  capacity/append, and value extraction — plus the layout kernel (render-range
+  planner, slot coverage) and the pixel-window planners, including non-finite /
+  negative / zero inputs.
+- **Controller unit (jsdom):** the extracted controllers driven through fake
+  hosts and mocked viewport geometry: scroll-settle characterization per
+  engine strategy, boundary-reach semantics (arming, once-per-entry emission,
+  the prepend-on-reach loading loop), the measurement queue's batching and
+  defer rules, and the placeholder fast-mode hysteresis and hydration loop.
 - **DOM contract (jsdom):** `createVirtualList` behaviors that do not depend on
   real geometry, run in `renderMode: "full"` with a no-op `ResizeObserver` stub:
   `getItemOffset`, the build/reuse/destroy lifecycle across count changes and
   window shifts (prepend/remove-before keep existing rows as the same DOM nodes),
   `refreshFrom`/`refreshIndex`, recycling, and `dispose`.
 
-Tests live under `tests/` (outside the `tsconfig` include), so `pnpm run check`
-does not type-check them; a separate pass is used for that.
+Tests live under `tests/` and are type-checked by `pnpm run check`. Run
+`pnpm exec vitest run --coverage` for a per-module coverage report.
 
 Behavior that depends on real layout, scroll, and timing — scroll preservation
 on prepend/append, streaming tail precision, `scrollToIndex` alignment, and
