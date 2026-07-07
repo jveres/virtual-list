@@ -334,6 +334,33 @@ export class FenwickTree {
     }
   }
 
+  /**
+   * The stored value at `index`, as the difference of adjacent prefix sums —
+   * O(log n). Float rounding across the partial sums bounds the error at
+   * ~1e-7 of the total, far below the library's 0.5px measure epsilon.
+   */
+  valueAt(index: number): number {
+    return this.prefix(index + 1) - this.prefix(index);
+  }
+
+  /**
+   * Extract all logical values in O(n) by inverting the linear build on a
+   * scratch copy: descending, remove each node's contribution from its
+   * parent; what remains at node i is the raw value of element i-1.
+   */
+  toValues(): Float64Array {
+    const scratch = this.tree.slice();
+    for (let i = this.capacity; i >= 1; i--) {
+      const parent = i + (i & -i);
+      if (parent <= this.capacity) {
+        scratch[parent] = (scratch[parent] ?? 0) - (scratch[i] ?? 0);
+      }
+    }
+    const values = new Float64Array(this.logicalSize);
+    for (let i = 0; i < this.logicalSize; i++) values[i] = scratch[i + 1] ?? 0;
+    return values;
+  }
+
   /** Grow the logical size by one, assigning `value` to the new last index. */
   append(value: number): void {
     if (this.logicalSize >= this.capacity) {
@@ -687,9 +714,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   const renderMode = config.renderMode ?? "virtual";
   const measureEpsilon = config.measureEpsilon ?? DEFAULT_MEASURE_EPSILON;
   let count = 0;
-  let sizes = new Float64Array(0);
+  // Heights live solely in the Fenwick tree (valueAt/toValues recover
+  // individual values on cold paths); `measured` tracks which are real.
   let measured = new Uint8Array(0);
-  let sizeTree = new FenwickTree(sizes);
+  let sizeTree = new FenwickTree(new Float64Array(0));
   let itemSizeTotal = 0;
   let measuredCount = 0;
   let mounted = new Map<number, HTMLElement>();
@@ -1336,31 +1364,28 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   function appendModeledSizes(previousCount: number, nextCount: number): void {
     if (nextCount > sizeTree.capacity) {
       const capacity = Math.max(nextCount, previousCount * 2);
-      const nextSizes = new Float64Array(capacity);
-      nextSizes.set(sizes.subarray(0, previousCount));
+      const nextSizes = new Float64Array(nextCount);
+      nextSizes.set(sizeTree.toValues());
       const nextMeasured = new Uint8Array(capacity);
       nextMeasured.set(measured.subarray(0, previousCount));
       for (let index = previousCount; index < nextCount; index++) {
         nextSizes[index] = modeledItemHeight(index);
       }
-      sizes = nextSizes;
       measured = nextMeasured;
-      sizeTree = new FenwickTree(nextSizes.subarray(0, nextCount), capacity);
+      sizeTree = new FenwickTree(nextSizes, capacity);
       itemSizeTotal = sizeTree.total();
       return;
     }
 
     for (let index = previousCount; index < nextCount; index++) {
-      const height = modeledItemHeight(index);
-      sizes[index] = height;
-      sizeTree.append(height);
-      itemSizeTotal += height;
+      sizeTree.append(modeledItemHeight(index));
     }
+    itemSizeTotal = sizeTree.total();
   }
 
-  // NOTE: `sizes`/`measured` may carry spare capacity beyond `count` (append
-  // headroom); only `[0, count)` is meaningful. Use `count`, never
-  // `sizes.length`, as the logical length.
+  // NOTE: `measured` may carry spare capacity beyond `count` (append
+  // headroom, kept equal to the tree's capacity); only `[0, count)` is
+  // meaningful. Use `count`, never `measured.length`, as the logical length.
   function fillSizes(
     nextCount: number,
     addedBefore: number,
@@ -1381,7 +1406,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return 0;
     }
 
-    const previousSizes = sizes;
+    const previousSizes = sizeTree.toValues();
     const previousMeasured = measured;
     const nextSizes = new Float64Array(nextCount);
     const nextMeasured = new Uint8Array(nextCount);
@@ -1427,9 +1452,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       nextSizes[index] = modeledItemHeight(index);
     }
 
-    sizes = nextSizes;
     measured = nextMeasured;
-    sizeTree = new FenwickTree(sizes);
+    sizeTree = new FenwickTree(nextSizes);
     itemSizeTotal = sizeTree.total();
     markLayoutDirtyFrom(0);
     return beforeHeightDelta;
@@ -1446,10 +1470,9 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       measurementFrame = 0;
     }
     pendingMeasurements.clear();
-    sizes = nextSizes;
     measured = new Uint8Array(count);
     measuredCount = 0;
-    sizeTree = new FenwickTree(sizes);
+    sizeTree = new FenwickTree(nextSizes);
     itemSizeTotal = sizeTree.total();
     markLayoutDirtyFrom(0);
   }
@@ -1924,8 +1947,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     height: number,
     anchorIndex: number,
   ): number | null {
-    const previous = sizes[index];
-    if (previous === undefined) return null;
+    if (index < 0 || index >= count) return null;
+    const previous = sizeTree.valueAt(index);
 
     if (!measured[index]) {
       measured[index] = 1;
@@ -1935,7 +1958,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     const delta = height - previous;
     if (Math.abs(delta) <= measureEpsilon) return null;
 
-    sizes[index] = height;
     sizeTree.add(index, delta);
     itemSizeTotal += delta;
     markLayoutDirtyFrom(index + 1);
@@ -2041,7 +2063,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     align: VirtualListAlign = "top",
   ): number {
     const itemTop = topSlotHeight() + sizeTree.prefix(index);
-    const itemHeight = sizes[index] ?? modeledItemHeight(index);
+    const itemHeight = sizeTree.valueAt(index);
     if (typeof align === "number") return itemTop - align;
     if (align === "bottom") return itemTop + itemHeight - viewport.clientHeight;
     if (align === "center") {
