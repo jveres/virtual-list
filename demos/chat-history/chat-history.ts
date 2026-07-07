@@ -221,13 +221,16 @@ function scrollToTypedIndex(): void {
     : 0;
   indexInput.value = String(dataIndex);
   const align = isAlign(alignSelect.value) ? alignSelect.value : "top";
+  // A top-aligned goto reserves one header height above the message when the
+  // floating pill occupies that band (sticky on — the analog of
+  // scroll-margin-top), or when the message opens its group (its own date
+  // header rides along, so "go to the first message" lands at the exact
+  // content top with no leftover scroll room). Mid-group gotos with sticky
+  // off land flush: the row above them is a message, not a label.
+  const headerAbove = stickyEnabled || dataIndex % MESSAGES_PER_GROUP === 0;
   void virtualList.scrollToIndex(
     dataToLayoutIndex(dataIndex),
-    // With pinned section headers, a top-aligned message must land below the
-    // floating pill (the sticky-header analog of scroll-margin-top). This
-    // also makes "go to the first message" land at the exact content top:
-    // its date header (HEADER_HEIGHT) sits above it, so the offset cancels.
-    align === "top" && stickyEnabled ? HEADER_HEIGHT : align,
+    align === "top" && headerAbove ? HEADER_HEIGHT : align,
     {
       behavior: isScrollBehavior(behaviorSelect.value)
         ? behaviorSelect.value
