@@ -1674,30 +1674,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     flushDeferredLayoutUpdates();
   }
 
-  // Force the engine to drop its internal gesture and scroll-limit snapshot.
-  // Firefox keeps the pre-apply limit alive for the remainder of a gesture
-  // that never emitted its release scrollend, so content applied by the
-  // last-resort settle leaves a ghost end the next scroll bounces against.
-  // Two levers, both needed: the overflow toggle with a forced reflow
-  // detaches the scroll container from the live gesture, and the 1px
-  // nudge-and-restore is a REAL-value programmatic scroll — a same-value
-  // write is a no-op the engine ignores, while a value change makes
-  // Firefox's async scroll machinery cancel its gesture/overscroll animation
-  // and sync fresh frame metrics that include the grown range. Both writes
-  // are pre-recorded so their scroll echoes aren't misread as user scrolls.
-  function resetNativeGestureState(): void {
-    const currentTop = clamp(viewport.scrollTop, 0, nativeMaxScrollTop());
-    const previousOverflowY = viewport.style.overflowY;
-    viewport.style.overflowY = "hidden";
-    void viewport.offsetHeight;
-    viewport.style.overflowY = previousOverflowY;
-    const nudgeTop = Math.max(0, currentTop - 1);
-    scrollSettle.recordProgrammaticScrollTop(nudgeTop);
-    viewport.scrollTop = nudgeTop;
-    scrollSettle.recordProgrammaticScrollTop(currentTop);
-    viewport.scrollTop = currentTop;
-  }
-
   function interruptNativeScrollMomentum(): void {
     if (!scrollSettle.isUserScrollActive()) return;
 
@@ -2291,7 +2267,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       if (mountedPlaceholders.size === 0) return;
       if (placeholderMode.forceHydrate()) renderNow(logicalScrollTop());
     },
-    onGestureSettledWithoutRelease: resetNativeGestureState,
   });
 
   viewportResizeObserver.observe(viewport);

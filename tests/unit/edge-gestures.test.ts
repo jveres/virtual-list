@@ -179,7 +179,7 @@ describe("fractional-edge gestures", () => {
       harness.wheel(8);
       vi.advanceTimersByTime(350);
     }
-    vi.advanceTimersByTime(1200); // held, motionless, inside the last resort
+    vi.advanceTimersByTime(5000); // held, motionless — no timer may fire
     expect(harness.applies()).toBe(0);
     expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
@@ -191,15 +191,22 @@ describe("fractional-edge gestures", () => {
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
   });
 
-  it("firefox: a missing scrollend cannot strand the load (long last resort)", () => {
+  it("firefox: never settles from a timer at the edge; the next gesture recovers a missed scrollend", () => {
     const harness = mountEdgeDemo("firefox-wheel");
     momentumScrollTo(harness, harness.maxScrollTop() - 0.8);
     harness.wheel(8);
 
-    vi.advanceTimersByTime(1200);
-    expect(harness.applies()).toBe(0); // still waiting for the release
+    // No timer may ever apply here: doing so while the engine gesture is
+    // alive flashes and leaves a ghost end no main-thread reset can clear.
+    vi.advanceTimersByTime(10_000);
+    expect(harness.applies()).toBe(0);
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(2500); // past the last resort
+    // The scrollend was missed entirely; the user scrolls away and that
+    // gesture's settle applies the deferred load.
+    harness.scrollTo(3000);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(300);
     expect(harness.applies()).toBe(1);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
   });
