@@ -276,30 +276,62 @@ export interface VirtualList {
 
 export class FenwickTree {
   private readonly tree: Float64Array;
+  private logicalSize: number;
+  private searchBit: number;
 
-  readonly size: number;
-  readonly maxBit: number;
+  /** Backing slot count; `append` may grow `size` up to this without a rebuild. */
+  readonly capacity: number;
 
-  constructor(values: Float64Array) {
-    this.size = values.length;
-    this.tree = new Float64Array(this.size + 1);
-    for (let index = 0; index < values.length; index++) {
-      this.add(index, values[index] ?? 0);
+  /** Logical element count — `prefix`/`indexAt` operate on `[0, size)`. */
+  get size(): number {
+    return this.logicalSize;
+  }
+
+  /** Largest power of two <= size (1 when empty); `indexAt`'s first probe. */
+  get maxBit(): number {
+    return this.searchBit;
+  }
+
+  constructor(values: Float64Array, capacity = values.length) {
+    this.logicalSize = values.length;
+    this.capacity = Math.max(capacity, values.length);
+    this.tree = new Float64Array(this.capacity + 1);
+    // O(n) build over the full capacity (slots past values.length are zero):
+    // seed each node with its value, then fold each node's partial sum into its
+    // parent — same result as n add() calls, one log factor cheaper.
+    for (let i = 1; i <= this.capacity; i++) {
+      this.tree[i] = (this.tree[i] ?? 0) + (values[i - 1] ?? 0);
+      const parent = i + (i & -i);
+      if (parent <= this.capacity) {
+        this.tree[parent] = (this.tree[parent] ?? 0) + (this.tree[i] ?? 0);
+      }
     }
     let maxBit = 1;
-    while (maxBit << 1 <= this.size) maxBit <<= 1;
-    this.maxBit = maxBit;
+    while (maxBit << 1 <= this.logicalSize) maxBit <<= 1;
+    this.searchBit = maxBit;
   }
 
   add(index: number, delta: number): void {
-    for (let i = index + 1; i <= this.size; i += i & -i) {
+    // Walk to capacity, not size, so the zero-padding slots stay consistent and
+    // append() can activate them later without touching the tree.
+    for (let i = index + 1; i <= this.capacity; i += i & -i) {
       this.tree[i] = (this.tree[i] ?? 0) + delta;
     }
   }
 
+  /** Grow the logical size by one, assigning `value` to the new last index. */
+  append(value: number): void {
+    if (this.logicalSize >= this.capacity) {
+      throw new Error("FenwickTree.append: no spare capacity");
+    }
+    this.logicalSize++;
+    if (this.searchBit << 1 <= this.logicalSize) this.searchBit <<= 1;
+    this.add(this.logicalSize - 1, value);
+  }
+
   prefix(count: number): number {
     let sum = 0;
-    const safeCount = Math.max(0, Math.min(this.size, count));
+    const safeCount = Math.max(0, Math.min(this.logicalSize, count));
     for (let i = safeCount; i > 0; i -= i & -i) {
       sum += this.tree[i] ?? 0;
     }
@@ -307,25 +339,26 @@ export class FenwickTree {
   }
 
   total(): number {
-    return this.prefix(this.size);
+    return this.prefix(this.logicalSize);
   }
 
   indexAt(offset: number): number {
-    if (this.size === 0) return 0;
+    if (this.logicalSize === 0) return 0;
 
     let index = 0;
     let sum = 0;
 
-    for (let bit = this.maxBit; bit > 0; bit >>= 1) {
+    for (let bit = this.searchBit; bit > 0; bit >>= 1) {
       const next = index + bit;
+      if (next > this.logicalSize) continue;
       const nextValue = this.tree[next] ?? 0;
-      if (next <= this.size && sum + nextValue <= offset) {
+      if (sum + nextValue <= offset) {
         index = next;
         sum += nextValue;
       }
     }
 
-    return Math.max(0, Math.min(this.size - 1, index));
+    return Math.max(0, Math.min(this.logicalSize - 1, index));
   }
 }
 
@@ -1344,21 +1377,69 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return shouldWrite;
   }
 
+  // Extend the size structures for a pure append of [previousCount, nextCount).
+  // With spare tree capacity this is O(appended · log capacity); when full, the
+  // arrays regrow with doubling headroom and rebuild once, linearly, so a
+  // one-row-at-a-time streaming append stays amortized O(1) per row.
+  function appendModeledSizes(previousCount: number, nextCount: number): void {
+    if (nextCount > sizeTree.capacity) {
+      const capacity = Math.max(nextCount, previousCount * 2);
+      const nextSizes = new Float64Array(capacity);
+      nextSizes.set(sizes.subarray(0, previousCount));
+      const nextMeasured = new Uint8Array(capacity);
+      nextMeasured.set(measured.subarray(0, previousCount));
+      for (let index = previousCount; index < nextCount; index++) {
+        nextSizes[index] = modeledItemHeight(index);
+      }
+      sizes = nextSizes;
+      measured = nextMeasured;
+      sizeTree = new FenwickTree(nextSizes.subarray(0, nextCount), capacity);
+      itemSizeTotal = sizeTree.total();
+      return;
+    }
+
+    for (let index = previousCount; index < nextCount; index++) {
+      const height = modeledItemHeight(index);
+      sizes[index] = height;
+      sizeTree.append(height);
+      itemSizeTotal += height;
+    }
+  }
+
+  // NOTE: `sizes`/`measured` may carry spare capacity beyond `count` (append
+  // headroom); only `[0, count)` is meaningful. Use `count`, never
+  // `sizes.length`, as the logical length.
   function fillSizes(
     nextCount: number,
     addedBefore: number,
     removedBefore: number,
   ): number {
+    const previousCount = count;
+
+    // Pure append (or no-op): nothing prepended or removed, so the existing
+    // prefix — sizes, measured flags, tree — is kept in place as-is.
+    if (
+      addedBefore === 0 &&
+      removedBefore === 0 &&
+      nextCount >= previousCount
+    ) {
+      if (nextCount === previousCount) return 0;
+      appendModeledSizes(previousCount, nextCount);
+      layoutVersion++;
+      return 0;
+    }
+
     const previousSizes = sizes;
     const previousMeasured = measured;
     const nextSizes = new Float64Array(nextCount);
     const nextMeasured = new Uint8Array(nextCount);
-    const previousStart = Math.min(removedBefore, previousSizes.length);
+    const previousStart = Math.min(removedBefore, previousCount);
     const preserved = Math.min(
-      Math.max(0, previousSizes.length - previousStart),
+      Math.max(0, previousCount - previousStart),
       Math.max(0, nextCount - addedBefore),
     );
 
+    measuredCount = 0;
     if (preserved > 0) {
       nextSizes.set(
         previousSizes.subarray(previousStart, previousStart + preserved),
@@ -1368,6 +1449,15 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         previousMeasured.subarray(previousStart, previousStart + preserved),
         addedBefore,
       );
+      // Everything outside the preserved slice is freshly modeled (unmeasured),
+      // so the surviving flags are the whole measured count.
+      for (
+        let index = previousStart;
+        index < previousStart + preserved;
+        index++
+      ) {
+        if (previousMeasured[index]) measuredCount++;
+      }
     }
 
     let beforeHeightDelta = 0;
@@ -1387,10 +1477,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     sizes = nextSizes;
     measured = nextMeasured;
-    measuredCount = 0;
-    for (const value of measured) {
-      if (value) measuredCount++;
-    }
     sizeTree = new FenwickTree(sizes);
     itemSizeTotal = sizeTree.total();
     layoutVersion++;
@@ -1742,9 +1828,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     const previousEnd = rangeEnd;
     computeRange(explicitScrollTop, viewportHeight);
     const { start, end } = computedRange;
+    // An item's top is topSlotHeight() + prefix(index) — absolute in content
+    // space, independent of the mounted range. Every input that moves it (size
+    // measurements, count changes, slot heights) bumps layoutVersion, so kept
+    // items only need repositioning when the layout is dirty, not on range
+    // shifts.
     const layoutDirty = renderedLayoutVersion !== layoutVersion;
     const mountPlaceholders = shouldUsePlaceholderMode();
-    const rangeChanged = start !== previousStart || end !== previousEnd;
     rangeStart = start;
     rangeEnd = end;
 
@@ -1757,11 +1847,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       // that caused a visible flash. Newly mounted items below already build as
       // placeholders via mountItem(.., mountPlaceholders, ..). On exit, hydrate
       // any placeholders that survived back into real items.
-      const refreshedMountedItems = mountPlaceholders
-        ? false
-        : hydratePlaceholdersBlocked
-          ? false
-          : refreshMountedPlaceholders();
+      const refreshedMountedItems =
+        !mountPlaceholders &&
+        !hydratePlaceholdersBlocked &&
+        refreshMountedPlaceholders();
       if (!layoutDirty && !refreshedMountedItems) {
         emitViewportChange(totalSize, actualScrollTop, viewportHeight);
         return;
@@ -1774,7 +1863,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
           complete = false;
           break;
         }
-        if (layoutDirty || rangeChanged) {
+        if (layoutDirty) {
           positionItem(index, element, itemOffset);
         }
       }
@@ -1802,7 +1891,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         newItems ??= document.createDocumentFragment();
         newItems.appendChild(element);
         mounted.set(index, element);
-      } else if (layoutDirty || rangeChanged) {
+      } else if (layoutDirty) {
         positionItem(index, element, itemOffset);
       }
     }
@@ -1901,6 +1990,39 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return index < anchorIndex ? delta : 0;
   }
 
+  // Shared tail of a committed height change: re-sync the content height, keep
+  // the viewport anchored (stick to the bottom, or offset by the height change
+  // above the anchor), and re-render.
+  function applyMeasurementCorrection(
+    wasAtBottom: boolean,
+    hadStickyTail: boolean,
+    correction: number,
+  ): void {
+    const scrollTopBeforeSync = viewport.scrollTop;
+    recomputeTailGap();
+    syncContentHeight();
+    const maxTop = nativeMaxScrollTop();
+    // If content shrank below the current scroll position, the browser clamps
+    // scrollTop down to maxTop and emits a scroll event we never initiated.
+    // Pre-record the expected landing so it isn't misread as a user scroll —
+    // which would cancel an active auto-follow mid-stream (content shrinks as
+    // streamed markdown heals/re-parses, e.g. a partial fence reflowing shorter).
+    // Use the pre-shrink scrollTop: reading viewport.scrollTop after the height
+    // write forces layout and already reflects the clamp.
+    if (scrollTopBeforeSync > maxTop + measureEpsilon) {
+      recordProgrammaticScrollTop(maxTop);
+    }
+    if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
+      setScrollTop(maxTop);
+    } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
+      setScrollTop(
+        logicalScrollTop() + correction,
+        PRESERVE_LOGICAL_SCROLL_OFFSET,
+      );
+    }
+    renderNow(logicalScrollTop());
+  }
+
   function flushMeasurements(): void {
     measurementFrame = 0;
     if (pendingMeasurements.size === 0) return;
@@ -1927,29 +2049,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return;
     }
 
-    const scrollTopBeforeSync = viewport.scrollTop;
-    recomputeTailGap();
-    syncContentHeight();
-    const maxTop = nativeMaxScrollTop();
-    // If content shrank below the current scroll position, the browser clamps
-    // scrollTop down to maxTop and emits a scroll event we never initiated.
-    // Pre-record the expected landing so it isn't misread as a user scroll —
-    // which would cancel an active auto-follow mid-stream (content shrinks as
-    // streamed markdown heals/re-parses, e.g. a partial fence reflowing shorter).
-    // Use the pre-shrink scrollTop: reading viewport.scrollTop after the height
-    // write forces layout and already reflects the clamp.
-    if (scrollTopBeforeSync > maxTop + measureEpsilon) {
-      recordProgrammaticScrollTop(maxTop);
-    }
-    if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
-      setScrollTop(maxTop);
-    } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
-      setScrollTop(
-        logicalScrollTop() + correction,
-        PRESERVE_LOGICAL_SCROLL_OFFSET,
-      );
-    }
-    renderNow(logicalScrollTop());
+    applyMeasurementCorrection(wasAtBottom, hadStickyTail, correction);
   }
 
   function commitExplicitMeasurement(index: number, height: number): void {
@@ -1979,29 +2079,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return;
     }
 
-    const scrollTopBeforeSync = viewport.scrollTop;
-    recomputeTailGap();
-    syncContentHeight();
-    const maxTop = nativeMaxScrollTop();
-    // If content shrank below the current scroll position, the browser clamps
-    // scrollTop down to maxTop and emits a scroll event we never initiated.
-    // Pre-record the expected landing so it isn't misread as a user scroll —
-    // which would cancel an active auto-follow mid-stream (content shrinks as
-    // streamed markdown heals/re-parses, e.g. a partial fence reflowing shorter).
-    // Use the pre-shrink scrollTop: reading viewport.scrollTop after the height
-    // write forces layout and already reflects the clamp.
-    if (scrollTopBeforeSync > maxTop + measureEpsilon) {
-      recordProgrammaticScrollTop(maxTop);
-    }
-    if (!hadStickyTail && wasAtBottom && !userScrollActive && count > 0) {
-      setScrollTop(maxTop);
-    } else if (!userScrollActive && Math.abs(correction) > measureEpsilon) {
-      setScrollTop(
-        logicalScrollTop() + correction,
-        PRESERVE_LOGICAL_SCROLL_OFFSET,
-      );
-    }
-    renderNow(logicalScrollTop());
+    applyMeasurementCorrection(wasAtBottom, hadStickyTail, correction);
   }
 
   function scrollTopForIndex(
@@ -2498,7 +2576,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (update.apply) return true;
     if (
       normalizedCountShift(update.addedBefore, Number.MAX_SAFE_INTEGER) > 0 ||
-      normalizedCountShift(update.removedBefore, sizes.length) > 0
+      normalizedCountShift(update.removedBefore, count) > 0
     ) {
       return true;
     }
@@ -2511,10 +2589,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     ensureReachBoundarySlots();
     const nextCount = nonNegativeInteger(getCount());
     const addedBefore = normalizedCountShift(update.addedBefore, nextCount);
-    const removedBefore = normalizedCountShift(
-      update.removedBefore,
-      sizes.length,
-    );
+    const removedBefore = normalizedCountShift(update.removedBefore, count);
     const previousScrollTop = logicalScrollTop();
     const previousTopSlotHeight = topSlotHeight();
     const hasSlotUpdate =
@@ -2569,18 +2644,16 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         }
       }
     }
-    if (emittingChangeCallback) {
-      if (hasScrollTarget) {
-        setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
-      }
+    if (hasScrollTarget) {
+      setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
+    }
+    // Defer the render when re-entering from a change callback (no synchronous
+    // render inside the app's handler) or after a scroll write, whose scroll
+    // event lands next frame anyway; otherwise render in place.
+    if (hasScrollTarget || emittingChangeCallback) {
       scheduleRender();
     } else {
-      if (hasScrollTarget) {
-        setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
-        scheduleRender();
-      } else {
-        renderNow(logicalScrollTop());
-      }
+      renderNow(logicalScrollTop());
     }
     update.after?.();
   }
@@ -3175,11 +3248,15 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     );
     if (scrollbarGutterWidth <= 0) return event.target === viewport;
 
+    // The client area spans [left + clientLeft, + clientWidth) of the border
+    // box; anything outside it horizontally is scrollbar gutter (or border).
+    // Bounding at the client edges — rather than offsetting the combined gutter
+    // width from each border-box edge — keeps borders and the opposite edge's
+    // gutter from widening the zones into the content.
     const rect = viewport.getBoundingClientRect();
-    return (
-      event.clientX <= rect.left + scrollbarGutterWidth ||
-      event.clientX >= rect.right - scrollbarGutterWidth
-    );
+    const clientLeftEdge = rect.left + viewport.clientLeft;
+    const clientRightEdge = clientLeftEdge + viewport.clientWidth;
+    return event.clientX < clientLeftEdge || event.clientX >= clientRightEdge;
   }
 
   function handlePointerScrollStart(event: PointerEvent): void {
