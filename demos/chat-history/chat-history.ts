@@ -220,9 +220,14 @@ function scrollToTypedIndex(): void {
     ? Math.min(Math.max(parsed, 0), total - 1)
     : 0;
   indexInput.value = String(dataIndex);
+  const align = isAlign(alignSelect.value) ? alignSelect.value : "top";
   void virtualList.scrollToIndex(
     dataToLayoutIndex(dataIndex),
-    isAlign(alignSelect.value) ? alignSelect.value : "top",
+    // With pinned section headers, a top-aligned message must land below the
+    // floating pill (the sticky-header analog of scroll-margin-top). This
+    // also makes "go to the first message" land at the exact content top:
+    // its date header (HEADER_HEIGHT) sits above it, so the offset cancels.
+    align === "top" && stickyEnabled ? HEADER_HEIGHT : align,
     {
       behavior: isScrollBehavior(behaviorSelect.value)
         ? behaviorSelect.value
