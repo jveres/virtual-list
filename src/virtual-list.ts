@@ -67,7 +67,6 @@ const CSS = `
   isolation: isolate;
   scrollbar-gutter: stable both-edges;
   scrollbar-width: thin;
-  will-change: scroll-position;
 }
 .vl-content {
   position: relative;
