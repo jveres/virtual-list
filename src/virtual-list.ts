@@ -1,4 +1,5 @@
 import { FenwickTree } from "./fenwick";
+import { createFollowBottomController } from "./follow-bottom";
 import {
   clamp,
   nonNegativeInteger,
@@ -7,6 +8,11 @@ import {
   positiveSize,
   slotCoverageVisible,
 } from "./layout-kernel";
+import { createMeasurementQueue } from "./measurement-queue";
+import {
+  createPlaceholderModeController,
+  DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD,
+} from "./placeholder-mode";
 
 export {
   planVirtualListPixelWindowFromEnd,
@@ -36,9 +42,6 @@ const SCROLL_SNAP_THRESHOLD = 1;
 const DEFAULT_BOUNDARY_SENTINEL_HEIGHT = 1;
 const BOUNDARY_INTERSECTION_THRESHOLD = 0.01;
 const DEFAULT_SMOOTH_SCROLL_DURATION = 300;
-const DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD = 8;
-const PLACEHOLDER_VELOCITY_EXIT_RATIO = 0.5;
-const PLACEHOLDER_EXIT_SAMPLE_COUNT = 3;
 // Float-noise threshold for rewriting a rendered style value (heights, slot
 // tops) or re-emitting state: differences at or below this are the same pixel.
 const RENDER_EPSILON_PX = 0.01;
@@ -503,14 +506,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let rangeStart = 0;
   let rangeEnd = 0;
   let renderFrame = 0;
-  let measurementFrame = 0;
-  let bottomFollowFrame = 0;
-  let bottomFollowActive = false;
-  let bottomFollowLastFrameAt = 0;
-  let bottomFollowDuration = DEFAULT_SMOOTH_SCROLL_DURATION;
-  let bottomFollowSnapThreshold = SCROLL_SNAP_THRESHOLD;
-  let bottomFollowSignal: AbortSignal | null = null;
-  let bottomFollowAbortHandler: (() => void) | null = null;
   let scrollTopResidual = 0;
   // First item index whose mounted position may be stale (Infinity = clean).
   // An item's top is topSlotHeight() + prefix(index), so a size or slot change
@@ -533,10 +528,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let topSlot: MountedBoundarySlot | null = null;
   let bottomSlot: MountedBoundarySlot | null = null;
   let placeholderSlot: MountedPlaceholderSlot | null = null;
-  let placeholderFastMode = false;
-  let hydratePlaceholdersBlocked = false;
-  let placeholderLowVelocitySamples = 0;
-  let placeholderHydrationFrame = 0;
   let reachTopArmed = false;
   let reachBottomArmed = false;
   let topReachConsumed = false;
@@ -552,7 +543,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let itemMeasurer: VirtualListItemMeasurer | null = null;
   let disposed = false;
 
-  const pendingMeasurements = new Map<number, number>();
   const deferredLayoutUpdates: VirtualListLayoutUpdate[] = [];
   const content = document.createElement("div");
   const computedRange = { start: 0, end: 0 };
@@ -564,7 +554,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       if (!Number.isInteger(index)) continue;
       if (mounted.get(index) !== entry.target) continue;
       const height = resizeEntryHeight(entry);
-      if (height !== null) queueMeasurement(index, height);
+      if (height !== null) measurementQueue.queue(index, height);
     }
   });
 
@@ -793,7 +783,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (Math.abs(totalSize - renderedTotalSize) > RENDER_EPSILON_PX) {
       content.style.height = px(totalSize);
       renderedTotalSize = totalSize;
-      wakeBottomFollow();
+      bottomFollow.wake();
     }
     return totalSize;
   }
@@ -1238,11 +1228,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       nextSizes[index] = modeledItemHeight(index);
     }
 
-    if (measurementFrame) {
-      cancelAnimationFrame(measurementFrame);
-      measurementFrame = 0;
-    }
-    pendingMeasurements.clear();
+    measurementQueue.cancelFlush();
+    measurementQueue.clear();
     measured = new Uint8Array(count);
     measuredCount = 0;
     sizeTree = new FenwickTree(nextSizes);
@@ -1296,113 +1283,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return element;
   }
 
-  function canMountPlaceholderItems(): boolean {
-    return renderMode !== "full" && buildPlaceholder !== undefined;
-  }
-
-  function placeholderEnterVelocity(): number {
-    const value = getPlaceholderVelocityThreshold();
-    if (!Number.isFinite(value)) {
-      return value === Number.POSITIVE_INFINITY
-        ? Number.POSITIVE_INFINITY
-        : DEFAULT_PLACEHOLDER_VELOCITY_THRESHOLD;
-    }
-    return Math.max(0, value);
-  }
-
-  function cancelPlaceholderHydrationCheck(): void {
-    if (!placeholderHydrationFrame) return;
-    cancelAnimationFrame(placeholderHydrationFrame);
-    placeholderHydrationFrame = 0;
-  }
-
-  function needsPlaceholderHydrationCheck(): boolean {
-    return (
-      mountedPlaceholders.size > 0 &&
-      (placeholderFastMode || hydratePlaceholdersBlocked)
-    );
-  }
-
-  function schedulePlaceholderHydrationCheck(): void {
-    if (placeholderHydrationFrame || disposed) return;
-    if (!needsPlaceholderHydrationCheck()) return;
-
-    placeholderHydrationFrame = requestAnimationFrame(() => {
-      placeholderHydrationFrame = 0;
-      if (disposed || !needsPlaceholderHydrationCheck()) return;
-
-      renderNow(logicalScrollTop());
-      if (needsPlaceholderHydrationCheck()) {
-        schedulePlaceholderHydrationCheck();
-      }
-    });
-  }
-
-  function clearPlaceholderFastModeState(): void {
-    placeholderFastMode = false;
-    hydratePlaceholdersBlocked = false;
-    placeholderLowVelocitySamples = 0;
-  }
-
-  function disablePlaceholderFastMode(): boolean {
-    const hadPlaceholderMounts = mountedPlaceholders.size > 0;
-    const wasActive =
-      placeholderFastMode || hydratePlaceholdersBlocked || hadPlaceholderMounts;
-    clearPlaceholderFastModeState();
-    return wasActive ? refreshMountedPlaceholders() : false;
-  }
-
-  // Advances the placeholder fast-mode state machine from the current scroll
-  // velocity (entering/exiting fast mode, scheduling hydration checks) and
-  // returns whether newly mounted items should build as placeholders.
-  function updatePlaceholderMode(): boolean {
-    if (!canMountPlaceholderItems()) {
-      disablePlaceholderFastMode();
-      return false;
-    }
-
-    const enterVelocity = placeholderEnterVelocity();
-    if (enterVelocity === Number.POSITIVE_INFINITY) {
-      disablePlaceholderFastMode();
-      return false;
-    }
-
-    const velocity = scrollSettle.currentVelocity();
-
-    if (isAtNativeScrollBoundary()) {
-      disablePlaceholderFastMode();
-      return false;
-    }
-
-    if (velocity >= enterVelocity) {
-      hydratePlaceholdersBlocked = true;
-      placeholderFastMode = true;
-      placeholderLowVelocitySamples = 0;
-      schedulePlaceholderHydrationCheck();
-    } else if (placeholderFastMode) {
-      const exitVelocity = enterVelocity * PLACEHOLDER_VELOCITY_EXIT_RATIO;
-      if (
-        scrollSettle.lastSampleDelta() > measureEpsilon &&
-        velocity <= exitVelocity
-      ) {
-        placeholderLowVelocitySamples++;
-      } else if (scrollSettle.lastSampleDelta() > measureEpsilon) {
-        placeholderLowVelocitySamples = 0;
-      }
-      if (placeholderLowVelocitySamples >= PLACEHOLDER_EXIT_SAMPLE_COUNT) {
-        hydratePlaceholdersBlocked = false;
-        placeholderFastMode = false;
-        placeholderLowVelocitySamples = 0;
-      } else {
-        schedulePlaceholderHydrationCheck();
-      }
-    } else {
-      placeholderFastMode = false;
-    }
-
-    return placeholderFastMode;
-  }
-
   function mountItem(
     index: number,
     usePlaceholder: boolean,
@@ -1416,7 +1296,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (usePlaceholder && buildPlaceholder) {
       element.dataset.placeholder = "true";
       mountedPlaceholders.add(index);
-      schedulePlaceholderHydrationCheck();
+      placeholderMode.scheduleHydrationCheck();
     } else {
       itemResizeObserver.observe(element);
       mountedPlaceholders.delete(index);
@@ -1451,11 +1331,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       }
     }
     return refreshed;
-  }
-
-  function forceHydratePlaceholders(): boolean {
-    clearPlaceholderFastModeState();
-    return refreshMountedPlaceholders();
   }
 
   function syncRenderChrome(): number {
@@ -1571,7 +1446,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     // range shifts.
     const dirtyFrom = firstDirtyIndex;
     const layoutDirty = dirtyFrom < end;
-    const mountPlaceholders = updatePlaceholderMode();
+    const mountPlaceholders = placeholderMode.update();
     rangeStart = start;
     rangeEnd = end;
 
@@ -1586,7 +1461,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       // any placeholders that survived back into real items.
       const refreshedMountedItems =
         !mountPlaceholders &&
-        !hydratePlaceholdersBlocked &&
+        !placeholderMode.isHydrationBlocked() &&
         refreshMountedPlaceholders();
       if (!layoutDirty && !refreshedMountedItems) {
         firstDirtyIndex = Number.POSITIVE_INFINITY;
@@ -1617,7 +1492,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       unmountIndex(index);
     }
 
-    if (!mountPlaceholders && !hydratePlaceholdersBlocked) {
+    if (!mountPlaceholders && !placeholderMode.isHydrationBlocked()) {
       refreshMountedPlaceholders();
     }
 
@@ -1660,50 +1535,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     syncContentHeight();
     renderBoundarySlots();
     renderPlaceholderSlot();
-  }
-
-  function queueMeasurement(index: number, height: number): void {
-    if (
-      !Number.isFinite(height) ||
-      height <= 0 ||
-      index < 0 ||
-      index >= count
-    ) {
-      return;
-    }
-    pendingMeasurements.set(index, positiveSize(height));
-    if (scrollSettle.isUserScrollActive()) return;
-    scheduleMeasurementFlush();
-  }
-
-  function scheduleMeasurementFlush(): void {
-    if (measurementFrame || disposed) return;
-    measurementFrame = requestAnimationFrame(runScheduledMeasurementFlush);
-  }
-
-  // rAF body for the deferred measurement flush. While bottom-follow is
-  // animating (e.g. streaming follow) it already drains pending measurements via
-  // flushMeasurementsNow and runs a single scroll+render pass per frame, so hand
-  // off to it instead of running a second flush+scroll+render the same frame.
-  function runScheduledMeasurementFlush(): void {
-    measurementFrame = 0;
-    if (bottomFollowActive && !scrollSettle.isUserScrollActive()) {
-      wakeBottomFollow();
-      return;
-    }
-    flushMeasurements();
-  }
-
-  function flushMeasurementsNow(): boolean {
-    if (pendingMeasurements.size === 0 || scrollSettle.isUserScrollActive()) {
-      return false;
-    }
-    if (measurementFrame) {
-      cancelAnimationFrame(measurementFrame);
-      measurementFrame = 0;
-    }
-    flushMeasurements();
-    return true;
   }
 
   function commitMeasurement(
@@ -1763,11 +1594,9 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     renderNow(logicalScrollTop());
   }
 
-  function flushMeasurements(): void {
-    measurementFrame = 0;
-    if (pendingMeasurements.size === 0) return;
-    if (scrollSettle.isUserScrollActive()) return;
-
+  // The measurement queue's drain: commit every queued height against the
+  // current scroll anchor, then correct the viewport in one pass.
+  function drainPendingMeasurements(pending: Map<number, number>): void {
     const wasAtBottom = nearNativeBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
@@ -1776,8 +1605,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     let changed = false;
     let correction = 0;
 
-    for (const [index, height] of pendingMeasurements) {
-      pendingMeasurements.delete(index);
+    for (const [index, height] of pending) {
+      pending.delete(index);
       const correctionDelta = commitMeasurement(index, height, anchorIndex);
       if (correctionDelta === null) continue;
       changed = true;
@@ -1808,11 +1637,11 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       Math.max(0, logicalScrollTop() - topSlotHeight()),
     );
     if (scrollSettle.isUserScrollActive() && index < anchorIndex) {
-      queueMeasurement(index, height);
+      measurementQueue.queue(index, height);
       return;
     }
 
-    pendingMeasurements.delete(index);
+    measurementQueue.delete(index);
     const correction = commitMeasurement(index, height, anchorIndex);
     if (correction === null) {
       emitViewportChange();
@@ -1879,7 +1708,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     activeSmoothScrollCancel?.();
-    const hydratedPlaceholders = forceHydratePlaceholders();
+    const hydratedPlaceholders = placeholderMode.forceHydrate();
     interruptNativeScrollMomentum();
     scrollSettle.cancelGesture();
     const target = clamp(top, 0, nativeMaxScrollTop());
@@ -2000,127 +1829,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     });
   }
 
-  function clearBottomFollowSignal(): void {
-    if (bottomFollowSignal && bottomFollowAbortHandler) {
-      bottomFollowSignal.removeEventListener("abort", bottomFollowAbortHandler);
-    }
-    bottomFollowSignal = null;
-    bottomFollowAbortHandler = null;
-  }
-
-  function stopFollowBottom(): void {
-    bottomFollowActive = false;
-    if (bottomFollowFrame) {
-      cancelAnimationFrame(bottomFollowFrame);
-      bottomFollowFrame = 0;
-    }
-    clearBottomFollowSignal();
-    // Drain any measurements that were deferred to the follow loop while it ran.
-    if (pendingMeasurements.size > 0) scheduleMeasurementFlush();
-  }
-
-  function wakeBottomFollow(): void {
-    if (
-      !bottomFollowActive ||
-      disposed ||
-      scrollSettle.isUserScrollActive() ||
-      bottomFollowSignal?.aborted ||
-      count <= 0
-    ) {
-      return;
-    }
-    scheduleBottomFollowFrame();
-  }
-
-  function bottomFollowFrameProgress(now: number): number {
-    const previousFrameAt = bottomFollowLastFrameAt || now;
-    bottomFollowLastFrameAt = now;
-    const elapsed = Math.max(0, now - previousFrameAt);
-    const duration = Math.max(1, bottomFollowDuration);
-    if (duration <= 1) return 1;
-
-    return clamp(1 - 0.01 ** (elapsed / duration), 0, 1);
-  }
-
-  function scheduleBottomFollowFrame(): void {
-    if (bottomFollowFrame || disposed) return;
-    bottomFollowFrame = requestAnimationFrame(tickBottomFollow);
-  }
-
-  function tickBottomFollow(now: number): void {
-    bottomFollowFrame = 0;
-    if (
-      disposed ||
-      !bottomFollowActive ||
-      scrollSettle.isUserScrollActive() ||
-      bottomFollowSignal?.aborted ||
-      count <= 0
-    ) {
-      stopFollowBottom();
-      return;
-    }
-
-    const flushedMeasurements = flushMeasurementsNow();
-    syncContentHeight();
-
-    const target = nativeMaxScrollTop();
-
-    const distance = Math.abs(viewport.scrollTop - target);
-    if (distance <= bottomFollowSnapThreshold) {
-      const didScroll = setScrollTop(target, ALLOW_DURING_SCROLL);
-      if (didScroll || flushedMeasurements) {
-        renderNow(viewport.scrollTop);
-      }
-      if (Math.abs(viewport.scrollTop - target) <= bottomFollowSnapThreshold) {
-        return;
-      }
-      bottomFollowLastFrameAt = now;
-      scheduleBottomFollowFrame();
-      return;
-    }
-
-    const progress = bottomFollowFrameProgress(now);
-    const nextTop =
-      viewport.scrollTop + (target - viewport.scrollTop) * progress;
-    if (setScrollTop(nextTop, ALLOW_DURING_SCROLL)) {
-      renderNow(viewport.scrollTop);
-    }
-    scheduleBottomFollowFrame();
-  }
-
-  function followBottom(options: VirtualListScrollOptions = {}): void {
-    stopFollowBottom();
-    if (count <= 0 || options.signal?.aborted) return;
-
-    syncContentHeight();
-    const snapThreshold = options.snapThreshold ?? SCROLL_SNAP_THRESHOLD;
-
-    bottomFollowDuration = Math.max(
-      1,
-      options.behavior === "smooth"
-        ? (options.duration ?? DEFAULT_SMOOTH_SCROLL_DURATION)
-        : 1,
-    );
-    bottomFollowSnapThreshold = snapThreshold;
-    bottomFollowActive = true;
-    bottomFollowSignal = options.signal ?? null;
-    if (bottomFollowSignal) {
-      bottomFollowAbortHandler = stopFollowBottom;
-      bottomFollowSignal.addEventListener("abort", bottomFollowAbortHandler, {
-        once: true,
-      });
-    }
-    bottomFollowLastFrameAt = performance.now();
-    scheduleBottomFollowFrame();
-  }
-
   async function scrollToIndex(
     index: number,
     align: VirtualListAlign = "top",
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
-    stopFollowBottom();
+    bottomFollow.stop();
     if (count <= 0 || options.signal?.aborted) return false;
     const targetIndex = clamp(Math.floor(index), 0, count - 1);
     syncScrollSurface();
@@ -2145,7 +1860,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
-    stopFollowBottom();
+    bottomFollow.stop();
     if (options.signal?.aborted) return false;
     clearProgrammaticBoundaryReach();
     syncScrollSurface();
@@ -2158,7 +1873,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
-    stopFollowBottom();
+    bottomFollow.stop();
     if (options.signal?.aborted) return false;
     syncScrollSurface();
     armProgrammaticBoundaryReach("top");
@@ -2173,12 +1888,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
     flushDeferredLayoutBeforeProgrammaticOperation();
-    stopFollowBottom();
+    bottomFollow.stop();
     // Commit any settled-but-unflushed row heights so the target is the true
     // content bottom. Without this, a streaming row that just swapped from the
     // (throttled, lagging) live viewer to its taller final static render can
     // leave its measurement queued, and we'd scroll to the shorter old height.
-    flushMeasurementsNow();
+    measurementQueue.flushNow();
     if (options.signal?.aborted) return false;
     syncScrollSurface();
     armProgrammaticBoundaryReach("bottom");
@@ -2293,12 +2008,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     mountedPlaceholders = nextMountedPlaceholders;
   }
 
-  function removePendingMeasurementsOutsideCount(): void {
-    for (const index of pendingMeasurements.keys()) {
-      if (index >= count) pendingMeasurements.delete(index);
-    }
-  }
-
   function flushDeferredLayoutUpdates(): boolean {
     if (deferredLayoutUpdates.length === 0) return false;
 
@@ -2349,7 +2058,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     count = nextCount;
 
     if (isWindowShift) {
-      pendingMeasurements.clear();
+      measurementQueue.clear();
       if (stickyIndex !== null) {
         const nextStickyIndex = stickyIndex + addedBefore - removedBefore;
         stickyIndex =
@@ -2358,7 +2067,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
             : null;
       }
     } else {
-      removePendingMeasurementsOutsideCount();
+      measurementQueue.removeAtOrBeyond(count);
     }
 
     recomputeTailGap();
@@ -2483,6 +2192,49 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     scheduleRender();
   }
 
+  const measurementQueue = createMeasurementQueue({
+    isDisposed: () => disposed,
+    isUserScrollActive: () => scrollSettle.isUserScrollActive(),
+    itemCount: () => count,
+    followLoopDrains: () =>
+      bottomFollow.isActive() && !scrollSettle.isUserScrollActive(),
+    wakeFollowLoop: () => bottomFollow.wake(),
+    drain: drainPendingMeasurements,
+  });
+
+  const placeholderMode = createPlaceholderModeController({
+    canMountPlaceholders: () =>
+      renderMode !== "full" && buildPlaceholder !== undefined,
+    velocityThreshold: getPlaceholderVelocityThreshold,
+    currentVelocity: () => scrollSettle.currentVelocity(),
+    lastSampleDelta: () => scrollSettle.lastSampleDelta(),
+    sampleEpsilon: measureEpsilon,
+    isDisposed: () => disposed,
+    atNativeScrollBoundary: () => isAtNativeScrollBoundary(),
+    hasPlaceholderMounts: () => mountedPlaceholders.size > 0,
+    refreshMountedPlaceholders,
+    renderNow: () => renderNow(logicalScrollTop()),
+  });
+
+  const bottomFollow = createFollowBottomController({
+    viewport,
+    defaultSmoothDuration: DEFAULT_SMOOTH_SCROLL_DURATION,
+    defaultSnapThreshold: SCROLL_SNAP_THRESHOLD,
+    isDisposed: () => disposed,
+    isUserScrollActive: () => scrollSettle.isUserScrollActive(),
+    hasContent: () => count > 0,
+    syncContentHeight: () => {
+      syncContentHeight();
+    },
+    flushMeasurementsNow: () => measurementQueue.flushNow(),
+    writeScrollTop: (top) => setScrollTop(top, ALLOW_DURING_SCROLL),
+    renderNow: () => renderNow(viewport.scrollTop),
+    onStopped: () => {
+      // Drain measurements deferred to the follow loop while it ran.
+      if (measurementQueue.hasPending()) measurementQueue.scheduleFlush();
+    },
+  });
+
   const scrollSettle = createScrollSettleController({
     viewport,
     strategy: config.scrollSettleStrategy ?? detectScrollSettleStrategy(),
@@ -2493,7 +2245,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     },
     smoothScrollReachedTarget: activeSmoothScrollReachedTarget,
     onGestureActivity: () => {
-      stopFollowBottom();
+      bottomFollow.stop();
       clearScrollTopResidual();
     },
     onGestureStarted: () => {
@@ -2502,18 +2254,18 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     },
     onGestureSettled: () => {
       const flushedLayout = flushDeferredLayoutUpdates();
-      const flushedMeasurements = flushMeasurementsNow();
+      const flushedMeasurements = measurementQueue.flushNow();
       const refreshedPlaceholders = refreshMountedPlaceholders();
       if (refreshedPlaceholders || (!flushedLayout && !flushedMeasurements)) {
         renderNow(viewport.scrollTop);
       }
       onScrollEnd?.(getState());
     },
-    onGestureReset: clearPlaceholderFastModeState,
+    onGestureReset: () => placeholderMode.clear(),
     onScrollEventObserved: scheduleRender,
     onNativeScrollEndIdle: () => {
       if (mountedPlaceholders.size === 0) return;
-      if (forceHydratePlaceholders()) renderNow(logicalScrollTop());
+      if (placeholderMode.forceHydrate()) renderNow(logicalScrollTop());
     },
   });
 
@@ -2537,8 +2289,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     scrollToOffset,
     scrollToTop,
     scrollToBottom,
-    followBottom,
-    stopFollowBottom,
+    followBottom: (options) => bottomFollow.follow(options),
+    stopFollowBottom: () => bottomFollow.stop(),
     setStickyIndex,
     getMountedElement,
     getItemOffset,
@@ -2548,9 +2300,9 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     dispose() {
       disposed = true;
       if (renderFrame) cancelAnimationFrame(renderFrame);
-      if (measurementFrame) cancelAnimationFrame(measurementFrame);
-      cancelPlaceholderHydrationCheck();
-      stopFollowBottom();
+      measurementQueue.cancelFlush();
+      placeholderMode.dispose();
+      bottomFollow.stop();
       scrollSettle.dispose();
       deferredLayoutUpdates.length = 0;
       itemResizeObserver.disconnect();
