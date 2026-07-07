@@ -1,3 +1,22 @@
+import { FenwickTree } from "./fenwick";
+import {
+  clamp,
+  nonNegativeInteger,
+  nonNegativeSize,
+  planRenderRange,
+  positiveSize,
+  slotCoverageVisible,
+} from "./layout-kernel";
+
+export {
+  planVirtualListPixelWindowFromEnd,
+  planVirtualListPixelWindowFromStart,
+  type VirtualListPixelWindowConfig,
+  type VirtualListPixelWindowFromEndConfig,
+  type VirtualListPixelWindowFromStartConfig,
+  type VirtualListPixelWindowPlan,
+} from "./layout-kernel";
+
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,
@@ -181,31 +200,6 @@ export interface VirtualListLayoutUpdate extends VirtualListSetCountOptions {
   after?: () => void;
 }
 
-export interface VirtualListPixelWindowPlan {
-  start: number;
-  end: number;
-  count: number;
-  height: number;
-}
-
-export interface VirtualListPixelWindowConfig {
-  count: number;
-  minimumPx: number;
-  getItemHeight: (index: number) => number;
-  minItems?: number;
-  maxItems?: number;
-}
-
-export interface VirtualListPixelWindowFromStartConfig
-  extends VirtualListPixelWindowConfig {
-  start?: number;
-}
-
-export interface VirtualListPixelWindowFromEndConfig
-  extends VirtualListPixelWindowConfig {
-  end?: number;
-}
-
 export interface VirtualListState {
   count: number;
   range: { start: number; end: number };
@@ -289,120 +283,7 @@ export interface VirtualList {
   dispose(): void;
 }
 
-export class FenwickTree {
-  private readonly tree: Float64Array;
-  private logicalSize: number;
-  private searchBit: number;
-
-  /** Backing slot count; `append` may grow `size` up to this without a rebuild. */
-  readonly capacity: number;
-
-  /** Logical element count — `prefix`/`indexAt` operate on `[0, size)`. */
-  get size(): number {
-    return this.logicalSize;
-  }
-
-  /** Largest power of two <= size (1 when empty); `indexAt`'s first probe. */
-  get maxBit(): number {
-    return this.searchBit;
-  }
-
-  constructor(values: Float64Array, capacity = values.length) {
-    this.logicalSize = values.length;
-    this.capacity = Math.max(capacity, values.length);
-    this.tree = new Float64Array(this.capacity + 1);
-    // O(n) build over the full capacity (slots past values.length are zero):
-    // seed each node with its value, then fold each node's partial sum into its
-    // parent — same result as n add() calls, one log factor cheaper.
-    for (let i = 1; i <= this.capacity; i++) {
-      this.tree[i] = (this.tree[i] ?? 0) + (values[i - 1] ?? 0);
-      const parent = i + (i & -i);
-      if (parent <= this.capacity) {
-        this.tree[parent] = (this.tree[parent] ?? 0) + (this.tree[i] ?? 0);
-      }
-    }
-    let maxBit = 1;
-    while (maxBit << 1 <= this.logicalSize) maxBit <<= 1;
-    this.searchBit = maxBit;
-  }
-
-  add(index: number, delta: number): void {
-    // Walk to capacity, not size, so the zero-padding slots stay consistent and
-    // append() can activate them later without touching the tree.
-    for (let i = index + 1; i <= this.capacity; i += i & -i) {
-      this.tree[i] = (this.tree[i] ?? 0) + delta;
-    }
-  }
-
-  /**
-   * The stored value at `index`, as the difference of adjacent prefix sums —
-   * O(log n). Float rounding across the partial sums bounds the error at
-   * ~1e-7 of the total, far below the library's 0.5px measure epsilon.
-   */
-  valueAt(index: number): number {
-    return this.prefix(index + 1) - this.prefix(index);
-  }
-
-  /**
-   * Extract all logical values in O(n) by inverting the linear build on a
-   * scratch copy: descending, remove each node's contribution from its
-   * parent; what remains at node i is the raw value of element i-1.
-   */
-  toValues(): Float64Array {
-    const scratch = this.tree.slice();
-    for (let i = this.capacity; i >= 1; i--) {
-      const parent = i + (i & -i);
-      if (parent <= this.capacity) {
-        scratch[parent] = (scratch[parent] ?? 0) - (scratch[i] ?? 0);
-      }
-    }
-    const values = new Float64Array(this.logicalSize);
-    for (let i = 0; i < this.logicalSize; i++) values[i] = scratch[i + 1] ?? 0;
-    return values;
-  }
-
-  /** Grow the logical size by one, assigning `value` to the new last index. */
-  append(value: number): void {
-    if (this.logicalSize >= this.capacity) {
-      throw new Error("FenwickTree.append: no spare capacity");
-    }
-    this.logicalSize++;
-    if (this.searchBit << 1 <= this.logicalSize) this.searchBit <<= 1;
-    this.add(this.logicalSize - 1, value);
-  }
-
-  prefix(count: number): number {
-    let sum = 0;
-    const safeCount = Math.max(0, Math.min(this.logicalSize, count));
-    for (let i = safeCount; i > 0; i -= i & -i) {
-      sum += this.tree[i] ?? 0;
-    }
-    return sum;
-  }
-
-  total(): number {
-    return this.prefix(this.logicalSize);
-  }
-
-  indexAt(offset: number): number {
-    if (this.logicalSize === 0) return 0;
-
-    let index = 0;
-    let sum = 0;
-
-    for (let bit = this.searchBit; bit > 0; bit >>= 1) {
-      const next = index + bit;
-      if (next > this.logicalSize) continue;
-      const nextValue = this.tree[next] ?? 0;
-      if (sum + nextValue <= offset) {
-        index = next;
-        sum += nextValue;
-      }
-    }
-
-    return Math.max(0, Math.min(this.logicalSize - 1, index));
-  }
-}
+export { FenwickTree } from "./fenwick";
 
 function injectStyles(): void {
   if (document.getElementById(STYLE_ID)) return;
@@ -410,10 +291,6 @@ function injectStyles(): void {
   style.id = STYLE_ID;
   style.textContent = CSS;
   document.head.appendChild(style);
-}
-
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
 }
 
 // Ease-out quint: a quick launch into a long, very soft deceleration tail, so
@@ -461,106 +338,6 @@ function toNumberGetter(
   if (typeof option === "function") return option;
   const value = option ?? fallback;
   return () => value;
-}
-
-function nonNegativeInteger(value: number): number {
-  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-}
-
-function positiveSize(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 1;
-}
-
-function normalizedWindowItemLimit(
-  value: number | undefined,
-  fallback: number,
-): number {
-  if (value === undefined) return fallback;
-  if (!Number.isFinite(value) || value < 0) return fallback;
-  return Math.floor(value);
-}
-
-function shouldCollectPixelWindowItem(
-  itemCount: number,
-  height: number,
-  minimumPx: number,
-  minItems: number,
-  maxItems: number,
-): boolean {
-  if (itemCount >= maxItems) return false;
-  return itemCount < minItems || height < minimumPx;
-}
-
-export function planVirtualListPixelWindowFromEnd(
-  config: VirtualListPixelWindowFromEndConfig,
-): VirtualListPixelWindowPlan {
-  const count = nonNegativeInteger(config.count);
-  const end = clamp(normalizedWindowItemLimit(config.end, count), 0, count);
-  const minimumPx = nonNegativeSize(config.minimumPx);
-  const minItems = normalizedWindowItemLimit(
-    config.minItems,
-    count > 0 ? 1 : 0,
-  );
-  const maxItems = Math.max(
-    minItems,
-    normalizedWindowItemLimit(config.maxItems, count),
-  );
-  let start = end;
-  let height = 0;
-
-  while (
-    start > 0 &&
-    shouldCollectPixelWindowItem(
-      end - start,
-      height,
-      minimumPx,
-      minItems,
-      maxItems,
-    )
-  ) {
-    start--;
-    height += positiveSize(config.getItemHeight(start));
-  }
-
-  return { start, end, count: end - start, height };
-}
-
-export function planVirtualListPixelWindowFromStart(
-  config: VirtualListPixelWindowFromStartConfig,
-): VirtualListPixelWindowPlan {
-  const count = nonNegativeInteger(config.count);
-  const start = clamp(normalizedWindowItemLimit(config.start, 0), 0, count);
-  const minimumPx = nonNegativeSize(config.minimumPx);
-  const minItems = normalizedWindowItemLimit(
-    config.minItems,
-    count > 0 ? 1 : 0,
-  );
-  const maxItems = Math.max(
-    minItems,
-    normalizedWindowItemLimit(config.maxItems, count),
-  );
-  let end = start;
-  let height = 0;
-
-  while (
-    end < count &&
-    shouldCollectPixelWindowItem(
-      end - start,
-      height,
-      minimumPx,
-      minItems,
-      maxItems,
-    )
-  ) {
-    height += positiveSize(config.getItemHeight(end));
-    end++;
-  }
-
-  return { start, end, count: end - start, height };
-}
-
-function nonNegativeSize(value: number): number {
-  return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function px(value: number): string {
@@ -1197,16 +974,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     const slot = currentBoundarySlot(boundary);
     if (!slot?.element.isConnected || slot.height <= 0) return false;
 
-    const scrollTop = logicalScrollTop();
-    const slotTop = boundarySlotTop(boundary);
-    const visibleHeight =
-      Math.min(slotTop + slot.height, scrollTop + lastViewportHeight) -
-      Math.max(slotTop, scrollTop);
-    if (visibleHeight <= 0) return false;
-
-    return (
-      visibleHeight / Math.max(1, slot.height) >=
-      BOUNDARY_INTERSECTION_THRESHOLD
+    return slotCoverageVisible(
+      boundarySlotTop(boundary),
+      slot.height,
+      logicalScrollTop(),
+      lastViewportHeight,
+      BOUNDARY_INTERSECTION_THRESHOLD,
     );
   }
 
@@ -1482,25 +1255,16 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     viewportHeight = lastViewportHeight,
     overscanPx = Math.max(0, getOverscanPx()),
   ): void {
-    if (count === 0) {
-      computedRange.start = 0;
-      computedRange.end = 0;
-      return;
-    }
-    if (renderMode === "full") {
-      computedRange.start = 0;
-      computedRange.end = count;
-      return;
-    }
-
-    const itemScrollTop = scrollTop - topSlotHeight();
-    const startTarget = Math.max(0, itemScrollTop - overscanPx);
-    const endTarget = Math.min(
+    planRenderRange(
+      computedRange,
+      sizeTree,
+      count,
+      renderMode === "full",
+      scrollTop - topSlotHeight(),
+      viewportHeight,
+      overscanPx,
       itemTotalSize(),
-      itemScrollTop + viewportHeight + overscanPx,
     );
-    computedRange.start = Math.max(0, sizeTree.indexAt(startTarget) - 1);
-    computedRange.end = Math.min(count, sizeTree.indexAt(endTarget) + 2);
   }
 
   function needsAuxiliaryChrome(): boolean {
