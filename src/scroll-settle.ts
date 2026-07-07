@@ -36,7 +36,11 @@
  *   momentum-end wheels that follow it (settling one cooldown after they go
  *   idle). A long last-resort (FIREFOX_EDGE_LAST_RESORT_MS) guards against
  *   a missing scrollend stranding a deferred load; it is expected to lose
- *   the race to the release scrollend in practice. Structurally this makes
+ *   the race to the release scrollend in practice. When it does fire, the
+ *   engine-side gesture may still be alive holding the pre-apply scroll
+ *   limit — the next scroll would bounce against that "ghost end" — so the
+ *   host is told to reset native gesture state right after the flush
+ *   (onGestureSettledWithoutRelease). Structurally this makes
  *   firefox the chromium strategy with a much longer quiet window plus a
  *   fast path on the (reliable) release scrollend — if Firefox's overscroll
  *   rendering ever stops flashing on content growth, the two strategies can
@@ -125,6 +129,15 @@ export interface ScrollSettleHost {
   onScrollEventObserved(): void;
   /** A native scroll end arrived and the gesture is quiet: placeholders may hydrate. */
   onNativeScrollEndIdle(): void;
+  /**
+   * The gesture settled from a last-resort timer while the engine may still
+   * hold a live gesture (no release scrollend was observed). The host must
+   * reset native gesture state: Firefox keeps the pre-apply scroll-limit
+   * snapshot alive for the rest of its gesture, so content applied now
+   * leaves a "ghost end" the next scroll bounces against until the engine
+   * re-snapshots the range.
+   */
+  onGestureSettledWithoutRelease(): void;
 }
 
 export interface ScrollSettleController {
@@ -516,6 +529,9 @@ export function createScrollSettleController(
         Math.min(nativeMaxScrollTop(), viewport.scrollTop),
       );
       maybeFinishUserScroll();
+      // Settled without the engine's release signal: have the host reset
+      // native gesture state so the applied content is scrollable at once.
+      if (!userScrollActive) host.onGestureSettledWithoutRelease();
     }, FIREFOX_EDGE_LAST_RESORT_MS);
   }
 
