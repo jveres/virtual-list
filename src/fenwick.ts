@@ -3,14 +3,15 @@
  * engine. `prefix(i)` is the content-space top of index i, `total()` the full
  * item height, `indexAt(offset)` maps a pixel offset back to the row that
  * owns it, and `append`/`add` keep the model current as rows stream in and
- * measurements land. Backed by capacity headroom so pure appends are
- * O(log capacity) without a rebuild.
+ * measurements land. Backed by lazy capacity headroom: inactive slots cost no
+ * build or update work, and activating them is amortized O(1).
  */
 
 export class FenwickTree {
   private readonly tree: Float64Array;
   private logicalSize: number;
   private searchBit: number;
+  private totalValue: number;
 
   /** Backing slot count; `append` may grow `size` up to this without a rebuild. */
   readonly capacity: number;
@@ -27,15 +28,23 @@ export class FenwickTree {
 
   constructor(values: Float64Array, capacity = values.length) {
     this.logicalSize = values.length;
-    this.capacity = Math.max(capacity, values.length);
+    const normalizedCapacity =
+      Number.isFinite(capacity) && capacity > 0 ? Math.floor(capacity) : 0;
+    this.capacity = Math.max(normalizedCapacity, values.length);
     this.tree = new Float64Array(this.capacity + 1);
-    // O(n) build over the full capacity (slots past values.length are zero):
-    // seed each node with its value, then fold each node's partial sum into its
-    // parent — same result as n add() calls, one log factor cheaper.
-    for (let i = 1; i <= this.capacity; i++) {
-      this.tree[i] = (this.tree[i] ?? 0) + (values[i - 1] ?? 0);
+    this.totalValue = 0;
+    // O(size) build: seed each active node with its value, then fold each
+    // partial sum into its active parent. Capacity headroom stays untouched
+    // until append() activates a slot.
+    for (let i = 1; i <= this.logicalSize; i++) {
+      const value = values[i - 1] ?? 0;
+      if (!Number.isFinite(value)) {
+        throw new RangeError("FenwickTree: values must be finite");
+      }
+      this.tree[i] = (this.tree[i] ?? 0) + value;
+      this.totalValue += value;
       const parent = i + (i & -i);
-      if (parent <= this.capacity) {
+      if (parent <= this.logicalSize) {
         this.tree[parent] = (this.tree[parent] ?? 0) + (this.tree[i] ?? 0);
       }
     }
@@ -45,37 +54,55 @@ export class FenwickTree {
   }
 
   add(index: number, delta: number): void {
-    // Walk to capacity, not size, so the zero-padding slots stay consistent and
-    // append() can activate them later without touching the tree.
-    for (let i = index + 1; i <= this.capacity; i += i & -i) {
+    if (
+      !Number.isInteger(index) ||
+      index < 0 ||
+      index >= this.logicalSize ||
+      !Number.isFinite(delta) ||
+      delta === 0
+    ) {
+      return;
+    }
+    for (let i = index + 1; i <= this.logicalSize; i += i & -i) {
       this.tree[i] = (this.tree[i] ?? 0) + delta;
     }
+    this.totalValue += delta;
   }
 
   /**
-   * The stored value at `index`, as the difference of adjacent prefix sums —
-   * O(log n). Float rounding across the partial sums bounds the error at
-   * ~1e-7 of the total, far below the library's 0.5px measure epsilon.
+   * The stored value at `index`, recovered directly from its Fenwick node.
+   * This visits only the earlier nodes inside that node's low-bit block instead
+   * of performing two complete prefix traversals.
    */
   valueAt(index: number): number {
-    return this.prefix(index + 1) - this.prefix(index);
+    if (!Number.isInteger(index) || index < 0 || index >= this.logicalSize) {
+      return 0;
+    }
+
+    let cursor = index + 1;
+    let value = this.tree[cursor] ?? 0;
+    const blockStart = cursor - (cursor & -cursor);
+    cursor--;
+    while (cursor !== blockStart) {
+      value -= this.tree[cursor] ?? 0;
+      cursor -= cursor & -cursor;
+    }
+    return value;
   }
 
   /**
-   * Extract all logical values in O(n) by inverting the linear build on a
-   * scratch copy: descending, remove each node's contribution from its
-   * parent; what remains at node i is the raw value of element i-1.
+   * Extract all logical values in O(size) by copying only the active nodes and
+   * inverting the linear build in place: descending, remove each node's
+   * contribution from its parent; what remains is the raw value.
    */
   toValues(): Float64Array {
-    const scratch = this.tree.slice();
-    for (let i = this.capacity; i >= 1; i--) {
+    const values = this.tree.slice(1, this.logicalSize + 1);
+    for (let i = this.logicalSize; i >= 1; i--) {
       const parent = i + (i & -i);
-      if (parent <= this.capacity) {
-        scratch[parent] = (scratch[parent] ?? 0) - (scratch[i] ?? 0);
+      if (parent <= this.logicalSize) {
+        values[parent - 1] = (values[parent - 1] ?? 0) - (values[i - 1] ?? 0);
       }
     }
-    const values = new Float64Array(this.logicalSize);
-    for (let i = 0; i < this.logicalSize; i++) values[i] = scratch[i + 1] ?? 0;
     return values;
   }
 
@@ -84,14 +111,35 @@ export class FenwickTree {
     if (this.logicalSize >= this.capacity) {
       throw new Error("FenwickTree.append: no spare capacity");
     }
-    this.logicalSize++;
+    if (!Number.isFinite(value)) {
+      throw new RangeError("FenwickTree.append: value must be finite");
+    }
+
+    const nextSize = this.logicalSize + 1;
+    const blockStart = nextSize - (nextSize & -nextSize);
+    let nodeValue = value;
+    // Build the newly active node from the already-current nodes in its block.
+    // Most appends visit no prior node; powers of two visit O(log size), making
+    // a sequence of appends amortized O(1).
+    for (
+      let cursor = this.logicalSize;
+      cursor > blockStart;
+      cursor -= cursor & -cursor
+    ) {
+      nodeValue += this.tree[cursor] ?? 0;
+    }
+    this.tree[nextSize] = nodeValue;
+    this.logicalSize = nextSize;
+    this.totalValue += value;
     if (this.searchBit << 1 <= this.logicalSize) this.searchBit <<= 1;
-    this.add(this.logicalSize - 1, value);
   }
 
   prefix(count: number): number {
     let sum = 0;
-    const safeCount = Math.max(0, Math.min(this.logicalSize, count));
+    const safeCount = Math.max(
+      0,
+      Math.min(this.logicalSize, Math.floor(count)),
+    );
     for (let i = safeCount; i > 0; i -= i & -i) {
       sum += this.tree[i] ?? 0;
     }
@@ -99,7 +147,7 @@ export class FenwickTree {
   }
 
   total(): number {
-    return this.prefix(this.logicalSize);
+    return this.totalValue;
   }
 
   indexAt(offset: number): number {

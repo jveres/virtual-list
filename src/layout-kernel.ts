@@ -146,19 +146,18 @@ export interface RenderRange {
  * `overscanPx` above and below, widened by one buffer row at the top and two
  * at the bottom (the exclusive end). Writes into `target` so the per-frame
  * path allocates nothing. `itemScrollTop` is the scroll position in item
- * space (logical scrollTop minus the top slot height); `itemTotal` is the
- * summed item height (the tree total, passed in where the caller caches it).
+ * space (logical scrollTop minus the top slot height). Count and total height
+ * come from the tree so the planner cannot receive mismatched size metadata.
  */
 export function planRenderRange(
   target: RenderRange,
   tree: FenwickTree,
-  count: number,
   fullRender: boolean,
   itemScrollTop: number,
   viewportHeight: number,
   overscanPx: number,
-  itemTotal: number,
 ): void {
+  const count = tree.size;
   if (count === 0) {
     target.start = 0;
     target.end = 0;
@@ -170,13 +169,18 @@ export function planRenderRange(
     return;
   }
 
+  const itemTotal = tree.total();
   const startTarget = Math.max(0, itemScrollTop - overscanPx);
   const endTarget = Math.min(
     itemTotal,
     itemScrollTop + viewportHeight + overscanPx,
   );
-  target.start = Math.max(0, tree.indexAt(startTarget) - 1);
-  target.end = Math.min(count, tree.indexAt(endTarget) + 2);
+  target.start =
+    startTarget <= 0 ? 0 : Math.max(0, tree.indexAt(startTarget) - 1);
+  target.end =
+    endTarget >= itemTotal
+      ? count
+      : Math.min(count, tree.indexAt(endTarget) + 2);
 }
 
 /**

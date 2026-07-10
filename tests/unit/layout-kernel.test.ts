@@ -14,7 +14,6 @@ const uniformTree = (count: number, height: number): FenwickTree =>
 
 function range(
   tree: FenwickTree,
-  count: number,
   options: {
     full?: boolean;
     itemScrollTop?: number;
@@ -26,12 +25,10 @@ function range(
   planRenderRange(
     target,
     tree,
-    count,
     options.full ?? false,
     options.itemScrollTop ?? 0,
     options.viewportHeight ?? 300,
     options.overscanPx ?? 0,
-    tree.total(),
   );
   return target;
 }
@@ -41,7 +38,7 @@ describe("planRenderRange", () => {
     const tree = uniformTree(100, 50);
     // Viewport [500, 800): rows 10..15 visible; buffer widens by 1 above and
     // (via the exclusive end) 2 below.
-    expect(range(tree, 100, { itemScrollTop: 500 })).toEqual({
+    expect(range(tree, { itemScrollTop: 500 })).toEqual({
       start: 9,
       end: 18,
     });
@@ -50,7 +47,7 @@ describe("planRenderRange", () => {
   it("extends by overscan pixels on both sides", () => {
     const tree = uniformTree(100, 50);
     // Overscan 100px = 2 rows each side on top of the buffer rows.
-    expect(range(tree, 100, { itemScrollTop: 500, overscanPx: 100 })).toEqual({
+    expect(range(tree, { itemScrollTop: 500, overscanPx: 100 })).toEqual({
       start: 7,
       end: 20,
     });
@@ -58,11 +55,11 @@ describe("planRenderRange", () => {
 
   it("clamps at the content edges", () => {
     const tree = uniformTree(10, 50);
-    expect(range(tree, 10, { itemScrollTop: 0, overscanPx: 900 })).toEqual({
+    expect(range(tree, { itemScrollTop: 0, overscanPx: 900 })).toEqual({
       start: 0,
       end: 10,
     });
-    expect(range(tree, 10, { itemScrollTop: 400 })).toEqual({
+    expect(range(tree, { itemScrollTop: 400 })).toEqual({
       start: 7,
       end: 10,
     });
@@ -70,7 +67,7 @@ describe("planRenderRange", () => {
 
   it("mounts everything in full render mode regardless of geometry", () => {
     const tree = uniformTree(7, 50);
-    expect(range(tree, 7, { full: true, itemScrollTop: 99999 })).toEqual({
+    expect(range(tree, { full: true, itemScrollTop: 99999 })).toEqual({
       start: 0,
       end: 7,
     });
@@ -78,7 +75,7 @@ describe("planRenderRange", () => {
 
   it("returns an empty range for an empty list", () => {
     const tree = uniformTree(0, 50);
-    expect(range(tree, 0, { itemScrollTop: 123 })).toEqual({
+    expect(range(tree, { itemScrollTop: 123 })).toEqual({
       start: 0,
       end: 0,
     });
@@ -88,7 +85,7 @@ describe("planRenderRange", () => {
     const tree = new FenwickTree(Float64Array.from([10, 200, 10, 200, 10]));
     // Row tops: 0, 10, 210, 220, 420. Viewport [15, 215) spans rows 1..2;
     // the buffer widens to start 0 and exclusive end 2 + 2 = 4.
-    expect(range(tree, 5, { itemScrollTop: 15, viewportHeight: 200 })).toEqual({
+    expect(range(tree, { itemScrollTop: 15, viewportHeight: 200 })).toEqual({
       start: 0,
       end: 4,
     });

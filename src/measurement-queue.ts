@@ -7,8 +7,6 @@
  * sizes and applying the scroll-anchoring correction).
  */
 
-import { positiveSize } from "./layout-kernel";
-
 /** What the measurement queue needs from the virtualizer that owns it. */
 export interface MeasurementQueueHost {
   isDisposed(): boolean;
@@ -18,10 +16,24 @@ export interface MeasurementQueueHost {
   followLoopDrains(): boolean;
   wakeFollowLoop(): void;
   /**
-   * Commit the queued heights (deleting entries as they are consumed) and
-   * apply the resulting scroll correction and re-render.
+   * Commit the queued heights and apply the resulting scroll correction.
+   * Returns true when row geometry changed and needs rendering.
    */
-  drain(pending: Map<number, number>): void;
+  drain(pending: ReadonlyMap<number, number>): boolean;
+  /** Render geometry committed by drain(). */
+  render(): void;
+}
+
+export interface MeasurementFlushOptions {
+  /** Let the caller combine the committed geometry with its own frame render. */
+  deferRender?: boolean;
+}
+
+export interface MeasurementFlushResult {
+  /** The pending queue was drained. */
+  readonly flushed: boolean;
+  /** The drained measurements changed row geometry. */
+  readonly needsRender: boolean;
 }
 
 export interface MeasurementQueue {
@@ -35,9 +47,22 @@ export interface MeasurementQueue {
   hasPending(): boolean;
   scheduleFlush(): void;
   cancelFlush(): void;
-  /** Drain synchronously when allowed; true when a flush ran. */
-  flushNow(): boolean;
+  /** Drain synchronously when allowed and report both work and render state. */
+  flushNow(options?: MeasurementFlushOptions): MeasurementFlushResult;
 }
+
+const NOT_FLUSHED: MeasurementFlushResult = {
+  flushed: false,
+  needsRender: false,
+};
+const FLUSHED_UNCHANGED: MeasurementFlushResult = {
+  flushed: true,
+  needsRender: false,
+};
+const FLUSHED_CHANGED: MeasurementFlushResult = {
+  flushed: true,
+  needsRender: true,
+};
 
 export function createMeasurementQueue(
   host: MeasurementQueueHost,
@@ -51,10 +76,12 @@ export function createMeasurementQueue(
     frame = 0;
   }
 
-  function flush(): void {
-    if (pending.size === 0) return;
-    if (host.isUserScrollActive()) return;
-    host.drain(pending);
+  function flush(deferRender: boolean): MeasurementFlushResult {
+    if (pending.size === 0 || host.isUserScrollActive()) return NOT_FLUSHED;
+    const needsRender = host.drain(pending);
+    pending.clear();
+    if (needsRender && !deferRender) host.render();
+    return needsRender ? FLUSHED_CHANGED : FLUSHED_UNCHANGED;
   }
 
   // rAF body for the deferred flush. While bottom-follow is animating (e.g.
@@ -67,7 +94,7 @@ export function createMeasurementQueue(
       host.wakeFollowLoop();
       return;
     }
-    flush();
+    flush(false);
   }
 
   function scheduleFlush(): void {
@@ -79,23 +106,29 @@ export function createMeasurementQueue(
     if (
       !Number.isFinite(height) ||
       height <= 0 ||
+      !Number.isInteger(index) ||
       index < 0 ||
       index >= host.itemCount()
     ) {
       return;
     }
-    pending.set(index, positiveSize(height));
+    pending.set(index, height);
     if (host.isUserScrollActive()) return;
+    if (host.followLoopDrains()) {
+      cancelFlush();
+      host.wakeFollowLoop();
+      return;
+    }
     scheduleFlush();
   }
 
-  function flushNow(): boolean {
-    if (pending.size === 0 || host.isUserScrollActive()) {
-      return false;
-    }
+  function flushNow(options?: MeasurementFlushOptions): MeasurementFlushResult {
+    // A blocked synchronous attempt must not cancel the queue's existing frame:
+    // callers such as scrollToBottom can cancel the gesture immediately after
+    // this returns, allowing that frame to drain the still-pending heights.
+    if (pending.size === 0 || host.isUserScrollActive()) return NOT_FLUSHED;
     cancelFlush();
-    flush();
-    return true;
+    return flush(options?.deferRender === true);
   }
 
   return {

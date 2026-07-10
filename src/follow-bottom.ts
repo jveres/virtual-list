@@ -31,7 +31,7 @@ export interface FollowBottomHost {
   /** count > 0 — there is content to follow. */
   hasContent(): boolean;
   syncContentHeight(): void;
-  /** Drain settled measurements; true when any were committed. */
+  /** Drain settled measurements; true when committed geometry needs rendering. */
   flushMeasurementsNow(): boolean;
   /** Programmatic clamped scrollTop write; true when scrollTop moved. */
   writeScrollTop(top: number): boolean;
@@ -125,7 +125,7 @@ export function createFollowBottomController(
       return;
     }
 
-    const flushedMeasurements = host.flushMeasurementsNow();
+    const measurementsChanged = host.flushMeasurementsNow();
     host.syncContentHeight();
 
     const target = nativeMaxScrollTop();
@@ -133,7 +133,7 @@ export function createFollowBottomController(
     const distance = Math.abs(viewport.scrollTop - target);
     if (distance <= snapThreshold) {
       const didScroll = host.writeScrollTop(target);
-      if (didScroll || flushedMeasurements) {
+      if (didScroll || measurementsChanged) {
         host.renderNow();
       }
       if (Math.abs(viewport.scrollTop - target) <= snapThreshold) {
@@ -147,7 +147,8 @@ export function createFollowBottomController(
     const progress = frameProgress(now);
     const nextTop =
       viewport.scrollTop + (target - viewport.scrollTop) * progress;
-    if (host.writeScrollTop(nextTop)) {
+    const didScroll = host.writeScrollTop(nextTop);
+    if (didScroll || measurementsChanged) {
       host.renderNow();
     }
     scheduleFrame();
@@ -155,9 +156,12 @@ export function createFollowBottomController(
 
   function follow(options: FollowBottomOptions = {}): void {
     stop();
-    if (!host.hasContent() || options.signal?.aborted) return;
+    if (host.isDisposed() || options.signal?.aborted) return;
+    const hasContent = host.hasContent();
+    if (host.isDisposed() || !hasContent) return;
 
     host.syncContentHeight();
+    if (host.isDisposed()) return;
     duration = Math.max(
       1,
       options.behavior === "smooth"

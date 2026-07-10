@@ -52,6 +52,7 @@ describe("FenwickTree.prefix / total", () => {
   it("clamps the count to [0, size]", () => {
     const t = tree([10, 20, 30]);
     expect(t.prefix(-5)).toBe(0);
+    expect(t.prefix(2.9)).toBe(30);
     expect(t.prefix(99)).toBe(60);
   });
 
@@ -61,6 +62,10 @@ describe("FenwickTree.prefix / total", () => {
     expect(t.total()).toBe(0);
     expect(t.prefix(3)).toBe(0);
     expect(t.indexAt(50)).toBe(0);
+  });
+
+  it("should reject a non-finite initial value", () => {
+    expect(() => tree([10, Number.NaN])).toThrow(/finite/);
   });
 
   it("supports zero-height items", () => {
@@ -114,6 +119,16 @@ describe("FenwickTree.add", () => {
     expect(tree([1, 1, 1, 1, 1]).maxBit).toBe(4);
     expect(tree([1, 1, 1, 1, 1, 1, 1, 1]).maxBit).toBe(8);
   });
+
+  it("should ignore invalid indices and non-finite deltas", () => {
+    const t = tree([10, 20, 30]);
+    t.add(-1, 5);
+    t.add(1.5, 5);
+    t.add(3, 5);
+    t.add(1, Number.NaN);
+    expect(Array.from(t.toValues())).toEqual([10, 20, 30]);
+    expect(t.total()).toBe(60);
+  });
 });
 
 describe("FenwickTree edge cases", () => {
@@ -146,6 +161,12 @@ describe("FenwickTree capacity / append", () => {
   it("defaults capacity to the value count", () => {
     expect(tree([10, 20, 30]).capacity).toBe(3);
     expect(tree([]).capacity).toBe(0);
+  });
+
+  it("should normalize fractional and non-finite capacity", () => {
+    expect(new FenwickTree(new Float64Array(0), 3.9).capacity).toBe(3);
+    expect(new FenwickTree(new Float64Array(0), Number.NaN).capacity).toBe(0);
+    expect(new FenwickTree(Float64Array.from([1, 2]), 0.5).capacity).toBe(2);
   });
 
   it("appends into spare capacity without disturbing existing sums", () => {
@@ -192,6 +213,15 @@ describe("FenwickTree capacity / append", () => {
     expect(t.indexAt(24)).toBe(1);
   });
 
+  it("should include prior updates when append activates a parent node", () => {
+    const t = new FenwickTree(Float64Array.from([10, 20, 30]), 8);
+    t.add(1, 5); // [10, 25, 30]
+    t.append(40); // activates tree node 4, which covers every current row
+    expect(Array.from(t.toValues())).toEqual([10, 25, 30, 40]);
+    expect(t.total()).toBe(105);
+    expect(t.prefix(4)).toBe(105);
+  });
+
   it("appends from an empty tree with capacity", () => {
     const t = new FenwickTree(new Float64Array(0), 4);
     expect(t.size).toBe(0);
@@ -205,6 +235,13 @@ describe("FenwickTree capacity / append", () => {
   it("throws when appending past capacity", () => {
     const t = new FenwickTree(Float64Array.from([1, 2]));
     expect(() => t.append(3)).toThrow(/capacity/);
+  });
+
+  it("should reject a non-finite appended value", () => {
+    const t = new FenwickTree(new Float64Array(0), 1);
+    expect(() => t.append(Number.NaN)).toThrow(/finite/);
+    expect(t.size).toBe(0);
+    expect(t.total()).toBe(0);
   });
 
   it("property: appended trees agree with the oracle", () => {

@@ -59,7 +59,8 @@ subsystem with its own lifecycle lives in its own module behind a narrow host
 interface:
 
 - `fenwick.ts` — the offset engine: a Fenwick tree over row heights for prefix
-  sums, index lookup, and O(log n) appends against capacity headroom.
+  sums, index lookup, and amortized `O(1)` appends against lazy capacity
+  headroom.
 - `layout-kernel.ts` — pure layout math (render-range planning, pixel-window
   planning, slot visibility) with no DOM, state, or side effects.
 - `scroll-settle.ts` — per-engine gesture classification: when a user scroll
@@ -264,6 +265,10 @@ The returned object exposes:
 - `followBottom(options)` to keep the viewport following the current bottom
   while content grows. Wheel, touch, and pointer input stop the follow.
 - `stopFollowBottom()` to cancel an active bottom follow.
+- `interruptScroll()` to stop active native or programmatic momentum and
+  synchronously commit layout and measurement work that was waiting for the
+  scroll to settle. Use it before a discrete interaction that must replace row
+  geometry immediately, such as switching a message branch.
 - `setStickyIndex(index)` to reserve trailing space for top alignment.
 - `getMountedElement(index)` for direct mounted-row updates.
 - `getItemOffset(index)` for the content-space (scroll) top of a row, where
@@ -395,6 +400,11 @@ as soon as the user reaches a boundary. When the rows are ready, call
 `syncLayout(...)`. The runtime queues row prepends, appends, and retained-window
 shifts while native scrolling is active and applies them from its `scrollend`
 path.
+
+Engine-specific protected-edge settling applies only where the matching
+`onReachTop` or `onReachBottom` callback exists. A complete transcript tail,
+for example, doesn't inherit the longer Firefox bottom-load release grace when
+only `onReachTop` is configured.
 
 Slot-only updates apply immediately while native scrolling is active. This lets
 the host show a loading spinner as soon as a boundary is reached. Layout updates

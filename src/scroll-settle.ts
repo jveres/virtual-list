@@ -24,11 +24,11 @@
  *   (EDGE_SETTLE_QUIET_MS + the cooldown); applying a list update
  *   mid-overscroll after that delay is fine because Chromium repaints the
  *   anchored content without a visible flash.
- * - **Firefox**: at an overscrolled edge, settle only from a scrollend
- *   followed by FIREFOX_EDGE_RELEASE_GRACE_MS of wheel silence — never from
- *   a bare timer. Firefox emits a scrollend whenever scrolling pauses, so
+ * - **Firefox**: at an overscrolled edge, settle only from a scrollend after
+ *   an extended last-input stability window — never from a bare timer.
+ *   Firefox emits a scrollend whenever scrolling pauses, so
  *   one can land inside a momentum-wheel gap mid-hold; wheels arriving
- *   inside the grace postpone the settle (trailing momentum-end markers
+ *   inside the stability window postpone the settle (trailing momentum markers
  *   after a real release delay it briefly, a continuing gesture pushes it
  *   to its own release scrollend). Applying while the engine gesture is
  *   alive is unfixable, verified empirically: besides the visible flash,
@@ -39,7 +39,7 @@
  *   were both tried). The generic 280ms fallback never arms near an edge
  *   either, and a scrollend-less hold never applies at all: the loading
  *   slot keeps spinning and the next gesture's settle recovers it. A
- *   mid-hold scrollend followed by a motionless hold longer than the grace
+ *   mid-hold scrollend followed by a motionless hold longer than the window
  *   remains indistinguishable from a release and will apply then.
  * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
  *   during native motion kills the momentum animation. The contract is:
@@ -65,13 +65,12 @@ const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 // are gone (or motionless, which is indistinguishable). Long enough to
 // outlast the gaps in a decaying momentum-wheel tail.
 const EDGE_SETTLE_QUIET_MS = 450;
-// A firefox scrollend at an outward edge is honored only after this much
-// wheel silence: Firefox emits a scrollend whenever scrolling pauses, so one
-// can land inside a momentum-wheel gap mid-hold — applying it there flashes
-// and mints a ghost end. Wheels arriving inside the grace postpone the
-// settle: trailing momentum-end markers after a real release delay it
-// briefly; a continuing gesture pushes it out to its own release scrollend.
-const FIREFOX_EDGE_RELEASE_GRACE_MS = 600;
+// Firefox publishes range growth to APZ asynchronously after the main-thread
+// commit. A rapid re-grab can otherwise join the pre-growth overscroll state
+// and bounce at a ghost edge. There is no content-visible APZ acknowledgement,
+// so keep a conservative, empirically verified quiet window from the latest
+// DOM wheel signal. This is a race buffer, not an engine transaction constant.
+const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
 // cooldown, and a settle inside the tail performs anchor-preserving
@@ -119,6 +118,8 @@ export interface ScrollSettleHost {
   strategy: VirtualListScrollSettleStrategy;
   measureEpsilon: number;
   isDisposed(): boolean;
+  /** Whether reaching this edge can enqueue boundary growth. */
+  canLoadAtBoundary(boundary: ScrollBoundary): boolean;
   /** Cancel an in-flight programmatic smooth scroll — a real user gesture began. */
   cancelActiveSmoothScroll(): void;
   /** False only while a programmatic smooth scroll is still short of its target. */
@@ -178,7 +179,12 @@ export function createScrollSettleController(
   const programmaticScrollTops: number[] = [];
   let nativeScrollEndPending = false;
   let wheelPendingNativeScrollEndTop: number | null = null;
+  let pendingNativeScrollEndDelayMs = SCROLL_SETTLE_COOLDOWN_MS;
+  let pendingFirefoxEdgeRelease = false;
+  let lastFirefoxWheelInputAt = Number.NEGATIVE_INFINITY;
+  let firefoxProtectedEdge: ScrollBoundary | null = null;
   let settleFrame = 0;
+  let firefoxEdgeCommitFrame = 0;
   let settleTimer = 0;
   let wheelInputActive = false;
   let wheelInputTimer = 0;
@@ -248,24 +254,28 @@ export function createScrollSettleController(
   }
 
   function handleScroll(): void {
+    if (host.isDisposed()) return;
     const previousScrollTop = lastScrollSampleTop;
     const nextScrollTop = viewport.scrollTop;
     const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
     const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
+    if (strategy === "firefox-wheel" && moved && !programmaticScroll) {
+      firefoxProtectedEdge ??= loadableBoundaryAtNativeEdge();
+    }
     if (!userScrollActive && moved && !programmaticScroll) {
-      handleUserScrollStart();
+      if (!handleUserScrollStart()) return;
     }
     updateScrollVelocity(nextScrollTop);
     if (
       (strategy === "firefox-wheel" || strategy === "safari-wheel") &&
       nativeScrollEndPending &&
       wheelPendingNativeScrollEndTop !== null &&
+      !programmaticScroll &&
       !isRubberBandOverscrolled() &&
       Math.abs(nextScrollTop - wheelPendingNativeScrollEndTop) >
         SETTLE_MOTION_EPSILON_PX
     ) {
-      nativeScrollEndPending = false;
-      wheelPendingNativeScrollEndTop = null;
+      clearPendingNativeScrollEnd();
       cancelSettleTimer();
       cancelSettleFrame();
     }
@@ -273,7 +283,7 @@ export function createScrollSettleController(
       userScrollMoved = true;
     }
     if (nativeScrollEndPending) {
-      scheduleSettleCooldown();
+      schedulePendingNativeScrollEnd();
     } else {
       scheduleWheelScrollEndFallback();
     }
@@ -296,6 +306,20 @@ export function createScrollSettleController(
     if (!settleFrame) return;
     cancelAnimationFrame(settleFrame);
     settleFrame = 0;
+  }
+
+  function cancelFirefoxEdgeCommitFrame(): boolean {
+    if (!firefoxEdgeCommitFrame) return false;
+    cancelAnimationFrame(firefoxEdgeCommitFrame);
+    firefoxEdgeCommitFrame = 0;
+    return true;
+  }
+
+  function cancelFirefoxEdgeCommitForInput(): void {
+    if (!cancelFirefoxEdgeCommitFrame()) return;
+    // Input after the entire stability window is a new gesture, not a trailing
+    // momentum marker. Require this gesture's own scrollend before growth.
+    cancelPendingUserScrollEnd();
   }
 
   function cancelSettleTimer(): void {
@@ -362,6 +386,31 @@ export function createScrollSettleController(
     );
   }
 
+  function loadableBoundaryAtNativeEdge(): ScrollBoundary | null {
+    const scrollTop = viewport.scrollTop;
+    if (
+      host.canLoadAtBoundary("top") &&
+      scrollTop <= EDGE_PROXIMITY_EPSILON_PX
+    ) {
+      return "top";
+    }
+    const maxScrollTop = nativeMaxScrollTop();
+    if (
+      host.canLoadAtBoundary("bottom") &&
+      maxScrollTop > EDGE_PROXIMITY_EPSILON_PX &&
+      maxScrollTop - scrollTop <= EDGE_PROXIMITY_EPSILON_PX
+    ) {
+      return "bottom";
+    }
+    return null;
+  }
+
+  function isNearProtectedFirefoxEdge(): boolean {
+    return (
+      firefoxProtectedEdge !== null || loadableBoundaryAtNativeEdge() !== null
+    );
+  }
+
   function canSettleUserScroll(): boolean {
     return (
       !hasActiveTouchOrPointerInput() &&
@@ -395,13 +444,14 @@ export function createScrollSettleController(
       // held fingers, which visibly flashes — and the rest of the gesture
       // routes to the overscroll effect, so the user can't even scroll into
       // the newly applied content until release.
-      !(strategy === "firefox-wheel" && isNearScrollEdge())
+      !(strategy === "firefox-wheel" && isNearProtectedFirefoxEdge())
     );
   }
 
   function cancelUserScrollTimers(): void {
     cancelSettleTimer();
     cancelSettleFrame();
+    cancelFirefoxEdgeCommitFrame();
     cancelWheelInputTimer();
     cancelChromiumEdgeSettleTimer();
   }
@@ -413,22 +463,22 @@ export function createScrollSettleController(
     chromiumWheelSawNativeScrollEnd = false;
     chromiumWheelAwaitingFinalScrollEnd = false;
     chromiumEdgeWheelSuppressed = false;
+    firefoxProtectedEdge = null;
   }
 
   function cancelPendingUserScrollEnd(): void {
-    nativeScrollEndPending = false;
-    wheelPendingNativeScrollEndTop = null;
+    clearPendingNativeScrollEnd();
     chromiumWheelSawNativeScrollEnd = false;
     cancelSettleTimer();
     cancelSettleFrame();
   }
 
   function resetUserScrollState(): void {
-    nativeScrollEndPending = false;
-    wheelPendingNativeScrollEndTop = null;
+    clearPendingNativeScrollEnd();
     userScrollActive = false;
     userScrollMoved = false;
     resetScrollVelocity();
+    if (host.isDisposed()) return;
     host.onGestureReset();
   }
 
@@ -436,6 +486,7 @@ export function createScrollSettleController(
     cancelUserScrollTimers();
     resetScrollSettleState();
     resetUserScrollState();
+    if (host.isDisposed()) return;
     host.onGestureSettled();
   }
 
@@ -446,7 +497,9 @@ export function createScrollSettleController(
   }
 
   function maybeFinishUserScroll(): void {
-    if (!userScrollActive || !nativeScrollEndPending) return;
+    if (host.isDisposed() || !userScrollActive || !nativeScrollEndPending) {
+      return;
+    }
     if (!canSettleUserScroll()) {
       if (
         ((strategy === "firefox-wheel" || strategy === "safari-wheel") &&
@@ -460,47 +513,125 @@ export function createScrollSettleController(
       schedulePendingSettleCheck();
       return;
     }
+    if (hasPendingFirefoxEdgeRelease()) {
+      scheduleFirefoxEdgeCommit();
+      return;
+    }
     finishUserScroll();
+  }
+
+  // Commit Firefox edge growth atomically in a render opportunity after the
+  // stability window. This keeps the list geometry and its render in one
+  // main-thread pass; it is not an acknowledgement from Firefox's APZ thread.
+  function scheduleFirefoxEdgeCommit(): void {
+    if (firefoxEdgeCommitFrame || host.isDisposed()) return;
+    firefoxEdgeCommitFrame = requestAnimationFrame(() => {
+      firefoxEdgeCommitFrame = 0;
+      if (
+        host.isDisposed() ||
+        !hasPendingFirefoxEdgeRelease() ||
+        !canSettleUserScroll()
+      ) {
+        return;
+      }
+      finishUserScroll();
+    });
   }
 
   function schedulePendingSettleCheck(): void {
     if (settleFrame || host.isDisposed()) return;
     settleFrame = requestAnimationFrame(() => {
       settleFrame = 0;
+      if (host.isDisposed()) return;
       maybeFinishUserScroll();
     });
   }
 
   function scheduleSettleCooldown(delayMs = SCROLL_SETTLE_COOLDOWN_MS): void {
     cancelSettleTimer();
+    if (host.isDisposed()) return;
     settleTimer = window.setTimeout(() => {
       settleTimer = 0;
+      if (host.isDisposed()) return;
       maybeFinishUserScroll();
     }, delayMs);
   }
 
+  function setPendingNativeScrollEnd(
+    options: {
+      delayMs?: number;
+      scrollTop?: number | null;
+      firefoxEdge?: boolean;
+    } = {},
+  ): void {
+    cancelFirefoxEdgeCommitFrame();
+    nativeScrollEndPending = true;
+    pendingNativeScrollEndDelayMs =
+      options.delayMs ?? SCROLL_SETTLE_COOLDOWN_MS;
+    wheelPendingNativeScrollEndTop = options.scrollTop ?? null;
+    pendingFirefoxEdgeRelease = options.firefoxEdge === true;
+  }
+
+  function clearPendingNativeScrollEnd(): void {
+    cancelFirefoxEdgeCommitFrame();
+    nativeScrollEndPending = false;
+    pendingNativeScrollEndDelayMs = SCROLL_SETTLE_COOLDOWN_MS;
+    wheelPendingNativeScrollEndTop = null;
+    pendingFirefoxEdgeRelease = false;
+  }
+
+  // Preserve the policy chosen when the native scrollend was observed. In
+  // particular, pinned scroll events and neutral wheel jitter must not turn a
+  // Firefox edge stability wait into the generic short cooldown.
+  function schedulePendingNativeScrollEnd(): void {
+    if (host.isDisposed() || !nativeScrollEndPending) return;
+    const delayMs = hasPendingFirefoxEdgeRelease()
+      ? Math.max(
+          0,
+          FIREFOX_EDGE_STABILITY_QUIET_MS -
+            (performance.now() - lastFirefoxWheelInputAt),
+        )
+      : pendingNativeScrollEndDelayMs;
+    scheduleSettleCooldown(
+      Number.isFinite(delayMs) ? delayMs : FIREFOX_EDGE_STABILITY_QUIET_MS,
+    );
+  }
+
+  function hasPendingFirefoxEdgeRelease(): boolean {
+    return (
+      strategy === "firefox-wheel" &&
+      nativeScrollEndPending &&
+      pendingFirefoxEdgeRelease
+    );
+  }
+
   function hydratePlaceholdersAfterNativeScrollEnd(): void {
     if (!nativeScrollEndPending) return;
+    // Placeholder hydration swaps mounted DOM just like a layout flush. Keep
+    // it behind the same Firefox stability wait instead of hydrating when
+    // neutral wheel jitter merely goes idle.
+    if (hasPendingFirefoxEdgeRelease()) return;
     if (!canSettleUserScroll()) return;
     host.onNativeScrollEndIdle();
   }
 
   function markPendingWheelScrollEnd(): void {
-    nativeScrollEndPending = true;
-    wheelPendingNativeScrollEndTop = Math.max(
-      0,
-      Math.min(nativeMaxScrollTop(), viewport.scrollTop),
-    );
+    setPendingNativeScrollEnd({
+      scrollTop: Math.max(
+        0,
+        Math.min(nativeMaxScrollTop(), viewport.scrollTop),
+      ),
+    });
     hydratePlaceholdersAfterNativeScrollEnd();
-    scheduleSettleCooldown();
+    schedulePendingNativeScrollEnd();
   }
 
   function scheduleWheelScrollEndFallback(): void {
-    if (!canScheduleWheelScrollEndFallback()) return;
+    if (host.isDisposed() || !canScheduleWheelScrollEndFallback()) return;
     cancelSettleTimer();
     settleTimer = window.setTimeout(() => {
       settleTimer = 0;
-      if (!canScheduleWheelScrollEndFallback()) return;
+      if (host.isDisposed() || !canScheduleWheelScrollEndFallback()) return;
       markPendingWheelScrollEnd();
     }, SCROLL_SETTLE_COOLDOWN_MS);
   }
@@ -526,8 +657,8 @@ export function createScrollSettleController(
       ) {
         return;
       }
-      nativeScrollEndPending = true;
-      scheduleSettleCooldown();
+      setPendingNativeScrollEnd();
+      schedulePendingNativeScrollEnd();
     }, EDGE_SETTLE_QUIET_MS);
   }
 
@@ -549,13 +680,15 @@ export function createScrollSettleController(
       chromiumEdgeWheelSuppressed = false;
       chromiumEdgeWheelActive = null;
       chromiumEdgeWheelIdle = false;
-      nativeScrollEndPending = true;
-      scheduleSettleCooldown();
+      setPendingNativeScrollEnd();
+      schedulePendingNativeScrollEnd();
     }, EDGE_SETTLE_QUIET_MS);
   }
 
   function handleScrollEnd(): void {
-    if (!host.smoothScrollReachedTarget()) return;
+    if (host.isDisposed()) return;
+    const smoothScrollReachedTarget = host.smoothScrollReachedTarget();
+    if (host.isDisposed() || !smoothScrollReachedTarget) return;
 
     if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
       if (!userScrollActive) return;
@@ -563,23 +696,29 @@ export function createScrollSettleController(
         cancelUserScroll();
         return;
       }
-      if (strategy === "firefox-wheel" && isNearScrollEdge()) {
+      if (
+        strategy === "firefox-wheel" &&
+        (hasPendingFirefoxEdgeRelease() || isNearProtectedFirefoxEdge())
+      ) {
         // This may be the release — or a scrollend that slipped into a
-        // momentum-wheel gap mid-hold. Honor it only after the grace of
-        // wheel silence; skip placeholder hydration until then too.
-        nativeScrollEndPending = true;
-        wheelPendingNativeScrollEndTop = Math.max(
-          0,
-          Math.min(nativeMaxScrollTop(), viewport.scrollTop),
-        );
-        scheduleSettleCooldown(FIREFOX_EDGE_RELEASE_GRACE_MS);
+        // momentum-wheel gap mid-hold. Honor it only after the stability
+        // window. Preserve an already-classified edge release even if spinner
+        // chrome has since grown the native scroll range.
+        setPendingNativeScrollEnd({
+          scrollTop: Math.max(
+            0,
+            Math.min(nativeMaxScrollTop(), viewport.scrollTop),
+          ),
+          firefoxEdge: true,
+        });
+        schedulePendingNativeScrollEnd();
         return;
       }
       markPendingWheelScrollEnd();
       return;
     }
 
-    nativeScrollEndPending = true;
+    setPendingNativeScrollEnd();
     if (strategy === "chromium-wheel" && userScrollActive) {
       chromiumWheelSawNativeScrollEnd = true;
       if (!wheelInputActive && chromiumWheelAwaitingFinalScrollEnd) {
@@ -597,23 +736,25 @@ export function createScrollSettleController(
       chromiumEdgeWheelIdle = false;
     }
     hydratePlaceholdersAfterNativeScrollEnd();
-    scheduleSettleCooldown();
+    schedulePendingNativeScrollEnd();
   }
 
   // `isProgrammatic` is set only by the library's own smooth-scroll driver
   // (scrollToNativeTop). A genuine user scroll (everything else) interrupts any
   // in-flight programmatic smooth scroll so the user can actually scroll away,
   // instead of the library re-issuing the animation and pulling them back.
-  function handleUserScrollStart(isProgrammatic = false): void {
+  function handleUserScrollStart(isProgrammatic = false): boolean {
+    if (host.isDisposed()) return false;
     if (!isProgrammatic) {
       host.cancelActiveSmoothScroll();
+      if (host.isDisposed()) return false;
     }
     host.onGestureActivity();
+    if (host.isDisposed()) return false;
     const wasActive = userScrollActive;
     userScrollActive = true;
     if (!wasActive) {
-      nativeScrollEndPending = false;
-      wheelPendingNativeScrollEndTop = null;
+      clearPendingNativeScrollEnd();
       userScrollMoved = false;
       resetScrollVelocity();
       chromiumWheelSawNativeScrollEnd = false;
@@ -621,9 +762,11 @@ export function createScrollSettleController(
       chromiumEdgeWheelSuppressed = false;
       cancelChromiumEdgeSettleTimer();
       host.onGestureStarted();
+      if (host.isDisposed()) return false;
     } else if (strategy !== "firefox-wheel" && strategy !== "safari-wheel") {
       cancelPendingUserScrollEnd();
     }
+    return true;
   }
 
   function handleChromiumWheelInput(event: WheelEvent): void {
@@ -633,10 +776,10 @@ export function createScrollSettleController(
     cancelChromiumEdgeSettleTimer();
     if (outwardBoundary) {
       chromiumEdgeWheelSuppressed = true;
-      nativeScrollEndPending = false;
+      clearPendingNativeScrollEnd();
       chromiumWheelAwaitingFinalScrollEnd = true;
     } else if (nativeScrollEndPending) {
-      nativeScrollEndPending = false;
+      clearPendingNativeScrollEnd();
     }
     if (!outwardBoundary) {
       chromiumEdgeWheelActive = null;
@@ -649,21 +792,22 @@ export function createScrollSettleController(
     cancelWheelInputTimer();
     wheelInputTimer = window.setTimeout(() => {
       wheelInputTimer = 0;
+      if (host.isDisposed()) return;
       wheelInputActive = false;
       if (outwardBoundary) {
         chromiumEdgeWheelIdle = true;
         chromiumWheelAwaitingFinalScrollEnd = true;
-        nativeScrollEndPending = false;
+        clearPendingNativeScrollEnd();
         scheduleChromiumEdgeSettleFallback(outwardBoundary);
       } else if (chromiumWheelSawNativeScrollEnd) {
-        nativeScrollEndPending = true;
+        setPendingNativeScrollEnd();
         chromiumWheelAwaitingFinalScrollEnd = false;
         chromiumEdgeWheelSuppressed = false;
       } else {
         scheduleChromiumStallFallback();
       }
       hydratePlaceholdersAfterNativeScrollEnd();
-      if (nativeScrollEndPending) scheduleSettleCooldown();
+      schedulePendingNativeScrollEnd();
     }, WHEEL_INPUT_IDLE_MS);
   }
 
@@ -677,6 +821,7 @@ export function createScrollSettleController(
     cancelWheelInputTimer();
     wheelInputTimer = window.setTimeout(() => {
       wheelInputTimer = 0;
+      if (host.isDisposed()) return;
       wheelInputActive = false;
       if (strategy === "firefox-wheel" && outwardBoundary !== null) {
         // Firefox contract at an overscrolled edge (see the module header):
@@ -686,8 +831,8 @@ export function createScrollSettleController(
           // A scrollend already fired and wheels followed it — either
           // trailing momentum-end markers after a real release, or the
           // gesture continuing past a momentum-gap scrollend. Re-arm the
-          // full grace; only sustained wheel silence settles at an edge.
-          scheduleSettleCooldown(FIREFOX_EDGE_RELEASE_GRACE_MS);
+          // full stability window; only sustained wheel silence settles.
+          schedulePendingNativeScrollEnd();
           return;
         }
         // No scrollend yet: fingers may still be down, and Firefox defers
@@ -699,7 +844,7 @@ export function createScrollSettleController(
       }
       hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) {
-        scheduleSettleCooldown();
+        schedulePendingNativeScrollEnd();
         return;
       }
       scheduleWheelScrollEndFallback();
@@ -707,15 +852,29 @@ export function createScrollSettleController(
   }
 
   function handleWheel(event: WheelEvent): void {
+    if (host.isDisposed()) return;
     if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
+      if (strategy === "firefox-wheel") {
+        lastFirefoxWheelInputAt = performance.now();
+      }
       const outwardBoundary = boundaryForOutwardWheel(event);
-      handleUserScrollStart();
+      if (
+        strategy === "firefox-wheel" &&
+        outwardBoundary !== null &&
+        host.canLoadAtBoundary(outwardBoundary)
+      ) {
+        firefoxProtectedEdge ??= outwardBoundary;
+      }
+      if (event.deltaY !== 0) cancelFirefoxEdgeCommitForInput();
+      if (!handleUserScrollStart()) return;
       if (outwardBoundary) userScrollMoved = true;
-      handleWheelInputSettle(outwardBoundary);
+      handleWheelInputSettle(
+        strategy === "firefox-wheel" ? firefoxProtectedEdge : outwardBoundary,
+      );
       return;
     }
 
-    handleUserScrollStart();
+    if (!handleUserScrollStart()) return;
     handleChromiumWheelInput(event);
   }
 
@@ -734,10 +893,12 @@ export function createScrollSettleController(
 
   function handleTouchScrollStart(): void {
     touchInputActive = true;
+    cancelFirefoxEdgeCommitForInput();
     handleUserScrollStart();
   }
 
   function handleTouchScrollMove(): void {
+    cancelFirefoxEdgeCommitForInput();
     handleUserScrollStart();
   }
 
@@ -772,6 +933,7 @@ export function createScrollSettleController(
       return;
     }
     activePointers.add(event.pointerId);
+    cancelFirefoxEdgeCommitForInput();
     handleUserScrollStart();
   }
 
@@ -786,8 +948,7 @@ export function createScrollSettleController(
       return;
     }
 
-    nativeScrollEndPending = true;
-    wheelPendingNativeScrollEndTop = null;
+    setPendingNativeScrollEnd();
   }
 
   function handlePointerScrollEnd(event: PointerEvent): void {
@@ -839,8 +1000,9 @@ export function createScrollSettleController(
     recordProgrammaticScrollTop,
     beginProgrammaticGesture: () => handleUserScrollStart(true),
     markSettlePending: () => {
-      nativeScrollEndPending = true;
-      scheduleSettleCooldown();
+      if (host.isDisposed()) return;
+      setPendingNativeScrollEnd();
+      schedulePendingNativeScrollEnd();
     },
     finishGesture: finishUserScroll,
     cancelGesture: cancelUserScroll,

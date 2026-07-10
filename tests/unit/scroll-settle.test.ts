@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createScrollSettleController } from "../../src/scroll-settle";
 import {
   createVirtualList,
   detectScrollSettleStrategy,
@@ -52,6 +53,8 @@ interface SettleHarness {
   onScrollEnd: ReturnType<typeof vi.fn>;
   /** Set the value getCount() returns; follow with list.syncLayout(). */
   setCountValue: (next: number) => void;
+  /** Set the modeled height returned for every item. */
+  setItemHeightValue: (next: number) => void;
   /** Move the mocked scrollTop and dispatch a scroll event, like a real scroll. */
   scrollTo: (top: number) => void;
   wheel: (deltaY: number) => void;
@@ -66,6 +69,7 @@ const liveHarnesses: SettleHarness[] = [];
 function mountScrollList(
   strategy: VirtualListScrollSettleStrategy,
   initialCount = 100,
+  boundaries: { top?: boolean; bottom?: boolean } = {},
 ): SettleHarness {
   const viewport = document.createElement("div");
   document.body.appendChild(viewport);
@@ -83,13 +87,17 @@ function mountScrollList(
   const maxScrollTop = (): number => scrollHeight() - VIEWPORT_HEIGHT;
 
   let scrollTop = 0;
+  let itemHeight = ITEM_HEIGHT;
   Object.defineProperties(viewport, {
     clientHeight: { get: () => VIEWPORT_HEIGHT },
     clientWidth: { get: () => CLIENT_WIDTH },
     offsetWidth: { get: () => OFFSET_WIDTH },
     scrollHeight: { get: scrollHeight },
     scrollTop: {
-      get: () => scrollTop,
+      get: () => {
+        scrollTop = Math.max(0, Math.min(maxScrollTop(), scrollTop));
+        return scrollTop;
+      },
       set: (next: number) => {
         // Browsers clamp scrollTop writes to the scrollable range.
         scrollTop = Math.max(0, Math.min(maxScrollTop(), next));
@@ -108,7 +116,7 @@ function mountScrollList(
   const list = createVirtualList({
     viewport,
     getCount: () => count,
-    getItemHeight: () => ITEM_HEIGHT,
+    getItemHeight: () => itemHeight,
     buildItem: (index) => {
       const element = document.createElement("div");
       element.textContent = `item ${index}`;
@@ -117,6 +125,8 @@ function mountScrollList(
     scrollSettleStrategy: strategy,
     onScrollStart,
     onScrollEnd,
+    onReachTop: boundaries.top ? () => {} : undefined,
+    onReachBottom: boundaries.bottom ? () => {} : undefined,
   });
 
   const harness: SettleHarness = {
@@ -126,6 +136,9 @@ function mountScrollList(
     onScrollEnd,
     setCountValue: (next) => {
       count = next;
+    },
+    setItemHeightValue: (next) => {
+      itemHeight = next;
     },
     scrollTo: (top) => {
       viewport.scrollTop = top;
@@ -207,6 +220,127 @@ describe("detectScrollSettleStrategy", () => {
   });
 });
 
+describe("controller disposal continuation", () => {
+  it("should not schedule wheel settling after the start callback disposes", () => {
+    const viewport = document.createElement("div");
+    let disposed = false;
+    const settled = vi.fn();
+    const controller = createScrollSettleController({
+      viewport,
+      strategy: "safari-wheel",
+      measureEpsilon: 0.5,
+      isDisposed: () => disposed,
+      canLoadAtBoundary: () => false,
+      cancelActiveSmoothScroll: vi.fn(),
+      smoothScrollReachedTarget: () => true,
+      onGestureActivity: vi.fn(),
+      onGestureStarted: () => {
+        disposed = true;
+      },
+      onGestureSettled: settled,
+      onGestureReset: vi.fn(),
+      onScrollEventObserved: vi.fn(),
+      onNativeScrollEndIdle: vi.fn(),
+    });
+
+    try {
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 8 }));
+
+      expect(vi.getTimerCount()).toBe(0);
+      vi.runAllTimers();
+      expect(settled).not.toHaveBeenCalled();
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("should not settle after the reset callback disposes", () => {
+    const viewport = document.createElement("div");
+    let disposed = false;
+    const reset = vi.fn(() => {
+      disposed = true;
+    });
+    const settled = vi.fn();
+    const controller = createScrollSettleController({
+      viewport,
+      strategy: "default",
+      measureEpsilon: 0.5,
+      isDisposed: () => disposed,
+      canLoadAtBoundary: () => false,
+      cancelActiveSmoothScroll: vi.fn(),
+      smoothScrollReachedTarget: () => true,
+      onGestureActivity: vi.fn(),
+      onGestureStarted: vi.fn(),
+      onGestureSettled: settled,
+      onGestureReset: reset,
+      onScrollEventObserved: vi.fn(),
+      onNativeScrollEndIdle: vi.fn(),
+    });
+
+    try {
+      controller.beginProgrammaticGesture();
+      controller.finishGesture();
+
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(settled).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      controller.dispose();
+    }
+  });
+
+  it("should not re-arm a smooth-scroll frame after rendering disposes", async () => {
+    const viewport = document.createElement("div");
+    document.body.appendChild(viewport);
+    let scrollTop = 0;
+    Object.defineProperties(viewport, {
+      clientHeight: { get: () => VIEWPORT_HEIGHT },
+      clientWidth: { get: () => CLIENT_WIDTH },
+      scrollHeight: { get: () => 5_000 },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (next: number) => {
+          scrollTop = Math.max(0, Math.min(4_700, next));
+        },
+      },
+    });
+    (
+      viewport as unknown as { scrollTo: (options: ScrollToOptions) => void }
+    ).scrollTo = (options) => {
+      if (options.top !== undefined) viewport.scrollTop = options.top;
+    };
+    let disposeOnRange = false;
+    let list: VirtualList;
+    const onScrollEnd = vi.fn();
+    list = createVirtualList({
+      viewport,
+      getCount: () => 100,
+      getItemHeight: () => 50,
+      buildItem: () => document.createElement("div"),
+      onRangeChange: () => {
+        if (disposeOnRange) list.dispose();
+      },
+      onScrollEnd,
+    });
+    disposeOnRange = true;
+
+    try {
+      const completed = list.scrollToBottom({
+        behavior: "smooth",
+        duration: 300,
+      });
+      vi.advanceTimersByTime(34);
+
+      await expect(completed).resolves.toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(onScrollEnd).not.toHaveBeenCalled();
+    } finally {
+      list.dispose();
+      viewport.remove();
+    }
+  });
+});
+
 describe("default strategy", () => {
   it("settles one cooldown after scrollend, emitting a single start/end pair", () => {
     const harness = mountScrollList("default");
@@ -237,6 +371,53 @@ describe("default strategy", () => {
     vi.advanceTimersByTime(200);
     expect(harness.list.state.count).toBe(150);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat a measurement-invalidation clamp as a user scroll", () => {
+    const harness = mountScrollList("default");
+
+    harness.viewport.scrollTop = harness.maxScrollTop();
+    harness.setItemHeightValue(40);
+    harness.list.invalidateMeasurements();
+
+    // The content shrink clamps the native scrollTop before the browser emits
+    // its scroll echo. That landing belongs to the invalidation, not the user.
+    harness.viewport.dispatchEvent(new Event("scroll"));
+    expect(harness.onScrollStart).not.toHaveBeenCalled();
+
+    harness.setCountValue(101);
+    harness.list.syncLayout({ apply: () => true });
+    expect(harness.list.state.count).toBe(101);
+  });
+
+  it("interrupts an active scroll and commits its deferred work exactly once", () => {
+    const harness = mountScrollList("default");
+    const apply = vi.fn(() => {
+      harness.setCountValue(101);
+      return true;
+    });
+
+    harness.scrollTo(100);
+    harness.list.syncLayout({ apply });
+    expect(apply).not.toHaveBeenCalled();
+    expect(harness.list.state.count).toBe(100);
+
+    harness.list.interruptScroll();
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(harness.list.state.count).toBe(101);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(2_000);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("does nothing when interruptScroll is called while idle", () => {
+    const harness = mountScrollList("default");
+
+    harness.list.interruptScroll();
+
+    expect(harness.onScrollStart).not.toHaveBeenCalled();
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
   });
 
   it("keeps follow-bottom alive through its own scroll echoes; a user scroll tears it down", () => {
@@ -342,6 +523,237 @@ describe.each([
     // The machine is idle again: the next real scroll starts a fresh gesture.
     harness.scrollTo(1200);
     expect(harness.onScrollStart).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("firefox edge release policy", () => {
+  it("uses the generic settle policy at an edge without a load callback", () => {
+    // Matches the streaming demo: older messages load at the top, but the
+    // transcript tail is complete and cannot grow through onReachBottom.
+    const harness = mountScrollList("firefox-wheel", 100, { top: true });
+    harness.scrollTo(harness.maxScrollTop() - 0.8);
+    harness.wheel(8);
+    vi.advanceTimersByTime(150);
+
+    harness.scrollEnd();
+    vi.advanceTimersByTime(200);
+
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not hydrate placeholders when neutral wheel jitter goes idle", () => {
+    const viewport = document.createElement("div");
+    document.body.appendChild(viewport);
+    let scrollTop = 700;
+    Object.defineProperties(viewport, {
+      clientHeight: { get: () => 300 },
+      scrollHeight: { get: () => 1_000 },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (next: number) => {
+          scrollTop = Math.max(0, Math.min(700, next));
+        },
+      },
+    });
+
+    const hydrate = vi.fn();
+    const settled = vi.fn();
+    const controller = createScrollSettleController({
+      viewport,
+      strategy: "firefox-wheel",
+      measureEpsilon: 0.5,
+      isDisposed: () => false,
+      canLoadAtBoundary: () => true,
+      cancelActiveSmoothScroll: vi.fn(),
+      smoothScrollReachedTarget: () => true,
+      onGestureActivity: vi.fn(),
+      onGestureStarted: vi.fn(),
+      onGestureSettled: settled,
+      onGestureReset: vi.fn(),
+      onScrollEventObserved: vi.fn(),
+      onNativeScrollEndIdle: hydrate,
+    });
+
+    try {
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 8 }));
+      viewport.dispatchEvent(new Event("scrollend"));
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 0 }));
+      vi.advanceTimersByTime(200);
+
+      expect(hydrate).not.toHaveBeenCalled();
+      expect(settled).not.toHaveBeenCalled();
+
+      vi.advanceTimersByTime(1500);
+      expect(settled).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.dispose();
+      viewport.remove();
+    }
+  });
+
+  it("keeps the triggering edge protected after loading chrome grows", () => {
+    const harness = mountScrollList("firefox-wheel", 100, { bottom: true });
+    harness.scrollTo(harness.maxScrollTop());
+
+    harness.list.setBoundarySlot("bottom", {
+      key: "loading",
+      height: 40,
+      build: () => document.createElement("div"),
+    });
+    // The scroll event reached the old bottom before the spinner expanded it.
+    // The next outward wheel therefore sees a native gap, not the trigger edge.
+    harness.wheel(8);
+    vi.advanceTimersByTime(1_000);
+
+    // The spinner moved the native bottom away from the pinned scrollTop, but
+    // this is still the same held edge gesture and must not use the fallback.
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+
+    harness.scrollEnd();
+    vi.advanceTimersByTime(1_600);
+    vi.advanceTimersToNextFrame();
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    { boundary: "top", scrollTop: 0, deltaY: -8 },
+    { boundary: "bottom", scrollTop: 700, deltaY: 8 },
+  ])("defers the $boundary commit when a re-grab arrives inside the stability window", ({
+    scrollTop: initialScrollTop,
+    deltaY,
+  }) => {
+    const viewport = document.createElement("div");
+    document.body.appendChild(viewport);
+    let scrollTop = initialScrollTop;
+    Object.defineProperties(viewport, {
+      clientHeight: { get: () => 300 },
+      scrollHeight: { get: () => 1_000 },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (next: number) => {
+          scrollTop = Math.max(0, Math.min(700, next));
+        },
+      },
+    });
+
+    const settled = vi.fn();
+    const controller = createScrollSettleController({
+      viewport,
+      strategy: "firefox-wheel",
+      measureEpsilon: 0.5,
+      isDisposed: () => false,
+      canLoadAtBoundary: () => true,
+      cancelActiveSmoothScroll: vi.fn(),
+      smoothScrollReachedTarget: () => true,
+      onGestureActivity: vi.fn(),
+      onGestureStarted: vi.fn(),
+      onGestureSettled: settled,
+      onGestureReset: vi.fn(),
+      onScrollEventObserved: vi.fn(),
+      onNativeScrollEndIdle: vi.fn(),
+    });
+
+    try {
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY }));
+      vi.advanceTimersByTime(150);
+      viewport.dispatchEvent(new Event("scrollend"));
+
+      // The old 600ms grace committed here. Keep the range stable so a re-grab
+      // in the empirically observed APZ publication window can postpone it.
+      vi.advanceTimersByTime(1_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY }));
+      vi.advanceTimersByTime(1_000);
+      expect(settled).not.toHaveBeenCalled();
+
+      // The second release reuses the remaining stability quiet time and then
+      // commits atomically on the next frame.
+      viewport.dispatchEvent(new Event("scrollend"));
+      vi.advanceTimersByTime(600);
+      expect(settled).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(17);
+      expect(settled).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.dispose();
+      viewport.remove();
+    }
+  });
+
+  it("keeps an accepted release through a pinned scroll echo before paint", () => {
+    const harness = mountScrollList("firefox-wheel", 100, { bottom: true });
+    harness.scrollTo(harness.maxScrollTop() - 0.8);
+    harness.wheel(8);
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(1450);
+
+    harness.viewport.dispatchEvent(new Event("scroll"));
+    vi.advanceTimersToNextFrame();
+
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-arms an accepted release after zero-delta jitter before paint", () => {
+    const harness = mountScrollList("firefox-wheel", 100, { bottom: true });
+    harness.scrollTo(harness.maxScrollTop() - 0.8);
+    harness.wheel(8);
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(1450);
+
+    harness.wheel(0);
+    vi.advanceTimersToNextFrame();
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1600);
+    vi.advanceTimersToNextFrame();
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a deferred top prepend in the Firefox commit frame", () => {
+    const harness = mountScrollList("firefox-wheel", 100, { top: true });
+    harness.list.setBoundarySlot("top", {
+      key: "loading",
+      height: 40,
+      build: () => document.createElement("div"),
+    });
+    const topSlot = harness.list.getBoundaryElement("top");
+    const previousFirst = harness.list.getMountedElement(0);
+    const apply = vi.fn(() => {
+      harness.setCountValue(102);
+      return true;
+    });
+
+    harness.wheel(-8);
+    harness.list.syncLayout({
+      addedBefore: 2,
+      topSlot: {
+        key: "idle",
+        height: 1,
+        build: () => document.createElement("div"),
+      },
+      apply,
+    });
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(1450);
+
+    expect(apply).not.toHaveBeenCalled();
+    vi.advanceTimersToNextFrame();
+
+    expect(apply).toHaveBeenCalledTimes(1);
+    expect(harness.list.state.count).toBe(102);
+    expect(harness.viewport.scrollTop).toBe(61);
+    expect(topSlot?.style.height).toBe("1px");
+    expect(harness.list.getMountedElement(0)?.style.transform).toBe(
+      "translateY(1px)",
+    );
+    expect(harness.list.getMountedElement(1)?.style.transform).toBe(
+      "translateY(51px)",
+    );
+    expect(harness.list.getMountedElement(2)).toBe(previousFirst);
+    expect(previousFirst?.style.transform).toBe("translateY(101px)");
   });
 });
 

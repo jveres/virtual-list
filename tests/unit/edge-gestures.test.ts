@@ -183,13 +183,12 @@ describe("fractional-edge gestures", () => {
     expect(harness.applies()).toBe(0);
     expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    // Firefox defers scrollend until the gesture truly ends: the release.
-    // At an edge it is honored after the wheel-silence grace (600ms) — a
-    // scrollend can also land inside a momentum gap mid-hold.
+    // Firefox defers scrollend until the gesture truly ends: the release. The
+    // previous wheel signal has already been quiet for several seconds, so
+    // only the paint-aligned commit frame remains.
     harness.scrollEnd();
-    vi.advanceTimersByTime(400);
-    expect(harness.applies()).toBe(0); // inside the grace
-    vi.advanceTimersByTime(400);
+    expect(harness.applies()).toBe(0);
+    vi.advanceTimersToNextFrame();
     expect(harness.applies()).toBe(1);
     expect(harness.list.state.count).toBe(150);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
@@ -230,12 +229,13 @@ describe("fractional-edge gestures", () => {
     vi.advanceTimersByTime(40);
     harness.wheel(4);
 
-    // The trailing wheels re-arm the grace rather than destroying the
+    // The trailing wheels re-arm the stability window rather than destroying
+    // the
     // pending settle (that starved the load before) or being cooked at the
     // short cooldown (that applied mid-gesture before).
     vi.advanceTimersByTime(400);
-    expect(harness.applies()).toBe(0); // still inside idle + grace
-    vi.advanceTimersByTime(600);
+    expect(harness.applies()).toBe(0); // still inside idle + stability wait
+    vi.advanceTimersByTime(1300);
     expect(harness.applies()).toBe(1);
     expect(harness.list.state.count).toBe(150);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
@@ -256,8 +256,8 @@ describe("fractional-edge gestures", () => {
     expect(harness.applies()).toBe(0);
     expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    harness.scrollEnd(); // release, honored after the wheel-silence grace
-    vi.advanceTimersByTime(800);
+    harness.scrollEnd(); // release, honored after the stability window
+    vi.advanceTimersByTime(1700);
     expect(harness.applies()).toBe(1);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
   });
@@ -280,8 +280,71 @@ describe("fractional-edge gestures", () => {
     expect(harness.applies()).toBe(0);
     expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    // Wheels stop for good: the grace elapses and the gesture settles.
-    vi.advanceTimersByTime(800);
+    // Wheels stop for good: the stability window elapses and the gesture settles.
+    vi.advanceTimersByTime(1400);
+    expect(harness.applies()).toBe(1);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    {
+      trailingEvent: "a pinned scroll event",
+      dispatch: (harness: EdgeHarness) =>
+        harness.viewport.dispatchEvent(new Event("scroll")),
+      waitMs: 200,
+    },
+    {
+      trailingEvent: "zero-delta wheel jitter",
+      dispatch: (harness: EdgeHarness) => harness.wheel(0),
+      waitMs: 350,
+    },
+  ])("firefox: $trailingEvent cannot shorten the edge stability wait", ({
+    dispatch,
+    waitMs,
+  }) => {
+    const harness = mountEdgeDemo("firefox-wheel");
+    momentumScrollTo(harness, harness.maxScrollTop() - 0.8);
+
+    // Let the async load arrive and remain deferred while the touchpad
+    // gesture is held at the edge, then replay Firefox's mid-hold end.
+    vi.advanceTimersByTime(200);
+    harness.scrollEnd();
+    dispatch(harness);
+
+    // Pinned scroll events and neutral wheel jitter used to replace the
+    // protected edge wait with the generic 140ms cooldown, flushing here.
+    vi.advanceTimersByTime(waitMs);
+    expect(harness.applies()).toBe(0);
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+
+    // A later scrollend is the actual release and may apply the load.
+    harness.scrollEnd();
+    vi.advanceTimersByTime(1700);
+    expect(harness.applies()).toBe(1);
+    expect(harness.list.state.count).toBe(150);
+    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+  });
+
+  it("firefox: edge chrome growth cannot downgrade a pending release", () => {
+    const harness = mountEdgeDemo("firefox-wheel");
+    momentumScrollTo(harness, harness.maxScrollTop() - 0.8);
+    vi.advanceTimersByTime(200);
+
+    harness.scrollEnd();
+    harness.list.setBoundarySlot("bottom", {
+      key: "taller-spinner",
+      height: 80,
+      build: () => document.createElement("div"),
+    });
+    harness.scrollEnd();
+
+    // Growing the slot moves the native bottom away from scrollTop. A later
+    // scrollend must retain the edge classification, not switch to 140ms.
+    vi.advanceTimersByTime(200);
+    expect(harness.applies()).toBe(0);
+    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1400);
     expect(harness.applies()).toBe(1);
     expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
   });

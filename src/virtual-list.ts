@@ -56,6 +56,8 @@ const AT_EDGE_EPSILON_PX = 1;
 const NATIVE_EDGE_EPSILON_PX = 2;
 const SCROLL_TOP_RESIDUAL_EPSILON = 0.01;
 const MAX_SCROLL_TOP_RESIDUAL = 2;
+const MAX_DEFERRED_REFRESH_ATTEMPTS = 2;
+const MAX_DEFERRED_INTERNAL_PASSES = 4;
 const CSS = `
 .vl-viewport {
   overflow-y: auto;
@@ -230,6 +232,8 @@ const PRESERVE_LOGICAL_SCROLL_OFFSET: ScrollTopWriteOptions = {
   preserveLogicalOffset: true,
 };
 
+const DEFER_MEASUREMENT_RENDER = { deferRender: true } as const;
+
 interface MountedBoundarySlot {
   key: string | null;
   build: (() => HTMLElement) | null;
@@ -242,12 +246,34 @@ interface MountedBoundarySlot {
 interface MountedPlaceholderSlot extends VirtualListPlaceholderSlot {
   element: HTMLElement | null;
   renderedHeight: number;
+  building: boolean;
+}
+
+interface ItemRecord {
+  index: number;
+  element: HTMLElement;
+}
+
+type PostCommitTask =
+  | { type: "destroy"; index: number; element: HTMLElement }
+  | { type: "callback"; run: () => void };
+
+type RefreshOutcome = "refreshed" | "measured" | "stale";
+
+interface MountCandidate extends ItemRecord {
+  placeholder: boolean;
 }
 
 export interface VirtualList {
   readonly state: VirtualListState;
 
   invalidateMeasurements(): void;
+  /**
+   * Stop an active native or programmatic scroll and synchronously commit work
+   * that was waiting for it to settle. Use before a discrete interaction that
+   * must replace list geometry immediately, such as switching a message branch.
+   */
+  interruptScroll(): void;
   setCount(options?: VirtualListSetCountOptions): void;
   syncLayout(update?: VirtualListLayoutUpdate): void;
   setBoundarySlot(
@@ -439,11 +465,34 @@ export function createVirtualListItemMeasurer(
 
       syncMeasurementRootWidth(measureRoot, viewport);
       measureRoot.replaceChildren();
-      const element = prepareMeasuredItem(buildItem(index));
-      measureRoot.appendChild(element);
-      const height = positiveSize(element.getBoundingClientRect().height);
+      let element: HTMLElement | null = null;
+      let height = 0;
+      let measurementFailed = false;
+      let measurementError: unknown;
+      try {
+        element = prepareMeasuredItem(buildItem(index));
+        measureRoot.appendChild(element);
+        height = positiveSize(element.getBoundingClientRect().height);
+      } catch (error) {
+        measurementFailed = true;
+        measurementError = error;
+      }
+
       measureRoot.replaceChildren();
-      destroyItem?.(index, element);
+      if (element && destroyItem) {
+        try {
+          destroyItem(index, element);
+        } catch (teardownError) {
+          if (measurementFailed) {
+            throw new AggregateError(
+              [measurementError, teardownError],
+              "item measurement and teardown failed",
+            );
+          }
+          throw teardownError;
+        }
+      }
+      if (measurementFailed) throw measurementError;
       return height;
     },
     dispose() {
@@ -498,7 +547,6 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   // individual values on cold paths); `measured` tracks which are real.
   let measured = new Uint8Array(0);
   let sizeTree = new FenwickTree(new Float64Array(0));
-  let itemSizeTotal = 0;
   let measuredCount = 0;
   let mounted = new Map<number, HTMLElement>();
   let mountedPlaceholders = new Set<number>();
@@ -541,6 +589,30 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   let emittingReachCallback = false;
   let pendingBoundaryArm = false;
   let itemMeasurer: VirtualListItemMeasurer | null = null;
+  // A numeric index has no stable identity across host data mutations. Any
+  // synchronous host callback that starts another item/layout transaction
+  // invalidates work captured by the older transaction.
+  let itemIdentityGeneration = 0;
+  let itemDataGeneration = 0;
+  const pendingPostCommitTasks: PostCommitTask[] = [];
+  const pendingExplicitMeasurementDataGenerations = new Map<number, number>();
+  const pendingItemBuilds = new Set<number>();
+  const deferredRefreshIndexes = new Set<number>();
+  const deferredRefreshIndexDataGenerations = new Map<number, number>();
+  const consumedRefreshIndexes = new Set<number>();
+  const deferredRefreshAttempts = new Map<number, number>();
+  let deferredRefreshFrom: number | null = null;
+  let deferredRefreshFromDataGeneration: number | null = null;
+  let activeDeferredRefreshIndex: number | null = null;
+  let activeDeferredRefreshFrom: number | null = null;
+  let deferredRefreshPasses = 0;
+  let drainingDeferredInternalWork = false;
+  let drainingDeferredRefreshes = false;
+  let drainingPostCommitTasks = false;
+  let layoutTransactionDepth = 0;
+  let deferredMeasurementInvalidation = false;
+  let renderDepth = 0;
+  let renderInterruptedByInternalWork = false;
   let disposed = false;
 
   const deferredLayoutUpdates: VirtualListLayoutUpdate[] = [];
@@ -554,7 +626,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       if (!Number.isInteger(index)) continue;
       if (mounted.get(index) !== entry.target) continue;
       const height = resizeEntryHeight(entry);
-      if (height !== null) measurementQueue.queue(index, height);
+      if (height !== null) {
+        pendingExplicitMeasurementDataGenerations.delete(index);
+        measurementQueue.queue(index, height);
+      }
     }
   });
 
@@ -603,7 +678,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function itemTotalSize(): number {
-    return itemSizeTotal;
+    return sizeTree.total();
   }
 
   function contentTotalSize(): number {
@@ -706,6 +781,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
   function canEmitBoundaryReach(boundary: VirtualListBoundary): boolean {
     return (
+      !disposed &&
       reachCallbacksEnabled &&
       !emittingReachCallback &&
       count > 0 &&
@@ -794,6 +870,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       build: slot.build,
       element: null,
       renderedHeight: -1,
+      building: false,
     };
   }
 
@@ -824,16 +901,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       : 0;
   }
 
-  function ensureBoundarySlot(
+  function createBoundarySlot(
     boundary: VirtualListBoundary,
   ): MountedBoundarySlot {
-    const current = currentBoundarySlot(boundary);
-    if (current) return current;
-
     const element = document.createElement("div");
     element.classList.add("vl-boundary-slot", `vl-boundary-${boundary}`);
 
-    const next: MountedBoundarySlot = {
+    return {
       key: null,
       build: null,
       element,
@@ -841,6 +915,15 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       renderedHeight: -1,
       renderedTop: -1,
     };
+  }
+
+  function ensureBoundarySlot(
+    boundary: VirtualListBoundary,
+  ): MountedBoundarySlot {
+    const current = currentBoundarySlot(boundary);
+    if (current) return current;
+
+    const next = createBoundarySlot(boundary);
     setCurrentBoundarySlot(boundary, next);
     markLayoutDirtyFrom(boundary === "top" ? 0 : count);
     return next;
@@ -857,6 +940,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   function applyBoundarySlotUpdate(
     boundary: VirtualListBoundary,
     slot: VirtualListBoundarySlot | null | undefined,
+    generation: number,
   ): boolean {
     if (slot === undefined) return false;
 
@@ -878,17 +962,31 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return true;
     }
 
-    const current = ensureBoundarySlot(boundary);
+    const existing = currentBoundarySlot(boundary);
+    const current = existing ?? createBoundarySlot(boundary);
+    const isNew = existing === null;
     const nextKey = String(slot.key);
     const nextHeight = positiveSize(slot.height);
     if (current.key !== nextKey || !current.element.firstChild) {
-      current.element.replaceChildren(slot.build());
+      const child = slot.build();
+      if (
+        !itemTransactionIsCurrent(generation) ||
+        (existing !== null && currentBoundarySlot(boundary) !== current)
+      ) {
+        child.remove();
+        return false;
+      }
+      current.element.replaceChildren(child);
     }
     current.key = nextKey;
     current.build = slot.build;
+    if (isNew) {
+      setCurrentBoundarySlot(boundary, current);
+      markLayoutDirtyFrom(boundary === "top" ? 0 : count);
+    }
 
     if (Math.abs(current.height - nextHeight) <= RENDER_EPSILON_PX)
-      return false;
+      return isNew;
     current.height = nextHeight;
     markLayoutDirtyFrom(boundary === "top" ? 0 : count);
     return true;
@@ -1014,7 +1112,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return element;
   }
 
-  function renderPlaceholderSlot(): void {
+  function renderPlaceholderSlot(generation: number): void {
     const slot = placeholderSlot;
     if (!slot) return;
 
@@ -1027,7 +1125,18 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     let element = slot.element;
     if (!element) {
-      element = preparePlaceholderSlot(slot);
+      if (slot.building) return;
+      slot.building = true;
+      try {
+        element = preparePlaceholderSlot(slot);
+      } finally {
+        slot.building = false;
+      }
+      if (!itemTransactionIsCurrent(generation) || placeholderSlot !== slot) {
+        element.remove();
+        if (!disposed && placeholderSlot === slot) scheduleRender();
+        return;
+      }
       slot.element = element;
       content.appendChild(element);
     }
@@ -1095,6 +1204,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     value: number,
     options?: ScrollTopWriteOptions,
   ): boolean {
+    if (disposed) return false;
     if (
       scrollSettle.isUserScrollActive() &&
       options?.allowDuringScroll !== true
@@ -1119,10 +1229,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   // Extend the size structures for a pure append of [previousCount, nextCount).
-  // With spare tree capacity this is O(appended · log capacity); when full, the
-  // arrays regrow with doubling headroom and rebuild once, linearly, so a
-  // one-row-at-a-time streaming append stays amortized O(1) per row.
-  function appendModeledSizes(previousCount: number, nextCount: number): void {
+  // Spare-capacity appends are amortized O(1); when full, the arrays regrow with
+  // doubling headroom and rebuild once, linearly, so one-row-at-a-time
+  // streaming stays amortized O(1) per row.
+  function appendModeledSizes(
+    previousCount: number,
+    nextCount: number,
+    generation: number,
+  ): boolean {
     if (nextCount > sizeTree.capacity) {
       const capacity = Math.max(nextCount, previousCount * 2);
       const nextSizes = new Float64Array(nextCount);
@@ -1131,17 +1245,28 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       nextMeasured.set(measured.subarray(0, previousCount));
       for (let index = previousCount; index < nextCount; index++) {
         nextSizes[index] = modeledItemHeight(index);
+        if (!itemTransactionIsCurrent(generation)) return false;
       }
       measured = nextMeasured;
       sizeTree = new FenwickTree(nextSizes, capacity);
-      itemSizeTotal = sizeTree.total();
-      return;
+      return true;
     }
 
-    for (let index = previousCount; index < nextCount; index++) {
-      sizeTree.append(modeledItemHeight(index));
+    const appendedCount = nextCount - previousCount;
+    if (appendedCount === 1) {
+      const height = modeledItemHeight(previousCount);
+      if (!itemTransactionIsCurrent(generation)) return false;
+      sizeTree.append(height);
+      return true;
     }
-    itemSizeTotal = sizeTree.total();
+
+    const appendedSizes = new Float64Array(appendedCount);
+    for (let offset = 0; offset < appendedCount; offset++) {
+      appendedSizes[offset] = modeledItemHeight(previousCount + offset);
+      if (!itemTransactionIsCurrent(generation)) return false;
+    }
+    for (const height of appendedSizes) sizeTree.append(height);
+    return true;
   }
 
   // NOTE: `measured` may carry spare capacity beyond `count` (append
@@ -1151,7 +1276,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     nextCount: number,
     addedBefore: number,
     removedBefore: number,
-  ): number {
+    generation: number,
+  ): number | null {
     const previousCount = count;
 
     // Pure append (or no-op): nothing prepended or removed, so the existing
@@ -1162,7 +1288,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       nextCount >= previousCount
     ) {
       if (nextCount === previousCount) return 0;
-      appendModeledSizes(previousCount, nextCount);
+      if (!appendModeledSizes(previousCount, nextCount, generation))
+        return null;
       markLayoutDirtyFrom(previousCount);
       return 0;
     }
@@ -1177,7 +1304,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       Math.max(0, nextCount - addedBefore),
     );
 
-    measuredCount = 0;
+    let nextMeasuredCount = 0;
     if (preserved > 0) {
       nextSizes.set(
         previousSizes.subarray(previousStart, previousStart + preserved),
@@ -1194,7 +1321,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         index < previousStart + preserved;
         index++
       ) {
-        if (previousMeasured[index]) measuredCount++;
+        if (previousMeasured[index]) nextMeasuredCount++;
       }
     }
 
@@ -1205,34 +1332,56 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     for (let index = 0; index < addedBefore; index++) {
       const height = modeledItemHeight(index);
+      if (!itemTransactionIsCurrent(generation)) return null;
       nextSizes[index] = height;
       beforeHeightDelta += height;
     }
 
     for (let index = addedBefore + preserved; index < nextCount; index++) {
       nextSizes[index] = modeledItemHeight(index);
+      if (!itemTransactionIsCurrent(generation)) return null;
     }
 
     measured = nextMeasured;
+    measuredCount = nextMeasuredCount;
     sizeTree = new FenwickTree(nextSizes);
-    itemSizeTotal = sizeTree.total();
     markLayoutDirtyFrom(0);
     return beforeHeightDelta;
   }
 
-  function refillModeledSizes(): void {
+  function clearPendingMeasurements(): void {
+    measurementQueue.clear();
+    pendingExplicitMeasurementDataGenerations.clear();
+  }
+
+  function deletePendingMeasurement(index: number): void {
+    measurementQueue.delete(index);
+    pendingExplicitMeasurementDataGenerations.delete(index);
+  }
+
+  function removePendingMeasurementsAtOrBeyond(index: number): void {
+    measurementQueue.removeAtOrBeyond(index);
+    for (const pendingIndex of pendingExplicitMeasurementDataGenerations.keys()) {
+      if (pendingIndex >= index) {
+        pendingExplicitMeasurementDataGenerations.delete(pendingIndex);
+      }
+    }
+  }
+
+  function refillModeledSizes(generation: number): boolean {
     const nextSizes = new Float64Array(count);
     for (let index = 0; index < count; index++) {
       nextSizes[index] = modeledItemHeight(index);
+      if (!itemTransactionIsCurrent(generation)) return false;
     }
 
     measurementQueue.cancelFlush();
-    measurementQueue.clear();
+    clearPendingMeasurements();
     measured = new Uint8Array(count);
     measuredCount = 0;
     sizeTree = new FenwickTree(nextSizes);
-    itemSizeTotal = sizeTree.total();
     markLayoutDirtyFrom(0);
+    return true;
   }
 
   function computeRange(
@@ -1243,12 +1392,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     planRenderRange(
       computedRange,
       sizeTree,
-      count,
       renderMode === "full",
       scrollTop - topSlotHeight(),
       viewportHeight,
       overscanPx,
-      itemTotalSize(),
     );
   }
 
@@ -1281,77 +1428,262 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return element;
   }
 
-  function mountItem(
-    index: number,
-    usePlaceholder: boolean,
-    offset = topSlotHeight(),
-  ): HTMLElement {
-    const element =
-      usePlaceholder && buildPlaceholder
-        ? prepareItem(index, buildPlaceholder(index), offset)
-        : prepareItem(index, acquireElement(index), offset);
-
-    if (usePlaceholder && buildPlaceholder) {
-      element.dataset.placeholder = "true";
-      mountedPlaceholders.add(index);
-      placeholderMode.scheduleHydrationCheck();
-    } else {
-      itemResizeObserver.observe(element);
-      mountedPlaceholders.delete(index);
-    }
-
-    return element;
+  function itemTransactionIsCurrent(generation: number): boolean {
+    return !disposed && itemIdentityGeneration === generation;
   }
 
-  function refreshMountedPlaceholder(index: number): boolean {
+  function buildMountCandidate(
+    index: number,
+    usePlaceholder: boolean,
+    offset: number,
+    generation: number,
+  ): MountCandidate | null {
+    if (pendingItemBuilds.has(index)) return null;
+    pendingItemBuilds.add(index);
+    let keepReservation = false;
+    let retry = false;
+    try {
+      const placeholder = usePlaceholder && buildPlaceholder !== undefined;
+      const element = placeholder
+        ? buildPlaceholder(index)
+        : acquireElement(index, generation);
+      if (!element) {
+        retry = !disposed;
+        return null;
+      }
+
+      if (!itemTransactionIsCurrent(generation)) {
+        if (placeholder) {
+          element.remove();
+        } else {
+          releaseItems([{ index, element }]);
+        }
+        retry = !disposed;
+        return null;
+      }
+
+      prepareItem(index, element, offset);
+      if (placeholder) {
+        element.dataset.placeholder = "true";
+      }
+      keepReservation = true;
+      return { index, element, placeholder };
+    } finally {
+      if (!keepReservation) {
+        pendingItemBuilds.delete(index);
+        if (retry) scheduleRender();
+      }
+    }
+  }
+
+  function discardMountCandidates(candidates: readonly MountCandidate[]): void {
+    const realItems: ItemRecord[] = [];
+    for (const candidate of candidates) {
+      pendingItemBuilds.delete(candidate.index);
+      if (candidate.placeholder) {
+        candidate.element.remove();
+      } else {
+        realItems.push(candidate);
+      }
+    }
+    releaseItems(realItems);
+  }
+
+  function refreshMountedPlaceholder(
+    index: number,
+    generation = itemIdentityGeneration,
+  ): boolean {
     const previous = mounted.get(index);
     if (!previous) {
       mountedPlaceholders.delete(index);
       return false;
     }
+    if (pendingItemBuilds.has(index)) return false;
 
-    const next = prepareItem(index, acquireElement(index));
-    itemResizeObserver.observe(next);
-    previous.replaceWith(next);
-    itemResizeObserver.unobserve(previous);
-    mounted.set(index, next);
-    mountedPlaceholders.delete(index);
-    return true;
+    pendingItemBuilds.add(index);
+    let retry = false;
+    try {
+      const next = acquireElement(index, generation);
+      if (!next) {
+        retry = !disposed;
+        return false;
+      }
+      prepareItem(index, next);
+      if (
+        !itemTransactionIsCurrent(generation) ||
+        mounted.get(index) !== previous ||
+        !mountedPlaceholders.has(index)
+      ) {
+        releaseItems([{ index, element: next }]);
+        retry = !disposed;
+        return false;
+      }
+
+      itemResizeObserver.observe(next);
+      previous.replaceWith(next);
+      itemResizeObserver.unobserve(previous);
+      mounted.set(index, next);
+      mountedPlaceholders.delete(index);
+      return true;
+    } finally {
+      pendingItemBuilds.delete(index);
+      if (retry) scheduleRender();
+    }
   }
 
   function refreshMountedPlaceholders(): boolean {
     if (mountedPlaceholders.size === 0) return false;
 
+    const generation = itemIdentityGeneration;
     let refreshed = false;
     for (const index of Array.from(mountedPlaceholders)) {
-      if (refreshMountedPlaceholder(index)) {
+      if (!itemTransactionIsCurrent(generation)) break;
+      if (refreshMountedPlaceholder(index, generation)) {
         refreshed = true;
       }
     }
     return refreshed;
   }
 
-  function syncRenderChrome(): number {
+  function syncRenderChrome(generation: number): number {
     if (needsAuxiliaryChrome()) {
       if (needsBoundaryRender) ensureReachBoundarySlots();
       const totalSize = syncContentHeight();
       renderBoundarySlots();
-      renderPlaceholderSlot();
+      renderPlaceholderSlot(generation);
       return totalSize;
     }
     return syncContentHeight();
   }
 
-  function notifyDestroyItem(index: number, element: HTMLElement): void {
-    if (!destroyItem) return;
-    if (element.dataset.placeholder === "true") return;
-    destroyItem(index, element);
+  function queueItemDestruction(index: number, element: HTMLElement): void {
+    if (!destroyItem || element.dataset.placeholder === "true") return;
+    pendingPostCommitTasks.push({
+      type: "destroy",
+      index,
+      element,
+    });
   }
 
-  function discardElement(index: number, element: HTMLElement): void {
-    itemResizeObserver.unobserve(element);
-    notifyDestroyItem(index, element);
-    element.remove();
+  function queuePostCommitCallback(run: () => void): void {
+    pendingPostCommitTasks.push({ type: "callback", run });
+  }
+
+  function throwCollectedErrors(
+    errors: readonly unknown[],
+    message: string,
+  ): void {
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, message);
+  }
+
+  function appendCollectedError(
+    errors: unknown[] | null,
+    error: unknown,
+  ): unknown[] {
+    if (!errors) return [error];
+    errors.push(error);
+    return errors;
+  }
+
+  // Host callbacks are delivered only after internal ownership has committed.
+  // Reentrant work appends to the same FIFO and is drained by the outermost
+  // caller, preserving teardown-before-after order without recursive delivery.
+  function drainPostCommitTasks(): boolean {
+    if (pendingPostCommitTasks.length === 0) return true;
+    if (drainingPostCommitTasks) return false;
+
+    drainingPostCommitTasks = true;
+    let errors: unknown[] | null = null;
+    try {
+      for (let cursor = 0; cursor < pendingPostCommitTasks.length; cursor++) {
+        const task = pendingPostCommitTasks[cursor];
+        if (!task) continue;
+        try {
+          if (task.type === "destroy") {
+            destroyItem?.(task.index, task.element);
+          } else {
+            task.run();
+          }
+        } catch (error) {
+          errors = appendCollectedError(errors, error);
+        }
+      }
+    } finally {
+      pendingPostCommitTasks.length = 0;
+      drainingPostCommitTasks = false;
+    }
+
+    if (errors) {
+      throwCollectedErrors(errors, "multiple virtual-list callbacks failed");
+    }
+    return true;
+  }
+
+  function runWithPostCommitDrain<T>(operation: () => T): T {
+    let result!: T;
+    let errors: unknown[] | null = null;
+    try {
+      result = operation();
+    } catch (error) {
+      errors = appendCollectedError(errors, error);
+    }
+    const ownsPostCommitDrain = !drainingPostCommitTasks;
+    try {
+      drainPostCommitTasks();
+    } catch (error) {
+      errors = appendCollectedError(errors, error);
+    }
+    if (ownsPostCommitDrain) {
+      try {
+        drainDeferredInternalWork();
+      } catch (error) {
+        errors = appendCollectedError(errors, error);
+      }
+    }
+    if (errors) {
+      throwCollectedErrors(
+        errors,
+        "virtual-list operation and callbacks failed",
+      );
+    }
+    return result;
+  }
+
+  function runLayoutTransaction(operation: () => void): void {
+    layoutTransactionDepth++;
+    let errors: unknown[] | null = null;
+    try {
+      runWithPostCommitDrain(operation);
+    } catch (error) {
+      errors = appendCollectedError(errors, error);
+    } finally {
+      layoutTransactionDepth--;
+    }
+    if (layoutTransactionDepth === 0) {
+      try {
+        drainDeferredInternalWork();
+      } catch (error) {
+        errors = appendCollectedError(errors, error);
+      }
+    }
+    if (errors) {
+      throwCollectedErrors(errors, "virtual-list layout transaction failed");
+    }
+  }
+
+  function detachItems(items: readonly ItemRecord[]): void {
+    for (const { element } of items) {
+      itemResizeObserver.unobserve(element);
+      element.remove();
+    }
+  }
+
+  function discardItems(items: readonly ItemRecord[]): void {
+    detachItems(items);
+    for (const { index, element } of items) {
+      queueItemDestruction(index, element);
+    }
   }
 
   function recyclePoolCapacity(): number {
@@ -1362,45 +1694,79 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
   function trimRecyclePool(): void {
     const capacity = recyclePoolCapacity();
-    while (recyclePool.length > capacity) {
-      const evicted = recyclePool.shift();
-      if (!evicted) break;
-      notifyDestroyItem(Number(evicted.dataset.index), evicted);
+    const overflow = recyclePool.length - capacity;
+    if (overflow <= 0) return;
+
+    for (const evicted of recyclePool.splice(0, overflow)) {
+      queueItemDestruction(Number(evicted.dataset.index), evicted);
     }
   }
 
-  // Pool a real (non-placeholder) element for reuse when recycling is enabled;
-  // otherwise discard it. Mirrors discardElement's call sites so every
-  // permanent-detach path participates in the pool.
-  function recycleOrDiscard(index: number, element: HTMLElement): void {
-    if (recycleItem && element.dataset.placeholder !== "true") {
-      itemResizeObserver.unobserve(element);
-      element.remove();
+  // Relinquish list ownership as one batch, then either pool real rows or queue
+  // their permanent teardown. Placeholders have no host lifecycle counterpart.
+  function releaseItems(items: readonly ItemRecord[]): void {
+    if (items.length === 0) return;
+    detachItems(items);
+
+    for (const { index, element } of items) {
+      if (!disposed && recycleItem && element.dataset.placeholder !== "true") {
+        recyclePool.push(element);
+      } else {
+        queueItemDestruction(index, element);
+      }
+    }
+    trimRecyclePool();
+  }
+
+  function releaseItem(index: number, element: HTMLElement): void {
+    itemResizeObserver.unobserve(element);
+    element.remove();
+    if (!disposed && recycleItem && element.dataset.placeholder !== "true") {
       recyclePool.push(element);
       trimRecyclePool();
-      return;
+    } else {
+      queueItemDestruction(index, element);
     }
-    discardElement(index, element);
   }
 
   // Reuse a pooled element (re-bound via recycleItem) or build a fresh one.
-  function acquireElement(index: number): HTMLElement {
+  function acquireElement(
+    index: number,
+    generation: number,
+  ): HTMLElement | null {
     if (recycleItem) {
       const pooled = recyclePool.pop();
       if (pooled) {
-        recycleItem(index, pooled);
+        try {
+          recycleItem(index, pooled);
+        } catch (error) {
+          discardItems([{ index, element: pooled }]);
+          throw error;
+        }
+        pooled.dataset.index = String(index);
+        if (!itemTransactionIsCurrent(generation)) {
+          releaseItems([{ index, element: pooled }]);
+          return null;
+        }
         return pooled;
       }
     }
-    return buildItem(index);
+
+    const element = buildItem(index);
+    element.dataset.index = String(index);
+    if (!itemTransactionIsCurrent(generation)) {
+      releaseItems([{ index, element }]);
+      return null;
+    }
+    return element;
   }
 
   function unmountIndex(index: number): void {
     const element = mounted.get(index);
     if (!element) return;
-    recycleOrDiscard(index, element);
     mounted.delete(index);
     mountedPlaceholders.delete(index);
+    releaseItem(index, element);
   }
 
   function rangeFullyMounted(start: number, end: number): boolean {
@@ -1412,23 +1778,72 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     return true;
   }
 
-  function render(explicitScrollTop = logicalScrollTop()): void {
+  function renderOperation(
+    explicitScrollTop: number,
+    generation: number,
+  ): void {
     if (disposed) return;
-    renderPass(explicitScrollTop);
+    renderPass(explicitScrollTop, generation);
+    if (!drainPostCommitTasks()) {
+      if (renderTransactionCanContinue(generation)) {
+        queuePostCommitCallback(() => {
+          if (itemTransactionIsCurrent(generation)) syncBoundaryReach();
+        });
+      }
+      return;
+    }
+    drainDeferredInternalWork();
+    if (!renderTransactionCanContinue(generation)) return;
     // After the pass, so reach callbacks observe settled chrome and any layout
     // they trigger re-enters via scheduleRender instead of recursing (the
     // emittingChangeCallback guard in applyLayoutUpdate).
     syncBoundaryReach();
   }
 
-  function renderPass(explicitScrollTop: number): void {
+  function render(explicitScrollTop = logicalScrollTop()): void {
+    renderDepth++;
+    const generation = itemIdentityGeneration;
+    let errors: unknown[] | null = null;
+    try {
+      renderOperation(explicitScrollTop, generation);
+    } catch (error) {
+      errors = appendCollectedError(errors, error);
+    }
+    const ownsPostCommitDrain = !drainingPostCommitTasks;
+    try {
+      drainPostCommitTasks();
+    } catch (error) {
+      errors = appendCollectedError(errors, error);
+    }
+    if (ownsPostCommitDrain) {
+      try {
+        drainDeferredInternalWork();
+      } catch (error) {
+        errors = appendCollectedError(errors, error);
+      }
+    }
+    renderDepth--;
+    if (renderDepth === 0) {
+      try {
+        reconcileInterruptedRender();
+      } catch (error) {
+        errors = appendCollectedError(errors, error);
+      }
+    }
+    if (errors) {
+      throwCollectedErrors(errors, "virtual-list render and callbacks failed");
+    }
+  }
+
+  function renderPass(explicitScrollTop: number, generation: number): void {
     if (pendingBoundaryArm && needsBoundaryRender) {
       pendingBoundaryArm = false;
       armCoveredBoundaryForScroll("top");
       armCoveredBoundaryForScroll("bottom");
     }
 
-    const totalSize = syncRenderChrome();
+    const totalSize = syncRenderChrome(generation);
+    if (!itemTransactionIsCurrent(generation)) return;
     const viewportHeight = lastViewportHeight;
     const actualScrollTop = logicalScrollTop();
     const itemOffset = topSlotHeight();
@@ -1445,6 +1860,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     const dirtyFrom = firstDirtyIndex;
     const layoutDirty = dirtyFrom < end;
     const mountPlaceholders = placeholderMode.update();
+    if (!itemTransactionIsCurrent(generation)) return;
     rangeStart = start;
     rangeEnd = end;
 
@@ -1455,12 +1871,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     ) {
       // Entering fast mode does NOT placeholderize items already on screen —
       // that caused a visible flash. Newly mounted items below already build as
-      // placeholders via mountItem(.., mountPlaceholders, ..). On exit, hydrate
+      // placeholders via buildMountCandidate(). On exit, hydrate
       // any placeholders that survived back into real items.
       const refreshedMountedItems =
         !mountPlaceholders &&
         !placeholderMode.isHydrationBlocked() &&
         refreshMountedPlaceholders();
+      drainDeferredInternalWork();
+      if (!renderTransactionCanContinue(generation)) return;
       if (!layoutDirty && !refreshedMountedItems) {
         firstDirtyIndex = Number.POSITIVE_INFINITY;
         emitViewportChange(totalSize, actualScrollTop, viewportHeight);
@@ -1492,23 +1910,59 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     if (!mountPlaceholders && !placeholderMode.isHydrationBlocked()) {
       refreshMountedPlaceholders();
+      drainDeferredInternalWork();
+      if (!renderTransactionCanContinue(generation)) return;
     }
 
-    let newItems: DocumentFragment | null = null;
-    for (let index = start; index < end; index++) {
-      let element = mounted.get(index);
-      if (!element) {
-        element = mountItem(index, mountPlaceholders, itemOffset);
-        newItems ??= document.createDocumentFragment();
-        newItems.appendChild(element);
-        mounted.set(index, element);
-      } else if (index >= dirtyFrom) {
-        positionItem(index, element, itemOffset);
+    const candidates: MountCandidate[] = [];
+    let candidatesCommitted = false;
+    try {
+      let newItems: DocumentFragment | null = null;
+      for (let index = start; index < end; index++) {
+        const element = mounted.get(index);
+        if (!element) {
+          if (pendingItemBuilds.has(index)) {
+            scheduleRender();
+            return;
+          }
+          const candidate = buildMountCandidate(
+            index,
+            mountPlaceholders,
+            itemOffset,
+            generation,
+          );
+          if (!candidate) return;
+          candidates.push(candidate);
+          newItems ??= document.createDocumentFragment();
+          newItems.appendChild(candidate.element);
+        } else if (index >= dirtyFrom) {
+          positionItem(index, element, itemOffset);
+        }
       }
+      if (!itemTransactionIsCurrent(generation)) return;
+
+      if (newItems) content.appendChild(newItems);
+      let mountedAnyPlaceholder = false;
+      for (const candidate of candidates) {
+        mounted.set(candidate.index, candidate.element);
+        pendingItemBuilds.delete(candidate.index);
+        if (candidate.placeholder) {
+          mountedPlaceholders.add(candidate.index);
+          mountedAnyPlaceholder = true;
+        } else {
+          mountedPlaceholders.delete(candidate.index);
+          itemResizeObserver.observe(candidate.element);
+        }
+      }
+      if (mountedAnyPlaceholder) placeholderMode.scheduleHydrationCheck();
+      candidatesCommitted = true;
+    } finally {
+      if (!candidatesCommitted) discardMountCandidates(candidates);
     }
-    if (newItems) content.appendChild(newItems);
 
     firstDirtyIndex = Number.POSITIVE_INFINITY;
+    drainDeferredInternalWork();
+    if (!renderTransactionCanContinue(generation)) return;
     emitViewportChange(totalSize, actualScrollTop, viewportHeight);
   }
 
@@ -1528,11 +1982,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     render(explicitScrollTop);
   }
 
-  function syncScrollSurface(): void {
+  function syncScrollSurface(): boolean {
+    const generation = itemIdentityGeneration;
     ensureReachBoundarySlots();
     syncContentHeight();
     renderBoundarySlots();
-    renderPlaceholderSlot();
+    renderPlaceholderSlot(generation);
+    return itemTransactionIsCurrent(generation);
   }
 
   function commitMeasurement(
@@ -1552,15 +2008,15 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (Math.abs(delta) <= measureEpsilon) return null;
 
     sizeTree.add(index, delta);
-    itemSizeTotal += delta;
     markLayoutDirtyFrom(index + 1);
 
     return index < anchorIndex ? delta : 0;
   }
 
-  // Shared tail of a committed height change: re-sync the content height, keep
-  // the viewport anchored (stick to the bottom, or offset by the height change
-  // above the anchor), and re-render.
+  // Shared tail of a committed height change: re-sync the content height and
+  // keep the viewport anchored (stick to the bottom, or offset by the height
+  // change above the anchor). The caller owns the eventual render so the
+  // measurement queue can combine it with bottom-follow's scroll write.
   function applyMeasurementCorrection(
     wasAtBottom: boolean,
     hadStickyTail: boolean,
@@ -1589,12 +2045,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         PRESERVE_LOGICAL_SCROLL_OFFSET,
       );
     }
-    renderNow(logicalScrollTop());
   }
 
   // The measurement queue's drain: commit every queued height against the
   // current scroll anchor, then correct the viewport in one pass.
-  function drainPendingMeasurements(pending: Map<number, number>): void {
+  function drainPendingMeasurements(
+    pending: ReadonlyMap<number, number>,
+  ): boolean {
     const wasAtBottom = nearNativeBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
@@ -1604,7 +2061,16 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     let correction = 0;
 
     for (const [index, height] of pending) {
-      pending.delete(index);
+      const explicitDataGeneration =
+        pendingExplicitMeasurementDataGenerations.get(index);
+      const hasExplicitDataGeneration =
+        pendingExplicitMeasurementDataGenerations.delete(index);
+      if (
+        hasExplicitDataGeneration &&
+        explicitDataGeneration !== itemDataGeneration
+      ) {
+        continue;
+      }
       const correctionDelta = commitMeasurement(index, height, anchorIndex);
       if (correctionDelta === null) continue;
       changed = true;
@@ -1613,14 +2079,20 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     if (!changed) {
       emitViewportChange();
-      return;
+      return false;
     }
 
     applyMeasurementCorrection(wasAtBottom, hadStickyTail, correction);
+    return true;
   }
 
-  function commitExplicitMeasurement(index: number, height: number): void {
+  function commitExplicitMeasurement(
+    index: number,
+    height: number,
+    dataGeneration = itemDataGeneration,
+  ): void {
     if (
+      disposed ||
       !Number.isFinite(height) ||
       height <= 0 ||
       index < 0 ||
@@ -1635,11 +2107,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       Math.max(0, logicalScrollTop() - topSlotHeight()),
     );
     if (scrollSettle.isUserScrollActive() && index < anchorIndex) {
+      pendingExplicitMeasurementDataGenerations.set(index, dataGeneration);
       measurementQueue.queue(index, height);
       return;
     }
 
-    measurementQueue.delete(index);
+    deletePendingMeasurement(index);
     const correction = commitMeasurement(index, height, anchorIndex);
     if (correction === null) {
       emitViewportChange();
@@ -1647,6 +2120,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     }
 
     applyMeasurementCorrection(wasAtBottom, hadStickyTail, correction);
+    renderNow();
   }
 
   function scrollTopForIndex(
@@ -1686,6 +2160,19 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     viewport.scrollTop = currentTop;
   }
 
+  function interruptScroll(): void {
+    if (disposed) return;
+    activeSmoothScrollCancel?.();
+    bottomFollow.stop();
+    if (!scrollSettle.isUserScrollActive()) return;
+
+    // Stop the browser-owned animation before applying any queued geometry.
+    // Merely clearing settle timers would leave both APZ momentum and the
+    // controller's active-gesture state alive.
+    interruptNativeScrollMomentum();
+    scrollSettle.finishGesture();
+  }
+
   function activeSmoothScrollReachedTarget(): boolean {
     if (activeSmoothScrollTarget === null) return true;
     const target = clamp(activeSmoothScrollTarget, 0, nativeMaxScrollTop());
@@ -1705,8 +2192,15 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     top: number,
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
+    if (disposed) return Promise.resolve(false);
     activeSmoothScrollCancel?.();
-    const hydratedPlaceholders = placeholderMode.forceHydrate();
+    const hydratedPlaceholders = runWithPostCommitDrain(() =>
+      placeholderMode.forceHydrate(),
+    );
+    if (disposed) {
+      drainPostCommitTasks();
+      return Promise.resolve(false);
+    }
     interruptNativeScrollMomentum();
     scrollSettle.cancelGesture();
     const target = clamp(top, 0, nativeMaxScrollTop());
@@ -1722,6 +2216,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     }
 
     scrollSettle.beginProgrammaticGesture();
+    if (disposed) return Promise.resolve(false);
 
     if (options.behavior !== "smooth") {
       setScrollTop(target, ALLOW_DURING_SCROLL);
@@ -1781,7 +2276,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
             ALLOW_DURING_SCROLL,
           );
           scrollSettle.finishGesture();
-        } else {
+        } else if (!disposed) {
           scrollSettle.markSettlePending();
         }
         resolve(completed);
@@ -1809,6 +2304,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         if (setScrollTop(nextTop, ALLOW_DURING_SCROLL)) {
           renderNow(viewport.scrollTop);
         }
+        if (finished || disposed) return;
         if (
           t >= 1 ||
           Math.abs(viewport.scrollTop - clampedTarget) <= snapThreshold
@@ -1832,11 +2328,12 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     align: VirtualListAlign = "top",
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
+    if (disposed) return false;
     flushDeferredLayoutBeforeProgrammaticOperation();
     bottomFollow.stop();
     if (count <= 0 || options.signal?.aborted) return false;
     const targetIndex = clamp(Math.floor(index), 0, count - 1);
-    syncScrollSurface();
+    if (!syncScrollSurface()) return false;
     const target = scrollTopForIndex(targetIndex, align);
     const boundary =
       targetIndex === 0 && align === "top"
@@ -1847,6 +2344,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (boundary) armProgrammaticBoundaryReach(boundary);
     else clearProgrammaticBoundaryReach();
     const ok = await scrollToNativeTop(target, options);
+    if (disposed) return false;
     renderNow(viewport.scrollTop);
     emitVisibleBoundaryReach(boundary);
     clearProgrammaticBoundaryReach(boundary);
@@ -1857,12 +2355,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     offset: number,
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
+    if (disposed) return false;
     flushDeferredLayoutBeforeProgrammaticOperation();
     bottomFollow.stop();
     if (options.signal?.aborted) return false;
     clearProgrammaticBoundaryReach();
-    syncScrollSurface();
+    if (!syncScrollSurface()) return false;
     const ok = await scrollToNativeTop(offset, options);
+    if (disposed) return false;
     renderNow(viewport.scrollTop);
     return ok;
   }
@@ -1870,12 +2370,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   async function scrollToTop(
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
+    if (disposed) return false;
     flushDeferredLayoutBeforeProgrammaticOperation();
     bottomFollow.stop();
     if (options.signal?.aborted) return false;
-    syncScrollSurface();
+    if (!syncScrollSurface()) return false;
     armProgrammaticBoundaryReach("top");
     const ok = await scrollToNativeTop(0, options);
+    if (disposed) return false;
     renderNow(viewport.scrollTop);
     emitVisibleBoundaryReach("top");
     clearProgrammaticBoundaryReach("top");
@@ -1885,6 +2387,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   async function scrollToBottom(
     options: VirtualListScrollOptions = {},
   ): Promise<boolean> {
+    if (disposed) return false;
     flushDeferredLayoutBeforeProgrammaticOperation();
     bottomFollow.stop();
     // Commit any settled-but-unflushed row heights so the target is the true
@@ -1893,9 +2396,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     // leave its measurement queued, and we'd scroll to the shorter old height.
     measurementQueue.flushNow();
     if (options.signal?.aborted) return false;
-    syncScrollSurface();
+    if (!syncScrollSurface()) return false;
     armProgrammaticBoundaryReach("bottom");
     const ok = await scrollToNativeTop(nativeMaxScrollTop(), options);
+    if (disposed) return false;
     renderNow(viewport.scrollTop);
     emitVisibleBoundaryReach("bottom");
     clearProgrammaticBoundaryReach("bottom");
@@ -1903,6 +2407,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function setStickyIndex(index: number | null): void {
+    if (disposed) return;
     flushDeferredLayoutBeforeProgrammaticOperation();
     if (index === null || count === 0 || !Number.isFinite(index)) {
       stickyIndex = null;
@@ -1931,12 +2436,389 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       viewport,
       canvasClassName,
       buildItem,
-      destroyItem,
+      destroyItem: queueItemDestruction,
     });
     return itemMeasurer.measure(index);
   }
 
+  function queueDeferredRefreshIndex(index: number): void {
+    if (drainingDeferredRefreshes) {
+      if (activeDeferredRefreshIndex === index && !drainingPostCommitTasks) {
+        return;
+      }
+      if (
+        (deferredRefreshAttempts.get(index) ?? 0) >=
+        MAX_DEFERRED_REFRESH_ATTEMPTS
+      ) {
+        return;
+      }
+    }
+    deferredRefreshIndexes.add(index);
+    deferredRefreshIndexDataGenerations.set(index, itemDataGeneration);
+  }
+
+  function queueDeferredRefreshFrom(from: number): void {
+    if (
+      drainingDeferredRefreshes &&
+      (deferredRefreshPasses >= MAX_DEFERRED_REFRESH_ATTEMPTS ||
+        (activeDeferredRefreshFrom !== null &&
+          activeDeferredRefreshIndex !== null &&
+          from >= activeDeferredRefreshIndex))
+    ) {
+      return;
+    }
+
+    if (
+      deferredRefreshFrom === null ||
+      deferredRefreshFromDataGeneration !== itemDataGeneration
+    ) {
+      deferredRefreshFrom = from;
+      deferredRefreshFromDataGeneration = itemDataGeneration;
+    } else {
+      deferredRefreshFrom = Math.min(deferredRefreshFrom, from);
+    }
+    // refreshFrom rebuilds mounted rows only. Preserve an exact retry for every
+    // colliding construction so an offscreen measurement is sampled again too.
+    for (const pendingIndex of pendingItemBuilds) {
+      if (
+        pendingIndex >= from &&
+        pendingIndex < count &&
+        pendingIndex !== activeDeferredRefreshIndex &&
+        (deferredRefreshAttempts.get(pendingIndex) ?? 0) <
+          MAX_DEFERRED_REFRESH_ATTEMPTS
+      ) {
+        queueDeferredRefreshIndex(pendingIndex);
+      }
+    }
+  }
+
+  function retagDeferredRefreshes(
+    previousDataGeneration: number,
+    nextDataGeneration: number,
+  ): void {
+    for (const [index, dataGeneration] of deferredRefreshIndexDataGenerations) {
+      if (dataGeneration === previousDataGeneration) {
+        deferredRefreshIndexDataGenerations.set(index, nextDataGeneration);
+      }
+    }
+    if (deferredRefreshFromDataGeneration === previousDataGeneration) {
+      deferredRefreshFromDataGeneration = nextDataGeneration;
+    }
+  }
+
+  function hasDeferredRefreshes(): boolean {
+    return deferredRefreshFrom !== null || deferredRefreshIndexes.size > 0;
+  }
+
+  function hasDeferredInternalWork(): boolean {
+    return deferredMeasurementInvalidation || hasDeferredRefreshes();
+  }
+
+  function drainDeferredInternalWork(): void {
+    if (
+      drainingDeferredInternalWork ||
+      drainingPostCommitTasks ||
+      drainingDeferredRefreshes ||
+      layoutTransactionDepth > 0 ||
+      disposed ||
+      pendingItemBuilds.size > 0 ||
+      !hasDeferredInternalWork()
+    ) {
+      return;
+    }
+
+    drainingDeferredInternalWork = true;
+    let errors: unknown[] | null = null;
+    try {
+      for (
+        let pass = 0;
+        pass < MAX_DEFERRED_INTERNAL_PASSES && hasDeferredInternalWork();
+        pass++
+      ) {
+        if (deferredMeasurementInvalidation) {
+          deferredMeasurementInvalidation = false;
+          try {
+            if (!performMeasurementInvalidation() && !disposed) {
+              deferredMeasurementInvalidation = true;
+            }
+          } catch (error) {
+            errors = appendCollectedError(errors, error);
+          }
+        }
+        if (hasDeferredRefreshes()) {
+          try {
+            drainDeferredRefreshes();
+          } catch (error) {
+            errors = appendCollectedError(errors, error);
+          }
+        }
+      }
+      // A host that requests new invalidation work from every replay cannot
+      // converge. Bound the barrier and discard only the non-converging tail.
+      if (hasDeferredInternalWork()) {
+        deferredMeasurementInvalidation = false;
+        deferredRefreshFrom = null;
+        deferredRefreshFromDataGeneration = null;
+        deferredRefreshIndexes.clear();
+        deferredRefreshIndexDataGenerations.clear();
+      }
+    } finally {
+      drainingDeferredInternalWork = false;
+    }
+    try {
+      reconcileInterruptedRender();
+    } catch (error) {
+      errors = appendCollectedError(errors, error);
+    }
+    if (errors) {
+      throwCollectedErrors(errors, "deferred virtual-list work failed");
+    }
+  }
+
+  function renderTransactionCanContinue(generation: number): boolean {
+    if (hasDeferredInternalWork() || !itemTransactionIsCurrent(generation)) {
+      renderInterruptedByInternalWork = true;
+      return false;
+    }
+    return true;
+  }
+
+  function reconcileInterruptedRender(): void {
+    if (!renderInterruptedByInternalWork) return;
+    if (disposed) {
+      renderInterruptedByInternalWork = false;
+      return;
+    }
+    if (
+      renderDepth > 0 ||
+      layoutTransactionDepth > 0 ||
+      drainingPostCommitTasks ||
+      drainingDeferredInternalWork ||
+      drainingDeferredRefreshes ||
+      pendingItemBuilds.size > 0 ||
+      hasDeferredInternalWork()
+    ) {
+      scheduleRender();
+      return;
+    }
+    renderInterruptedByInternalWork = false;
+    renderNow(logicalScrollTop());
+  }
+
+  function beginDeferredRefreshAttempt(index: number): boolean {
+    const attempts = deferredRefreshAttempts.get(index) ?? 0;
+    if (attempts >= MAX_DEFERRED_REFRESH_ATTEMPTS) return false;
+    deferredRefreshAttempts.set(index, attempts + 1);
+    activeDeferredRefreshIndex = index;
+    return true;
+  }
+
+  function endDeferredRefreshAttempt(): void {
+    activeDeferredRefreshIndex = null;
+  }
+
+  function drainDeferredRefreshes(): void {
+    if (
+      drainingDeferredRefreshes ||
+      drainingPostCommitTasks ||
+      layoutTransactionDepth > 0 ||
+      disposed ||
+      pendingItemBuilds.size > 0 ||
+      !hasDeferredRefreshes()
+    ) {
+      return;
+    }
+
+    drainingDeferredRefreshes = true;
+    consumedRefreshIndexes.clear();
+    deferredRefreshAttempts.clear();
+    activeDeferredRefreshIndex = null;
+    activeDeferredRefreshFrom = null;
+    deferredRefreshPasses = 0;
+    const replayCountLimit = count;
+    let errors: unknown[] | null = null;
+    try {
+      while (
+        !disposed &&
+        pendingItemBuilds.size === 0 &&
+        (deferredRefreshFrom !== null || deferredRefreshIndexes.size > 0)
+      ) {
+        consumedRefreshIndexes.clear();
+        const from = deferredRefreshFrom;
+        deferredRefreshFrom = null;
+        const fromDataGeneration = deferredRefreshFromDataGeneration;
+        deferredRefreshFromDataGeneration = null;
+        const indexes = Array.from(deferredRefreshIndexes, (index) => ({
+          dataGeneration:
+            deferredRefreshIndexDataGenerations.get(index) ??
+            itemDataGeneration,
+          index,
+        })).sort((left, right) => left.index - right.index);
+        deferredRefreshIndexes.clear();
+        deferredRefreshIndexDataGenerations.clear();
+
+        let requiresNewCountSnapshot = false;
+        if (from !== null && fromDataGeneration === itemDataGeneration) {
+          if (from < replayCountLimit) {
+            deferredRefreshPasses++;
+            activeDeferredRefreshFrom = from;
+            let completed = true;
+            try {
+              completed = performRefreshFrom(from, replayCountLimit);
+            } catch (error) {
+              errors = appendCollectedError(errors, error);
+            } finally {
+              activeDeferredRefreshFrom = null;
+            }
+            if (!completed && !disposed && from < count) {
+              queueDeferredRefreshFrom(from);
+            }
+          } else if (from < count) {
+            queueDeferredRefreshFrom(from);
+            requiresNewCountSnapshot = true;
+          }
+        }
+
+        for (const { dataGeneration, index } of indexes) {
+          if (dataGeneration !== itemDataGeneration || index < 0) continue;
+          if (index >= replayCountLimit) {
+            if (index < count) {
+              queueDeferredRefreshIndex(index);
+              requiresNewCountSnapshot = true;
+            }
+            continue;
+          }
+          if (index >= count) continue;
+          if (consumedRefreshIndexes.has(index)) continue;
+          consumedRefreshIndexes.add(index);
+          if (!beginDeferredRefreshAttempt(index)) continue;
+          let outcome: RefreshOutcome | null = null;
+          try {
+            outcome = performRefreshIndex(index);
+          } catch (error) {
+            errors = appendCollectedError(errors, error);
+          } finally {
+            endDeferredRefreshAttempt();
+          }
+          if (
+            outcome === "stale" &&
+            !disposed &&
+            index < count &&
+            (deferredRefreshAttempts.get(index) ?? 0) <
+              MAX_DEFERRED_REFRESH_ATTEMPTS
+          ) {
+            queueDeferredRefreshIndex(index);
+          }
+        }
+        if (requiresNewCountSnapshot) break;
+      }
+    } finally {
+      consumedRefreshIndexes.clear();
+      deferredRefreshAttempts.clear();
+      activeDeferredRefreshIndex = null;
+      activeDeferredRefreshFrom = null;
+      deferredRefreshPasses = 0;
+      drainingDeferredRefreshes = false;
+    }
+    try {
+      reconcileInterruptedRender();
+    } catch (error) {
+      errors = appendCollectedError(errors, error);
+    }
+    if (errors) {
+      throwCollectedErrors(errors, "multiple deferred refreshes failed");
+    }
+  }
+
+  function refreshIndexInTransaction(
+    index: number,
+    generation: number,
+  ): RefreshOutcome {
+    const targetIndex = Math.floor(index);
+    if (
+      !itemTransactionIsCurrent(generation) ||
+      !Number.isFinite(targetIndex) ||
+      targetIndex < 0 ||
+      targetIndex >= count
+    ) {
+      return "stale";
+    }
+    if (pendingItemBuilds.has(targetIndex)) return "stale";
+
+    pendingItemBuilds.add(targetIndex);
+    try {
+      const previous = mounted.get(targetIndex);
+      if (!previous) {
+        const height = measureUnmountedItem(targetIndex);
+        // Measurement teardown may itself update or dispose the host. Deliver it
+        // before accepting the sampled height, then validate numeric-index
+        // identity again because the API intentionally has no stable item key.
+        const teardownDelivered = drainPostCommitTasks();
+        if (
+          !teardownDelivered ||
+          !itemTransactionIsCurrent(generation) ||
+          targetIndex >= count ||
+          mounted.has(targetIndex) ||
+          deferredRefreshIndexes.has(targetIndex)
+        ) {
+          return "stale";
+        }
+        commitExplicitMeasurement(targetIndex, height);
+        return "measured";
+      }
+
+      const next = buildItem(targetIndex);
+      next.dataset.index = String(targetIndex);
+      if (
+        !itemTransactionIsCurrent(generation) ||
+        mounted.get(targetIndex) !== previous
+      ) {
+        releaseItems([{ index: targetIndex, element: next }]);
+        return "stale";
+      }
+
+      prepareItem(targetIndex, next);
+      deletePendingMeasurement(targetIndex);
+      itemResizeObserver.observe(next);
+      previous.replaceWith(next);
+      itemResizeObserver.unobserve(previous);
+      mounted.set(targetIndex, next);
+      mountedPlaceholders.delete(targetIndex);
+      discardItems([{ index: targetIndex, element: previous }]);
+      return "refreshed";
+    } finally {
+      pendingItemBuilds.delete(targetIndex);
+    }
+  }
+
+  function performRefreshIndex(
+    targetIndex: number,
+    queueDirectRetry = false,
+  ): RefreshOutcome {
+    if (disposed || targetIndex < 0 || targetIndex >= count) return "stale";
+    const generation = ++itemIdentityGeneration;
+    const dataGeneration = itemDataGeneration;
+    return runWithPostCommitDrain(() => {
+      const outcome = refreshIndexInTransaction(targetIndex, generation);
+      if (
+        outcome === "stale" &&
+        queueDirectRetry &&
+        itemDataGeneration === dataGeneration &&
+        !hasDeferredRefreshes()
+      ) {
+        queueDeferredRefreshIndex(targetIndex);
+      }
+      if (outcome === "refreshed" && !hasDeferredRefreshes()) {
+        queuePostCommitCallback(() => {
+          if (itemTransactionIsCurrent(generation)) emitViewportChange();
+        });
+      }
+      return outcome;
+    });
+  }
+
   function refreshIndex(index: number): void {
+    if (disposed) return;
     const targetIndex = Math.floor(index);
     if (
       !Number.isFinite(targetIndex) ||
@@ -1945,30 +2827,112 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     ) {
       return;
     }
-
-    const previous = mounted.get(targetIndex);
-    if (!previous) {
-      commitExplicitMeasurement(targetIndex, measureUnmountedItem(targetIndex));
+    if (
+      drainingDeferredInternalWork ||
+      drainingDeferredRefreshes ||
+      drainingPostCommitTasks ||
+      layoutTransactionDepth > 0 ||
+      pendingItemBuilds.size > 0
+    ) {
+      queueDeferredRefreshIndex(targetIndex);
       return;
     }
+    performRefreshIndex(targetIndex, true);
+  }
 
-    const next = prepareItem(targetIndex, buildItem(targetIndex));
-    itemResizeObserver.observe(next);
-    previous.replaceWith(next);
-    itemResizeObserver.unobserve(previous);
-    notifyDestroyItem(targetIndex, previous);
-    mounted.set(targetIndex, next);
-    mountedPlaceholders.delete(targetIndex);
-    emitViewportChange();
+  function performRefreshFrom(
+    from: number,
+    endExclusive = count,
+    queueDirectRetry = false,
+  ): boolean {
+    if (disposed || from < 0 || from >= count) return true;
+    const generation = ++itemIdentityGeneration;
+    const dataGeneration = itemDataGeneration;
+    removePendingMeasurementsAtOrBeyond(from);
+    // Snapshot the keys: each refresh replaces a mounted element in place
+    // (same key), so iterating a copy is safe and only the suffix is rebuilt.
+    return runWithPostCommitDrain(() => {
+      let refreshed = false;
+      let stale = false;
+      const mountedIndexes = Array.from(mounted.keys()).sort(
+        (left, right) => left - right,
+      );
+      for (const mountedIndex of mountedIndexes) {
+        if (!itemTransactionIsCurrent(generation)) break;
+        if (mountedIndex >= from && mountedIndex < endExclusive) {
+          let replayAttempt = false;
+          let deferredExact = false;
+          let rowRefreshed = false;
+          let rowCompleted = false;
+          if (drainingDeferredRefreshes) {
+            const deferredExactDataGeneration =
+              deferredRefreshIndexDataGenerations.get(mountedIndex);
+            deferredExact =
+              deferredRefreshIndexes.delete(mountedIndex) &&
+              deferredExactDataGeneration === itemDataGeneration;
+            deferredRefreshIndexDataGenerations.delete(mountedIndex);
+            replayAttempt = beginDeferredRefreshAttempt(mountedIndex);
+            if (!replayAttempt) continue;
+          }
+          try {
+            const outcome = refreshIndexInTransaction(mountedIndex, generation);
+            rowRefreshed = outcome === "refreshed";
+            rowCompleted = outcome !== "stale";
+            stale = !rowCompleted || stale;
+            refreshed = rowRefreshed || refreshed;
+            if (rowCompleted && drainingDeferredRefreshes) {
+              consumedRefreshIndexes.add(mountedIndex);
+            }
+          } finally {
+            if (replayAttempt) endDeferredRefreshAttempt();
+            if (
+              deferredExact &&
+              !rowCompleted &&
+              !disposed &&
+              mountedIndex < count &&
+              (deferredRefreshAttempts.get(mountedIndex) ?? 0) <
+                MAX_DEFERRED_REFRESH_ATTEMPTS
+            ) {
+              queueDeferredRefreshIndex(mountedIndex);
+            }
+          }
+        }
+      }
+      if (refreshed && !hasDeferredRefreshes()) {
+        queuePostCommitCallback(() => {
+          if (itemTransactionIsCurrent(generation)) emitViewportChange();
+        });
+      }
+      const completed = !stale && itemTransactionIsCurrent(generation);
+      if (
+        !completed &&
+        queueDirectRetry &&
+        itemDataGeneration === dataGeneration &&
+        !hasDeferredRefreshes()
+      ) {
+        queueDeferredRefreshFrom(from);
+      }
+      return completed;
+    });
   }
 
   function refreshFrom(index: number): void {
-    const from = Math.floor(index);
-    // Snapshot the keys: refreshIndex replaces a mounted element in place
-    // (same key), so iterating a copy is safe and only the suffix is rebuilt.
-    for (const mountedIndex of Array.from(mounted.keys())) {
-      if (mountedIndex >= from) refreshIndex(mountedIndex);
+    if (disposed) return;
+    const requestedFrom = Math.floor(index);
+    if (!Number.isFinite(requestedFrom)) return;
+    const from = Math.max(0, requestedFrom);
+    if (from >= count) return;
+    if (
+      drainingDeferredInternalWork ||
+      drainingDeferredRefreshes ||
+      drainingPostCommitTasks ||
+      layoutTransactionDepth > 0 ||
+      pendingItemBuilds.size > 0
+    ) {
+      queueDeferredRefreshFrom(from);
+      return;
     }
+    performRefreshFrom(from, count, true);
   }
 
   function refreshMounted(): void {
@@ -1980,17 +2944,16 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     const nextMounted = new Map<number, HTMLElement>();
     const nextMountedPlaceholders = new Set<number>();
+    const removedItems: ItemRecord[] = [];
     for (const [index, element] of mounted) {
       if (index < removedBefore) {
-        recycleOrDiscard(index, element);
-        mountedPlaceholders.delete(index);
+        removedItems.push({ index, element });
         continue;
       }
 
       const nextIndex = index - removedBefore + addedBefore;
       if (nextIndex < 0 || nextIndex >= count) {
-        recycleOrDiscard(index, element);
-        mountedPlaceholders.delete(index);
+        removedItems.push({ index, element });
         continue;
       }
 
@@ -2004,16 +2967,26 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     mounted = nextMounted;
     mountedPlaceholders = nextMountedPlaceholders;
+    releaseItems(removedItems);
   }
 
   function flushDeferredLayoutUpdates(): boolean {
-    if (deferredLayoutUpdates.length === 0) return false;
+    if (disposed || deferredLayoutUpdates.length === 0) return false;
 
-    const updates = deferredLayoutUpdates.splice(0);
-    for (const update of updates) {
-      applyLayoutUpdate(update);
+    const errors: unknown[] = [];
+    let flushed = false;
+    while (!disposed && deferredLayoutUpdates.length > 0) {
+      const update = deferredLayoutUpdates.shift();
+      if (!update) continue;
+      flushed = true;
+      try {
+        applyLayoutUpdate(update);
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    return true;
+    throwCollectedErrors(errors, "multiple deferred layout updates failed");
+    return flushed;
   }
 
   function shouldDeferLayoutUpdate(update: VirtualListLayoutUpdate): boolean {
@@ -2029,81 +3002,130 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function applyLayoutUpdate(update: VirtualListLayoutUpdate = {}): void {
-    if (update.apply?.() === false) return;
-
-    ensureReachBoundarySlots();
-    const nextCount = nonNegativeInteger(getCount());
-    const addedBefore = normalizedCountShift(update.addedBefore, nextCount);
-    const removedBefore = normalizedCountShift(update.removedBefore, count);
-    const previousScrollTop = logicalScrollTop();
-    const previousTopSlotHeight = topSlotHeight();
-    const hasSlotUpdate =
-      update.topSlot !== undefined ||
-      update.bottomSlot !== undefined ||
-      update.placeholderSlot !== undefined;
-    const shouldRefreshSizes =
-      !hasSlotUpdate ||
-      nextCount !== count ||
-      addedBefore > 0 ||
-      removedBefore > 0;
-    const isWindowShift = addedBefore > 0 || removedBefore > 0;
-    applyBoundarySlotUpdate("top", update.topSlot);
-    applyBoundarySlotUpdate("bottom", update.bottomSlot);
-    applyPlaceholderSlotUpdate(update.placeholderSlot);
-    const beforeHeightDelta = shouldRefreshSizes
-      ? fillSizes(nextCount, addedBefore, removedBefore)
-      : 0;
-    count = nextCount;
-
-    if (isWindowShift) {
-      measurementQueue.clear();
-      if (stickyIndex !== null) {
-        const nextStickyIndex = stickyIndex + addedBefore - removedBefore;
-        stickyIndex =
-          count > 0 && nextStickyIndex >= 0 && nextStickyIndex < count
-            ? nextStickyIndex
+    if (disposed) return;
+    const generation = ++itemIdentityGeneration;
+    const hasHostMutation = update.apply !== undefined;
+    runLayoutTransaction(() => {
+      if (update.apply) {
+        const previousDataGeneration = itemDataGeneration;
+        const previousDeferredRefreshFrom =
+          deferredRefreshFromDataGeneration === previousDataGeneration
+            ? deferredRefreshFrom
             : null;
-      }
-    } else {
-      measurementQueue.removeAtOrBeyond(count);
-    }
-
-    recomputeTailGap();
-    syncContentHeight();
-    const topSlotDelta =
-      addedBefore > 0 || removedBefore > 0
-        ? topSlotHeight() - previousTopSlotHeight
-        : 0;
-    const nextScrollTop = previousScrollTop + beforeHeightDelta + topSlotDelta;
-    const hasScrollTarget =
-      Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
-
-    if (isWindowShift) {
-      reindexMounted(addedBefore, removedBefore);
-    } else {
-      for (const [index, element] of mounted) {
-        if (index >= count) {
-          recycleOrDiscard(index, element);
-          mounted.delete(index);
-          mountedPlaceholders.delete(index);
+        const mutationDataGeneration = previousDataGeneration + 1;
+        itemDataGeneration = mutationDataGeneration;
+        if (update.apply() === false) {
+          if (itemDataGeneration === mutationDataGeneration) {
+            itemDataGeneration = previousDataGeneration;
+            retagDeferredRefreshes(
+              mutationDataGeneration,
+              previousDataGeneration,
+            );
+            if (previousDeferredRefreshFrom !== null) {
+              deferredRefreshFrom =
+                deferredRefreshFrom === null
+                  ? previousDeferredRefreshFrom
+                  : Math.min(deferredRefreshFrom, previousDeferredRefreshFrom);
+              deferredRefreshFromDataGeneration = previousDataGeneration;
+            }
+          }
+          return;
         }
       }
-    }
-    if (hasScrollTarget) {
-      setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
-    }
-    // Defer the render when re-entering from a change callback (no synchronous
-    // render inside the app's handler) or after a scroll write, whose scroll
-    // event lands next frame anyway; otherwise render in place.
-    if (hasScrollTarget || emittingChangeCallback) {
-      scheduleRender();
-    } else {
-      renderNow(logicalScrollTop());
-    }
-    update.after?.();
+      if (!itemTransactionIsCurrent(generation)) return;
+
+      ensureReachBoundarySlots();
+      const previousCount = count;
+      const nextCount = nonNegativeInteger(getCount());
+      if (!itemTransactionIsCurrent(generation)) return;
+      const addedBefore = normalizedCountShift(update.addedBefore, nextCount);
+      const removedBefore = normalizedCountShift(update.removedBefore, count);
+      const previousScrollTop = logicalScrollTop();
+      const previousTopSlotHeight = topSlotHeight();
+      const hasSlotUpdate =
+        update.topSlot !== undefined ||
+        update.bottomSlot !== undefined ||
+        update.placeholderSlot !== undefined;
+      const shouldRefreshSizes =
+        !hasSlotUpdate ||
+        nextCount !== count ||
+        addedBefore > 0 ||
+        removedBefore > 0;
+      const isWindowShift = addedBefore > 0 || removedBefore > 0;
+      applyBoundarySlotUpdate("top", update.topSlot, generation);
+      if (!itemTransactionIsCurrent(generation)) return;
+      applyBoundarySlotUpdate("bottom", update.bottomSlot, generation);
+      if (!itemTransactionIsCurrent(generation)) return;
+      applyPlaceholderSlotUpdate(update.placeholderSlot);
+      if (!itemTransactionIsCurrent(generation)) return;
+      const beforeHeightDelta = shouldRefreshSizes
+        ? fillSizes(nextCount, addedBefore, removedBefore, generation)
+        : 0;
+      if (beforeHeightDelta === null || !itemTransactionIsCurrent(generation)) {
+        return;
+      }
+      count = nextCount;
+
+      if (isWindowShift || (hasHostMutation && nextCount === previousCount)) {
+        clearPendingMeasurements();
+        if (isWindowShift && stickyIndex !== null) {
+          const nextStickyIndex = stickyIndex + addedBefore - removedBefore;
+          stickyIndex =
+            count > 0 && nextStickyIndex >= 0 && nextStickyIndex < count
+              ? nextStickyIndex
+              : null;
+        }
+      } else {
+        removePendingMeasurementsAtOrBeyond(count);
+      }
+
+      recomputeTailGap();
+      syncContentHeight();
+      const topSlotDelta =
+        addedBefore > 0 || removedBefore > 0
+          ? topSlotHeight() - previousTopSlotHeight
+          : 0;
+      const nextScrollTop =
+        previousScrollTop + beforeHeightDelta + topSlotDelta;
+      const hasScrollTarget =
+        Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
+
+      if (isWindowShift) {
+        reindexMounted(addedBefore, removedBefore);
+      } else {
+        const removedItems: ItemRecord[] = [];
+        for (const [index, element] of mounted) {
+          if (index < count) continue;
+          mounted.delete(index);
+          mountedPlaceholders.delete(index);
+          removedItems.push({ index, element });
+        }
+        releaseItems(removedItems);
+      }
+      if (hasScrollTarget) {
+        setScrollTop(nextScrollTop, PRESERVE_LOGICAL_SCROLL_OFFSET);
+      }
+      // Defer the render when re-entering from a change callback (no synchronous
+      // render inside the app's handler) or after a scroll write, whose scroll
+      // event lands next frame anyway; otherwise render in place.
+      if (hasScrollTarget || emittingChangeCallback) {
+        scheduleRender();
+      } else {
+        renderNow(logicalScrollTop());
+      }
+
+      // A reentrant update starts a newer generation, so the older transaction's
+      // completion callback becomes a no-op when the post-commit FIFO reaches it.
+      if (update.after) {
+        queuePostCommitCallback(() => {
+          if (itemTransactionIsCurrent(generation)) update.after?.();
+        });
+      }
+    });
   }
 
   function syncLayout(update: VirtualListLayoutUpdate = {}): void {
+    if (disposed) return;
     if (shouldDeferLayoutUpdate(update)) {
       deferredLayoutUpdates.push(update);
       return;
@@ -2112,7 +3134,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function setCount(options?: VirtualListSetCountOptions): void {
-    syncLayout(options);
+    syncLayout({ ...options, apply: () => true });
   }
 
   function setBoundarySlot(
@@ -2127,6 +3149,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   function getBoundaryElement(
     boundary: VirtualListBoundary,
   ): HTMLElement | null {
+    if (disposed) return null;
     return currentBoundarySlot(boundary)?.element ?? null;
   }
 
@@ -2135,12 +3158,15 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
   }
 
   function getPlaceholderElement(): HTMLElement | null {
+    if (disposed) return null;
     return placeholderSlot?.element ?? null;
   }
 
-  function invalidateMeasurements(): void {
+  function performMeasurementInvalidation(): boolean {
+    const generation = ++itemIdentityGeneration;
     lastViewportWidth = viewport.clientWidth;
     lastViewportHeight = viewport.clientHeight;
+    const previousNativeScrollTop = viewport.scrollTop;
     const previousScrollTop = logicalScrollTop();
     const previousItemOffset = Math.max(0, previousScrollTop - topSlotHeight());
     const anchorIndex =
@@ -2151,8 +3177,17 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
         : 0;
     const wasAtBottom = nearNativeBottom();
 
-    refillModeledSizes();
+    if (!refillModeledSizes(generation)) return false;
     recomputeTailGap();
+    const nextTotalSize = contentTotalSize();
+    const nextMaxScrollTop = Math.max(0, nextTotalSize - lastViewportHeight);
+    // Shrinking the modeled content can clamp scrollTop as soon as the height
+    // style changes. Record that landing before the browser queues its scroll
+    // echo, or the settle controller mistakes this library-owned clamp for a
+    // user gesture and defers the next interactive layout update indefinitely.
+    if (previousNativeScrollTop > nextMaxScrollTop + measureEpsilon) {
+      scrollSettle.recordProgrammaticScrollTop(nextMaxScrollTop);
+    }
     const totalSize = syncContentHeight();
 
     if (count > 0) {
@@ -2163,6 +3198,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     }
 
     renderNow(logicalScrollTop());
+    return true;
+  }
+
+  function invalidateMeasurements(): void {
+    if (disposed) return;
+    deferredMeasurementInvalidation = true;
+    if (renderDepth === 0) drainDeferredInternalWork();
   }
 
   function isAtNativeScrollBoundary(scrollTop = viewport.scrollTop): boolean {
@@ -2199,6 +3241,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       bottomFollow.isActive() && !scrollSettle.isUserScrollActive(),
     wakeFollowLoop: () => bottomFollow.wake(),
     drain: drainPendingMeasurements,
+    render: () => renderNow(),
   });
 
   const placeholderMode = createPlaceholderModeController({
@@ -2225,7 +3268,8 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     syncContentHeight: () => {
       syncContentHeight();
     },
-    flushMeasurementsNow: () => measurementQueue.flushNow(),
+    flushMeasurementsNow: () =>
+      measurementQueue.flushNow(DEFER_MEASUREMENT_RENDER).needsRender,
     writeScrollTop: (top) => setScrollTop(top, ALLOW_DURING_SCROLL),
     renderNow: () => renderNow(viewport.scrollTop),
     onStopped: () => {
@@ -2239,6 +3283,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     strategy: config.scrollSettleStrategy ?? detectScrollSettleStrategy(),
     measureEpsilon,
     isDisposed: () => disposed,
+    canLoadAtBoundary: (boundary) =>
+      boundary === "top"
+        ? onReachTop !== undefined
+        : onReachBottom !== undefined,
     cancelActiveSmoothScroll: () => {
       activeSmoothScrollCancel?.();
     },
@@ -2248,23 +3296,73 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       clearScrollTopResidual();
     },
     onGestureStarted: () => {
+      if (disposed) return;
       pendingBoundaryArm = needsBoundaryRender;
       onScrollStart?.(getState());
     },
     onGestureSettled: () => {
-      const flushedLayout = flushDeferredLayoutUpdates();
-      const flushedMeasurements = measurementQueue.flushNow();
-      const refreshedPlaceholders = refreshMountedPlaceholders();
-      if (refreshedPlaceholders || (!flushedLayout && !flushedMeasurements)) {
-        renderNow(viewport.scrollTop);
+      if (disposed) return;
+      let errors: unknown[] | null = null;
+      let flushedLayout = false;
+      let flushedMeasurements = false;
+      let refreshedPlaceholders = false;
+      try {
+        flushedLayout = flushDeferredLayoutUpdates();
+      } catch (error) {
+        errors = appendCollectedError(errors, error);
       }
-      onScrollEnd?.(getState());
+      if (!disposed) {
+        try {
+          flushedMeasurements = measurementQueue.flushNow().flushed;
+        } catch (error) {
+          errors = appendCollectedError(errors, error);
+        }
+      }
+      if (!disposed) {
+        try {
+          refreshedPlaceholders = runWithPostCommitDrain(
+            refreshMountedPlaceholders,
+          );
+        } catch (error) {
+          errors = appendCollectedError(errors, error);
+        }
+      }
+      if (!disposed) {
+        try {
+          if (
+            renderFrame ||
+            refreshedPlaceholders ||
+            (!flushedLayout && !flushedMeasurements)
+          ) {
+            renderNow();
+          }
+        } catch (error) {
+          errors = appendCollectedError(errors, error);
+        }
+      }
+      if (!disposed) {
+        try {
+          onScrollEnd?.(getState());
+        } catch (error) {
+          errors = appendCollectedError(errors, error);
+        }
+      }
+      if (errors) {
+        throwCollectedErrors(errors, "scroll-settle completion failed");
+      }
     },
     onGestureReset: () => placeholderMode.clear(),
     onScrollEventObserved: scheduleRender,
     onNativeScrollEndIdle: () => {
       if (mountedPlaceholders.size === 0) return;
-      if (placeholderMode.forceHydrate()) renderNow(logicalScrollTop());
+      const hydrated = runWithPostCommitDrain(() =>
+        placeholderMode.forceHydrate(),
+      );
+      if (disposed) {
+        drainPostCommitTasks();
+        return;
+      }
+      if (hydrated) renderNow(logicalScrollTop());
     },
   });
 
@@ -2278,6 +3376,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return getState();
     },
     invalidateMeasurements,
+    interruptScroll,
     setCount,
     syncLayout,
     setBoundarySlot,
@@ -2288,7 +3387,9 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     scrollToOffset,
     scrollToTop,
     scrollToBottom,
-    followBottom: (options) => bottomFollow.follow(options),
+    followBottom: (options) => {
+      if (!disposed) bottomFollow.follow(options);
+    },
     stopFollowBottom: () => bottomFollow.stop(),
     setStickyIndex,
     getMountedElement,
@@ -2297,27 +3398,55 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     refreshMounted,
     refreshFrom,
     dispose() {
-      disposed = true;
-      if (renderFrame) cancelAnimationFrame(renderFrame);
-      measurementQueue.cancelFlush();
-      placeholderMode.dispose();
-      bottomFollow.stop();
-      scrollSettle.dispose();
-      deferredLayoutUpdates.length = 0;
-      itemResizeObserver.disconnect();
-      viewportResizeObserver.disconnect();
-      itemMeasurer?.dispose();
-      viewport.classList.remove("vl-viewport", "vl-scrollbar");
-      for (const [index, element] of mounted) {
-        notifyDestroyItem(index, element);
-      }
-      for (const element of recyclePool) {
-        notifyDestroyItem(Number(element.dataset.index), element);
-      }
-      recyclePool.length = 0;
-      content.remove();
-      mounted.clear();
-      mountedPlaceholders.clear();
+      if (disposed) return;
+      runWithPostCommitDrain(() => {
+        disposed = true;
+        itemIdentityGeneration++;
+        activeSmoothScrollCancel?.();
+        activeSmoothScrollCancel = null;
+        activeSmoothScrollTarget = null;
+        if (renderFrame) {
+          cancelAnimationFrame(renderFrame);
+          renderFrame = 0;
+        }
+        measurementQueue.cancelFlush();
+        clearPendingMeasurements();
+        placeholderMode.dispose();
+        bottomFollow.stop();
+        scrollSettle.dispose();
+        deferredLayoutUpdates.length = 0;
+        itemResizeObserver.disconnect();
+        viewportResizeObserver.disconnect();
+        itemMeasurer?.dispose();
+        itemMeasurer = null;
+
+        const ownedItems: ItemRecord[] = Array.from(
+          mounted,
+          ([index, element]) => ({ index, element }),
+        );
+        for (const element of recyclePool) {
+          ownedItems.push({
+            index: Number(element.dataset.index),
+            element,
+          });
+        }
+        mounted = new Map();
+        mountedPlaceholders = new Set();
+        pendingItemBuilds.clear();
+        deferredRefreshIndexes.clear();
+        deferredRefreshIndexDataGenerations.clear();
+        deferredRefreshFrom = null;
+        deferredRefreshFromDataGeneration = null;
+        deferredMeasurementInvalidation = false;
+        renderInterruptedByInternalWork = false;
+        recyclePool.length = 0;
+        rangeStart = 0;
+        rangeEnd = 0;
+
+        viewport.classList.remove("vl-viewport", "vl-scrollbar");
+        content.remove();
+        discardItems(ownedItems);
+      });
     },
   };
 }

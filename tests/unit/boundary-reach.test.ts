@@ -20,6 +20,7 @@ interface ReachHarness {
   onReachTop: ReturnType<typeof vi.fn>;
   onReachBottom: ReturnType<typeof vi.fn>;
   setCountValue: (next: number) => void;
+  setBuildHook: (hook: ((index: number) => void) | null) => void;
   /** User scroll: move the mocked scrollTop, dispatch scroll, run the frame. */
   scrollTo: (top: number) => void;
   /** Finish the user gesture: scrollend plus the settle cooldown. */
@@ -62,6 +63,7 @@ function mountReachList(initialCount = 100): ReachHarness {
   };
 
   let count = initialCount;
+  let buildHook: ((index: number) => void) | null = null;
   const onReachTop = vi.fn();
   const onReachBottom = vi.fn();
   const list = createVirtualList({
@@ -71,6 +73,7 @@ function mountReachList(initialCount = 100): ReachHarness {
     buildItem: (index) => {
       const element = document.createElement("div");
       element.textContent = `item ${index}`;
+      buildHook?.(index);
       return element;
     },
     scrollSettleStrategy: "default",
@@ -85,6 +88,9 @@ function mountReachList(initialCount = 100): ReachHarness {
     onReachBottom,
     setCountValue: (next) => {
       count = next;
+    },
+    setBuildHook: (hook) => {
+      buildHook = hook;
     },
     scrollTo: (top) => {
       viewport.scrollTop = top;
@@ -134,6 +140,21 @@ describe("boundary reach", () => {
     expect(harness.onReachTop).not.toHaveBeenCalled();
   });
 
+  it("fires bottom reach after a newly built edge row queues a refresh", () => {
+    const harness = mountReachList();
+    let queuedRefresh = false;
+    harness.setBuildHook((index) => {
+      if (queuedRefresh) return;
+      queuedRefresh = true;
+      harness.list.refreshIndex(index);
+    });
+
+    harness.scrollTo(harness.maxScrollTop());
+
+    expect(queuedRefresh).toBe(true);
+    expect(harness.onReachBottom).toHaveBeenCalledTimes(1);
+  });
+
   it("re-arms when the user scrolls away and fires again on the next approach", () => {
     const harness = mountReachList();
 
@@ -155,6 +176,24 @@ describe("boundary reach", () => {
     expect(harness.onReachTop).not.toHaveBeenCalled();
 
     harness.scrollTo(0);
+    expect(harness.onReachTop).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an armed top reach when boundary construction queues a refresh", () => {
+    const harness = mountReachList();
+
+    harness.scrollTo(500);
+    harness.settle();
+    harness.viewport.scrollTop = 0;
+    harness.list.setBoundarySlot("top", {
+      key: "loading-top",
+      height: 1,
+      build: () => {
+        harness.list.refreshIndex(0);
+        return document.createElement("div");
+      },
+    });
+
     expect(harness.onReachTop).toHaveBeenCalledTimes(1);
   });
 

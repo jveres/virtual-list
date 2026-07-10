@@ -16,6 +16,7 @@ interface HostState {
   userScrollActive: boolean;
   itemCount: number;
   followDrains: boolean;
+  drainChangesLayout: boolean;
 }
 
 function makeQueue(overrides: Partial<HostState> = {}): {
@@ -23,16 +24,19 @@ function makeQueue(overrides: Partial<HostState> = {}): {
   state: HostState;
   drained: Map<number, number>[];
   wakes: () => number;
+  renders: () => number;
 } {
   const state: HostState = {
     disposed: false,
     userScrollActive: false,
     itemCount: 100,
     followDrains: false,
+    drainChangesLayout: true,
     ...overrides,
   };
   const drained: Map<number, number>[] = [];
   const wakeFollowLoop = vi.fn();
+  const render = vi.fn();
   const host: MeasurementQueueHost = {
     isDisposed: () => state.disposed,
     isUserScrollActive: () => state.userScrollActive,
@@ -41,14 +45,16 @@ function makeQueue(overrides: Partial<HostState> = {}): {
     wakeFollowLoop,
     drain: (pending) => {
       drained.push(new Map(pending));
-      pending.clear();
+      return state.drainChangesLayout;
     },
+    render,
   };
   return {
     queue: createMeasurementQueue(host),
     state,
     drained,
     wakes: () => wakeFollowLoop.mock.calls.length,
+    renders: () => render.mock.calls.length,
   };
 }
 
@@ -83,6 +89,8 @@ describe("measurement queue", () => {
     queue.queue(0, Number.NaN);
     queue.queue(1, 0);
     queue.queue(-1, 50);
+    queue.queue(Number.NaN, 50);
+    queue.queue(1.5, 50);
     queue.queue(10, 50);
     vi.advanceTimersByTime(17);
     expect(drained).toHaveLength(0);
@@ -94,30 +102,82 @@ describe("measurement queue", () => {
     queue.queue(1, 50);
     vi.advanceTimersByTime(100);
     expect(drained).toHaveLength(0);
-    expect(queue.flushNow()).toBe(false); // still scrolling
+    expect(queue.flushNow()).toEqual({
+      flushed: false,
+      needsRender: false,
+    });
 
     state.userScrollActive = false;
-    expect(queue.flushNow()).toBe(true); // gesture settled: drains now
+    expect(queue.flushNow()).toEqual({ flushed: true, needsRender: true });
     expect(drained).toHaveLength(1);
   });
 
   it("hands off to an active follow loop instead of draining", () => {
     const { queue, drained, wakes } = makeQueue({ followDrains: true });
     queue.queue(1, 50);
-    vi.advanceTimersByTime(17);
     expect(drained).toHaveLength(0);
     expect(wakes()).toBe(1);
     expect(queue.hasPending()).toBe(true); // the loop drains via flushNow
+    vi.advanceTimersByTime(17);
+    expect(wakes()).toBe(1); // no redundant queue frame was left behind
+  });
+
+  it("should hand off when bottom-follow starts after scheduling", () => {
+    const { queue, state, drained, wakes } = makeQueue();
+    queue.queue(1, 50);
+    state.followDrains = true;
+
+    vi.advanceTimersByTime(17);
+
+    expect(drained).toHaveLength(0);
+    expect(wakes()).toBe(1);
+    expect(queue.hasPending()).toBe(true);
+  });
+
+  it("should let a follow frame defer the queue-owned render", () => {
+    const { queue, renders } = makeQueue();
+    queue.queue(1, 50);
+
+    expect(queue.flushNow({ deferRender: true })).toEqual({
+      flushed: true,
+      needsRender: true,
+    });
+    expect(renders()).toBe(0);
+  });
+
+  it("should skip rendering when a batch does not change row geometry", () => {
+    const { queue, renders } = makeQueue({ drainChangesLayout: false });
+    queue.queue(1, 50);
+    expect(queue.flushNow()).toEqual({ flushed: true, needsRender: false });
+    expect(renders()).toBe(0);
   });
 
   it("flushNow drains synchronously and cancels the scheduled frame", () => {
     const { queue, drained } = makeQueue();
     queue.queue(1, 50);
-    expect(queue.flushNow()).toBe(true);
+    expect(queue.flushNow()).toEqual({ flushed: true, needsRender: true });
     expect(drained).toHaveLength(1);
     vi.advanceTimersByTime(50); // the canceled frame must not double-drain
     expect(drained).toHaveLength(1);
-    expect(queue.flushNow()).toBe(false); // nothing pending
+    expect(queue.flushNow()).toEqual({
+      flushed: false,
+      needsRender: false,
+    });
+  });
+
+  it("keeps the scheduled frame when flushNow is blocked by scrolling", () => {
+    const { queue, state, drained } = makeQueue();
+    queue.queue(1, 50);
+    state.userScrollActive = true;
+
+    expect(queue.flushNow()).toEqual({
+      flushed: false,
+      needsRender: false,
+    });
+
+    state.userScrollActive = false;
+    vi.advanceTimersByTime(17);
+    expect(drained).toEqual([new Map([[1, 50]])]);
   });
 
   it("supports targeted eviction: delete, removeAtOrBeyond, clear", () => {

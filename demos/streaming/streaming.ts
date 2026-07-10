@@ -732,6 +732,12 @@ function switchMessageVersion(messageId: number, offset: number): void {
   );
   if (nextSelected === parent.selectedChildIndex) return;
 
+  // A version click owns the viewport: stop native momentum and finish any
+  // queued settle transaction before deriving loaded-window indexes. Clearing
+  // cooldown timers alone would leave geometry updates blocked, and a pending
+  // top prepend may change loadedStart while it is being drained here.
+  virtualList.interruptScroll();
+
   // The branch point is this message's spot on the active path. Its navigator is
   // mounted, so it sits inside the loaded window: localBranchIndex >= 0.
   const branchIndex = transcript.findIndex(
@@ -739,6 +745,37 @@ function switchMessageVersion(messageId: number, offset: number): void {
   );
   if (branchIndex < 0) return;
   const localBranchIndex = branchIndex - loadedStart;
+  const nextNode = tree.get(parent.childrenIds[nextSelected] ?? -1);
+  if (!nextNode?.message) return;
+
+  // Regenerated replies at the transcript tail are leaf-for-leaf swaps: row
+  // count and every surrounding identity stay unchanged. Repaint that mounted
+  // row and its already-measured geometry immediately, even if the settle
+  // controller is only cooling down from a recent scroll. This explicit UI
+  // interaction does not need the structural deferral used by boundary loads.
+  const isLoadedLeafSwap =
+    node.childrenIds.length === 0 &&
+    nextNode.childrenIds.length === 0 &&
+    localBranchIndex >= 0 &&
+    localBranchIndex < messages.length &&
+    messages[localBranchIndex]?.id === messageId;
+  if (isLoadedLeafSwap) {
+    parent.selectedChildIndex = nextSelected;
+    nextNode.message.itemHeight = measureMessageHeight(
+      localBranchIndex,
+      nextNode.message,
+    );
+    transcript[branchIndex] = nextNode.message;
+    messages[localBranchIndex] = nextNode.message;
+    virtualList.refreshIndex(localBranchIndex);
+    // The replacement was measured above, so commit its geometry in the same
+    // interaction instead of leaving the surrounding UI behind until the
+    // ResizeObserver queue is allowed to flush.
+    virtualList.invalidateMeasurements();
+    syncDemoState();
+    return;
+  }
+
   const previousTranscriptEnd = transcript.length;
   const previousWindowLength = messages.length;
   const bottomWasLoaded = loadedEnd() >= previousTranscriptEnd;
@@ -762,15 +799,15 @@ function switchMessageVersion(messageId: number, offset: number): void {
     },
     topSlot: boundarySlotFor("top"),
     after: () => {
+      // syncLayout may defer apply() until an active scroll gesture settles.
+      // Rebuild only after messages reflects the selected branch; otherwise
+      // the row keeps the previous version's id and later navigation no-ops.
+      virtualList.refreshFrom(Math.max(0, localBranchIndex));
+      virtualList.invalidateMeasurements();
       updateRenderedBoundarySlots();
       syncDemoState();
     },
   });
-
-  // Rebuild the branch point and everything below; the prefix keeps its DOM.
-  virtualList.refreshFrom(Math.max(0, localBranchIndex));
-  // Reconcile measured heights against the new rows, preserving the anchor.
-  virtualList.invalidateMeasurements();
 }
 
 interface BoundarySlotContext {
@@ -1226,7 +1263,10 @@ function syncScrollButtons(state = virtualList.state): void {
     window.clearTimeout(scrollButtonsTimer);
     scrollButtonsTimer = 0;
   }
-  scrollTopBtn.hidden = state.atTop;
+  // state.atTop is the top of the loaded pixel window, not necessarily the
+  // transcript. Keep the jump visible while older rows still exist so it does
+  // not blink off at the local top and back on after the prepend is anchored.
+  scrollTopBtn.hidden = state.atTop && !canLoadOlderMessages();
   scrollBottomBtn.hidden =
     state.atBottom ||
     scrollTurnInProgress ||
@@ -1715,6 +1755,10 @@ async function handleSend(): Promise<void> {
 bindThemeButtons(refreshTheme);
 
 scrollTopBtn.addEventListener("click", () => {
+  // At the top of a partial loaded window the button stays visible while the
+  // boundary load runs; do not let a redundant click force deferred rows into
+  // a live native gesture through scrollToTop's programmatic flush path.
+  if (virtualList.state.atTop) return;
   void virtualList.scrollToTop({ behavior: "smooth" }).then(() => {
     syncDemoState();
   });
