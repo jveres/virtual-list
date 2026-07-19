@@ -485,46 +485,46 @@ describe("chromium-wheel strategy", () => {
   });
 });
 
-describe.each([
-  "firefox-wheel",
-  "safari-wheel",
-] as const)("%s strategy", (strategy) => {
-  it("drops an early scrollend while the wheel glide is still moving", () => {
-    const harness = mountScrollList(strategy);
+describe.each(["firefox-wheel", "safari-wheel"] as const)(
+  "%s strategy",
+  (strategy) => {
+    it("drops an early scrollend while the wheel glide is still moving", () => {
+      const harness = mountScrollList(strategy);
 
-    harness.wheel(100);
-    harness.scrollTo(100);
-    harness.scrollEnd(); // engine fires scrollend before the glide settles
+      harness.wheel(100);
+      harness.scrollTo(100);
+      harness.scrollEnd(); // engine fires scrollend before the glide settles
 
-    vi.advanceTimersByTime(50);
-    harness.scrollTo(200); // glide keeps moving: pending settle must drop
-    harness.wheel(100);
+      vi.advanceTimersByTime(50);
+      harness.scrollTo(200); // glide keeps moving: pending settle must drop
+      harness.wheel(100);
 
-    vi.advanceTimersByTime(200);
-    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(200);
+      expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    // Wheel idle, then the scroll-end fallback, then the cooldown.
-    vi.advanceTimersByTime(300);
-    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
-    expect(harness.onScrollStart).toHaveBeenCalledTimes(1);
-  });
+      // Wheel idle, then the scroll-end fallback, then the cooldown.
+      vi.advanceTimersByTime(300);
+      expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+      expect(harness.onScrollStart).toHaveBeenCalledTimes(1);
+    });
 
-  it("cancels a wheel tap that never moves the viewport without emitting scroll end", () => {
-    const harness = mountScrollList(strategy);
+    it("cancels a wheel tap that never moves the viewport without emitting scroll end", () => {
+      const harness = mountScrollList(strategy);
 
-    harness.viewport.scrollTop = 1000; // mid-list: not an outward boundary tap
-    harness.wheel(1);
-    expect(harness.onScrollStart).toHaveBeenCalledTimes(1);
+      harness.viewport.scrollTop = 1000; // mid-list: not an outward boundary tap
+      harness.wheel(1);
+      expect(harness.onScrollStart).toHaveBeenCalledTimes(1);
 
-    harness.scrollEnd(); // no movement happened
-    vi.advanceTimersByTime(1000);
-    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+      harness.scrollEnd(); // no movement happened
+      vi.advanceTimersByTime(1000);
+      expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    // The machine is idle again: the next real scroll starts a fresh gesture.
-    harness.scrollTo(1200);
-    expect(harness.onScrollStart).toHaveBeenCalledTimes(2);
-  });
-});
+      // The machine is idle again: the next real scroll starts a fresh gesture.
+      harness.scrollTo(1200);
+      expect(harness.onScrollStart).toHaveBeenCalledTimes(2);
+    });
+  },
+);
 
 describe("firefox edge release policy", () => {
   it("uses the generic settle policy at an edge without a load callback", () => {
@@ -618,67 +618,67 @@ describe("firefox edge release policy", () => {
   it.each([
     { boundary: "top", scrollTop: 0, deltaY: -8 },
     { boundary: "bottom", scrollTop: 700, deltaY: 8 },
-  ])("defers the $boundary commit when a re-grab arrives inside the stability window", ({
-    scrollTop: initialScrollTop,
-    deltaY,
-  }) => {
-    const viewport = document.createElement("div");
-    document.body.appendChild(viewport);
-    let scrollTop = initialScrollTop;
-    Object.defineProperties(viewport, {
-      clientHeight: { get: () => 300 },
-      scrollHeight: { get: () => 1_000 },
-      scrollTop: {
-        get: () => scrollTop,
-        set: (next: number) => {
-          scrollTop = Math.max(0, Math.min(700, next));
+  ])(
+    "defers the $boundary commit when a re-grab arrives inside the stability window",
+    ({ scrollTop: initialScrollTop, deltaY }) => {
+      const viewport = document.createElement("div");
+      document.body.appendChild(viewport);
+      let scrollTop = initialScrollTop;
+      Object.defineProperties(viewport, {
+        clientHeight: { get: () => 300 },
+        scrollHeight: { get: () => 1_000 },
+        scrollTop: {
+          get: () => scrollTop,
+          set: (next: number) => {
+            scrollTop = Math.max(0, Math.min(700, next));
+          },
         },
-      },
-    });
+      });
 
-    const settled = vi.fn();
-    const controller = createScrollSettleController({
-      viewport,
-      strategy: "firefox-wheel",
-      measureEpsilon: 0.5,
-      isDisposed: () => false,
-      canLoadAtBoundary: () => true,
-      cancelActiveSmoothScroll: vi.fn(),
-      smoothScrollReachedTarget: () => true,
-      onGestureActivity: vi.fn(),
-      onGestureStarted: vi.fn(),
-      onGestureSettled: settled,
-      onGestureReset: vi.fn(),
-      onScrollEventObserved: vi.fn(),
-      onNativeScrollEndIdle: vi.fn(),
-    });
+      const settled = vi.fn();
+      const controller = createScrollSettleController({
+        viewport,
+        strategy: "firefox-wheel",
+        measureEpsilon: 0.5,
+        isDisposed: () => false,
+        canLoadAtBoundary: () => true,
+        cancelActiveSmoothScroll: vi.fn(),
+        smoothScrollReachedTarget: () => true,
+        onGestureActivity: vi.fn(),
+        onGestureStarted: vi.fn(),
+        onGestureSettled: settled,
+        onGestureReset: vi.fn(),
+        onScrollEventObserved: vi.fn(),
+        onNativeScrollEndIdle: vi.fn(),
+      });
 
-    try {
-      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY }));
-      vi.advanceTimersByTime(150);
-      viewport.dispatchEvent(new Event("scrollend"));
+      try {
+        viewport.dispatchEvent(new WheelEvent("wheel", { deltaY }));
+        vi.advanceTimersByTime(150);
+        viewport.dispatchEvent(new Event("scrollend"));
 
-      // The old 600ms grace committed here. Keep the range stable so a re-grab
-      // in the empirically observed APZ publication window can postpone it.
-      vi.advanceTimersByTime(1_000);
-      expect(settled).not.toHaveBeenCalled();
+        // The old 600ms grace committed here. Keep the range stable so a re-grab
+        // in the empirically observed APZ publication window can postpone it.
+        vi.advanceTimersByTime(1_000);
+        expect(settled).not.toHaveBeenCalled();
 
-      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY }));
-      vi.advanceTimersByTime(1_000);
-      expect(settled).not.toHaveBeenCalled();
+        viewport.dispatchEvent(new WheelEvent("wheel", { deltaY }));
+        vi.advanceTimersByTime(1_000);
+        expect(settled).not.toHaveBeenCalled();
 
-      // The second release reuses the remaining stability quiet time and then
-      // commits atomically on the next frame.
-      viewport.dispatchEvent(new Event("scrollend"));
-      vi.advanceTimersByTime(600);
-      expect(settled).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(17);
-      expect(settled).toHaveBeenCalledTimes(1);
-    } finally {
-      controller.dispose();
-      viewport.remove();
-    }
-  });
+        // The second release reuses the remaining stability quiet time and then
+        // commits atomically on the next frame.
+        viewport.dispatchEvent(new Event("scrollend"));
+        vi.advanceTimersByTime(600);
+        expect(settled).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(17);
+        expect(settled).toHaveBeenCalledTimes(1);
+      } finally {
+        controller.dispose();
+        viewport.remove();
+      }
+    },
+  );
 
   it("keeps an accepted release through a pinned scroll echo before paint", () => {
     const harness = mountScrollList("firefox-wheel", 100, { bottom: true });

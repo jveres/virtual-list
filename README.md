@@ -12,22 +12,36 @@ masonry and justified layouts, and a newspaper/magazine layout.
 
 ## Run the demos
 
-Use the existing Vite setup from this directory. The repo doesn't pin a package
-manager version; use the globally installed `pnpm`.
+Use the existing Vite setup from this directory. The repository links two
+sibling checkouts and doesn't pin a package manager version, so use the globally
+installed `pnpm`.
+
+Keep the repositories under one parent directory:
+
+```text
+parent/
+├── comrak-wasm/
+├── markdown-viewer/
+└── virtual-list/
+```
+
+From `virtual-list`, install and build `markdown-viewer` before installing this
+repository:
 
 ```sh
+pnpm --dir ../markdown-viewer install
 pnpm install
 pnpm run dev
 ```
 
-`markdown-viewer` is a `link:` dependency on a sibling checkout: clone
-[markdown-viewer](https://github.com/jveres/markdown-viewer) next to this
-repository (as `../markdown-viewer`) before running `pnpm install`. The
-`pnpm-workspace.yaml` file approves the `esbuild` and `markdown-viewer`
-install scripts and sets `blockExoticSubdeps: false` so the transitive
-`comrak-wasm` installs under pnpm 11, and the Vite dev server allows
-`../markdown-viewer` in `server.fs` so the wasm binary is served through the
-symlink. The repo doesn't pin `pnpm` or require Corepack.
+`markdown-viewer` links `comrak-wasm` from `../comrak-wasm`, and its `dist/`
+directory isn't tracked. Installing it first creates the distributable files
+that `virtual-list` imports. If you change Rust code or Wasm exports, run
+`pnpm --dir ../comrak-wasm run build` before rebuilding `markdown-viewer`.
+
+The Vite dev server permits both sibling paths so it can serve the nested Wasm
+binary. It prints the local URL without opening a browser automatically. The
+`pnpm-workspace.yaml` file approves only the `esbuild` install script.
 
 Open these pages from the dev server:
 

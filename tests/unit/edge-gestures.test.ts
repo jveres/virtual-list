@@ -298,32 +298,32 @@ describe("fractional-edge gestures", () => {
       dispatch: (harness: EdgeHarness) => harness.wheel(0),
       waitMs: 350,
     },
-  ])("firefox: $trailingEvent cannot shorten the edge stability wait", ({
-    dispatch,
-    waitMs,
-  }) => {
-    const harness = mountEdgeDemo("firefox-wheel");
-    momentumScrollTo(harness, harness.maxScrollTop() - 0.8);
+  ])(
+    "firefox: $trailingEvent cannot shorten the edge stability wait",
+    ({ dispatch, waitMs }) => {
+      const harness = mountEdgeDemo("firefox-wheel");
+      momentumScrollTo(harness, harness.maxScrollTop() - 0.8);
 
-    // Let the async load arrive and remain deferred while the touchpad
-    // gesture is held at the edge, then replay Firefox's mid-hold end.
-    vi.advanceTimersByTime(200);
-    harness.scrollEnd();
-    dispatch(harness);
+      // Let the async load arrive and remain deferred while the touchpad
+      // gesture is held at the edge, then replay Firefox's mid-hold end.
+      vi.advanceTimersByTime(200);
+      harness.scrollEnd();
+      dispatch(harness);
 
-    // Pinned scroll events and neutral wheel jitter used to replace the
-    // protected edge wait with the generic 140ms cooldown, flushing here.
-    vi.advanceTimersByTime(waitMs);
-    expect(harness.applies()).toBe(0);
-    expect(harness.onScrollEnd).not.toHaveBeenCalled();
+      // Pinned scroll events and neutral wheel jitter used to replace the
+      // protected edge wait with the generic 140ms cooldown, flushing here.
+      vi.advanceTimersByTime(waitMs);
+      expect(harness.applies()).toBe(0);
+      expect(harness.onScrollEnd).not.toHaveBeenCalled();
 
-    // A later scrollend is the actual release and may apply the load.
-    harness.scrollEnd();
-    vi.advanceTimersByTime(1700);
-    expect(harness.applies()).toBe(1);
-    expect(harness.list.state.count).toBe(150);
-    expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
-  });
+      // A later scrollend is the actual release and may apply the load.
+      harness.scrollEnd();
+      vi.advanceTimersByTime(1700);
+      expect(harness.applies()).toBe(1);
+      expect(harness.list.state.count).toBe(150);
+      expect(harness.onScrollEnd).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it("firefox: edge chrome growth cannot downgrade a pending release", () => {
     const harness = mountEdgeDemo("firefox-wheel");

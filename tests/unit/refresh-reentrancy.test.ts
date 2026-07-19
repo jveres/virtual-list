@@ -251,45 +251,47 @@ describe("refreshIndex callback reentrancy", () => {
       api: "refreshFrom",
       reenter: (list: VirtualList, index: number) => list.refreshFrom(index),
     },
-  ])("replays a colliding $api after rebuilding a mounted row", ({
-    api,
-    reenter,
-  }) => {
-    const harness = mountReentrantList();
-    const targetIndex = 0;
-    const previous = requireElement(
-      harness.list.getMountedElement(targetIndex),
-      "mounted refresh target",
-    );
-    const rebuiltElements: HTMLElement[] = [];
-    let targetBuilds = 0;
-    harness.setBuildHook((index, element) => {
-      if (index !== targetIndex) return;
-      targetBuilds++;
-      rebuiltElements.push(element);
-      if (targetBuilds === 1) {
-        const next = [...harness.items()];
-        next[targetIndex] = {
-          id: `updated-by-${api}`,
-          measuredHeight: MODELED_HEIGHT,
-        };
-        harness.setItems(next);
-      }
-      reenter(harness.list, targetIndex);
-    });
+  ])(
+    "replays a colliding $api after rebuilding a mounted row",
+    ({ api, reenter }) => {
+      const harness = mountReentrantList();
+      const targetIndex = 0;
+      const previous = requireElement(
+        harness.list.getMountedElement(targetIndex),
+        "mounted refresh target",
+      );
+      const rebuiltElements: HTMLElement[] = [];
+      let targetBuilds = 0;
+      harness.setBuildHook((index, element) => {
+        if (index !== targetIndex) return;
+        targetBuilds++;
+        rebuiltElements.push(element);
+        if (targetBuilds === 1) {
+          const next = [...harness.items()];
+          next[targetIndex] = {
+            id: `updated-by-${api}`,
+            measuredHeight: MODELED_HEIGHT,
+          };
+          harness.setItems(next);
+        }
+        reenter(harness.list, targetIndex);
+      });
 
-    harness.list.refreshIndex(targetIndex);
+      harness.list.refreshIndex(targetIndex);
 
-    const mounted = requireElement(
-      harness.list.getMountedElement(targetIndex),
-      "replayed refresh target",
-    );
-    expect(targetBuilds).toBe(2);
-    expect(mounted).toBe(rebuiltElements[1]);
-    expect(mounted.dataset.identity).toBe(`updated-by-${api}`);
-    expect(destroyCountFor(harness.destroyCalls, previous)).toBe(1);
-    expect(destroyCountFor(harness.destroyCalls, rebuiltElements[0]!)).toBe(1);
-  });
+      const mounted = requireElement(
+        harness.list.getMountedElement(targetIndex),
+        "replayed refresh target",
+      );
+      expect(targetBuilds).toBe(2);
+      expect(mounted).toBe(rebuiltElements[1]);
+      expect(mounted.dataset.identity).toBe(`updated-by-${api}`);
+      expect(destroyCountFor(harness.destroyCalls, previous)).toBe(1);
+      expect(destroyCountFor(harness.destroyCalls, rebuiltElements[0]!)).toBe(
+        1,
+      );
+    },
+  );
 
   it.each([
     {
@@ -300,54 +302,54 @@ describe("refreshIndex callback reentrancy", () => {
       api: "refreshFrom",
       reenter: (list: VirtualList, index: number) => list.refreshFrom(index),
     },
-  ])("replays a colliding $api after measuring an offscreen row", ({
-    api,
-    reenter,
-  }) => {
-    const harness = mountReentrantList();
-    const changesBeforeRefresh = harness.rangeChanges.length;
-    const temporaryElements: HTMLElement[] = [];
-    let targetBuilds = 0;
-    harness.setBuildHook((index, element) => {
-      if (index !== OFFSCREEN_INDEX) return;
-      targetBuilds++;
-      temporaryElements.push(element);
-      if (targetBuilds === 1) {
-        const next = [...harness.items()];
-        next[OFFSCREEN_INDEX] = {
-          id: `updated-by-${api}`,
-          measuredHeight: UPDATED_MEASURED_HEIGHT,
-        };
-        harness.setItems(next);
+  ])(
+    "replays a colliding $api after measuring an offscreen row",
+    ({ api, reenter }) => {
+      const harness = mountReentrantList();
+      const changesBeforeRefresh = harness.rangeChanges.length;
+      const temporaryElements: HTMLElement[] = [];
+      let targetBuilds = 0;
+      harness.setBuildHook((index, element) => {
+        if (index !== OFFSCREEN_INDEX) return;
+        targetBuilds++;
+        temporaryElements.push(element);
+        if (targetBuilds === 1) {
+          const next = [...harness.items()];
+          next[OFFSCREEN_INDEX] = {
+            id: `updated-by-${api}`,
+            measuredHeight: UPDATED_MEASURED_HEIGHT,
+          };
+          harness.setItems(next);
+        }
+        reenter(harness.list, OFFSCREEN_INDEX);
+      });
+
+      harness.list.refreshIndex(OFFSCREEN_INDEX);
+
+      expect(targetBuilds).toBe(2);
+      expect(harness.list.state.measuredCount).toBe(1);
+      expect(modeledHeightAt(harness.list, OFFSCREEN_INDEX)).toBe(
+        UPDATED_MEASURED_HEIGHT,
+      );
+      expect(harness.list.getMountedElement(OFFSCREEN_INDEX)).toBeNull();
+      for (const element of temporaryElements) {
+        expect(destroyCountFor(harness.destroyCalls, element)).toBe(1);
       }
-      reenter(harness.list, OFFSCREEN_INDEX);
-    });
-
-    harness.list.refreshIndex(OFFSCREEN_INDEX);
-
-    expect(targetBuilds).toBe(2);
-    expect(harness.list.state.measuredCount).toBe(1);
-    expect(modeledHeightAt(harness.list, OFFSCREEN_INDEX)).toBe(
-      UPDATED_MEASURED_HEIGHT,
-    );
-    expect(harness.list.getMountedElement(OFFSCREEN_INDEX)).toBeNull();
-    for (const element of temporaryElements) {
-      expect(destroyCountFor(harness.destroyCalls, element)).toBe(1);
-    }
-    const refreshChanges = harness.rangeChanges.slice(changesBeforeRefresh);
-    const staleTotalSize =
-      harness.items().length * MODELED_HEIGHT +
-      MEASURED_HEIGHT -
-      MODELED_HEIGHT;
-    expect(
-      refreshChanges.some((state) => state.totalSize === staleTotalSize),
-    ).toBe(false);
-    expect(refreshChanges.at(-1)?.totalSize).toBe(
-      harness.items().length * MODELED_HEIGHT +
-        UPDATED_MEASURED_HEIGHT -
-        MODELED_HEIGHT,
-    );
-  });
+      const refreshChanges = harness.rangeChanges.slice(changesBeforeRefresh);
+      const staleTotalSize =
+        harness.items().length * MODELED_HEIGHT +
+        MEASURED_HEIGHT -
+        MODELED_HEIGHT;
+      expect(
+        refreshChanges.some((state) => state.totalSize === staleTotalSize),
+      ).toBe(false);
+      expect(refreshChanges.at(-1)?.totalSize).toBe(
+        harness.items().length * MODELED_HEIGHT +
+          UPDATED_MEASURED_HEIGHT -
+          MODELED_HEIGHT,
+      );
+    },
+  );
 
   it("replays a queued refresh after the owning build fails", () => {
     const harness = mountReentrantList();
@@ -616,36 +618,37 @@ describe("refreshIndex callback reentrancy", () => {
       api: "refreshFrom",
       reenter: (list: VirtualList) => list.refreshFrom(0),
     },
-  ])("replays a finite $api back-edge from a later suffix row", ({
-    reenter,
-  }) => {
-    const harness = mountReentrantList();
-    let firstRowBuilds = 0;
-    let backEdgeQueued = false;
-    harness.setBuildHook((index) => {
-      if (index === 0) {
-        firstRowBuilds++;
-        if (firstRowBuilds === 1) harness.list.refreshFrom(0);
-        return;
-      }
-      if (index !== 1 || firstRowBuilds < 2 || backEdgeQueued) return;
-      backEdgeQueued = true;
-      const next = [...harness.items()];
-      next[0] = {
-        id: "updated-from-later-row",
-        measuredHeight: MODELED_HEIGHT,
-      };
-      harness.setItems(next);
-      reenter(harness.list);
-    });
+  ])(
+    "replays a finite $api back-edge from a later suffix row",
+    ({ reenter }) => {
+      const harness = mountReentrantList();
+      let firstRowBuilds = 0;
+      let backEdgeQueued = false;
+      harness.setBuildHook((index) => {
+        if (index === 0) {
+          firstRowBuilds++;
+          if (firstRowBuilds === 1) harness.list.refreshFrom(0);
+          return;
+        }
+        if (index !== 1 || firstRowBuilds < 2 || backEdgeQueued) return;
+        backEdgeQueued = true;
+        const next = [...harness.items()];
+        next[0] = {
+          id: "updated-from-later-row",
+          measuredHeight: MODELED_HEIGHT,
+        };
+        harness.setItems(next);
+        reenter(harness.list);
+      });
 
-    harness.list.refreshIndex(0);
+      harness.list.refreshIndex(0);
 
-    expect(firstRowBuilds).toBe(3);
-    expect(harness.list.getMountedElement(0)?.dataset.identity).toBe(
-      "updated-from-later-row",
-    );
-  });
+      expect(firstRowBuilds).toBe(3);
+      expect(harness.list.getMountedElement(0)?.dataset.identity).toBe(
+        "updated-from-later-row",
+      );
+    },
+  );
 
   it.each([
     {
@@ -681,38 +684,40 @@ describe("refreshIndex callback reentrancy", () => {
         });
       },
     },
-  ])("does not commit an offscreen height after a reentrant $scenario", ({
-    expectedCount,
-    mutate,
-  }) => {
-    const harness = mountReentrantList();
-    expect(harness.list.getMountedElement(OFFSCREEN_INDEX)).toBeNull();
+  ])(
+    "does not commit an offscreen height after a reentrant $scenario",
+    ({ expectedCount, mutate }) => {
+      const harness = mountReentrantList();
+      expect(harness.list.getMountedElement(OFFSCREEN_INDEX)).toBeNull();
 
-    let temporary: HTMLElement | null = null;
-    harness.setBuildHook((index, element) => {
-      if (index !== OFFSCREEN_INDEX || temporary) return;
-      temporary = element;
-      harness.setBuildHook(null);
-      mutate(harness);
-    });
+      let temporary: HTMLElement | null = null;
+      harness.setBuildHook((index, element) => {
+        if (index !== OFFSCREEN_INDEX || temporary) return;
+        temporary = element;
+        harness.setBuildHook(null);
+        mutate(harness);
+      });
 
-    harness.list.refreshIndex(OFFSCREEN_INDEX);
+      harness.list.refreshIndex(OFFSCREEN_INDEX);
 
-    const temporaryElement = requireElement(
-      temporary,
-      "temporary measurement element",
-    );
-    expect(temporaryElement.dataset.identity).toBe("item-50");
-    expect(harness.items()).toHaveLength(expectedCount);
-    expect(harness.list.state.measuredCount).toBe(0);
-    expect(modeledHeightAt(harness.list, OFFSCREEN_INDEX)).toBe(MODELED_HEIGHT);
-    expect(modeledHeightAt(harness.list, OFFSCREEN_INDEX + 1)).toBe(
-      MODELED_HEIGHT,
-    );
-    expect(harness.list.getMountedElement(OFFSCREEN_INDEX)).toBeNull();
-    expect(destroyCountFor(harness.destroyCalls, temporaryElement)).toBe(1);
-    expect(temporaryElement.isConnected).toBe(false);
-  });
+      const temporaryElement = requireElement(
+        temporary,
+        "temporary measurement element",
+      );
+      expect(temporaryElement.dataset.identity).toBe("item-50");
+      expect(harness.items()).toHaveLength(expectedCount);
+      expect(harness.list.state.measuredCount).toBe(0);
+      expect(modeledHeightAt(harness.list, OFFSCREEN_INDEX)).toBe(
+        MODELED_HEIGHT,
+      );
+      expect(modeledHeightAt(harness.list, OFFSCREEN_INDEX + 1)).toBe(
+        MODELED_HEIGHT,
+      );
+      expect(harness.list.getMountedElement(OFFSCREEN_INDEX)).toBeNull();
+      expect(destroyCountFor(harness.destroyCalls, temporaryElement)).toBe(1);
+      expect(temporaryElement.isConnected).toBe(false);
+    },
+  );
 
   it("does not commit an offscreen height after temporary teardown disposes the list", () => {
     const harness = mountReentrantList();

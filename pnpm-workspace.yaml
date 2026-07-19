@@ -1,4 +1,4 @@
 allowBuilds:
   esbuild: true
-  markdown-viewer: true
-blockExoticSubdeps: false
+minimumReleaseAgeExclude:
+  - katex@0.18.1
