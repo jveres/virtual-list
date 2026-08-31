@@ -2069,7 +2069,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     pending: ReadonlyMap<number, number>,
   ): boolean {
     const wasAtBottom = nearNativeBottom();
-    const hadStickyTail = stickyIndex !== null || tailGap > 0;
+    // Only a gap that can still absorb height changes suppresses the
+    // at-bottom glue. The sticky anchor itself survives at gap 0 (so a later
+    // shrink regrows the reserved space), but dormant it must not disable
+    // normal bottom behavior: with the glue off, the last pixels of streamed
+    // growth after the follow loop's final wake were never followed, leaving
+    // the viewport short of the bottom at stream end.
+    const hadStickyTail = tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
       Math.max(0, logicalScrollTop() - topSlotHeight()),
     );
@@ -2126,7 +2132,13 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     }
 
     const wasAtBottom = stickToBottom && nearNativeBottom();
-    const hadStickyTail = stickyIndex !== null || tailGap > 0;
+    // Only a gap that can still absorb height changes suppresses the
+    // at-bottom glue. The sticky anchor itself survives at gap 0 (so a later
+    // shrink regrows the reserved space), but dormant it must not disable
+    // normal bottom behavior: with the glue off, the last pixels of streamed
+    // growth after the follow loop's final wake were never followed, leaving
+    // the viewport short of the bottom at stream end.
+    const hadStickyTail = tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
       Math.max(0, logicalScrollTop() - topSlotHeight()),
     );

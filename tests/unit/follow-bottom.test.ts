@@ -169,4 +169,51 @@ describe("bottom follow frame", () => {
     expect(harness.renders()).toBe(1);
     harness.controller.stop();
   });
+
+  it("converges to the exact bottom when the engine floors scrollTop writes", () => {
+    // WebKit rounds scrollTop writes to whole pixels: an exponential approach
+    // whose per-frame step shrinks below 1px gets floored back to the same
+    // integer and parks a few pixels short of the bottom forever.
+    const viewport = document.createElement("div");
+    const scrollHeight = 1_000;
+    const clientHeight = 200;
+    let scrollTop = 796;
+    Object.defineProperties(viewport, {
+      clientHeight: { get: () => clientHeight },
+      scrollHeight: { get: () => scrollHeight },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (value: number) => {
+          scrollTop = Math.floor(
+            Math.max(0, Math.min(scrollHeight - clientHeight, value)),
+          );
+        },
+      },
+    });
+    const host: FollowBottomHost = {
+      viewport,
+      defaultSmoothDuration: 300,
+      defaultSnapThreshold: 1,
+      isDisposed: () => false,
+      isUserScrollActive: () => false,
+      hasContent: () => true,
+      syncContentHeight: () => {},
+      flushMeasurementsNow: () => false,
+      writeScrollTop: (top) => {
+        const previous = scrollTop;
+        if (Math.abs(top - previous) <= 0.5) return false;
+        viewport.scrollTop = top;
+        return scrollTop !== previous;
+      },
+      renderNow: () => {},
+      onStopped: () => {},
+    };
+    const controller = createFollowBottomController(host);
+
+    controller.follow({ behavior: "smooth", duration: 300 });
+    vi.advanceTimersByTime(500);
+
+    expect(scrollTop).toBe(800);
+    controller.stop();
+  });
 });

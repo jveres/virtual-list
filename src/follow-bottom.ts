@@ -145,9 +145,16 @@ export function createFollowBottomController(
     }
 
     const progress = frameProgress(now);
-    const nextTop =
-      viewport.scrollTop + (target - viewport.scrollTop) * progress;
-    const didScroll = host.writeScrollTop(nextTop);
+    const remaining = target - viewport.scrollTop;
+    let step = remaining * progress;
+    // Engines that round scrollTop writes to whole pixels (WebKit) floor a
+    // sub-pixel step to zero, parking the glide a few pixels short of the
+    // bottom forever — the exponential approach must advance at least one
+    // whole pixel per frame so it always terminates in the snap branch.
+    if (Math.abs(step) < 1) {
+      step = Math.sign(remaining) * Math.min(1, Math.abs(remaining));
+    }
+    const didScroll = host.writeScrollTop(viewport.scrollTop + step);
     if (didScroll || measurementsChanged) {
       host.renderNow();
     }
