@@ -17,6 +17,8 @@ export interface AISettings {
   contextTurns: number;
   /** Built-in Responses API tools to request; support varies by model. */
   tools: AIToolSettings;
+  /** Request reasoning summaries and show them as "thinking" panels. */
+  reasoningSummary: boolean;
 }
 
 export interface ChatTurn {
@@ -69,6 +71,7 @@ function defaultSettings(): AISettings {
     model: DEFAULT_OPENAI_MODEL,
     contextTurns: DEFAULT_CONTEXT_TURNS,
     tools: defaultToolSettings(),
+    reasoningSummary: true,
   };
 }
 
@@ -115,6 +118,10 @@ function readStoredSettings(): AISettings {
           ? parsed.contextTurns
           : DEFAULT_CONTEXT_TURNS,
       tools: storedToolSettings(parsed.tools),
+      reasoningSummary:
+        typeof parsed.reasoningSummary === "boolean"
+          ? parsed.reasoningSummary
+          : true,
     };
   } catch {
     return defaultSettings();
@@ -282,6 +289,18 @@ function toolCallId(item: Record<string, unknown>): string {
   return typeof item.id === "string" ? item.id : "tool";
 }
 
+// A finished reasoning item's streamed summary parts, joined.
+function reasoningSummaryText(item: Record<string, unknown>): string {
+  if (!Array.isArray(item.summary)) return "";
+  const parts: string[] = [];
+  for (const part of item.summary) {
+    if (isRecord(part) && typeof part.text === "string" && part.text !== "") {
+      parts.push(part.text);
+    }
+  }
+  return parts.join("\n\n").trim();
+}
+
 // The text a finished code_interpreter run printed, if any.
 function codeInterpreterLogs(item: Record<string, unknown>): string {
   if (!Array.isArray(item.outputs)) return "";
@@ -347,6 +366,14 @@ function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
           name: "code_interpreter",
           input: "(writing code…)",
         },
+      ];
+    }
+    // Reasoning items share the tool-call lifecycle, so the model's thinking
+    // phases surface as panels too: running while it reasons, settled with
+    // the streamed summary when the phase completes.
+    if (item.type === "reasoning") {
+      return [
+        { kind: "tool-start", id, name: "thinking", input: "(reasoning…)" },
       ];
     }
     return [];
@@ -444,6 +471,22 @@ function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
       ];
     }
 
+    if (item.type === "reasoning") {
+      const summary = reasoningSummaryText(item);
+      return [
+        {
+          kind: "tool-end",
+          id,
+          name: "thinking",
+          ok,
+          input: "(internal reasoning; summary below)",
+          output:
+            summary ||
+            "No summary provided — the model reasoned without emitting one.",
+        },
+      ];
+    }
+
     return [];
   }
 
@@ -475,7 +518,12 @@ function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
  */
 export async function* streamOpenAIChat(
   turns: readonly ChatTurn[],
-  { apiKey, model, tools }: Pick<AISettings, "apiKey" | "model" | "tools">,
+  {
+    apiKey,
+    model,
+    tools,
+    reasoningSummary,
+  }: Pick<AISettings, "apiKey" | "model" | "tools" | "reasoningSummary">,
   signal: AbortSignal,
 ): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
   if (!apiKey) {
@@ -497,6 +545,9 @@ export async function* streamOpenAIChat(
       instructions: SYSTEM_PROMPT,
       input: turns,
       ...(toolList.length > 0 ? { tools: toolList } : {}),
+      // Reasoning models stream a summary of their thinking; raw chain of
+      // thought is never exposed. Support varies by model, hence the toggle.
+      ...(reasoningSummary ? { reasoning: { summary: "auto" } } : {}),
     }),
     signal,
   });
@@ -582,6 +633,7 @@ export function initAISettingsPanel(
   const webSearchInput = mustGet("ai-tool-web-search", HTMLInputElement);
   const imageToolInput = mustGet("ai-tool-image", HTMLInputElement);
   const codeToolInput = mustGet("ai-tool-code", HTMLInputElement);
+  const reasoningInput = mustGet("ai-reasoning", HTMLInputElement);
 
   const stored = getAISettings();
   providerSelect.value = stored.provider;
@@ -591,6 +643,7 @@ export function initAISettingsPanel(
   webSearchInput.checked = stored.tools.webSearch;
   imageToolInput.checked = stored.tools.imageGeneration;
   codeToolInput.checked = stored.tools.codeInterpreter;
+  reasoningInput.checked = stored.reasoningSummary;
   contextSelect.value = String(stored.contextTurns);
   // A stored value the markup doesn't offer leaves the select unselected;
   // snap it back to the default option.
@@ -619,6 +672,7 @@ export function initAISettingsPanel(
         imageGeneration: imageToolInput.checked,
         codeInterpreter: codeToolInput.checked,
       },
+      reasoningSummary: reasoningInput.checked,
       contextTurns:
         Number.isInteger(contextTurns) && contextTurns >= 0
           ? contextTurns
@@ -645,6 +699,7 @@ export function initAISettingsPanel(
   webSearchInput.addEventListener("change", persist);
   imageToolInput.addEventListener("change", persist);
   codeToolInput.addEventListener("change", persist);
+  reasoningInput.addEventListener("change", persist);
   clearHistoryBtn.addEventListener("click", () => {
     clearOpenAIHistory();
     options.onClearHistory?.();

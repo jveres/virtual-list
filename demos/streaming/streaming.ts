@@ -50,6 +50,15 @@ interface Message {
   status?: AssistantStatus;
   itemHeight: number;
   toolCalls?: ChatToolCall[];
+  /**
+   * Streaming ended with a line-owning cursor, so markdown-viewer left its
+   * height-neutral spacer. The flag makes every later render of the message
+   * include that line permanently: reclaiming it anywhere risks a visible
+   * jump (deferred rebuilds fire at scroll settle, in plain view), and one
+   * blank line is cheaper than any amount of jank. A page reload starts
+   * fresh renders without it — invisibly.
+   */
+  trailingSpacer?: boolean;
 }
 
 interface StreamAbort {
@@ -1244,8 +1253,19 @@ function buildItem(index: number): HTMLElement {
 
 // A finished row: the static markdown render plus, when the message has sibling
 // versions, the navigator that switches between them.
+// The same markup markdown-viewer's finalize leaves behind; rendered by every
+// static build of a message flagged trailingSpacer (see the Message field).
+const CURSOR_SPACER_HTML =
+  '<span class="cursor cursor-spacer" data-cursor-spacer aria-hidden="true"></span>';
+
 function buildStaticItem(index: number, message: Message): HTMLElement {
   const row = buildChatItem(index, message, htmlForMessage(message));
+  row.dataset.messageId = String(message.id);
+  if (message.trailingSpacer) {
+    row
+      .querySelector<HTMLElement>(".markdown")
+      ?.insertAdjacentHTML("beforeend", CURSOR_SPACER_HTML);
+  }
   appendVersionNav(row, message);
   return row;
 }
@@ -1294,18 +1314,28 @@ function appendVersionNav(row: HTMLElement, message: Message): void {
   content.appendChild(nav);
 }
 
+// Matches when the (trimmed) stream currently ends with an embedded image.
+const TRAILING_IMAGE_RE = /!\[[^\]]*\]\(data:image\/[a-z.+-]+;base64,[^)]*\)$/;
+
 // What the live viewer renders mid-stream. Trailing newlines (OpenAI replies
 // end with one; embedded image blocks append two) would otherwise parse into
 // an empty trailing paragraph hosting the typing cursor — a phantom line that
 // vanishes when streaming finalizes, jumping the content bottom at the end of
-// every reply. The stored markdown stays raw; trailing whitespace renders to
-// nothing in the final static parse, so finalize output is unchanged.
+// every reply (markdown-viewer's finalize spacer keeps the height only for
+// line-owning cursors that are still displayed). The exception: when the
+// stream ends with an image, keep one blank line so the cursor sits on its
+// own line below it — glued to the image corner it reads wrong, and hidden it
+// looks stalled. The finalize spacer keeps that line, so no end jump either
+// way. The stored markdown stays raw; trailing whitespace renders to nothing
+// in the final static parse, so finalize output is unchanged.
 function streamingDisplayText(message: Message): string {
-  return message.markdown.trimEnd();
+  const trimmed = message.markdown.trimEnd();
+  return TRAILING_IMAGE_RE.test(trimmed) ? `${trimmed}\n\n` : trimmed;
 }
 
 function buildStreamingItem(index: number, message: Message): HTMLElement {
   const { row, content } = buildChatRow(index, message);
+  row.dataset.messageId = String(message.id);
   // createMarkdownViewer takes over its host's children, so it gets a dedicated
   // wrapper rather than `content` (which also holds the role label / tool calls).
   const host = document.createElement("div");
@@ -1384,6 +1414,12 @@ function refreshItem(
   if (liveHandle) {
     syncRoleLabel(element, message, index);
     liveHandle.update({ text: message.markdown, isStreaming: false });
+    // The finalize may have left the height-neutral cursor spacer; record it
+    // so every future static render keeps the line (never reclaimed — see
+    // Message.trailingSpacer).
+    if (element.querySelector("[data-cursor-spacer]")) {
+      message.trailingSpacer = true;
+    }
     return;
   }
 
@@ -1536,23 +1572,21 @@ async function streamOpenAIResponse(
   messageId: number,
   abort: StreamAbort,
 ): Promise<void> {
-  const { apiKey, model, contextTurns, tools } = getAISettings();
+  const { apiKey, model, contextTurns, tools, reasoningSummary } =
+    getAISettings();
   const abortLink = linkedAbortSignal(abort);
+  // Live tool calls by event id: where each sits in message.toolCalls and
+  // when it started, so tool-end can settle the right entry with a real
+  // duration — and so a failed stream can settle whatever was still running.
+  const liveToolCalls = new Map<string, { slot: number; startedAt: number }>();
   try {
     let started = false;
-    // Live tool calls by event id: where each sits in message.toolCalls and
-    // when it started, so tool-end can settle the right entry with a real
-    // duration.
-    const liveToolCalls = new Map<
-      string,
-      { slot: number; startedAt: number }
-    >();
     // The partial preview currently embedded per image call, so each next
     // frame (and the final image) swaps it in place instead of stacking up.
     const partialImages = new Map<string, string>();
     for await (const chunk of streamOpenAIChat(
       openAIContext(contextTurns),
-      { apiKey, model, tools },
+      { apiKey, model, tools, reasoningSummary },
       abortLink.signal,
     )) {
       if (abort.cancelled) return;
@@ -1651,12 +1685,33 @@ async function streamOpenAIResponse(
       messageId,
       (message) => {
         const alert = `> [!CAUTION]\n> **OpenAI request failed** — ${detail}`;
+        // A stream can die inside an open code fence; close it first or the
+        // alert is swallowed into the fence as raw monospace text. An odd
+        // fence count means the last one opened a block — close with its own
+        // marker (a ``` cannot close a ~~~ or a longer backtick run).
+        const fences = message.markdown.match(/^\s{0,3}(`{3,}|~{3,})/gm);
+        const fenceClose =
+          fences && fences.length % 2 === 1
+            ? `\n\n${fences[fences.length - 1]?.trim()}`
+            : "";
         message.markdown = message.markdown
-          ? `${message.markdown}\n\n${alert}`
+          ? `${message.markdown}${fenceClose}\n\n${alert}`
           : alert;
+        // Panels still mid-flight would pulse "running" forever; settle them.
+        if (liveToolCalls.size > 0 && message.toolCalls) {
+          message.toolCalls = message.toolCalls.map((toolCall) =>
+            toolCall.status === "running"
+              ? { ...toolCall, status: "error" as const }
+              : toolCall,
+          );
+        }
       },
       { refreshUnmounted: true },
     );
+    if (liveToolCalls.size > 0) {
+      const index = findLoadedMessageIndex(messageId);
+      if (index >= 0) virtualList.refreshIndex(index);
+    }
   } finally {
     abortLink.cleanup();
   }
