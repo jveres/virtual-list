@@ -50,15 +50,6 @@ interface Message {
   status?: AssistantStatus;
   itemHeight: number;
   toolCalls?: ChatToolCall[];
-  /**
-   * Streaming ended with a line-owning cursor, so markdown-viewer left its
-   * height-neutral spacer. The flag makes every later render of the message
-   * include that line permanently: reclaiming it anywhere risks a visible
-   * jump (deferred rebuilds fire at scroll settle, in plain view), and one
-   * blank line is cheaper than any amount of jank. A page reload starts
-   * fresh renders without it — invisibly.
-   */
-  trailingSpacer?: boolean;
 }
 
 interface StreamAbort {
@@ -1253,19 +1244,8 @@ function buildItem(index: number): HTMLElement {
 
 // A finished row: the static markdown render plus, when the message has sibling
 // versions, the navigator that switches between them.
-// The same markup markdown-viewer's finalize leaves behind; rendered by every
-// static build of a message flagged trailingSpacer (see the Message field).
-const CURSOR_SPACER_HTML =
-  '<span class="cursor cursor-spacer" data-cursor-spacer aria-hidden="true"></span>';
-
 function buildStaticItem(index: number, message: Message): HTMLElement {
   const row = buildChatItem(index, message, htmlForMessage(message));
-  row.dataset.messageId = String(message.id);
-  if (message.trailingSpacer) {
-    row
-      .querySelector<HTMLElement>(".markdown")
-      ?.insertAdjacentHTML("beforeend", CURSOR_SPACER_HTML);
-  }
   appendVersionNav(row, message);
   return row;
 }
@@ -1335,7 +1315,6 @@ function streamingDisplayText(message: Message): string {
 
 function buildStreamingItem(index: number, message: Message): HTMLElement {
   const { row, content } = buildChatRow(index, message);
-  row.dataset.messageId = String(message.id);
   // createMarkdownViewer takes over its host's children, so it gets a dedicated
   // wrapper rather than `content` (which also holds the role label / tool calls).
   const host = document.createElement("div");
@@ -1413,13 +1392,10 @@ function refreshItem(
   const liveHandle = streamingViewers.get(element);
   if (liveHandle) {
     syncRoleLabel(element, message, index);
+    // Stream end is height-neutral by CSS: the bare cursor's 1em line and
+    // the assistant body's constant 1em bottom padding trade places in the
+    // same style recalc (see the .markdown:has(> .cursor) padding swap).
     liveHandle.update({ text: message.markdown, isStreaming: false });
-    // The finalize may have left the height-neutral cursor spacer; record it
-    // so every future static render keeps the line (never reclaimed — see
-    // Message.trailingSpacer).
-    if (element.querySelector("[data-cursor-spacer]")) {
-      message.trailingSpacer = true;
-    }
     return;
   }
 

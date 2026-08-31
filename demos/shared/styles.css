@@ -723,6 +723,20 @@ select.source-select:disabled {
   max-width: 100%;
 }
 
+/* The padding swap: every assistant body ends in a constant 1em of breathing
+   room — except while a line-owning streaming cursor (a direct child of
+   .markdown, exactly 1em tall by markdown-viewer's bare-cursor rule) occupies
+   that space instead. Cursor line and padding trade places atomically in the
+   same style recalc, so stream end never shifts the content below: the space
+   is permanent, only its occupant changes. */
+.message.assistant .markdown {
+  padding-bottom: 1em;
+}
+
+.message.assistant .markdown:has(> .cursor) {
+  padding-bottom: 0;
+}
+
 /* Code blocks and tables scroll horizontally, but markdown-viewer gives them
    `overflow: auto`, which also makes them a vertical scroll container that traps
    wheel events and stalls list scrolling. Pin overflow-y so vertical scrolling
