@@ -300,6 +300,16 @@ export interface VirtualList {
   getMountedElement(index: number): HTMLElement | null;
   /** Top of an item in content (scroll) space; `index === count` is the bottom. */
   getItemOffset(index: number): number;
+  /**
+   * Sample a mounted item's current border-box height and commit it now,
+   * through the same anchored-correction path ResizeObserver measurements
+   * take on their deferred flush. For host-known discrete height changes —
+   * e.g. a collapsible section toggled inside a row — where waiting a frame
+   * for the observer flush would paint stale geometry first. No-op for
+   * unmounted indexes; the observer's own later measurement supersedes it
+   * harmlessly.
+   */
+  remeasureIndex(index: number): void;
   refreshIndex(index: number): void;
   refreshMounted(): void;
   /**
@@ -2301,8 +2311,17 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
           0,
           nativeMaxScrollTop(),
         );
+        // Final approach: once the remaining travel fits inside the overscan,
+        // render the window anchored at the target so the landing rows get
+        // built while the glide still moves fast — instead of paying their
+        // build cost in the ease-out's delicate last frames, where a long
+        // task reads as a lag right at arrival. The overscan keeps the rows
+        // currently on screen mounted either way, so the handoff is
+        // invisible.
+        const landing =
+          Math.abs(clampedTarget - nextTop) <= Math.max(0, getOverscanPx());
         if (setScrollTop(nextTop, ALLOW_DURING_SCROLL)) {
-          renderNow(viewport.scrollTop);
+          renderNow(landing ? clampedTarget : viewport.scrollTop);
         }
         if (finished || disposed) return;
         if (
@@ -3207,6 +3226,17 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (renderDepth === 0) drainDeferredInternalWork();
   }
 
+  function remeasureIndex(index: number): void {
+    if (disposed || count === 0) return;
+    const targetIndex = Math.floor(index);
+    if (targetIndex < 0 || targetIndex >= count) return;
+    const element = mounted.get(targetIndex);
+    if (!element) return;
+    const height = positiveSize(element.getBoundingClientRect().height);
+    if (height <= 0) return;
+    commitExplicitMeasurement(targetIndex, height);
+  }
+
   function isAtNativeScrollBoundary(scrollTop = viewport.scrollTop): boolean {
     const maxScrollTop = nativeMaxScrollTop();
     return (
@@ -3394,6 +3424,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     setStickyIndex,
     getMountedElement,
     getItemOffset,
+    remeasureIndex,
     refreshIndex,
     refreshMounted,
     refreshFrom,
