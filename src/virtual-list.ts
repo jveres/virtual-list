@@ -305,9 +305,12 @@ export interface VirtualList {
    * through the same anchored-correction path ResizeObserver measurements
    * take on their deferred flush. For host-known discrete height changes —
    * e.g. a collapsible section toggled inside a row — where waiting a frame
-   * for the observer flush would paint stale geometry first. No-op for
-   * unmounted indexes; the observer's own later measurement supersedes it
-   * harmlessly.
+   * for the observer flush would paint stale geometry first. The correction
+   * stays anchored at the scroll position and never actively re-glues to the
+   * bottom (the change is user-driven, so their click target stays put; a
+   * shrink below the scroll position clamps to the bottom natively). No-op
+   * for unmounted indexes; the observer's own later measurement supersedes
+   * it harmlessly.
    */
   remeasureIndex(index: number): void;
   refreshIndex(index: number): void;
@@ -1179,12 +1182,15 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       viewport.clientHeight + stickyTop - baseTotalSize,
     );
 
-    if (nextTailGap <= 0.5) {
-      stickyIndex = null;
-      tailGap = 0;
-    } else {
-      tailGap = nextTailGap;
-    }
+    // Keep the sticky anchor even when content has grown past the reserved
+    // window (gap 0). A later shrink — a collapsed tool panel, healed
+    // streamed markdown — then regrows the gap, so the canvas never shrinks
+    // out from under a viewport positioned inside the reserved space (the
+    // browser clamp would yank the view to the new bottom). The reserved
+    // trailing space must not be destroyable by a transient expansion; the
+    // anchor is released by the guards above or replaced by the next
+    // setStickyIndex.
+    tailGap = nextTailGap <= 0.5 ? 0 : nextTailGap;
   }
 
   function setScrollTopResidual(value: number): void {
@@ -2100,6 +2106,14 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     index: number,
     height: number,
     dataGeneration = itemDataGeneration,
+    // Host-driven discrete changes (remeasureIndex) pass false: the user
+    // just interacted with the row, so the viewport must stay anchored at
+    // their click instead of chasing the content bottom. "Near bottom" is
+    // also trivially true whenever the content fits the viewport (maxTop is
+    // 0), where gluing a growth to the new bottom scrolls a short page for
+    // no reason. A shrink below the scroll position still lands glued — the
+    // browser's own scrollTop clamp does that without any active write.
+    stickToBottom = true,
   ): void {
     if (
       disposed ||
@@ -2111,7 +2125,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       return;
     }
 
-    const wasAtBottom = nearNativeBottom();
+    const wasAtBottom = stickToBottom && nearNativeBottom();
     const hadStickyTail = stickyIndex !== null || tailGap > 0;
     const anchorIndex = sizeTree.indexAt(
       Math.max(0, logicalScrollTop() - topSlotHeight()),
@@ -3234,7 +3248,10 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     if (!element) return;
     const height = positiveSize(element.getBoundingClientRect().height);
     if (height <= 0) return;
-    commitExplicitMeasurement(targetIndex, height);
+    // Anchored at the scroll position, never re-glued to the bottom: the
+    // change is user-driven, so their click target stays stationary. Shrinks
+    // below the scroll position clamp to the bottom natively.
+    commitExplicitMeasurement(targetIndex, height, itemDataGeneration, false);
   }
 
   function isAtNativeScrollBoundary(scrollTop = viewport.scrollTop): boolean {
