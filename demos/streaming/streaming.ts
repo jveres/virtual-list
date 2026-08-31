@@ -2107,7 +2107,9 @@ async function handleSend(): Promise<void> {
     if (!abort.cancelled) {
       await settleVirtualizerFrames();
       if (bottomFollowArmed) {
-        await virtualList.scrollToBottom();
+        // Normally a ≤1px no-op (the follow loop lands exactly at the
+        // bottom); covers any remainder with a glide, never a snap.
+        await virtualList.scrollToBottom({ behavior: "smooth" });
       }
     }
     stopStreamingBottomFollow();
