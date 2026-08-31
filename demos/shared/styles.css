@@ -143,6 +143,114 @@ select.source-select:disabled {
   opacity: 0.6;
 }
 
+/* AI provider settings popover (streaming demo statusbar). */
+.ai-settings {
+  position: relative;
+  flex: none;
+}
+
+.ai-settings-btn {
+  height: auto;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.ai-settings-btn:hover {
+  color: var(--fg);
+  background: var(--bg-surface);
+}
+
+.ai-settings-btn.active {
+  background: none;
+  color: var(--accent);
+}
+
+/* Fixed, not absolute: the statusbar clips overflow to ellipsize its metric
+   spans, and a fixed element escapes that (no transformed ancestors here). */
+.ai-settings-panel {
+  position: fixed;
+  right: 14px;
+  bottom: 44px;
+  z-index: 40;
+  /* The statusbar hosts this panel and sets nowrap for its metric line;
+     panel text must wrap, including unbroken tokens like an echoed key. */
+  white-space: normal;
+  overflow-wrap: anywhere;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 250px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+}
+
+.ai-settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.ai-settings-field select,
+.ai-settings-field input {
+  height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg);
+  padding: 0 8px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.ai-settings-field input:focus,
+.ai-settings-field select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.ai-settings-note {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.45;
+  color: var(--fg-dim);
+}
+
+.ai-tool-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.ai-tool-option input {
+  height: auto;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.ai-settings-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ai-settings-actions button {
+  flex: 1;
+}
+
 /* Section / date headers — shared by in-flow rows and the sticky overlay so a
    pinned header and its in-flow twin look identical. */
 .section-header {

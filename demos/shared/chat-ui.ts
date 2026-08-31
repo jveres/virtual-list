@@ -76,7 +76,11 @@ function buildToolCall(toolCall: ChatToolCall): HTMLElement {
 
   const meta = document.createElement("span");
   meta.className = `tool-call-meta ${toolCall.status}`;
-  meta.textContent = `${toolCall.status} - ${toolCall.durationMs}ms`;
+  // A live call has no duration yet; it settles when the row rebuilds done.
+  meta.textContent =
+    toolCall.status === "running"
+      ? toolCall.status
+      : `${toolCall.status} - ${toolCall.durationMs}ms`;
 
   summary.append(title, meta);
 

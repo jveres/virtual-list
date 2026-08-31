@@ -18,6 +18,7 @@ import {
   attachInteractions,
   createMarkdownViewer,
   initMarkdown,
+  loadLanguages,
   type MarkdownViewerHandle,
   renderMarkdown,
 } from "../shared/markdown.js";
@@ -29,6 +30,16 @@ import {
   refreshTheme,
   syncThemeButtons,
 } from "../shared/utils.js";
+import {
+  type ChatTurn,
+  getAISettings,
+  initAISettingsPanel,
+  loadOpenAIHistory,
+  type StoredTurn,
+  saveOpenAIHistory,
+  streamOpenAIChat,
+  stripGeneratedImages,
+} from "./openai.js";
 
 import "../shared/styles.css";
 
@@ -62,6 +73,11 @@ const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
 const BOTTOM_FOLLOW_DURATION_MS = 300;
+// The send scroll travels about one viewport, which the distance-based
+// duration policy clamps to its 320ms floor — a quick flick next to the
+// buttons' long 1400ms glides. An explicit duration gives the send its own
+// deliberate pace.
+const SEND_SCROLL_DURATION_MS = 650;
 const SCROLL_BUTTONS_DEBOUNCE_MS = 120;
 const MESSAGE_TOP_EPSILON_PX = 2;
 const DATA_WINDOW_FACTOR = 5;
@@ -710,6 +726,106 @@ function seedSyntheticBranches(): void {
   });
 }
 
+// Each provider owns a fully separate conversation: the simulated side reseeds
+// the template spine + synthetic branches, the OpenAI side reloads the history
+// persisted in localStorage as a linear chain. Switching swaps all of it.
+// Bumped on every conversation swap so an in-flight send's finally block can
+// tell it is finishing against a conversation that no longer exists — its
+// persistence must not write the other provider's transcript into the history.
+let conversationEpoch = 0;
+
+function resetConversationState(): void {
+  conversationEpoch++;
+  topBoundaryLoadSeen = false;
+  tree.clear();
+  tree.set(TREE_ROOT_ID, {
+    message: null,
+    parentId: TREE_ROOT_ID,
+    childrenIds: [],
+    selectedChildIndex: 0,
+  });
+  transcript.length = 0;
+  messages = [];
+  loadedStart = 0;
+  loadingTop = false;
+  htmlCache.clear();
+  nextMessageId = 1;
+  nextResponse = 0;
+}
+
+// The fence languages a stored history actually uses. The static render is
+// synchronous and only highlights already-loaded languages, so these must be
+// loaded before the history rows first render — the boot preload only covers
+// the simulated corpus, while real replies fence anything.
+function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
+  const languages = new Set<string>();
+  const fence = /^\s{0,3}(?:```|~~~)\s*([A-Za-z0-9+#_-]+)/gm;
+  for (const turn of turns) {
+    for (const match of turn.markdown.matchAll(fence)) {
+      const language = match[1];
+      if (language) languages.add(language.toLowerCase());
+    }
+  }
+  return [...languages];
+}
+
+// loadLanguages ignores unknown names, so the raw fence info strings are safe.
+async function prepareOpenAILanguages(): Promise<void> {
+  const languages = historyFenceLanguages(loadOpenAIHistory());
+  if (languages.length > 0) await loadLanguages(languages);
+}
+
+function seedOpenAIConversation(): void {
+  for (const turn of loadOpenAIHistory()) {
+    addTreeChild(
+      activeLeafId(),
+      createMessage({
+        role: turn.role,
+        markdown: turn.markdown,
+        itemHeight: ESTIMATED_ITEM_HEIGHT,
+        ...(turn.toolCalls
+          ? { toolCalls: cloneToolCalls(turn.toolCalls) }
+          : {}),
+      }),
+      { select: true },
+    );
+  }
+  rebuildActiveTranscript();
+  setNewestLoadedWindow();
+}
+
+function seedActiveConversation(): void {
+  resetConversationState();
+  if (getAISettings().provider === "openai") {
+    seedOpenAIConversation();
+  } else {
+    seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
+  }
+}
+
+// Swaps the rendered conversation after a provider change or a history clear:
+// cancel any live stream, rebuild the state inside a layout transaction, then
+// repaint every row and land at the bottom of the other conversation.
+function reloadConversation(): void {
+  if (streamAbort) cancelStream(streamAbort);
+  virtualList.interruptScroll();
+  virtualList.setStickyIndex(null);
+  virtualList.syncLayout({
+    apply: () => {
+      seedActiveConversation();
+      setBoundarySlotIdleState("top");
+      return true;
+    },
+    after: () => {
+      virtualList.refreshFrom(0);
+      virtualList.invalidateMeasurements();
+      syncBoundarySlot("top");
+      syncDemoState();
+      void virtualList.scrollToBottom();
+    },
+  });
+}
+
 function refreshLoadedWindowIfReplaced(result: LoadedAppendResult): void {
   if (!result.replacedWindow) return;
   virtualList.invalidateMeasurements();
@@ -810,6 +926,12 @@ function switchMessageVersion(messageId: number, offset: number): void {
   });
 }
 
+// Whether a top boundary load has ever run for the current conversation. It
+// keeps the slot mounted for the "At the top" state after scrollback exhausts,
+// while conversations with nothing above (see shouldMountBoundarySlot) skip
+// the slot entirely.
+let topBoundaryLoadSeen = false;
+
 interface BoundarySlotContext {
   loadedCount: number;
   loadedStart: number;
@@ -899,7 +1021,13 @@ function shouldMountBoundarySlot(
   context = currentBoundarySlotContext(),
 ): boolean {
   if (boundary === "bottom") return false;
-  return context.loadedCount > 0;
+  if (context.loadedCount === 0) return false;
+  // The slot exists to serve scrollback loading. A conversation whose top is
+  // loaded from the start (a fresh OpenAI chat) must not mount it: its height
+  // would sit above item 0 and turn the first send's scroll-to-top into a
+  // visible hop right before the fly-in. Once a top load has run, the slot
+  // stays for its "At the top" state.
+  return context.loadedStart > 0 || context.loadingTop || topBoundaryLoadSeen;
 }
 
 function boundarySlotFor(
@@ -974,6 +1102,7 @@ function loadOlderMessages(): void {
   }
 
   loadingTop = true;
+  topBoundaryLoadSeen = true;
   setBoundarySlotState("top", "loading");
   refreshBoundarySlot("top");
   syncDemoState();
@@ -1165,6 +1294,16 @@ function appendVersionNav(row: HTMLElement, message: Message): void {
   content.appendChild(nav);
 }
 
+// What the live viewer renders mid-stream. Trailing newlines (OpenAI replies
+// end with one; embedded image blocks append two) would otherwise parse into
+// an empty trailing paragraph hosting the typing cursor — a phantom line that
+// vanishes when streaming finalizes, jumping the content bottom at the end of
+// every reply. The stored markdown stays raw; trailing whitespace renders to
+// nothing in the final static parse, so finalize output is unchanged.
+function streamingDisplayText(message: Message): string {
+  return message.markdown.trimEnd();
+}
+
 function buildStreamingItem(index: number, message: Message): HTMLElement {
   const { row, content } = buildChatRow(index, message);
   // createMarkdownViewer takes over its host's children, so it gets a dedicated
@@ -1179,7 +1318,7 @@ function buildStreamingItem(index: number, message: Message): HTMLElement {
   host.addEventListener("click", (event) => event.stopPropagation());
   content.appendChild(host);
   const handle = createMarkdownViewer(host, {
-    text: message.markdown,
+    text: streamingDisplayText(message),
     isStreaming: true,
     // The viewer root rarely holds focus inside the list (the composer does), so
     // keep a solid block cursor instead of dimming to a hollow frame.
@@ -1215,7 +1354,10 @@ function refreshItem(
       const handle = streamingViewers.get(element);
       if (handle) {
         syncRoleLabel(element, message, index);
-        handle.update({ text: message.markdown, isStreaming: true });
+        handle.update({
+          text: streamingDisplayText(message),
+          isStreaming: true,
+        });
         return;
       }
       // Mounted but not yet live (the row just transitioned from "thinking"):
@@ -1345,6 +1487,178 @@ async function streamResponse(
       delayRange.min + Math.random() * (delayRange.max - delayRange.min),
       abort,
     );
+  }
+}
+
+// The active transcript, oldest → newest, as API turns — sliced per the
+// context setting (0 = full history). This reads `transcript`, the complete
+// in-memory conversation, never the virtualizer's loaded window: what is
+// rendered depends on viewport height and scroll position, which should not
+// decide what the model gets to see. The just-appended assistant placeholder
+// is still empty, so the markdown filter drops it.
+function openAIContext(contextTurns: number): ChatTurn[] {
+  const tail = contextTurns > 0 ? transcript.slice(-contextTurns) : transcript;
+  const turns: ChatTurn[] = [];
+  for (const message of tail) {
+    if (message.markdown === "") continue;
+    // Embedded generated images would go back to the API as base64 text —
+    // megabytes of tokens per image; a placeholder marks where they were.
+    turns.push({
+      role: message.role,
+      content: stripGeneratedImages(message.markdown),
+    });
+  }
+  return turns;
+}
+
+// Role, markdown, and settled tool calls persist; ids are reassigned and
+// heights remeasured on the next load.
+function persistOpenAIConversation(): void {
+  const turns: StoredTurn[] = [];
+  for (const message of transcript) {
+    if (message.markdown === "") continue;
+    // A cancel can leave a call mid-flight; store it as errored.
+    const toolCalls = message.toolCalls?.map((toolCall) => ({
+      ...toolCall,
+      status:
+        toolCall.status === "running" ? ("error" as const) : toolCall.status,
+    }));
+    turns.push({
+      role: message.role,
+      markdown: message.markdown,
+      ...(toolCalls?.length ? { toolCalls } : {}),
+    });
+  }
+  saveOpenAIHistory(turns);
+}
+
+async function streamOpenAIResponse(
+  messageId: number,
+  abort: StreamAbort,
+): Promise<void> {
+  const { apiKey, model, contextTurns, tools } = getAISettings();
+  const abortLink = linkedAbortSignal(abort);
+  try {
+    let started = false;
+    // Live tool calls by event id: where each sits in message.toolCalls and
+    // when it started, so tool-end can settle the right entry with a real
+    // duration.
+    const liveToolCalls = new Map<
+      string,
+      { slot: number; startedAt: number }
+    >();
+    // The partial preview currently embedded per image call, so each next
+    // frame (and the final image) swaps it in place instead of stacking up.
+    const partialImages = new Map<string, string>();
+    for await (const chunk of streamOpenAIChat(
+      openAIContext(contextTurns),
+      { apiKey, model, tools },
+      abortLink.signal,
+    )) {
+      if (abort.cancelled) return;
+      // Tool chunks change row structure (the tool-call panels are built at
+      // row construction), so they need a rebuild, not just a text update.
+      const rebuildRow =
+        chunk.kind === "tool-start" || chunk.kind === "tool-end";
+      mutateMessageById(messageId, (message) => {
+        // The row stays "thinking" until the first real activity arrives.
+        if (!started) message.status = "streaming";
+        switch (chunk.kind) {
+          case "text":
+            message.markdown += chunk.text;
+            break;
+          case "image-partial":
+          case "image": {
+            // Progressive frames refine the same embedded block; the final
+            // image takes the partial's place. Blank lines keep the image a
+            // block of its own regardless of surrounding text.
+            const previous = partialImages.get(chunk.id);
+            if (previous && message.markdown.includes(previous)) {
+              message.markdown = message.markdown.replace(
+                previous,
+                chunk.markdown,
+              );
+            } else {
+              message.markdown += `\n\n${chunk.markdown}\n\n`;
+            }
+            if (chunk.kind === "image-partial") {
+              partialImages.set(chunk.id, chunk.markdown);
+            } else {
+              partialImages.delete(chunk.id);
+            }
+            break;
+          }
+          case "tool-start": {
+            const toolCalls = message.toolCalls ?? [];
+            liveToolCalls.set(chunk.id, {
+              slot: toolCalls.length,
+              startedAt: performance.now(),
+            });
+            message.toolCalls = [
+              ...toolCalls,
+              {
+                name: chunk.name,
+                status: "running",
+                durationMs: 0,
+                input: chunk.input,
+                output: "",
+              },
+            ];
+            break;
+          }
+          case "tool-end": {
+            const live = liveToolCalls.get(chunk.id);
+            const entry: ChatToolCall = {
+              name: chunk.name,
+              status: chunk.ok ? "done" : "error",
+              durationMs: live
+                ? Math.max(1, Math.round(performance.now() - live.startedAt))
+                : 0,
+              input: chunk.input,
+              output: chunk.output,
+            };
+            const toolCalls = [...(message.toolCalls ?? [])];
+            if (live && toolCalls[live.slot]) toolCalls[live.slot] = entry;
+            else toolCalls.push(entry);
+            message.toolCalls = toolCalls;
+            break;
+          }
+        }
+      });
+      if (rebuildRow) {
+        const index = findLoadedMessageIndex(messageId);
+        if (index >= 0) virtualList.refreshIndex(index);
+      }
+      started = true;
+    }
+  } catch (error) {
+    // A cancelled stream rejects the fetch with an AbortError; that is the
+    // user's Stop, not a failure to surface.
+    if (abort.cancelled) return;
+    // fetch rejects with a TypeError when the response was unreadable
+    // (Safari: "Load failed", Chrome: "Failed to fetch"). Two very different
+    // causes share that shape: a network/blocker problem, or an auth error —
+    // OpenAI omits CORS headers on 401s, so a rejected key is unreadable too
+    // (the real status is visible in the browser console). Settings are kept
+    // per browser, so a key pasted in another browser does not exist here.
+    const detail =
+      error instanceof TypeError
+        ? `${error.message} — the response was unreadable. If the browser console shows a 401, the API rejected the key (re-paste it in the AI settings — keys are stored per browser); otherwise check content blockers, VPN/proxy, or the network tab.`
+        : error instanceof Error
+          ? error.message
+          : String(error);
+    mutateMessageById(
+      messageId,
+      (message) => {
+        const alert = `> [!CAUTION]\n> **OpenAI request failed** — ${detail}`;
+        message.markdown = message.markdown
+          ? `${message.markdown}\n\n${alert}`
+          : alert;
+      },
+      { refreshUnmounted: true },
+    );
+  } finally {
+    abortLink.cleanup();
   }
 }
 
@@ -1646,6 +1960,7 @@ async function scrollMessageToTop(
     targetAtTop = waitForMountedMessageTop(index, abort);
     const scroll = virtualList.scrollToIndex(index, "top", {
       behavior: "smooth",
+      duration: SEND_SCROLL_DURATION_MS,
       signal: abortLink.signal,
     });
     afterTargetMount?.();
@@ -1675,6 +1990,13 @@ async function handleSend(): Promise<void> {
   setStreamingUI(true);
   let assistantId: number | null = null;
   const shouldFlyIn = transcript.length === 0;
+  const useOpenAI = getAISettings().provider === "openai";
+  const sendEpoch = conversationEpoch;
+  const persistTurns = () => {
+    if (useOpenAI && sendEpoch === conversationEpoch) {
+      persistOpenAIConversation();
+    }
+  };
 
   try {
     const userMessage = createMessage({
@@ -1682,15 +2004,38 @@ async function handleSend(): Promise<void> {
       markdown: text,
       itemHeight: ESTIMATED_ITEM_HEIGHT,
     });
-    const userAppend = appendMessagesToLoadedBottom([userMessage]);
+    const assistantMessage = createMessage({
+      role: "assistant",
+      markdown: "",
+      status: "thinking",
+      itemHeight: ESTIMATED_ITEM_HEIGHT,
+      // Real replies have no tool phase; the simulated set stays a prop of the
+      // canned rotation only.
+      ...(useOpenAI ? {} : { toolCalls: createSimulatedToolCalls() }),
+    });
+    assistantId = assistantMessage.id;
+    // Both rows land before the glide starts: every structural cost (row
+    // builds, clone measurement, layout sync) is paid up front, so no long
+    // task hits the animation's delicate ease-out tail. The buttons' scrolls
+    // carry no payload — this is what made the send scroll feel rougher than
+    // them despite sharing the same animator and easing.
+    const appendResult = appendMessagesToLoadedBottom([
+      userMessage,
+      assistantMessage,
+    ]);
+    // Persist the user turn immediately so a reload mid-stream keeps it (the
+    // still-empty assistant placeholder is filtered out).
+    persistTurns();
     syncVirtualizerLayout();
-    refreshLoadedWindowIfReplaced(userAppend);
-    const userIndex = userAppend.startIndex;
+    refreshLoadedWindowIfReplaced(appendResult);
+    const userIndex = appendResult.startIndex;
     virtualList.setStickyIndex(userIndex);
     await scrollMessageToTop(
       userIndex,
       abort,
-      shouldFlyIn ? undefined : () => fadeInMountedItems([userIndex], abort),
+      shouldFlyIn
+        ? undefined
+        : () => fadeInMountedItems([userIndex, userIndex + 1], abort),
     );
     scheduleScrollButtons();
     if (abort.cancelled) return;
@@ -1699,30 +2044,20 @@ async function handleSend(): Promise<void> {
       if (abort.cancelled) return;
     }
 
-    const assistantMessage = createMessage({
-      role: "assistant",
-      markdown: "",
-      status: "thinking",
-      itemHeight: ESTIMATED_ITEM_HEIGHT,
-      toolCalls: createSimulatedToolCalls(),
-    });
-    assistantId = assistantMessage.id;
-    const assistantAppend = appendMessagesToLoadedBottom([assistantMessage]);
-    syncVirtualizerLayout();
-    refreshLoadedWindowIfReplaced(assistantAppend);
-    scheduleScrollButtons();
-    if (abort.cancelled) return;
-
     startStreamingBottomFollow(abort);
 
-    const reply = advanceResponse(text);
-    await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
-    if (abort.cancelled) return;
+    if (useOpenAI) {
+      await streamOpenAIResponse(assistantId, abort);
+    } else {
+      const reply = advanceResponse(text);
+      await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
+      if (abort.cancelled) return;
 
-    mutateMessageById(assistantId, (message) => {
-      message.status = "streaming";
-    });
-    await streamResponse(reply, assistantId, abort);
+      mutateMessageById(assistantId, (message) => {
+        message.status = "streaming";
+      });
+      await streamResponse(reply, assistantId, abort);
+    }
   } finally {
     if (assistantId !== null) {
       mutateMessageById(
@@ -1735,6 +2070,9 @@ async function handleSend(): Promise<void> {
         { refreshUnmounted: true },
       );
     }
+    // The finished (or cancelled-partial) assistant turn joins the history;
+    // empty turns are filtered out during serialization.
+    persistTurns();
     if (!abort.cancelled) {
       await settleVirtualizerFrames();
       if (bottomFollowArmed) {
@@ -1753,6 +2091,21 @@ async function handleSend(): Promise<void> {
 }
 
 bindThemeButtons(refreshTheme);
+initAISettingsPanel({
+  onProviderChange: (provider) => {
+    if (provider === "openai") {
+      // Fence languages must be loaded before the history's static render.
+      void prepareOpenAILanguages().then(() => reloadConversation());
+    } else {
+      reloadConversation();
+    }
+  },
+  onClearHistory: () => {
+    // Only the OpenAI conversation is rendered from that history; a clear
+    // while the simulated transcript is showing needs no repaint.
+    if (getAISettings().provider === "openai") reloadConversation();
+  },
+});
 
 scrollTopBtn.addEventListener("click", () => {
   // At the top of a partial loaded window the button stays visible while the
@@ -1790,7 +2143,8 @@ applyDocumentTheme();
 syncThemeButtons();
 autosize();
 measureTemplateHeights();
-seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
+if (getAISettings().provider === "openai") await prepareOpenAILanguages();
+seedActiveConversation();
 
 const virtualList = createVirtualList({
   viewport,
@@ -1829,6 +2183,39 @@ viewport.addEventListener("click", (event) => {
   );
   if (!Number.isFinite(messageId)) return;
   switchMessageVersion(messageId, button.dataset.dir === "prev" ? -1 : 1);
+});
+// Toggling a tool-call <details> changes the row's height inside the click's
+// own task, but ResizeObserver corrections flush a frame later — so the
+// browser would paint the toggle against stale canvas geometry and the
+// correction then shifts everything a frame after (a visible flash/jump).
+// A microtask runs after the details' default toggle action but before
+// paint: committing that one row's real height there (remeasureIndex uses
+// the same anchored-correction path the observer flush uses) keeps the
+// toggle, the canvas resize, and the scroll correction in a single frame.
+viewport.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const summary = event.target.closest(".tool-call-summary");
+  if (!summary) return;
+  const row = summary.closest<HTMLElement>("article.message");
+  if (!row) return;
+  // The summary's activation behavior — the actual open/close mutation — runs
+  // after event dispatch completes, which is later than any microtask queued
+  // here (a microtask checkpoint still measures the pre-toggle height on a
+  // real click). A rAF callback runs in the same rendering update that will
+  // paint the toggled layout, after the mutation but before paint, so
+  // committing there folds the row's height change, the canvas resize, and
+  // the scroll correction into one painted frame.
+  requestAnimationFrame(() => {
+    // Resolve the row's index by element identity at commit time — dataset
+    // indexes can be stale across loaded-window shifts.
+    const { range } = virtualList.state;
+    for (let index = range.start; index < range.end; index++) {
+      if (virtualList.getMountedElement(index) === row) {
+        virtualList.remeasureIndex(index);
+        return;
+      }
+    }
+  });
 });
 
 await virtualList.scrollToBottom();

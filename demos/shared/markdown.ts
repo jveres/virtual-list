@@ -31,4 +31,6 @@ export function renderMarkdown(markdown: string): string {
 // - createMarkdownViewer / MarkdownViewerHandle: the live component for streaming
 //   rows — heals partial markdown, shows a typing cursor, morphs the DOM in place.
 export type { MarkdownViewerHandle };
-export { attachInteractions, createMarkdownViewer };
+// loadLanguages: hosts with dynamic content (the OpenAI history) load the
+// fence languages it actually uses before the synchronous static render.
+export { attachInteractions, createMarkdownViewer, loadLanguages };
