@@ -263,33 +263,106 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(3005 + 10 * ROW_H);
   });
 
-  it("lets same-key content change inside its slot mid-gesture, committing the height at settle", () => {
+  it("freezes a mounted row mid-gesture: the same-key update renders fresh off-scroller and swaps at settle", () => {
     const initial = range(0, 50);
-    const h = mount(initial);
+    const existingSeen: (HTMLElement | undefined)[] = [];
+    const h = mount(initial, {
+      onRender: (m, existing) => {
+        if (m.id === 32) existingSeen.push(existing);
+      },
+    });
+    existingSeen.length = 0; // Drop the boot renders.
     h.userScroll(3005);
     const row = h.rowElement("msg 32");
     const slot = h.slotOf(row);
 
-    // The streaming update: render mutates in place inside the fixed slot.
+    // First streaming token during the gesture: the mounted element is not
+    // offered to render (frozen); a fresh element is built and measured.
     const next = [...initial];
     next[32] = message(32, "streamed body");
+    h.heights.set(32, 300);
     h.list.setItems(next);
-    expect(row.textContent).toBe("streamed body"); // Visible (clipped)...
+    expect(existingSeen).toEqual([undefined]);
+    expect(row.textContent).toBe("msg 32"); // Untouched on screen...
+    expect(row.isConnected).toBe(true);
     expect(slot.style.height).toBe(`${ROW_H}px`); // ...geometry untouched.
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
+    expect(h.list.state.held).toBe(true);
 
-    // Its real height grew; the observer marks it dirty — still no change.
+    // Second token in the same phase: the off-scroller replacement is
+    // advanced in place — one fresh render per phase, not per token.
+    const next2 = [...initial];
+    next2[32] = message(32, "streamed body more");
+    h.list.setItems(next2);
+    expect(existingSeen).toHaveLength(2);
+    expect(existingSeen[1]).toBeDefined();
+    expect(existingSeen[1]).not.toBe(row);
+    expect(row.textContent).toBe("msg 32");
+    expect(h.viewport.scrollTop).toBe(3005);
+
+    h.settle(); // Content, height, geometry, anchor: one atomic swap.
+    const after = h.rowElement("streamed body more");
+    expect(after).not.toBe(row);
+    expect(row.isConnected).toBe(false);
+    expect(h.destroyed).toEqual([32]); // The frozen element, exactly once.
+    expect(h.slotOf(after).style.height).toBe("300px");
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+    expect(h.viewport.scrollTop).toBe(3005); // Growth below the anchor.
+    expect(h.list.state.held).toBe(false);
+  });
+
+  it("freezes committed rows outside the window too: a mid-phase remount shows committed content", () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    h.userScroll(3005); // m5 is committed but unmounted.
+    const next = [...initial];
+    next[5] = message(5, "changed");
+    h.list.setItems(next);
+    h.userScroll(0); // Still the same gesture: m5 mounts at its committed height.
+    const row = h.rowElement("msg 5");
+    expect(h.slotOf(row).style.height).toBe(`${ROW_H}px`);
+    h.settle();
+    expect(h.rowElement("changed")).not.toBe(row);
+    expect(row.isConnected).toBe(false);
+  });
+
+  it("updates a mounted row in place while idle, committing immediately", () => {
+    const initial = range(0, 50);
+    const existingSeen: (HTMLElement | undefined)[] = [];
+    const h = mount(initial, {
+      onRender: (m, existing) => {
+        if (m.id === 20) existingSeen.push(existing);
+      },
+    });
+    existingSeen.length = 0; // Drop the boot renders.
+    void h.list.scrollTo("m20");
+    const row = h.rowElement("msg 20");
+    const next = [...initial];
+    next[20] = message(20, "edited");
+    h.heights.set(20, 160);
+    h.list.setItems(next);
+    expect(existingSeen).toEqual([row]);
+    expect(row.textContent).toBe("edited");
+    expect(h.slotOf(row).style.height).toBe("160px");
+    expect(h.destroyed).toEqual([]);
+  });
+
+  it("keeps geometry immutable for changes made outside setItems, committing their height at settle", () => {
+    const h = mount(range(0, 50));
+    h.userScroll(3005);
+    const row = h.rowElement("msg 32");
+    const slot = h.slotOf(row);
+    // The safety net: a direct DOM change grows the row; the observer
+    // marks it dirty, geometry stays put, the height commits at settle.
     h.heights.set(32, 300);
     fireResize(0, row, 300);
     expect(slot.style.height).toBe(`${ROW_H}px`);
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
-    expect(h.viewport.scrollTop).toBe(3005);
     expect(h.list.state.held).toBe(true);
-
-    h.settle(); // The latest height commits, once, anchored.
+    h.settle();
     expect(slot.style.height).toBe("300px");
     expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
-    expect(h.viewport.scrollTop).toBe(3005); // Growth below the anchor.
+    expect(h.viewport.scrollTop).toBe(3005);
   });
 
   it("commits an idle size change in the same delivery as its observation", () => {
@@ -345,9 +418,10 @@ describe("v2 runtime — retained nodes", () => {
   });
 
   it("rolls back a failed preparation: built rows destroyed once, held and committed state intact", () => {
-    const h = mount(range(0, 30), { throwOn: "boom" });
+    const initial = range(0, 30);
+    const h = mount(initial, { throwOn: "boom" });
     h.userScroll(1505);
-    h.list.setItems([...range(0, 30), message(40, "held")]); // Held: m40 built.
+    h.list.setItems([...initial, message(40, "held")]); // Held: m40 built.
     expect(h.list.state.held).toBe(true);
 
     // A later snapshot whose render throws part-way: m42 was built before
@@ -355,7 +429,7 @@ describe("v2 runtime — retained nodes", () => {
     // untouched; nothing committed changed.
     expect(() =>
       h.list.setItems([
-        ...range(0, 30),
+        ...initial,
         message(40, "held"),
         message(42, "ok"),
         message(43, "boom"),
@@ -663,7 +737,8 @@ describe("v2 runtime — retained nodes", () => {
   it("destroys locally built rows when a supersession-time onDestroy disposes the list", () => {
     let listRef: VirtualList<Msg> | null = null;
     let disposedOnce = false;
-    const h = mount(range(0, 30), {
+    const initial = range(0, 30);
+    const h = mount(initial, {
       onDestroy: () => {
         if (disposedOnce) return;
         disposedOnce = true;
@@ -672,13 +747,13 @@ describe("v2 runtime — retained nodes", () => {
     });
     listRef = h.list;
     h.userScroll(1505);
-    h.list.setItems([...range(0, 30), message(40, "held")]); // Held: m40 built.
+    h.list.setItems([...initial, message(40, "held")]); // Held: m40 built.
 
     // B drops m40 (destroyed at supersession → the host disposes) and
     // builds m41 locally. m41 exists only inside the preparation at that
     // moment — it must still be destroyed exactly once, not leaked.
     expect(() =>
-      h.list.setItems([...range(0, 30), message(41, "local")]),
+      h.list.setItems([...initial, message(41, "local")]),
     ).not.toThrow();
     expect(h.destroyed).toContain(40);
     expect(h.destroyed).toContain(41);

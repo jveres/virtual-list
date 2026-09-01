@@ -46,11 +46,22 @@ as preserved primitives, with the smaller API built around them.
    - one anchor-preserving scroll position.
 4. Same-key, size-changing updates — streaming text, disclosure toggles,
    image decode, font swaps — are geometry changes and follow the same
-   rule: premeasured off-scroller and settle-gated, or rendered into
-   **dimensionally stable placeholders** (a fixed-extent row box the
-   content fills without changing the box) until they can commit. No
-   exception path re-admits mid-scroll geometry drift; while the surface
-   is idle, such updates commit immediately (premeasured, same pipeline).
+   rule. During a scroll phase the committed elements are **frozen along
+   with geometry**: the update is rendered fresh (`render(item)` without
+   `existing`) and premeasured off-scroller, retained, and the settle
+   commit swaps content, height, offsets, canvas, and anchor together —
+   nothing mounted ever shows content that disagrees with its slot (a
+   fixed-height clipped box would clip growth and gap shrinkage, which is
+   visibly wrong). Later updates in the same phase advance that
+   off-scroller replacement in place; one fresh render per key per phase.
+   While the surface is idle, the update renders in place and commits
+   immediately (same pipeline). Changes made outside `setItems` — direct
+   DOM mutation of a mounted row, a late resource growing an element — are
+   outside this guarantee: the fixed slot keeps geometry immutable as a
+   safety net (the ResizeObserver marks the row dirty; its height commits
+   at settle, or in the same delivery when idle), but such content clips
+   or gaps until then. Hosts route size changes through `setItems` and
+   reserve dimensions for late resources.
 
 Corollaries: no ResizeObserver-driven mid-gesture geometry correction, no
 gesture-time canvas translation, no "safe update" exceptions. What v1
@@ -103,9 +114,11 @@ commit frequency in practice.
   retained nodes, leaving the DOM is not the end of an element's life;
   destruction (key removed, replacement committed, pending snapshot
   superseded, dispose) is, exactly once. `render(item, existing)` may
-  mutate `existing` in place — inside its fixed slot when mounted — or
-  return a replacement, which is premeasured off-scroller and swapped in
-  at commit.
+  mutate `existing` in place or return a replacement, which is
+  premeasured off-scroller and swapped in at commit; `existing` is offered
+  only when mutating it is safe (idle, or an off-scroller pending
+  replacement) — during a scroll phase a committed row's update is
+  rendered fresh and swapped at settle.
 - v2 addition (lab-prototyped): the reach callbacks receive a context with
   an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
   runtime aborts only on conditions it knows objectively: the user reached
@@ -131,15 +144,19 @@ commit frequency in practice.
 - **demos/dynamic-height** — the dynamic-height lab: the v2 runtime under
   adversarial content (streaming rows, toggles, late-loading images,
   width-sensitive code, edge loads with abort, superseding bursts,
-  deletions, width jitter) through both mutation channels (direct DOM,
-  setItems in-place or replacing). Its telemetry observes the runtime
+  deletions, width jitter), every change entering through setItems (in
+  place when idle, a fresh off-scroller render during a phase, or a
+  replacing render); late images reserve a zero box and re-enter through
+  setItems at load. Its telemetry observes the runtime
   strictly from outside — a scrollTop write hook, a MutationObserver on
   the canvas, the lab's own native-scroll evidence — and reports each
   contract violation by code: G geometry changed under a live scroll
   phase, W scrollTop written under native scroll, O slot overlap or a
   non-clipping slot, A anchor moved across a commit, S stale slot height
-  while quiet, L idle change over the frame budget, T height re-committed
-  without a change, D destroy-once/leak failures.
+  while quiet, L a mounted row disagreeing with its slot at the
+  post-runtime ResizeObserver delivery (a clipped or gapped paint, held or
+  not), T height re-committed without a change, D destroy-once/leak
+  failures.
 - **demos/streaming** — the chat acceptance target (kept in-tree, excluded
   from typecheck until the v2 runtime hosts it), compared against `main`.
 

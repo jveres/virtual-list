@@ -22,9 +22,12 @@ import {
 // - reach-driven chunk loads at both edges (aborted through the reach
 //   signal), superseding setItems bursts, deletion of random rows and of the
 //   very row under the viewport top.
-// Two mutation channels: direct DOM mutation (the ResizeObserver path) and
-// setItems with changed items (in-place re-render, or a replacing re-render
-// with the "replace" box).
+// Every change reaches the runtime through setItems (a new item object for
+// the key): in place while idle, rendered FRESH off-scroller during a scroll
+// phase (the contract freezes committed elements), or a replacing re-render
+// with the "replace" box. Late images learn their size at load and re-enter
+// through setItems the same way — the lab never mutates a mounted row's
+// size directly.
 //
 // Telemetry, purely observational:
 // - an instance-level scrollTop accessor on the viewport records every
@@ -44,8 +47,9 @@ import {
 //   S  a mounted slot's committed height differs from its content while
 //      everything is quiet (stale height: held work never committed, or a
 //      width/resource change was not honored);
-//   L  an idle row painted clipped: taller than its slot at the post-runtime
-//      ResizeObserver delivery, so the frame paints it cut off;
+//   L  a mounted row's content disagreed with its slot at the post-runtime
+//      ResizeObserver delivery — a frame that paints clipped or gapped
+//      (held or not: frozen elements never change under a live phase);
 //   T  a slot height was committed again with no content or width change
 //      in between (heights must commit once, latest);
 //   D  an element destroyed twice, never rendered by the lab, still in the
@@ -160,6 +164,7 @@ interface Item {
   streamTarget: number;
   imageDelayMs: number;
   imageAspect: number;
+  imageLoaded: boolean;
   hue: number;
 }
 
@@ -191,6 +196,7 @@ function makeItem(id: number): Item {
     streamTarget: kind === "stream" ? 50 + Math.floor(random() * 110) : 0,
     imageDelayMs: kind === "image" ? 400 + Math.floor(random() * 3600) : 0,
     imageAspect: 0.3 + random() * 0.5,
+    imageLoaded: false,
     hue: Math.floor(random() * 360),
   };
 }
@@ -276,23 +282,31 @@ function element(tag: string, className: string, text?: string): HTMLElement {
   return node;
 }
 
+// A late image is a resource whose size is unknown until it loads. The host
+// never lets the browser grow a mounted row on its own: the <img> box is
+// reserved at zero height until the item says "loaded", and the load event
+// re-enters through setItems like any other content change (in place when
+// idle, a fresh off-scroller render during a phase).
 function scheduleImage(row: HTMLElement, img: HTMLImageElement, item: Item) {
-  if (!checkbox("images").checked) {
-    img.src = imageSource(item);
+  if (item.imageLoaded) {
+    img.src = imageSource(item); // Re-render of a loaded item.
     return;
   }
+  img.addEventListener("load", () => {
+    const current = itemById.get(item.id);
+    if (!current || current.imageLoaded) return;
+    current.imageLoaded = true;
+    imagesLoaded += 1;
+    changeContent(current, `image #${item.id} loaded`);
+  });
+  const delay = checkbox("images").checked ? item.imageDelayMs : 0;
   imagesPending += 1;
   let settled = false;
   const timer = window.setTimeout(() => {
     settled = true;
     imagesPending -= 1;
     img.src = imageSource(item);
-  }, item.imageDelayMs);
-  img.addEventListener("load", () => {
-    imagesLoaded += 1;
-    // A resource change: the row is taller now, mounted or not.
-    recordContentChange(item.id, `image #${item.id} loaded`);
-  });
+  }, delay);
   cleanupByElement.set(row, () => {
     window.clearTimeout(timer);
     if (!settled) imagesPending -= 1;
@@ -335,6 +349,12 @@ function update(item: Item, row: HTMLElement): void {
     item.kind === "stream" && item.words.length >= item.streamTarget,
   );
   row.classList.toggle("live", streams.has(item.id));
+  const pic = row.querySelector<HTMLImageElement>(".pic");
+  if (pic) {
+    // Known size once loaded: the box is CSS-sized, independent of decode.
+    row.classList.toggle("loaded", item.imageLoaded);
+    pic.style.aspectRatio = `800 / ${Math.round(800 * item.imageAspect)}`;
+  }
   row.dataset.version = String(item.version);
 }
 
@@ -374,6 +394,20 @@ const expectedWrites: { top: number; at: number }[] = [];
 const runtimeWriteTimes: number[] = [];
 let commandIssuing = false;
 let smoothPending = 0;
+/** The last few raw input/scroll events — dumped with every G/W violation. */
+const recentInput: string[] = [];
+
+function noteInput(text: string): void {
+  recentInput.push(`+${(performance.now() - startedAt).toFixed(0)}ms ${text}`);
+  if (recentInput.length > 16) recentInput.shift();
+  if (verbose()) log(text);
+}
+
+function evidence(now: number): string {
+  const age = (at: number) =>
+    Number.isFinite(at) ? `${(now - at).toFixed(0)}ms ago` : "never";
+  return `touchDown=${touchDown} wheel ${age(lastWheelAt)} key ${age(lastKeyAt)} native scroll ${age(lastNativeScrollAt)} held=${stateHeld}; recent: ${recentInput.join(" | ")}`;
+}
 
 function nativeActive(now = performance.now()): boolean {
   return (
@@ -419,7 +453,7 @@ function installWriteHook(): void {
       if (!commandIssuing && smoothPending === 0 && nativeActive(now)) {
         violation(
           "W",
-          `scrollTop written (${Math.round(actual)}) during native scroll`,
+          `scrollTop written (${Math.round(actual)}) during native scroll — ${evidence(now)}`,
         );
       }
     },
@@ -431,7 +465,7 @@ function traceInput(): void {
     "wheel",
     (event) => {
       lastWheelAt = performance.now();
-      if (verbose()) log(`wheel dy=${Math.round(event.deltaY)}`);
+      noteInput(`wheel dy=${Math.round(event.deltaY)}`);
     },
     { passive: true },
   );
@@ -439,13 +473,13 @@ function traceInput(): void {
     "touchstart",
     () => {
       touchDown = true;
-      if (verbose()) log("touchstart");
+      noteInput("touchstart");
     },
     { passive: true },
   );
   const touchUp = (name: string) => () => {
     touchDown = false;
-    if (verbose()) log(name);
+    noteInput(name);
   };
   window.addEventListener("touchend", touchUp("touchend"), { passive: true });
   window.addEventListener("touchcancel", touchUp("touchcancel"), {
@@ -466,6 +500,7 @@ function traceInput(): void {
         ].includes(event.key)
       ) {
         lastKeyAt = performance.now();
+        noteInput(`key ${event.key}`);
       }
     },
     { passive: true },
@@ -486,22 +521,18 @@ function traceInput(): void {
       );
       if (index >= 0) {
         expectedWrites.splice(0, index + 1);
-        if (verbose()) log(`scroll top=${Math.round(top)} (runtime write)`);
+        noteInput(`scroll top=${Math.round(top)} (runtime write)`);
         return;
       }
       lastNativeScrollAt = now;
       frameHadNativeScroll = true;
-      if (verbose()) log(`scroll top=${Math.round(top)}`);
+      noteInput(`scroll top=${Math.round(top)}`);
     },
     { passive: true },
   );
-  viewport.addEventListener(
-    "scrollend",
-    () => {
-      if (verbose()) log("scrollend");
-    },
-    { passive: true },
-  );
+  viewport.addEventListener("scrollend", () => noteInput("scrollend"), {
+    passive: true,
+  });
 }
 
 // --- Content-change bookkeeping (what the lab itself changed, and when) ----
@@ -525,10 +556,16 @@ function recordContentChange(id: number, what: string): void {
   if (verbose()) log(what);
 }
 
+/** A width change that lands mid-phase reflows mounted rows live. */
+let widthChangedInPhase = false;
+
 function recordWidthChange(): void {
   contentSerial += 1;
   globalChangeSerial = contentSerial;
   lastContentChangeFrame = frame;
+  if (stateHeld || nativeActive() || smoothPending > 0) {
+    widthChangedInPhase = true;
+  }
 }
 
 // --- The runtime ------------------------------------------------------------
@@ -643,6 +680,7 @@ function onState(state: VirtualListState): void {
       state.held ? "warn" : "good",
     );
     if (!state.held) {
+      widthChangedInPhase = false;
       // ONE settle commits everything held, both edges.
       if (waitingChunk.start) chunkCommitted("start");
       if (waitingChunk.end) chunkCommitted("end");
@@ -698,15 +736,15 @@ function createPaintObserver(): void {
         continue;
       }
       clippedKeys.add(key);
-      // Held (a scroll phase is active by the runtime's reckoning) or
-      // natively scrolling: clipping is the contract. Idle: a defect.
-      if (!stateHeld && !nativeActive() && smoothPending === 0) {
-        clippedPaints += 1;
-        violation(
-          "L",
-          `#${key} paints clipped while idle (slot ${slotHeight.toFixed(1)}px, content ${contentHeight.toFixed(1)}px)`,
-        );
-      }
+      // Frozen elements never change under a live phase, so this holds
+      // held or not. The one thing the runtime cannot freeze is a width
+      // change landing mid-phase (the browser reflows mounted rows live).
+      if (widthChangedInPhase) continue;
+      clippedPaints += 1;
+      violation(
+        "L",
+        `#${key} paints ${contentHeight > slotHeight ? "clipped" : "gapped"} (slot ${slotHeight.toFixed(1)}px, content ${contentHeight.toFixed(1)}px, held=${stateHeld})`,
+      );
     }
     scheduleStatus();
   });
@@ -715,9 +753,26 @@ function createPaintObserver(): void {
   }
 }
 
+// Registrations happen from the MutationObserver, i.e. inside the frame's
+// observer delivery: observing there schedules a same-depth observation the
+// loop cannot deliver ("loop completed with undelivered notifications").
+// Registrations wait a frame instead — the runtime does the same.
+const pendingWatches: Element[] = [];
+let watchFrame = 0;
+
 function watchRow(slot: Element): void {
   const row = slot.firstElementChild;
-  if (row) paintObserver?.observe(row);
+  if (!row) return;
+  pendingWatches.push(row);
+  if (watchFrame !== 0) return;
+  watchFrame = requestAnimationFrame(() => {
+    watchFrame = 0;
+    for (const element of pendingWatches.splice(0)) {
+      if (element.parentElement?.parentElement === canvas) {
+        paintObserver?.observe(element);
+      }
+    }
+  });
 }
 
 function unwatchRow(slot: Element): void {
@@ -845,10 +900,13 @@ function classifyBatch(records: MutationRecord[]): void {
     if (nativeActive(now)) {
       violation(
         "G",
-        `geometry changed during native scroll (${heightChanges.length} heights, ${offsetChanges} offsets, canvas ${canvasChange ? "changed" : "same"})`,
+        `geometry changed during native scroll (${heightChanges.length} heights, ${offsetChanges} offsets, canvas ${canvasChange ? "changed" : "same"}) — ${evidence(now)}`,
       );
     } else if (glideMoving(now)) {
-      violation("G", "geometry changed while a glide was still moving");
+      violation(
+        "G",
+        `geometry changed while a glide was still moving — ${evidence(now)}`,
+      );
     }
   }
 
@@ -1074,16 +1132,11 @@ function scheduleStatus(): void {
 const random = mulberry32(0x9e3779b9);
 const streams = new Map<number, number>();
 
+/** Every content change is a new item object handed to setItems. */
 function changeContent(item: Item, what: string): void {
-  if (checkbox("channel").value === "items") {
-    const updated = { ...item, version: item.version + 1 };
-    replaceItem(updated);
-    list.setItems(items);
-  } else {
-    item.version += 1;
-    const row = elementById.get(item.id);
-    if (row) update(item, row);
-  }
+  const updated = { ...item, version: item.version + 1 };
+  replaceItem(updated);
+  list.setItems(items);
   recordContentChange(item.id, what);
 }
 

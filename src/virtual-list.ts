@@ -27,12 +27,18 @@ import {
 //    and a single anchor-preserving scroll write. Retained nodes are
 //    re-measured immediately before they commit (a detached image may have
 //    decoded since preparation), so the latest heights commit once.
-// 4. A mounted row lives inside a dimensionally stable SLOT (fixed height,
-//    clipped). Same-key content changes — streaming text, toggles, late
-//    images, font swaps — may mutate the row any time: the slot clips
-//    them, geometry stays put, and the row is marked dirty; its real height
-//    is read in place at the next commit. Idle: the commit is immediate,
-//    in the same frame as the ResizeObserver delivery.
+// 4. During a phase, committed elements are frozen along with geometry: a
+//    same-key update (streaming text, toggles, a decoded image) is rendered
+//    fresh and premeasured off-scroller, and the settle commit swaps
+//    content, height, offsets, canvas, and anchor together — nothing
+//    mounted ever shows content that disagrees with its slot. Idle, the
+//    same update renders in place and commits immediately. A mounted row
+//    lives inside a dimensionally stable SLOT (fixed height, clipped) as
+//    the safety net for changes the host makes outside setItems (direct
+//    DOM mutation, late resources): the ResizeObserver marks the row dirty
+//    and its real height commits at settle, or in the same delivery when
+//    idle — geometry never drifts, but such content clips or gaps until
+//    then, so hosts route size changes through setItems.
 //
 // There is no compensation machinery: no mid-gesture corrections, no
 // canvas translation, no "safe update" exceptions. What v1 patched cannot
@@ -53,9 +59,11 @@ export interface VirtualListOptions<T> {
   key: (item: T) => string;
   /**
    * Build a row's element, or update `existing` in place for a same-key
-   * item change (return it) or replace it (return a new element). Runs
-   * off-scroller for unmounted rows; for mounted rows an in-place update
-   * mutates inside the row's fixed slot.
+   * item change (return it) or replace it (return a new element).
+   * `existing` is offered only when mutating it is safe: while the list is
+   * idle, or when it is an off-scroller element (a pending replacement).
+   * During a scroll phase a committed row's update is rendered fresh
+   * (no `existing`) and swapped in at settle.
    */
   render: (item: T, existing?: HTMLElement) => HTMLElement;
   overscanPx?: number;
@@ -603,8 +611,19 @@ export function createVirtualList<T>(
             committed.renderUnknown ||
             committed.renderedItem !== item
           ) {
-            const replacement = renderInPlaceOrReplace(committed, item);
-            if (replacement !== null) newRows.set(key, replacement);
+            if (idle()) {
+              const replacement = renderInPlaceOrReplace(committed, item);
+              if (replacement !== null) newRows.set(key, replacement);
+            } else {
+              // A scroll phase is active: committed elements are frozen —
+              // content as much as geometry, mounted or not (an unmounted
+              // row may mount mid-phase at its committed height). The
+              // update is rendered FRESH, premeasured off-scroller, and
+              // swapped in atomically at settle with its height; later
+              // updates in the same phase advance that replacement in
+              // place (it is off-scroller) through the adoption branch.
+              newRows.set(key, measureFresh(key, item, render(item)));
+            }
           }
         }
         if (disposed) throw new DisposedDuringPreparation();

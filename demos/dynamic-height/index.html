@@ -140,11 +140,16 @@
         background: color-mix(in srgb, var(--accent) 8%, transparent);
         font-size: 13px;
       }
+      /* Reserved at zero height until the item learns the size at load;
+         then CSS-sized through aspect-ratio, independent of decode. */
       .row .pic {
         display: block;
         width: 100%;
-        height: auto;
+        height: 0;
         border-radius: 8px;
+      }
+      .row.loaded .pic {
+        height: auto;
       }
       .row .code {
         margin: 0;
@@ -336,11 +341,11 @@
           <div class="cell" title="Elements the lab rendered / destroyed exactly once by the runtime / still alive"><b>nodes c/d/live</b><span class="val" id="s-nodes">0/0/0</span></div>
           <div
             class="cell"
-            title="Mounted rows whose painted content height differs from the committed slot height — expected while held, must return to 0 after settle"
+            title="Mounted rows whose painted content height differs from the committed slot height — must always be 0 (frozen elements never change under a phase)"
           ><b>clipped</b><span class="val" id="s-clipped">0</span></div>
           <div
             class="cell"
-            title="ResizeObserver deliveries (post-runtime, pre-paint) in which an idle row was taller than its slot — a frame that paints clipped; must stay 0"
+            title="ResizeObserver deliveries (post-runtime, pre-paint) in which a mounted row disagreed with its slot — a frame that paints clipped or gapped; must stay 0, held or not"
           ><b>clipped paints</b><span class="val" id="s-paints">0</span></div>
           <div class="cell"><b>streams</b><span class="val" id="s-streams">0</span></div>
           <div class="cell" title="Late images: waiting for their src / loaded"><b>images</b><span class="val" id="s-images">0/0</span></div>
@@ -352,13 +357,6 @@
           <label><input type="checkbox" id="toggles" checked />toggles</label>
           <label><input type="checkbox" id="images" checked />late images</label>
           <label><input type="checkbox" id="width-jitter" />width jitter</label>
-          <label
-            >channel
-            <select id="channel" title="How content changes reach the runtime">
-              <option value="dom">DOM</option>
-              <option value="items">setItems</option>
-            </select></label
-          >
           <label title="A same-key re-render returns a NEW element instead of updating in place"
             ><input type="checkbox" id="replace" />replace</label
           >
