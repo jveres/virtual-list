@@ -227,7 +227,12 @@ export function createVirtualList<T>(
       if (item === undefined) continue;
       let element = mounted.get(key);
       if (element === undefined) {
-        element = adoptElement(key, render(item));
+        const created = render(item);
+        // render() is a host callback: it may dispose the list, and then
+        // reconciliation must abort — no appends, observes, or bookkeeping
+        // on a torn-down canvas.
+        if (disposed) return;
+        element = adoptElement(key, created);
         canvas.appendChild(element);
         itemResizeObserver.observe(element);
         renderedItem.set(key, item);
@@ -236,6 +241,7 @@ export function createVirtualList<T>(
         // replacement element takes over the row's bookkeeping and is
         // positioned below like any other — inside the transaction.
         const next = render(item, element);
+        if (disposed) return;
         renderedItem.set(key, item);
         if (next !== element) {
           itemResizeObserver.unobserve(element);
@@ -311,24 +317,31 @@ export function createVirtualList<T>(
       if (atEndTop(viewport.scrollTop)) following = true;
       const pendingItems = deferredItems;
       deferredItems = null;
-      // One flush transaction: the deferred structural update, deferred
-      // measures, reserve re-evaluation (released reserve drains once out
-      // of view) — and the suppressed end-follow catch-up (I2).
-      transaction(
-        pendingItems?.anchor ?? (following ? "end" : "viewport"),
-        () => {
-          if (pendingItems) adoptItems(pendingItems.items);
-          for (const [key, height] of deferredMeasures) {
-            geometry.measure(key, height);
-          }
-          deferredMeasures.clear();
-        },
-      );
-      // A command deferred during the gesture executes now, outranking the
-      // anchor policies it settled with.
       const command = pendingCommand;
       pendingCommand = null;
-      if (command) scrollTo(command.target, command.options);
+      // The whole settle — flush transaction AND the gesture-deferred
+      // command — is ONE guarded boundary: a newer command queued by the
+      // flush's publication drains only afterward, so it executes after
+      // the older deferred one and wins.
+      guarded(() => {
+        // One flush commit: the deferred structural update, deferred
+        // measures, reserve re-evaluation (released reserve drains once
+        // out of view) — and the suppressed end-follow catch-up (I2).
+        commitOnce(
+          pendingItems?.anchor ?? (following ? "end" : "viewport"),
+          () => {
+            if (pendingItems) adoptItems(pendingItems.items);
+            for (const [key, height] of deferredMeasures) {
+              geometry.measure(key, height);
+            }
+            deferredMeasures.clear();
+          },
+        );
+        if (disposed) return;
+        // The deferred command executes inside the boundary, outranking
+        // the anchor policies it settled with.
+        if (command) performScrollTo(command.target, command.options);
+      });
     },
   });
 
@@ -432,23 +445,34 @@ export function createVirtualList<T>(
     setOptions: { anchor?: AnchorPolicy } = {},
   ): void {
     if (disposed) return;
-    if (enqueueDuringCommit(() => setItems(next, setOptions))) return;
+    // Inputs are captured at call time — the caller's array stays theirs,
+    // and mutating it after the call (even from inside a callback, before
+    // the queued operation runs) cannot leak into the runtime.
+    const snapshot = [...next];
     const anchor = setOptions.anchor ?? "auto";
+    if (enqueueDuringCommit(() => applySetItems(snapshot, anchor))) return;
+    applySetItems(snapshot, anchor);
+  }
+
+  /** `snapshot` is runtime-owned (copied by setItems at call time). */
+  function applySetItems(snapshot: readonly T[], anchor: AnchorPolicy): void {
+    if (disposed) return;
     // Mid-gesture, only "auto" end-compatible updates commit immediately
     // (their resolved target is where the user already is). Everything else
     // defers: structural changes, and any explicit anchor policy — settle
     // must honor the stated policy, not re-derive one from follow state.
     // Once anything is deferred, every later snapshot replaces it (latest
-    // wins; a newer update must not leapfrog an older deferred one). The
-    // snapshot is copied on acceptance — the caller's array stays theirs.
+    // wins; a newer update must not leapfrog an older deferred one).
     if (
       sensor.active &&
-      (deferredItems !== null || anchor !== "auto" || !isEndCompatible(next))
+      (deferredItems !== null ||
+        anchor !== "auto" ||
+        !isEndCompatible(snapshot))
     ) {
-      deferredItems = { items: [...next], anchor };
+      deferredItems = { items: snapshot, anchor };
       return;
     }
-    transaction(anchor, () => adoptItems(next));
+    transaction(anchor, () => adoptItems(snapshot));
   }
 
   // --- Commands -------------------------------------------------------------
@@ -457,13 +481,26 @@ export function createVirtualList<T>(
     scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" } = {},
   ): void {
     if (disposed) return;
-    if (enqueueDuringCommit(() => scrollTo(target, scrollOptions))) return;
+    // Options are normalized into a runtime-owned object at call time.
+    const owned = {
+      align: scrollOptions.align,
+      behavior: scrollOptions.behavior,
+    };
+    if (enqueueDuringCommit(() => scrollTo(target, owned))) return;
     if (sensor.active) {
       // The user owns the viewport (documented precedence); the command
       // defers to settle, latest wins.
-      pendingCommand = { target, options: scrollOptions };
+      pendingCommand = { target, options: owned };
       return;
     }
+    performScrollTo(target, owned);
+  }
+
+  /** The command body; runs only when no gesture is active. */
+  function performScrollTo(
+    target: string | "start" | "end",
+    scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" },
+  ): void {
     glide?.cancel();
 
     const destination = (): number => {

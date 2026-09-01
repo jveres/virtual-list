@@ -50,6 +50,7 @@ function mount(
   hooks: {
     onReachStart?: () => void;
     onState?: (s: VirtualListState) => void;
+    onRender?: (m: Msg) => void;
     replaceOnRerender?: boolean;
   } = {},
 ) {
@@ -62,6 +63,7 @@ function mount(
     estimateSize: ESTIMATE,
     render: (m, existing) => {
       renders.push(m.id);
+      hooks.onRender?.(m);
       const el =
         hooks.replaceOnRerender || !existing
           ? document.createElement("div")
@@ -446,6 +448,62 @@ describe("virtual list runtime", () => {
     // disposal in the callback must stop it from firing.
     expect(reached).toBe(0);
     expect(viewport.children.length).toBe(0);
+  });
+
+  it("runs a settle-flush-queued command after the gesture-deferred one, so it wins", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let once = false;
+    const { viewport, list } = mount(range(0, 100), {
+      onState: (state) => {
+        if (!listRef || once || state.count !== 105) return;
+        once = true;
+        // Queued during the settle flush's publication: must execute after
+        // the older gesture-deferred scrollTo("start"), not before it.
+        listRef.scrollTo("m20");
+      },
+    });
+    listRef = list;
+
+    userScroll(viewport, 9402);
+    list.scrollTo("start"); // Deferred: the user owns the viewport.
+    list.setItems(range(-5, 100)); // Structural: deferred to settle.
+
+    settleGesture(viewport);
+    // m20 sits at index 25 in the new list — the newer command's target.
+    expect(viewport.scrollTop).toBe(25 * ESTIMATE);
+  });
+
+  it("aborts reconciliation when render() disposes the list", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    const { viewport, list } = mount(range(0, 10), {
+      onRender: (m) => {
+        if (m.id === 99) listRef?.dispose();
+      },
+    });
+    listRef = list;
+
+    expect(() => list.setItems([...range(0, 10), message(99)])).not.toThrow();
+    // The canvas is gone and nothing was re-appended, observed, or
+    // bookkept after the disposing render call.
+    expect(viewport.children.length).toBe(0);
+  });
+
+  it("captures a queued setItems snapshot at call time (owned inputs)", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let once = false;
+    const { list } = mount(range(0, 10), {
+      onState: (state) => {
+        if (!listRef || once || state.count !== 12) return;
+        once = true;
+        const next = range(0, 5);
+        listRef.setItems(next);
+        next.push(message(99)); // Mutated after the call, before the queue drains.
+      },
+    });
+    listRef = list;
+
+    list.setItems(range(0, 12));
+    expect(list.state.count).toBe(5); // The mutation never leaked in.
   });
 
   it("dispose removes the canvas and stops reacting", () => {
