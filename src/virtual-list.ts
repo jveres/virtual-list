@@ -150,6 +150,16 @@ export interface VirtualListConfig {
   onReachBottom?: (state: VirtualListState) => void;
   onScrollStart?: (state: VirtualListState) => void;
   onScrollEnd?: (state: VirtualListState) => void;
+  /**
+   * A measurement was committed for an item: the list now models `index` at
+   * `height` (real border-box pixels, learned from the DOM). Hosts that keep
+   * their own height model — anything feeding `getItemHeight` from state —
+   * should sync it here, or the two models drift apart whenever content
+   * changes after the host's own measurement (images decoding, late syntax
+   * highlighting, web fonts). Notification only: runs after the correction
+   * is applied; do not mutate the list synchronously from it.
+   */
+  onItemMeasured?: (index: number, height: number) => void;
 }
 
 export interface VirtualListItemMeasurerConfig {
@@ -313,6 +323,19 @@ export interface VirtualList {
    * it harmlessly.
    */
   remeasureIndex(index: number): void;
+  /**
+   * Schedule a remeasure of the mounted item rendering `element`, timed for
+   * user-interaction-driven discrete height changes (a <details> toggle, a
+   * class flip): the commit runs on the next animation frame — after the
+   * event's default action has applied the new layout, before it paints —
+   * so the height change, canvas resize, and scroll correction land in one
+   * painted frame. (A microtask is too early: for a real click it runs
+   * before the activation behavior mutates the DOM.) The element's index is
+   * resolved by identity at commit time, since indexes shift under
+   * loaded-window moves. Same correction semantics as remeasureIndex;
+   * no-op if the element is not mounted when the frame fires.
+   */
+  remeasureElement(element: HTMLElement): void;
   refreshIndex(index: number): void;
   refreshMounted(): void;
   /**
@@ -545,6 +568,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     onReachBottom,
     onScrollStart,
     onScrollEnd,
+    onItemMeasured,
   } = config;
 
   const getOverscanPx = toNumberGetter(config.overscanPx, DEFAULT_OVERSCAN_PX);
@@ -2081,6 +2105,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     );
     let changed = false;
     let correction = 0;
+    const committed: [number, number][] = [];
 
     for (const [index, height] of pending) {
       const explicitDataGeneration =
@@ -2097,6 +2122,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
       if (correctionDelta === null) continue;
       changed = true;
       correction += correctionDelta;
+      if (onItemMeasured) committed.push([index, height]);
     }
 
     if (!changed) {
@@ -2105,6 +2131,9 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     }
 
     applyMeasurementCorrection(wasAtBottom, hadStickyTail, correction);
+    for (const [index, height] of committed) {
+      onItemMeasured?.(index, height);
+    }
     return true;
   }
 
@@ -2157,6 +2186,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
 
     applyMeasurementCorrection(wasAtBottom, hadStickyTail, correction);
     renderNow();
+    onItemMeasured?.(index, height);
   }
 
   function scrollTopForIndex(
@@ -3266,6 +3296,19 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     commitExplicitMeasurement(targetIndex, height, itemDataGeneration, false);
   }
 
+  function remeasureElement(element: HTMLElement): void {
+    if (disposed) return;
+    requestAnimationFrame(() => {
+      if (disposed) return;
+      for (const [index, mountedElement] of mounted) {
+        if (mountedElement === element) {
+          remeasureIndex(index);
+          return;
+        }
+      }
+    });
+  }
+
   function isAtNativeScrollBoundary(scrollTop = viewport.scrollTop): boolean {
     const maxScrollTop = nativeMaxScrollTop();
     return (
@@ -3454,6 +3497,7 @@ export function createVirtualList(config: VirtualListConfig): VirtualList {
     getMountedElement,
     getItemOffset,
     remeasureIndex,
+    remeasureElement,
     refreshIndex,
     refreshMounted,
     refreshFrom,
