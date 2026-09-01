@@ -254,7 +254,7 @@ describe("virtual list runtime", () => {
     expect(list.state.count).toBe(5); // Queued call ran after the callback.
   });
 
-  it("restores exact end-follow at settle for an append during a gesture (I2)", () => {
+  it("defers an append during a gesture and lands exactly at settle (I2)", () => {
     const { viewport, list } = mount(range(0, 50));
     expect(viewport.scrollTop).toBe(4400);
 
@@ -262,13 +262,33 @@ describe("virtual list runtime", () => {
     userScroll(viewport, 4398);
 
     list.setItems(range(0, 52));
-    // Committed (not deferred), but the user owns the viewport: no write.
-    expect(list.state.count).toBe(52);
+    // A key-sequence change: deferred — nothing restructures the list
+    // under a live scroll, and the viewport stays untouched.
+    expect(list.state.count).toBe(50);
     expect(viewport.scrollTop).toBe(4398);
 
     settleGesture(viewport);
-    // Follow intent survived the suppressed write: exact landing.
+    // The flush resolves the deferred "auto" through follow state: the
+    // append commits and lands on the new end exactly.
+    expect(list.state.count).toBe(52);
     expect(viewport.scrollTop).toBe(52 * ESTIMATE - VIEWPORT_H);
+  });
+
+  it("commits identical-key streaming replacements immediately during a gesture", () => {
+    const initial = range(0, 50);
+    const { viewport, list } = mount(initial);
+    userScroll(viewport, 4398);
+
+    // Same key sequence, one changed identity: a streaming row update.
+    const next = [...initial];
+    next[49] = message(49, "streamed body");
+    list.setItems(next);
+
+    const canvas = viewport.firstElementChild as HTMLElement;
+    const texts = [...canvas.children].map((el) => el.textContent);
+    expect(texts).toContain("streamed body"); // Not deferred.
+    expect(viewport.scrollTop).toBe(4398); // And no write, of course.
+    settleGesture(viewport);
   });
 
   it("restores exact end-follow at settle for bottom growth during a gesture (I2)", () => {
@@ -294,7 +314,7 @@ describe("virtual list runtime", () => {
 
     list.setItems(range(-10, 50)); // A: structural (prepend) → deferred.
     expect(list.state.count).toBe(50);
-    list.setItems(range(0, 55)); // B: end-compatible, but must replace A.
+    list.setItems(range(0, 55)); // B: also structural — must replace A.
     expect(list.state.count).toBe(50); // Still deferred — no bypass.
 
     settleGesture(viewport);

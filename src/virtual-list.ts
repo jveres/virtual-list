@@ -17,10 +17,11 @@ import { type Glide, glideDuration, startGlide } from "./glide";
 // The arbiter is the only scrollTop writer, with the documented precedence:
 // explicit command > user gesture > end-anchor > position-anchor. A command
 // issued during an active gesture takes the viewport over immediately —
-// the sensor is interrupted (trailing momentum absorbed in its grace
-// window), the gesture shift is exchanged, deferred geometry flushes, and
-// the command starts, all in one guarded operation. Anchor-driven writes
-// still yield to an active gesture until settle.
+// the sensor genuinely cancels native momentum and settles the phase
+// synchronously (exchanging the gesture shift, flushing deferred
+// geometry), then the command starts, all in one guarded operation.
+// Anchor-driven writes still yield to an active native gesture until
+// settle; a programmatic phase (our own glide) writes freely.
 //
 // End-follow is explicit state: engaged when a commit lands at the end,
 // disengaged when the user scrolls upward, re-engaged when they return to
@@ -33,10 +34,11 @@ import { type Glide, glideDuration, startGlide } from "./glide";
 // lands in the same painted frame (I6). Measurements always commit; during
 // a gesture the runtime writes NO scrollTop — the anchor-preserving delta
 // is applied as a temporary canvas translation (the gesture shift) and
-// exchanged for one scrollTop write at settle, in the same frame.
-// Structural and explicitly anchored updates defer during a gesture and
-// flush at settle (the explicit policy is honored there); once a snapshot
-// is deferred, every later one replaces it (latest wins).
+// exchanged for one scrollTop write at settle, in the same frame. Every
+// key-sequence change (append, prepend, removal, reorder) and every
+// explicitly anchored update defers during a scroll phase and flushes at
+// its end; only identical-key replacements commit immediately. Once a
+// snapshot is deferred, every later one replaces it (latest wins).
 //
 // Edge chrome does not exist here (I3): `onReachStart/End` are proximity
 // signals with entry/exit hysteresis; loaders are the host's overlays.
@@ -453,13 +455,18 @@ export function createVirtualList<T>(
         deferredItems = null;
         // One flush commit: the deferred structural update, reserve
         // re-evaluation (released reserve drains once out of view) — and
-        // the suppressed end-follow catch-up (I2).
-        commitOnce(
-          pendingItems?.anchor ?? (following ? "end" : "viewport"),
-          () => {
-            if (pendingItems) adoptItems(pendingItems.items);
-          },
-        );
+        // the suppressed end-follow catch-up (I2). A deferred "auto"
+        // snapshot resolves against follow state here: mid-phase positions
+        // are rarely numerically at the end, so `following` — not the
+        // capture-time atEnd — carries the intent (a deferred append while
+        // following must land the new end exactly).
+        const explicitAnchor =
+          pendingItems !== null && pendingItems.anchor !== "auto"
+            ? pendingItems.anchor
+            : null;
+        commitOnce(explicitAnchor ?? (following ? "end" : "viewport"), () => {
+          if (pendingItems) adoptItems(pendingItems.items);
+        });
       });
     },
   });
@@ -551,9 +558,10 @@ export function createVirtualList<T>(
     }
   }
 
-  function isEndCompatible(next: readonly T[]): boolean {
-    if (next.length < geometry.count) return false;
-    for (let index = 0; index < geometry.count; index++) {
+  /** True when the snapshot carries exactly the current key sequence. */
+  function isSameKeySequence(next: readonly T[]): boolean {
+    if (next.length !== geometry.count) return false;
+    for (let index = 0; index < next.length; index++) {
       if (keyOf(next[index] as T) !== geometry.keyAt(index)) return false;
     }
     return true;
@@ -577,20 +585,20 @@ export function createVirtualList<T>(
   function applySetItems(snapshot: readonly T[], anchor: AnchorPolicy): void {
     if (disposed) return;
     // The sensor tracks BOTH scroll-phase flavors — native gestures and
-    // programmatic glides. During either, only "auto" end-compatible
-    // updates commit immediately (their resolved target is where the user
-    // already is, or the live end a glide is tracking). Everything else
-    // defers: structural changes, and any explicit anchor policy — the
-    // flush must honor the stated policy, not re-derive one from follow
-    // state. Once anything is deferred, every later snapshot replaces it
-    // (latest wins); the single kept snapshot commits once, anchored, when
-    // the OVERALL phase reaches idle — a glide→gesture handoff never
-    // flushes in between.
+    // programmatic glides. During either, only "auto" IDENTICAL-KEY
+    // updates commit immediately (same-key streaming replacements: no
+    // geometry restructuring, just row content). EVERY key-sequence change
+    // — append, prepend, removal, reorder — defers, as does any explicit
+    // anchor policy: nothing restructures the list under a live scroll,
+    // and the flush honors the stated policy. Once anything is deferred,
+    // every later snapshot replaces it (latest wins); the single kept
+    // snapshot commits once, anchored, when the OVERALL phase reaches
+    // idle — a glide→gesture handoff never flushes in between.
     if (
       sensor.active &&
       (deferredItems !== null ||
         anchor !== "auto" ||
-        !isEndCompatible(snapshot))
+        !isSameKeySequence(snapshot))
     ) {
       deferredItems = { items: snapshot, anchor };
       return;

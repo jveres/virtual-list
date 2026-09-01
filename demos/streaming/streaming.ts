@@ -576,11 +576,18 @@ function scheduleEdgeHide(): void {
 // The in-flight scrollback load, so concurrent reach-start signals share
 // one load instead of racing.
 let activeLoad: Promise<void> | null = null;
+// A prepend handed to the runtime but not yet committed (the runtime
+// defers structural updates while a scroll phase is active). The loader —
+// pill included — stays up until onState confirms the committed count, or
+// the user reaches the old top with no loader in sight and rubber-bands
+// against a ghost end.
+let pendingPrepend: { count: number; finish: () => void } | null = null;
 
-// Loads one older chunk; resolves once the snapshot has been handed to the
-// runtime — which may defer the actual commit until the active scroll phase
-// settles. The prepend preserves the reading position (I1), and the runtime
-// re-arms the reach-start signal once the viewport is past the exit zone.
+// Loads one older chunk; resolves once the prepend has actually been
+// COMMITTED by the runtime — which may hold it until the active scroll
+// phase settles. The prepend preserves the reading position (I1), and the
+// runtime re-arms the reach-start signal once the viewport is past the
+// exit zone.
 function loadOlderChunk(): Promise<void> {
   if (activeLoad) return activeLoad;
   if (!canLoadOlderMessages()) return Promise.resolve();
@@ -594,19 +601,31 @@ function loadOlderChunk(): Promise<void> {
   // provider switch or history clear mid-timeout).
   const epoch = conversationEpoch;
   activeLoad = new Promise((resolve) => {
-    window.setTimeout(() => {
+    const finish = () => {
+      pendingPrepend = null;
+      loadingTop = false;
       activeLoad = null;
+      if (epoch === conversationEpoch) {
+        if (!canLoadOlderMessages()) setEdgeState("no-more");
+        else scheduleEdgeHide(); // Linger: the next chunk may follow at once.
+        syncMetrics();
+      }
+      resolve();
+    };
+    window.setTimeout(() => {
       if (epoch !== conversationEpoch) {
-        resolve();
+        finish();
         return;
       }
-      loadingTop = false;
       loadedStart = Math.max(0, loadedStart - loadChunkCount());
       pushItems();
-      if (!canLoadOlderMessages()) setEdgeState("no-more");
-      else scheduleEdgeHide(); // Linger: the next chunk may follow at once.
-      syncMetrics();
-      resolve();
+      if (virtualList && virtualList.state.count < messages.length) {
+        // Deferred by the runtime: stay in the loading state until the
+        // commit is confirmed through onState.
+        pendingPrepend = { count: messages.length, finish };
+      } else {
+        finish();
+      }
     }, LOAD_OLDER_DELAY_MS);
   });
   return activeLoad;
@@ -1577,6 +1596,10 @@ virtualList = createVirtualList<Message>(viewport, {
   },
   estimateSize: ESTIMATED_ITEM_HEIGHT,
   onState: (state) => {
+    // A deferred prepend committed: close out the load it belongs to.
+    if (pendingPrepend && state.count >= pendingPrepend.count) {
+      pendingPrepend.finish();
+    }
     syncScrollButtons(state);
     syncMetrics(state);
   },

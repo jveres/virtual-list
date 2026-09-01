@@ -112,8 +112,8 @@ command starts.
 
 **The scroll-phase rule (architectural):** a native gesture and a
 programmatic glide are both active scroll phases, tracked by ONE state
-machine in the sensor. While either is active, structural `setItems`
-updates defer — only the latest snapshot is kept — and commit once,
+machine in the sensor. While either is active, every key-sequence-changing
+`setItems` defers — only the latest snapshot is kept — and commits once,
 anchored, when the OVERALL phase reaches idle: the browser-adaptive
 settle for gestures, completion for glides. User input (wheel, touch,
 pointer) mid-glide hands the phase programmatic → native without going
@@ -144,11 +144,13 @@ transaction runs. Anchor-driven moving writes (the end-follow catch-up)
 remain refused until settle; an explicit command instead interrupts the
 gesture, as above.
 
-Within an active scroll phase, only `anchor: "auto"` end-compatible
-updates commit immediately (their resolved target is where the user
-already is, or the live end a glide is tracking); updates with an
-explicit anchor policy defer and are flushed at the phase end under that
-stated policy, never one re-derived from follow state.
+Within an active scroll phase, only `anchor: "auto"` IDENTICAL-KEY
+updates commit immediately — same-key streaming replacements that change
+row content, never the key sequence. Every key-sequence change (append,
+prepend, removal, reorder) defers, as does any explicitly anchored
+update; the flush honors an explicit policy verbatim, and resolves a
+deferred "auto" through follow state (a deferred append while following
+lands the new end exactly).
 
 The glide rebases (never snaps) when either of its endpoints moves
 externally: an anchor-preserving prepend shifting the position, or a
