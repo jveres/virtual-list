@@ -154,6 +154,42 @@
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
+      .row.fresh {
+        animation: fresh 0.9s ease-out;
+      }
+      @keyframes fresh {
+        from {
+          background: color-mix(in srgb, var(--accent) 18%, transparent);
+        }
+      }
+      #pill {
+        position: absolute;
+        top: 10px;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: center;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+      #pill.visible {
+        opacity: 1;
+      }
+      #pill.bottom {
+        top: auto;
+        bottom: 10px;
+      }
+      #pill span {
+        padding: 5px 14px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--bg-panel);
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--fg-dim);
+        box-shadow: 0 4px 14px rgb(0 0 0 / 0.15);
+      }
       aside {
         width: 400px;
         flex: none;
@@ -277,6 +313,7 @@
     <main>
       <div class="stage" id="stage">
         <div id="viewport"></div>
+        <div id="pill"><span id="pill-label"></span></div>
       </div>
       <aside>
         <div class="grid">

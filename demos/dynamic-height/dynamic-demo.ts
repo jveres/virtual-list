@@ -234,6 +234,9 @@ function replaceItem(updated: Item): void {
   items = items.map((item) => (item.id === updated.id ? updated : item));
 }
 
+/** Ids of chunk rows not yet built: their first render gets the highlight. */
+const freshIds = new Set<number>();
+
 function makeChunk(edge: "start" | "end"): Item[] {
   const chunk: Item[] = [];
   if (edge === "start") {
@@ -247,7 +250,10 @@ function makeChunk(edge: "start" | "end"): Item[] {
     }
     nextId += CHUNK_ROWS;
   }
-  for (const item of chunk) itemById.set(item.id, item);
+  for (const item of chunk) {
+    itemById.set(item.id, item);
+    freshIds.add(item.id);
+  }
   return chunk;
 }
 
@@ -296,6 +302,7 @@ function scheduleImage(row: HTMLElement, img: HTMLImageElement, item: Item) {
 function build(item: Item): HTMLElement {
   const row = element("div", `row ${item.kind}`);
   row.dataset.id = String(item.id);
+  if (freshIds.delete(item.id)) row.classList.add("fresh");
   row.append(element("span", "idx", `#${item.id} · ${item.kind}`));
   row.append(element("p", "body"));
   if (item.kind === "toggle") {
@@ -566,10 +573,54 @@ let expectAnchoredCommit = false;
 /** A held phase just committed: the next geometry batch is worth logging. */
 let heldCleared = false;
 
+// --- The edge pill (same presentation as the settle lab) --------------------
+
+const pill = mustGet("pill");
+const pillLabel = mustGet("pill-label");
+let pillTimer = 0;
+let pillSticky = false;
+/** A chunk handed to the runtime while scrolling, committing at settle. */
+const waitingChunk: Record<"start" | "end", boolean> = {
+  start: false,
+  end: false,
+};
+
+function showPill(text: string, edge: "start" | "end", sticky = false): void {
+  window.clearTimeout(pillTimer);
+  pillSticky = sticky;
+  pill.classList.toggle("bottom", edge === "end");
+  pillLabel.textContent = text;
+  pill.classList.add("visible");
+  if (sticky) {
+    pillTimer = window.setTimeout(() => {
+      pillSticky = false;
+      pill.classList.remove("visible");
+    }, 1400);
+  }
+}
+
+/** Hides the pill; a sticky pill ("at the top/bottom") survives unless forced. */
+function hidePill(force = false): void {
+  if (pillSticky && !force) return;
+  window.clearTimeout(pillTimer);
+  pillSticky = false;
+  pill.classList.remove("visible");
+}
+
+function chunkCommitted(edge: "start" | "end"): void {
+  waitingChunk[edge] = false;
+  if (chunksLeft[edge] > 0) {
+    hidePill(true);
+  } else {
+    showPill(edge === "start" ? "at the top" : "at the bottom", edge, true);
+  }
+}
+
 function startLoad(edge: "start" | "end", context: ReachContext): void {
   if (!booted || !checkbox("auto-load").checked) return;
-  if (loading[edge] || chunksLeft[edge] <= 0) return;
+  if (loading[edge] || waitingChunk[edge] || chunksLeft[edge] <= 0) return;
   loading[edge] = true;
+  showPill(edge === "start" ? "loading older…" : "loading newer…", edge);
   log(`load ${edge} start`);
   const timer = window.setTimeout(() => {
     loading[edge] = false;
@@ -581,7 +632,16 @@ function startLoad(edge: "start" | "end", context: ReachContext): void {
     // happens to sit exactly at the end must NOT follow the appended chunk
     // (that end-follow is `auto`'s convention for live messages, not pages).
     expectAnchoredCommit = true;
+    waitingChunk[edge] = true;
     list.setItems(items, { anchor: "viewport" });
+    if (stateHeld) {
+      // The scroll surface is immutable while the user scrolls: the
+      // runtime holds the prepared chunk for the settle signal.
+      showPill("waiting for settle…", edge);
+      log("HELD: gesture active, committing at settle", "mark");
+    } else {
+      chunkCommitted(edge);
+    }
     scheduleStatus();
   }, LOAD_LATENCY_MS);
   // What a real host does with fetch(url, { signal }).
@@ -591,6 +651,7 @@ function startLoad(edge: "start" | "end", context: ReachContext): void {
     loading[edge] = false;
     loadsAborted += 1;
     log(`ABORT load ${edge} (signal)`, "warn");
+    hidePill();
     scheduleStatus();
   });
 }
@@ -605,6 +666,11 @@ function onState(state: VirtualListState): void {
       state.held ? "HELD" : "committed (held cleared)",
       state.held ? "warn" : "good",
     );
+    if (!state.held) {
+      // ONE settle commits everything held, both edges.
+      if (waitingChunk.start) chunkCommitted("start");
+      if (waitingChunk.end) chunkCommitted("end");
+    }
   } else if (verbose() && previous.count !== state.count) {
     log(`state count=${state.count} total=${Math.round(state.totalSize)}`);
   }
@@ -1137,6 +1203,10 @@ function boot(): void {
   chunksLeft.end = MAX_CHUNKS;
   loading.start = false;
   loading.end = false;
+  waitingChunk.start = false;
+  waitingChunk.end = false;
+  freshIds.clear();
+  hidePill(true);
   committedSerial.clear();
   staleFrames.clear();
   staleReported.clear();
