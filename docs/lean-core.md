@@ -59,6 +59,10 @@ as preserved primitives, with the smaller API built around them.
    and gap shrinkage, which is visibly wrong). Later updates in a held
    phase advance that off-scroller replacement in place; one fresh render
    per key per phase once held, one per update while promotable.
+   `scrollingUpdates` selects the policy: `"same-height"` (default,
+   promotion as above) or `"freeze"` (every phase-time update held until
+   settle). There is no live-mutation mode. Structural changes are
+   settle-gated in both.
    While the surface is idle, the update renders in place and commits
    immediately (same pipeline). Changes made outside `setItems` — direct
    DOM mutation of a mounted row, a late resource growing an element — are
@@ -109,7 +113,8 @@ commit frequency in practice.
   floored engines, endpoint rebase).
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
   `createVirtualList(viewport, { items, key, render, overscanPx?,
-  onState?, onReachStart/End?, onDestroy?, settleStrategy? })`,
+  onState?, onReachStart/End?, onDestroy?, settleStrategy?,
+  scrollingUpdates? })`,
   `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior? })
   → Promise<boolean>`, `state` (adds `held`: work is waiting for settle),
   `dispose()`. Changes from the v1 shape: `estimateSize` is gone — every

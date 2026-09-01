@@ -66,7 +66,9 @@ export interface VirtualListOptions<T> {
    * `existing` is offered only when mutating it is safe: while the list is
    * idle, or when it is an off-scroller element (a pending replacement).
    * During a scroll phase a committed row's update is rendered fresh
-   * (no `existing`) and swapped in at settle.
+   * (no `existing`), premeasured, and — see `scrollingUpdates` — either
+   * swapped into the committed slot at once when its height is unchanged
+   * or retained and swapped in at settle.
    */
   render: (item: T, existing?: HTMLElement) => HTMLElement;
   overscanPx?: number;
@@ -83,6 +85,18 @@ export interface VirtualListOptions<T> {
   onDestroy?: (element: HTMLElement, item: T) => void;
   /** Settle strategy override (labs and tests); auto-detected otherwise. */
   settleStrategy?: VirtualListScrollSettleStrategy;
+  /**
+   * What happens to a same-key update that arrives during a scroll phase
+   * (structural changes are settle-gated in both modes):
+   * - "same-height" (default): rendered fresh and premeasured off-scroller;
+   *   if its height equals the committed height it is swapped into the
+   *   committed slot at once (no geometry change), otherwise held until
+   *   settle — streaming keeps flowing until a wrap changes the height;
+   * - "freeze": every such update is held until settle.
+   * There is no live-mutation mode: size-changing mutation of a mounted
+   * row produces clipped lines and gaps.
+   */
+  scrollingUpdates?: "freeze" | "same-height";
 }
 
 export interface VirtualListState {
@@ -162,6 +176,8 @@ export function createVirtualList<T>(
   options: VirtualListOptions<T>,
 ): VirtualList<T> {
   const { key: keyOf, render } = options;
+  const promoteSameHeight =
+    (options.scrollingUpdates ?? "same-height") === "same-height";
   const overscanPx = options.overscanPx ?? Math.max(300, viewport.clientHeight);
 
   // --- Committed state --------------------------------------------------------
@@ -639,6 +655,7 @@ export function createVirtualList<T>(
               // through the adoption branch.
               const fresh = measureFresh(key, item, render(item));
               if (
+                promoteSameHeight &&
                 !committed.dirty &&
                 Math.abs(fresh.height - committed.height) <= MEASURE_EPSILON_PX
               ) {

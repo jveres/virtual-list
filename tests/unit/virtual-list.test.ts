@@ -90,6 +90,7 @@ function mount(
     replaceOnRerender?: boolean;
     onState?: (state: VirtualListState) => void;
     onDestroy?: (element: HTMLElement) => void;
+    scrollingUpdates?: "freeze" | "same-height";
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     reach?: boolean | "start-only";
@@ -142,6 +143,7 @@ function mount(
     items,
     key: (m) => `m${m.id}`,
     settleStrategy: "default",
+    scrollingUpdates: hooks.scrollingUpdates,
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
@@ -373,6 +375,23 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.state.held).toBe(true);
     h.settle();
     expect(slot.style.height).toBe("300px");
+  });
+
+  it('scrollingUpdates: "freeze" holds even an equal-height update until settle', () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "freeze" });
+    h.userScroll(3005);
+    const row = h.rowElement("msg 32");
+    const next = [...initial];
+    next[32] = message(32, "same-height token");
+    h.list.setItems(next);
+    expect(row.textContent).toBe("msg 32"); // Frozen, not promoted.
+    expect(row.isConnected).toBe(true);
+    expect(h.list.state.held).toBe(true);
+    expect(h.destroyed).toEqual([]);
+    h.settle();
+    expect(h.rowElement("same-height token")).not.toBe(row);
+    expect(h.destroyed).toEqual([32]);
   });
 
   it("promotion leaves a pending page load (and its anchor) waiting for settle", () => {

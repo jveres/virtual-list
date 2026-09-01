@@ -494,6 +494,16 @@ function traceInput(): void {
   window.addEventListener(
     "keydown",
     (event) => {
+      // Keys that activate a control (Space/Enter on a button, typing in
+      // a field) are not scroll intent.
+      const target = event.target as Element | null;
+      if (
+        target?.closest(
+          "button, input, select, textarea, a, summary, [contenteditable]",
+        )
+      ) {
+        return;
+      }
       if (
         [
           "ArrowUp",
@@ -706,6 +716,9 @@ function createList(): void {
     onReachStart: (context) => startLoad("start", context),
     onReachEnd: (context) => startLoad("end", context),
     onDestroy,
+    scrollingUpdates: mustGet<HTMLSelectElement>("scrolling-updates").value as
+      | "freeze"
+      | "same-height",
   });
   canvas = viewport.firstElementChild as HTMLElement | null;
   if (!canvas) throw new Error("runtime canvas not found");
@@ -1392,6 +1405,13 @@ mustGet("delete-random").addEventListener("click", () => {
 mustGet("burst").addEventListener("click", burst);
 mustGet("reset").addEventListener("click", () => {
   log("reset", "mark");
+  reset();
+});
+mustGet("scrolling-updates").addEventListener("change", () => {
+  log(
+    `scrollingUpdates → ${mustGet<HTMLSelectElement>("scrolling-updates").value} (reset)`,
+    "mark",
+  );
   reset();
 });
 mustGet("clear").addEventListener("click", () => {
