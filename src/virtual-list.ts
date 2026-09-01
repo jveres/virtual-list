@@ -141,6 +141,9 @@ interface Prepared<T> {
 
 type Edge = "start" | "end";
 
+/** Preparation bail-out: the host disposed the list from inside a callback. */
+class DisposedDuringPreparation extends Error {}
+
 export function createVirtualList<T>(
   viewport: HTMLElement,
   options: VirtualListOptions<T>,
@@ -406,22 +409,15 @@ export function createVirtualList<T>(
     const inPlace: { row: Row<T>; item: T }[] = [];
     const adopted = new Set<string>();
 
-    const renderInPlaceOrReplace = (row: Row<T>, item: T): Row<T> | null => {
-      const rendered = render(item, row.element);
-      if (rendered === row.element) {
-        row.renderedItem = item;
-        inPlace.push({ row, item });
-        return null;
-      }
-      const { element, height } = premeasure(item, () => rendered);
-      const replacement = retain(row.key, item, element, height);
-      built.push(replacement);
-      return replacement;
-    };
+    // Every in-place candidate is recorded BEFORE its render is invoked:
+    // the host may mutate the element and then throw, and rollback must
+    // see that row. A fresh element the host returns is owned (destroyed
+    // on any bail-out) from the moment it exists.
+    const touched: { row: Row<T>; item: T }[] = [];
 
     const rollBack = (): void => {
       for (const row of built) destroyRow(row);
-      for (const { row } of inPlace) {
+      for (const { row } of touched) {
         if (row.destroyed) continue;
         try {
           const back = render(row.item, row.element);
@@ -434,8 +430,38 @@ export function createVirtualList<T>(
         } catch {
           // Left marked (renderedItem ≠ item): re-rendered next time.
         }
-        markDirty(row); // The DOM changed either way; re-measure.
+        markDirty(row); // The DOM may have changed either way; re-measure.
       }
+    };
+
+    /** Render then measure, taking ownership of a fresh element first. */
+    const measureFresh = (
+      key: string,
+      item: T,
+      element: HTMLElement,
+    ): Row<T> => {
+      if (disposed) {
+        options.onDestroy?.(element, item);
+        throw new DisposedDuringPreparation();
+      }
+      const measured = premeasure(item, () => element);
+      const row = retain(key, item, measured.element, measured.height);
+      built.push(row);
+      return row;
+    };
+
+    const renderInPlaceOrReplace = (row: Row<T>, item: T): Row<T> | null => {
+      touched.push({ row, item });
+      const previouslyRendered = row.renderedItem;
+      row.renderedItem = item; // Provisional: rollback restores on failure.
+      const rendered = render(item, row.element);
+      if (rendered === row.element) {
+        inPlace.push({ row, item });
+        return null;
+      }
+      // A replacement: the old element's DOM was not advanced.
+      row.renderedItem = previouslyRendered;
+      return measureFresh(row.key, item, rendered);
     };
 
     try {
@@ -458,22 +484,19 @@ export function createVirtualList<T>(
         } else {
           const committed = rows.get(key);
           if (committed === undefined) {
-            const { element, height } = premeasure(item, () => render(item));
-            const row = retain(key, item, element, height);
-            built.push(row);
-            newRows.set(key, row);
+            newRows.set(key, measureFresh(key, item, render(item)));
           } else if (committed.renderedItem !== item) {
             const replacement = renderInPlaceOrReplace(committed, item);
             if (replacement !== null) newRows.set(key, replacement);
           }
         }
-        if (disposed) {
-          rollBack();
-          return { keys, itemByKey, newRows: new Map(), anchor };
-        }
+        if (disposed) throw new DisposedDuringPreparation();
       }
     } catch (error) {
       rollBack();
+      if (error instanceof DisposedDuringPreparation) {
+        return { keys, itemByKey, newRows: new Map(), anchor };
+      }
       throw error;
     }
 
@@ -715,11 +738,7 @@ export function createVirtualList<T>(
     // user owns the viewport from here, whatever the settle later finds.
     cancelActiveSmoothScroll: () => {
       glide?.cancel();
-      const awaiting = awaitingSettle;
-      if (awaiting) {
-        awaitingSettle = null;
-        awaiting.done(false);
-      }
+      cancelParkedCommand();
     },
     smoothScrollReachedTarget: () =>
       glide === null ||
@@ -751,6 +770,14 @@ export function createVirtualList<T>(
     if (!awaiting) return;
     awaitingSettle = null;
     awaiting.done(!disposed && awaiting.landed());
+  }
+
+  /** A landed command parked for its settle is superseded: false, now. */
+  function cancelParkedCommand(): void {
+    const awaiting = awaitingSettle;
+    if (!awaiting) return;
+    awaitingSettle = null;
+    awaiting.done(false);
   }
 
   /**
@@ -843,12 +870,15 @@ export function createVirtualList<T>(
     done: (completed: boolean) => void,
   ): void {
     const keyed = target !== "start" && target !== "end";
-    // Explicit command > gesture: take the viewport over, settling held
-    // work first so the command sees committed geometry. A prior landed
-    // command still awaiting its settle resolves against that geometry.
+    // A newer command supersedes the previous one whatever its state: a
+    // parked landed command resolves false BEFORE its phase is finished
+    // (finishing it would otherwise resolve it true), an in-flight glide
+    // is cancelled. Then: explicit command > gesture — take the viewport
+    // over, settling held work first so the command sees committed
+    // geometry.
+    cancelParkedCommand();
+    glide?.cancel();
     interruptNativeScroll();
-    resolveAwaitingSettle();
-    glide?.cancel(); // A prior in-flight command resolves interrupted.
     if (disposed) {
       done(false);
       return;
@@ -941,8 +971,7 @@ export function createVirtualList<T>(
       for (const entry of afterCommit) entry.discard?.();
       afterCommit.length = 0;
       glide?.cancel();
-      awaitingSettle?.done(false);
-      awaitingSettle = null;
+      cancelParkedCommand();
       abortEdge("start");
       abortEdge("end");
       controller.dispose();

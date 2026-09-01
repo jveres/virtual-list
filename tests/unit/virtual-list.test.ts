@@ -90,6 +90,8 @@ function mount(
     replaceOnRerender?: boolean;
     onState?: (state: VirtualListState) => void;
     onDestroy?: (element: HTMLElement) => void;
+    /** Runs at the start of every render (probe hook). */
+    onRender?: (m: Msg, existing?: HTMLElement) => void;
     reach?: boolean | "start-only";
     width?: () => number;
     /** render() throws for items with this body. */
@@ -141,6 +143,7 @@ function mount(
     key: (m) => `m${m.id}`,
     settleStrategy: "default",
     render: (m, existing) => {
+      hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
         throw new Error(`render failed: ${m.body}`);
       }
@@ -388,6 +391,47 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.rowElement("msg 29").textContent).toBe("msg 29");
   });
 
+  it("rolls back a render that mutates its element and then throws", () => {
+    const h = mount(range(0, 30), {
+      onRender: (m, existing) => {
+        if (m.body === "partial" && existing) {
+          existing.textContent = "partial"; // Mutated...
+          throw new Error("render failed: partial"); // ...then thrown.
+        }
+      },
+    });
+    void h.list.scrollTo("m25");
+    const row = h.rowElement("msg 29");
+
+    expect(() =>
+      h.list.setItems([...range(0, 29), message(29, "partial")]),
+    ).toThrow("render failed: partial");
+    expect(row.textContent).toBe("msg 29"); // The throwing render's own row.
+  });
+
+  it("destroys a replacement returned by a render that disposed the list", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    const initial = range(0, 20);
+    const h = mount(initial, {
+      replaceOnRerender: true,
+      onRender: (m, existing) => {
+        if (m.body === "fresh" && existing) listRef?.dispose();
+      },
+    });
+    listRef = h.list;
+
+    const next = [...initial];
+    next[19] = message(19, "fresh");
+    expect(() => h.list.setItems(next)).not.toThrow();
+    // 20 committed elements via dispose, plus the fresh element the host
+    // returned AFTER disposing — owned and destroyed, not leaked.
+    expect(h.destroyedElements).toHaveLength(21);
+    expect(h.destroyedElements.some((el) => el.textContent === "fresh")).toBe(
+      true,
+    );
+    expect(new Set(h.destroyedElements).size).toBe(21);
+  });
+
   it("destroys locally built rows when a supersession-time onDestroy disposes the list", () => {
     let listRef: VirtualList<Msg> | null = null;
     let disposedOnce = false;
@@ -561,6 +605,20 @@ describe("v2 runtime — commands", () => {
     await expect(command).resolves.toBe(false);
 
     h.settle(); // The user's gesture settling must not re-resolve anything.
+  });
+
+  it("a newer command resolves a parked landed command false, never true", async () => {
+    const h = mount(range(0, 100));
+    const first = h.list.scrollTo("start", { behavior: "smooth" });
+    for (let t = 0; t < 3000 && h.viewport.scrollTop !== 0; t += 16) {
+      vi.advanceTimersByTime(16);
+    }
+    expect(h.viewport.scrollTop).toBe(0); // Landed, parked for its settle.
+
+    const second = h.list.scrollTo("m20"); // Supersedes before the settle.
+    await expect(first).resolves.toBe(false);
+    await expect(second).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(20 * ROW_H);
   });
 
   it("resolves false when the settle-time snapshot removed a keyed glide target", async () => {
