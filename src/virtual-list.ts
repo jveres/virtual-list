@@ -46,6 +46,12 @@ export interface VirtualListOptions<T> {
   onState?: (state: VirtualListState) => void;
   onReachStart?: () => void;
   onReachEnd?: () => void;
+  /**
+   * A row's element left the DOM — scrolled out of the window, replaced by
+   * a new element from render(item, existing), or removed by dispose().
+   * `item` is the item the element was last rendered with.
+   */
+  onUnmount?: (element: HTMLElement, item: T) => void;
 }
 
 export interface VirtualListState {
@@ -59,10 +65,15 @@ export interface VirtualListState {
 
 export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
+  /**
+   * Resolves true when the command landed on its target, false when it was
+   * interrupted (user gesture, newer command, dispose). A command queued
+   * behind a dispose() may never settle.
+   */
   scrollTo(
     target: string | "start" | "end",
     options?: { align?: "start"; behavior?: "auto" | "smooth" },
-  ): void;
+  ): Promise<boolean>;
   readonly state: VirtualListState;
   dispose(): void;
 }
@@ -108,15 +119,15 @@ export function createVirtualList<T>(
   const renderedItem = new Map<string, T>();
   const keyByElement = new WeakMap<HTMLElement, string>();
 
-  // --- Deferred work (flushed as one transaction on gesture settle) ---------
+  // --- Deferred work (flushed on gesture settle) ----------------------------
   let deferredItems: {
     items: readonly T[];
     anchor: AnchorPolicy;
   } | null = null;
-  const deferredMeasures = new Map<string, number>();
   let pendingCommand: {
     target: string;
     options: { align?: "start"; behavior?: "auto" | "smooth" };
+    done: (completed: boolean) => void;
   } | null = null;
   const afterCommit: (() => void)[] = [];
 
@@ -161,6 +172,23 @@ export function createVirtualList<T>(
     return true;
   }
 
+  /**
+   * Position-preserving correction while the user owns the viewport: shifts
+   * scrollTop by exactly the delta the content above the anchor changed, so
+   * the page stays still under the user's finger (I1 during gestures). This
+   * is not a fight for the viewport — moving writes (end-anchor, commands)
+   * remain refused until settle. The follow high-water mark shifts with it
+   * so compensation is never mistaken for user movement.
+   */
+  function compensationWrite(top: number): void {
+    const delta = top - viewport.scrollTop;
+    if (Math.abs(delta) <= SCROLL_WRITE_EPSILON_PX) return;
+    sensor.expectWrite(top);
+    viewport.scrollTop = top;
+    gestureHighWaterTop += delta;
+    lastScrollTop = top;
+  }
+
   // --- The commit pipeline --------------------------------------------------
   /**
    * Run one complete logical operation under the I4 guard: host callbacks
@@ -182,13 +210,23 @@ export function createVirtualList<T>(
     while (!disposed && afterCommit.length > 0) afterCommit.shift()?.();
   }
 
-  function transaction(policy: AnchorPolicy, mutate: () => void): void {
+  function transaction(
+    policy: AnchorPolicy,
+    mutate: () => void,
+    compensate = false,
+  ): void {
     if (disposed) return;
-    if (enqueueDuringCommit(() => transaction(policy, mutate))) return;
-    guarded(() => commitOnce(policy, mutate));
+    if (enqueueDuringCommit(() => transaction(policy, mutate, compensate))) {
+      return;
+    }
+    guarded(() => commitOnce(policy, mutate, compensate));
   }
 
-  function commitOnce(policy: AnchorPolicy, mutate: () => void): void {
+  function commitOnce(
+    policy: AnchorPolicy,
+    mutate: () => void,
+    compensate = false,
+  ): void {
     const capture = geometry.capture(currentViewport(), policy);
     mutate();
     const commit = geometry.resolve(capture);
@@ -196,9 +234,11 @@ export function createVirtualList<T>(
     canvas.style.height = `${commit.totalSize}px`;
     if (arbitratedWrite(commit.scrollTop)) {
       following = atEndTop(commit.scrollTop);
+    } else if (compensate) {
+      compensationWrite(commit.scrollTop);
     }
-    // A gesture-refused write keeps its intent: `following` is untouched
-    // and the settle flush lands on the end exactly (I2).
+    // A gesture-refused moving write keeps its intent: `following` is
+    // untouched and the settle flush lands on the end exactly (I2).
     renderWindow();
     if (disposed) return;
     publish();
@@ -218,7 +258,10 @@ export function createVirtualList<T>(
         itemResizeObserver.unobserve(element);
         element.remove();
         mounted.delete(key);
+        const item = renderedItem.get(key);
         renderedItem.delete(key);
+        if (item !== undefined) options.onUnmount?.(element, item);
+        if (disposed) return;
       }
     }
 
@@ -240,6 +283,7 @@ export function createVirtualList<T>(
         // Changed identity (streaming updates): re-render in place. A
         // replacement element takes over the row's bookkeeping and is
         // positioned below like any other — inside the transaction.
+        const previous = renderedItem.get(key);
         const next = render(item, element);
         if (disposed) return;
         renderedItem.set(key, item);
@@ -247,8 +291,13 @@ export function createVirtualList<T>(
           itemResizeObserver.unobserve(element);
           keyByElement.delete(element);
           element.replaceWith(next);
+          const replaced = element;
           element = adoptElement(key, next);
           itemResizeObserver.observe(element);
+          if (previous !== undefined) {
+            options.onUnmount?.(replaced, previous);
+          }
+          if (disposed) return;
         }
       }
       element.style.transform = `translateY(${geometry.offsetOf(key)}px)`;
@@ -268,8 +317,7 @@ export function createVirtualList<T>(
   // --- Measurements (I6: same painted frame) --------------------------------
   const itemResizeObserver = new ResizeObserver((entries) => {
     if (disposed) return;
-    const scrollTop = viewport.scrollTop;
-    const immediate: [string, number][] = [];
+    const measures: [string, number][] = [];
     for (const entry of entries) {
       const key = keyByElement.get(entry.target as HTMLElement);
       if (key === undefined || !mounted.has(key)) continue;
@@ -279,21 +327,22 @@ export function createVirtualList<T>(
       if (Math.abs(height - geometry.heightOf(key)) <= MEASURE_EPSILON_PX) {
         continue; // Noise suppression lives here, not in the kernel.
       }
-      const wholeItemAbove =
-        geometry.offsetOf(key) + geometry.heightOf(key) <= scrollTop;
-      if (sensor.active && wholeItemAbove) {
-        // Above-viewport corrections would need a scroll write mid-gesture;
-        // hold them for the settle flush.
-        deferredMeasures.set(key, height);
-      } else {
-        immediate.push([key, height]);
-      }
+      measures.push([key, height]);
     }
-    if (immediate.length > 0) {
-      transaction("auto", () => {
-        for (const [key, height] of immediate) geometry.measure(key, height);
-      });
-    }
+    if (measures.length === 0) return;
+    // Measurements always commit — deferring them would leave mounted rows
+    // positioned by stale geometry and visually overlapping mid-gesture.
+    // While the user owns the viewport, the commit anchors to the visible
+    // item and applies as a pure compensation write; end-follow catch-up
+    // still happens at settle (I2).
+    const gesture = sensor.active;
+    transaction(
+      gesture ? "viewport" : "auto",
+      () => {
+        for (const [key, height] of measures) geometry.measure(key, height);
+      },
+      gesture,
+    );
   });
 
   const viewportResizeObserver = new ResizeObserver(() => {
@@ -324,23 +373,24 @@ export function createVirtualList<T>(
       // flush's publication drains only afterward, so it executes after
       // the older deferred one and wins.
       guarded(() => {
-        // One flush commit: the deferred structural update, deferred
-        // measures, reserve re-evaluation (released reserve drains once
-        // out of view) — and the suppressed end-follow catch-up (I2).
+        // One flush commit: the deferred structural update, reserve
+        // re-evaluation (released reserve drains once out of view) — and
+        // the suppressed end-follow catch-up (I2).
         commitOnce(
           pendingItems?.anchor ?? (following ? "end" : "viewport"),
           () => {
             if (pendingItems) adoptItems(pendingItems.items);
-            for (const [key, height] of deferredMeasures) {
-              geometry.measure(key, height);
-            }
-            deferredMeasures.clear();
           },
         );
-        if (disposed) return;
+        if (disposed) {
+          command?.done(false);
+          return;
+        }
         // The deferred command executes inside the boundary, outranking
         // the anchor policies it settled with.
-        if (command) performScrollTo(command.target, command.options);
+        if (command) {
+          performScrollTo(command.target, command.options, command.done);
+        }
       });
     },
   });
@@ -479,27 +529,38 @@ export function createVirtualList<T>(
   function scrollTo(
     target: string | "start" | "end",
     scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" } = {},
-  ): void {
-    if (disposed) return;
+  ): Promise<boolean> {
+    if (disposed) return Promise.resolve(false);
     // Options are normalized into a runtime-owned object at call time.
     const owned = {
       align: scrollOptions.align,
       behavior: scrollOptions.behavior,
     };
-    if (enqueueDuringCommit(() => scrollTo(target, owned))) return;
-    if (sensor.active) {
-      // The user owns the viewport (documented precedence); the command
-      // defers to settle, latest wins.
-      pendingCommand = { target, options: owned };
-      return;
-    }
-    performScrollTo(target, owned);
+    return new Promise((resolve) => {
+      if (
+        enqueueDuringCommit(() => {
+          void scrollTo(target, owned).then(resolve);
+        })
+      ) {
+        return;
+      }
+      if (sensor.active) {
+        // The user owns the viewport (documented precedence); the command
+        // defers to settle, latest wins — a superseded command resolves
+        // interrupted.
+        pendingCommand?.done(false);
+        pendingCommand = { target, options: owned, done: resolve };
+        return;
+      }
+      performScrollTo(target, owned, resolve);
+    });
   }
 
   /** The command body; runs only when no gesture is active. */
   function performScrollTo(
     target: string | "start" | "end",
     scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" },
+    done: (completed: boolean) => void,
   ): void {
     const destination = (): number => {
       const height = viewportHeight();
@@ -517,18 +578,30 @@ export function createVirtualList<T>(
     // a callback inside it (including the cancelled glide's onDone
     // publication) drains only afterwards, so it executes last and wins.
     guarded(() => {
+      // Cancelling a prior glide resolves its command as interrupted.
       glide?.cancel();
-      if (disposed) return;
+      if (disposed) {
+        done(false);
+        return;
+      }
       commitOnce("none", () => {
         if (target !== "start" && target !== "end") geometry.pin(target);
       });
-      if (disposed) return;
+      if (disposed) {
+        done(false);
+        return;
+      }
 
       if (scrollOptions.behavior !== "smooth") {
         arbitratedWrite(destination());
         following = atEndTop(viewport.scrollTop);
         renderWindow();
-        if (!disposed) publish();
+        if (disposed) {
+          done(false);
+          return;
+        }
+        publish();
+        done(!disposed);
         return;
       }
 
@@ -543,11 +616,12 @@ export function createVirtualList<T>(
           target: destination,
         },
         glideDuration(destination() - viewport.scrollTop, viewportHeight()),
-        () =>
+        (completed) =>
           guarded(() => {
             glide = null;
             following = atEndTop(viewport.scrollTop);
-            publish();
+            if (!disposed) publish();
+            done(completed && !disposed);
           }),
       );
     });
@@ -570,12 +644,20 @@ export function createVirtualList<T>(
       if (disposed) return;
       disposed = true;
       afterCommit.length = 0;
+      pendingCommand?.done(false);
+      pendingCommand = null;
       glide?.cancel();
       sensor.dispose();
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();
       viewport.removeEventListener("scroll", handleScroll);
       canvas.remove();
+      // Every mounted row leaves the DOM with the canvas; report each so
+      // hosts can tear down per-row resources.
+      for (const [key, element] of mounted) {
+        const item = renderedItem.get(key);
+        if (item !== undefined) options.onUnmount?.(element, item);
+      }
       mounted.clear();
       renderedItem.clear();
     },

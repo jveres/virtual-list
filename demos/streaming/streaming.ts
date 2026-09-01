@@ -88,10 +88,11 @@ const DATA_WINDOW_FACTOR = 5;
 const LOAD_OLDER_DELAY_MS = 180;
 // How long the "At the top" overlay lingers before fading.
 const EDGE_NO_MORE_HIDE_MS = 1400;
-// The send glide has no completion callback; the bottom button suppression
-// clears on landing (state.atEnd) with this timeout as the fallback for an
-// interrupted glide. Slightly above the glide's 1400ms duration ceiling.
-const SEND_GLIDE_FALLBACK_MS = 1600;
+// After a chunk loads with more history remaining, the loading pill lingers
+// briefly instead of hiding — the next chunk usually follows within this
+// window (a glide re-entering the edge zone), and hiding between chunks
+// reads as a flashing loader.
+const EDGE_HIDE_LINGER_MS = 400;
 
 const demoParams = new URLSearchParams(location.search);
 const instantReplies =
@@ -118,7 +119,7 @@ let nextResponse = 0;
 let loadedStart = 0;
 let loadingTop = false;
 let sendGlideActive = false;
-let sendGlideTimer = 0;
+let topNavigationToken = 0;
 const htmlCache = new Map<string, string>();
 // Live markdown-viewer instances for streaming rows, keyed by row element so
 // remounts and replacements never collide; the unmount observer below tears
@@ -565,28 +566,62 @@ function setEdgeState(state: "hidden" | "loading" | "no-more"): void {
   }
 }
 
-function loadOlderMessages(): void {
-  if (loadingTop) return;
-  if (!canLoadOlderMessages()) {
-    if (topBoundaryLoadSeen) setEdgeState("no-more");
-    return;
-  }
+function scheduleEdgeHide(): void {
+  window.clearTimeout(edgeHideTimer);
+  edgeHideTimer = window.setTimeout(
+    () => setEdgeState("hidden"),
+    EDGE_HIDE_LINGER_MS,
+  );
+}
 
+// Loads one older chunk; resolves after the prepend has been committed. The
+// prepend preserves the reading position (I1); the runtime re-arms the
+// reach-start signal once the viewport is past the exit zone.
+function loadOlderChunk(): Promise<void> {
+  if (loadingTop || !canLoadOlderMessages()) return Promise.resolve();
   loadingTop = true;
   topBoundaryLoadSeen = true;
   setEdgeState("loading");
   syncMetrics();
 
   // Simulated fetch latency; a real host would await its data source here.
-  window.setTimeout(() => {
-    loadingTop = false;
-    loadedStart = Math.max(0, loadedStart - loadChunkCount());
-    // The prepend preserves the reading position (I1); the runtime re-arms
-    // the reach-start signal once the viewport is past the exit zone.
-    pushItems();
-    setEdgeState(canLoadOlderMessages() ? "hidden" : "no-more");
-    syncMetrics();
-  }, LOAD_OLDER_DELAY_MS);
+  return new Promise((resolve) => {
+    window.setTimeout(() => {
+      loadingTop = false;
+      loadedStart = Math.max(0, loadedStart - loadChunkCount());
+      pushItems();
+      if (!canLoadOlderMessages()) setEdgeState("no-more");
+      else scheduleEdgeHide(); // Linger: the next chunk may follow at once.
+      syncMetrics();
+      resolve();
+    }, LOAD_OLDER_DELAY_MS);
+  });
+}
+
+function loadOlderMessages(): void {
+  if (loadingTop) return;
+  if (!canLoadOlderMessages()) {
+    if (topBoundaryLoadSeen) setEdgeState("no-more");
+    return;
+  }
+  void loadOlderChunk();
+}
+
+// The scroll-top command, chained across scrollback loads: each completed
+// glide that lands on the top of a *partial* window loads the next chunk and
+// re-issues the command, until the true top is reached or the user (or a
+// newer navigation) takes over — scrollTo's completion result is the signal.
+async function navigateToTop(): Promise<void> {
+  const token = ++topNavigationToken;
+  while (virtualList) {
+    const completed = await virtualList.scrollTo("start", {
+      behavior: "smooth",
+    });
+    if (!completed || token !== topNavigationToken) return;
+    if (!canLoadOlderMessages()) return; // The true top.
+    await loadOlderChunk();
+    if (token !== topNavigationToken) return;
+  }
 }
 
 // --- Conversations ----------------------------------------------------------
@@ -975,24 +1010,18 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
   return null;
 }
 
-// Live viewers must be torn down when their row leaves the DOM (unmount,
-// replacement, or dispose); the runtime has no unmount callback, so observe
-// removals. Also prunes the animation lookup.
-const unmountObserver = new MutationObserver((records) => {
-  for (const record of records) {
-    for (const node of record.removedNodes) {
-      if (!(node instanceof HTMLElement)) continue;
-      const handle = streamingViewers.get(node);
-      if (handle) {
-        handle.destroy();
-        streamingViewers.delete(node);
-      }
-      const key = node.dataset.key;
-      if (key && rowById.get(key) === node) rowById.delete(key);
-    }
+// Live viewers are torn down when their row leaves the DOM (scrolled out,
+// replaced, or disposed) via the runtime's onUnmount callback; the animation
+// lookup is pruned there too.
+function handleRowUnmount(element: HTMLElement): void {
+  const handle = streamingViewers.get(element);
+  if (handle) {
+    handle.destroy();
+    streamingViewers.delete(element);
   }
-});
-unmountObserver.observe(viewport, { childList: true, subtree: true });
+  const key = element.dataset.key;
+  if (key && rowById.get(key) === element) rowById.delete(key);
+}
 
 // --- Demo chrome ------------------------------------------------------------
 
@@ -1022,20 +1051,10 @@ function syncMetrics(state = virtualList?.state): void {
   virtualListStatus.textContent = `dom ${formatCount(state.end - state.start)}/${formatCount(state.count)} · mounted ${formatCount(state.start)}-${formatCount(mountedEnd)} · height ${formatCount(state.totalSize)}px`;
 }
 
-function beginSendGlide(): void {
-  sendGlideActive = true;
-  window.clearTimeout(sendGlideTimer);
-  sendGlideTimer = window.setTimeout(() => {
-    sendGlideActive = false;
-    if (virtualList) syncScrollButtons(virtualList.state);
-  }, SEND_GLIDE_FALLBACK_MS);
-}
-
 function endSendGlide(): void {
   if (!sendGlideActive) return;
   sendGlideActive = false;
-  window.clearTimeout(sendGlideTimer);
-  sendGlideTimer = 0;
+  if (virtualList) syncScrollButtons(virtualList.state);
 }
 
 // --- Simulated streaming ----------------------------------------------------
@@ -1395,6 +1414,7 @@ async function handleSend(): Promise<void> {
 
   const abort: StreamAbort = { cancelled: false, onCancel: new Set() };
   streamAbort = abort;
+  topNavigationToken++; // A send supersedes an in-flight top navigation.
   setStreamingUI(true);
   let assistantId: number | null = null;
   const shouldFlyIn = transcript.length === 0;
@@ -1432,11 +1452,14 @@ async function handleSend(): Promise<void> {
     // exactly at the viewport top. End-follow engages on landing, so the
     // reply keeps the bottom pinned once it outgrows the reserve — and a
     // user scroll during the stream disengages it (their intent wins).
-    beginSendGlide();
-    virtualList?.scrollTo(String(userMessage.id), {
-      align: "start",
-      behavior: "smooth",
-    });
+    // The bottom button stays hidden until the glide settles either way.
+    sendGlideActive = true;
+    void virtualList
+      ?.scrollTo(String(userMessage.id), {
+        align: "start",
+        behavior: "smooth",
+      })
+      .then(endSendGlide);
     if (shouldFlyIn) {
       await flyInRows([userMessage.id], abort);
       if (abort.cancelled) return;
@@ -1498,15 +1521,15 @@ initAISettingsPanel({
 });
 
 scrollTopBtn.addEventListener("click", () => {
-  // The glide's live target keeps aiming at the true top while scrollback
-  // chunks prepend along the way.
-  virtualList?.scrollTo("start", { behavior: "smooth" });
+  void navigateToTop();
 });
 
 scrollBottomBtn.addEventListener("click", () => {
-  // Landing at the end re-engages end-follow, so a click during a stream
-  // resumes following (the runtime's follow state, not demo bookkeeping).
-  virtualList?.scrollTo("end", { behavior: "smooth" });
+  // A bottom command supersedes any in-flight top-navigation chain. Landing
+  // at the end re-engages end-follow, so a click during a stream resumes
+  // following (the runtime's follow state, not demo bookkeeping).
+  topNavigationToken++;
+  void virtualList?.scrollTo("end", { behavior: "smooth" });
 });
 
 promptInput.addEventListener("input", autosize);
@@ -1545,11 +1568,11 @@ virtualList = createVirtualList<Message>(viewport, {
   },
   estimateSize: ESTIMATED_ITEM_HEIGHT,
   onState: (state) => {
-    if (state.atEnd) endSendGlide();
     syncScrollButtons(state);
     syncMetrics(state);
   },
   onReachStart: loadOlderMessages,
+  onUnmount: handleRowUnmount,
 });
 
 // One delegated listener powers copy buttons across every mounted row.

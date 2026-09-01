@@ -51,6 +51,7 @@ function mount(
     onReachStart?: () => void;
     onState?: (s: VirtualListState) => void;
     onRender?: (m: Msg) => void;
+    onUnmount?: (element: HTMLElement, m: Msg) => void;
     replaceOnRerender?: boolean;
   } = {},
 ) {
@@ -76,6 +77,7 @@ function mount(
       hooks.onState?.(s);
     },
     onReachStart: hooks.onReachStart,
+    onUnmount: hooks.onUnmount,
   });
   return { viewport, list, states, renders };
 }
@@ -534,6 +536,100 @@ describe("virtual list runtime", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("compensates above-viewport growth during a gesture — geometry current, position kept", () => {
+    withControlledResizeObserver((fire) => {
+      const { viewport, list } = mount(range(0, 50));
+      list.scrollTo("m30");
+      userScroll(viewport, 3002);
+
+      // A mounted row wholly above the viewport grows 100 → 300 mid-gesture.
+      fire(0, rowElement(viewport, "msg 25"), 300);
+
+      // The measurement committed immediately: total size and the positions
+      // of the rows below are current (no overlapping boxes)...
+      expect(list.state.totalSize).toBe(50 * ESTIMATE + 200);
+      expect(rowElement(viewport, "msg 30").style.transform).toBe(
+        `translateY(${30 * ESTIMATE + 200}px)`,
+      );
+      // ...and the compensating write kept the viewport still: scrollTop
+      // shifted by exactly the growth.
+      expect(viewport.scrollTop).toBe(3002 + 200);
+
+      settleGesture(viewport);
+      // The settle flush preserves the compensated position — no jump.
+      expect(viewport.scrollTop).toBe(3002 + 200);
+    });
+  });
+
+  it("scrollTo resolves true on completion", async () => {
+    const { viewport, list } = mount(range(0, 100));
+    await expect(list.scrollTo("start")).resolves.toBe(true);
+    expect(viewport.scrollTop).toBe(0);
+
+    vi.useFakeTimers();
+    try {
+      const glide = list.scrollTo("end", { behavior: "smooth" });
+      vi.advanceTimersByTime(3000);
+      await expect(glide).resolves.toBe(true);
+      expect(viewport.scrollTop).toBe(100 * ESTIMATE - VIEWPORT_H);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("scrollTo resolves false when a newer command interrupts the glide", async () => {
+    vi.useFakeTimers();
+    try {
+      const { viewport, list } = mount(range(0, 100));
+      const first = list.scrollTo("start", { behavior: "smooth" });
+      vi.advanceTimersByTime(48);
+      const second = list.scrollTo("m10");
+      await expect(first).resolves.toBe(false);
+      await expect(second).resolves.toBe(true);
+      expect(viewport.scrollTop).toBe(10 * ESTIMATE);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves gesture-deferred commands: superseded false, executed true", async () => {
+    const { viewport, list } = mount(range(0, 100));
+    userScroll(viewport, 9402);
+
+    const first = list.scrollTo("start"); // Deferred, then superseded.
+    const second = list.scrollTo("m20"); // Deferred, executes at settle.
+    await expect(first).resolves.toBe(false);
+
+    settleGesture(viewport);
+    await expect(second).resolves.toBe(true);
+    expect(viewport.scrollTop).toBe(20 * ESTIMATE);
+  });
+
+  it("reports unmounts with the element and its item — scroll-out, replacement, dispose", () => {
+    const unmounted: number[] = [];
+    const initial = range(0, 100);
+    const { list } = mount(initial, {
+      replaceOnRerender: true,
+      onUnmount: (element, m) => {
+        expect(element.isConnected).toBe(false);
+        unmounted.push(m.id);
+      },
+    });
+
+    list.scrollTo("start"); // The rows near the end scroll out.
+    expect(unmounted).toContain(99);
+
+    const next = [...initial];
+    next[0] = message(0, "updated body"); // Replacement unmounts the old element.
+    list.setItems(next);
+    expect(unmounted).toContain(0);
+
+    unmounted.length = 0;
+    list.dispose(); // Every still-mounted row is reported.
+    expect(unmounted.length).toBeGreaterThan(0);
+    expect(new Set(unmounted).size).toBe(unmounted.length);
   });
 
   it("dispose removes the canvas and stops reacting", () => {

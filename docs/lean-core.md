@@ -59,10 +59,15 @@ const list = createVirtualList(viewport, {
   render: (item, existing?) => HTMLElement,
   estimateSize?: number | ((item) => number),   // finite and > 0 — enforced
   onState?, onReachStart?, onReachEnd?,
+  onUnmount?: (element, item) => void,  // row left the DOM: scrolled out,
+                                        // replaced, or disposed
 });
 
 list.setItems(next, { anchor?: "auto" | "viewport" | "end" | "none" });
 list.scrollTo(key | "start" | "end", { align?, behavior? });  // align:"start" ⇒ I5 reserve
+  // → Promise<boolean>: true = landed on target, false = interrupted
+  //   (user gesture, newer command, dispose); a command queued behind a
+  //   dispose() may never settle.
 list.state;                   // read-only snapshot
 list.dispose();
 ```
@@ -100,7 +105,16 @@ One scroll arbiter owns every scrollTop write, one policy per frame:
 user gesture > explicit command > end-anchor > position-anchor.
 An explicit command issued while a gesture is active is deferred (latest
 wins) and executes at settle, where it outranks the anchor policies; it is
-never dropped and never fights the user's finger. The same holds for data:
+never dropped and never fights the user's finger.
+
+Measurements always commit, gesture or not — deferring them would leave
+mounted rows positioned by stale geometry and visually overlapping. During
+a gesture the measurement commit anchors to the visible item and applies
+as a pure *compensation* write: scrollTop shifts by exactly the delta the
+content above the anchor changed, keeping the page still under the user's
+finger (I1 during gestures). Compensation is not a fight for the viewport
+and never disengages follow; moving writes (end-anchor, commands) remain
+refused until settle. The same holds for data:
 during a gesture only `anchor: "auto"` end-compatible updates commit
 immediately (their resolved target is where the user already is); updates
 with an explicit anchor policy defer and are flushed at settle under that
