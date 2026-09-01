@@ -75,18 +75,20 @@ const EDGE_SETTLE_QUIET_MS = 450;
 // buffer, not an engine transaction constant.
 //
 // V2 DEVIATION (two windows instead of main's one; lab-verified traces):
-// a pending Firefox edge release is CONTESTED when wheel input arrives
-// after its scrollend — that scrollend was a mid-momentum/mid-hold pause,
-// not the release (main honored it on this single 1600ms timer, which
-// committed under held fingers). An UNCONTESTED scrollend (no wheels after
-// it) is a clean release signature and settles after the short
-// confirmation window (~0.3s after the scrollend; main's 1600ms made
-// every normal edge load wait ~1.5s). A contested one falls back to the
-// full stability window from the last wheel: active motion keeps pushing
-// it, a decaying momentum tail at a pinned edge (which emits no second
-// scrollend) still recovers instead of hanging, and only ≥1600ms of TOTAL
-// stillness — observably identical to a release, the platform's genuine
-// ambiguity — can commit under resting fingers.
+// a pending Firefox edge release is CONTESTED when post-scrollend wheel
+// input adds energy (grows past its predecessor beyond the marker band),
+// reverses direction, or comes from a line/page-delta device — that
+// scrollend was a mid-momentum/mid-hold pause, not the release (main
+// honored it on this single 1600ms timer, which committed under actively
+// held fingers). A decaying pixel-mode tail merely postpones. An
+// uncontested scrollend is a clean release signature and settles after
+// the short confirmation window (~0.3s after the scrollend; main's 1600ms
+// made every normal edge load wait ~1.5s). A contested one falls back to
+// the full stability window from the last wheel: active motion keeps
+// pushing it and a decaying tail at a pinned edge (which emits no second
+// scrollend) still recovers instead of hanging. Accepted trade-off: a
+// hold that pauses into an uncontested scrollend and stays still is
+// observably identical to a release and commits after the short window.
 const FIREFOX_EDGE_RELEASE_CONFIRM_MS = 450;
 const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
 // Post-scrollend PIXEL-mode wheels at or below this magnitude, and not

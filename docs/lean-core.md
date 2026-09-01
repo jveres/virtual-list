@@ -91,12 +91,21 @@ commit frequency in practice.
   to it are premeasured, not estimated-then-corrected.
 - `src/glide.ts`: the programmatic glide (exact landing, ≥1px/frame on
   floored engines, endpoint rebase).
-- The v1 API surface as the goal shape:
-  `createVirtualList(viewport, { items, key, render, estimateSize?,
-  onState?, onReachStart/End?, onUnmount? })`,
+- The API, as built in the v2 runtime (`src/virtual-list.ts`):
+  `createVirtualList(viewport, { items, key, render, overscanPx?,
+  onState?, onReachStart/End?, onDestroy?, settleStrategy? })`,
   `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior? })
-  → Promise<boolean>`, `state`, `dispose()` — details re-reviewed when the
-  runtime is built on the new foundation.
+  → Promise<boolean>`, `state` (adds `held`: work is waiting for settle),
+  `dispose()`. Changes from the v1 shape: `estimateSize` is gone — every
+  key is premeasured before it commits, so heights are never estimated
+  (hosts window their data; the chat demo hands the runtime a modest
+  loaded window); `onUnmount` became `onDestroy(element, item)` — with
+  retained nodes, leaving the DOM is not the end of an element's life;
+  destruction (key removed, replacement committed, pending snapshot
+  superseded, dispose) is, exactly once. `render(item, existing)` may
+  mutate `existing` in place — inside its fixed slot when mounted — or
+  return a replacement, which is premeasured off-scroller and swapped in
+  at commit.
 - v2 addition (lab-prototyped): the reach callbacks receive a context with
   an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
   runtime aborts only on conditions it knows objectively: the user reached
@@ -113,7 +122,7 @@ commit frequency in practice.
 ## Verification vehicles
 
 - **demos/scroll-settle** — the settle lab: a plain (non-virtualized)
-  natively scrolling list wired straight to the verbatim controller.
+  natively scrolling list wired straight to the controller itself.
   Chunks load during scrolling but commit only at settle (prepend + one
   anchor-preserving write). Live panel: strategy, gesture state, settle
   lag, post-settle-motion counter (premature-settle detector), and an
@@ -125,16 +134,29 @@ commit frequency in practice.
 ## Execution order
 
 1. Branch setup, clean slate, this contract. Port `scroll-settle.ts`
-   verbatim; build the settle lab. **Review + all-browser lab checkpoint.**
+   from `main`; build the settle lab. **Review + all-browser lab
+   checkpoint.** (Done; two lab-driven Firefox deviations ratified.)
 2. Port the detached premeasurement primitive (`src/premeasure.ts`) and
    direct-host characterization tests for the settle controller's engine
-   strategies. **Review checkpoint.**
-3. The v2 runtime on the contract above: off-scroller chunk pipeline
-   (build → premeasure → hold), settle-gated atomic commit into the kernel
-   and DOM, commands/glide via the controller's programmatic gesture.
-   **Review checkpoint.**
-4. Host the streaming chat demo; gauntlet against `main` in
-   Chromium/Firefox/Safari.
+   strategies. **Review checkpoint.** (Done; retained-node ownership rule
+   ratified.)
+3. The v2 runtime on the contract above: off-scroller preparation
+   (render → premeasure → retain), dimensionally stable slots, settle-
+   gated atomic commits into the kernel and DOM, commands/glide via the
+   controller's programmatic gesture. **Review checkpoint.**
+4. A focused dynamic-height lab: adversarial content only (delayed
+   unknown-size images, expansion/shrinkage above/inside/below the
+   viewport, off-scroller changes, remounts, rapid superseding changes,
+   viewport-width changes) with telemetry that proves the invariants —
+   zero slot/canvas/offset/scrollTop change during native scrolling, no
+   row overlap (volatile content stays inside its committed slot), latest
+   heights committing once at settle, a stationary visual anchor,
+   immediate idle commits, held measurements invalidated by width/resource
+   changes, aborted/superseded retained nodes destroyed exactly once. All
+   dynamic-height behavior lives in the runtime; the lab only generates
+   content and reports violations. **Pass in Chromium, Firefox, desktop
+   Safari, iOS Safari.**
+5. Only then: host the streaming chat demo; gauntlet against `main`.
 
 ## Lessons carried as law
 
