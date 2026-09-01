@@ -789,6 +789,30 @@ describe("virtual list runtime", () => {
     expect(list.state.count).toBe(49); // The flush did apply.
   });
 
+  it("caps the gesture shift at half a viewport — excess becomes an anchor slip", () => {
+    withControlledResizeObserver((ro) => {
+      const { viewport, list } = mount(range(0, 50));
+      void list.scrollTo("m30");
+      userScroll(viewport, 3005);
+
+      // A violent correction: +2000px above the anchor in one delivery.
+      ro.fire(0, rowElement(viewport, "msg 25"), 2100);
+
+      // Geometry takes the full delta...
+      expect(list.state.totalSize).toBe(50 * ESTIMATE + 2000);
+      // ...but the shift clamps at viewport/2: the rest of the correction
+      // shows as content movement, keeping the content edges reachable
+      // instead of walling 2000px off behind the raw scroll boundary.
+      const canvas = viewport.firstElementChild as HTMLElement;
+      expect(canvas.style.transform).toBe(`translateY(${-VIEWPORT_H / 2}px)`);
+      expect(viewport.scrollTop).toBe(3005); // Still zero scroll writes.
+
+      settleGesture(viewport);
+      expect(viewport.scrollTop).toBe(3005 + VIEWPORT_H / 2);
+      expect(canvas.style.transform).toBe("");
+    });
+  });
+
   it("defers observing rows mounted by a measurement commit to the next frame", () => {
     vi.useFakeTimers();
     try {

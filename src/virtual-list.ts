@@ -92,6 +92,15 @@ const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
 const FOLLOW_DISENGAGE_PX = 2;
+// The gesture shift is bounded to this fraction of the viewport height.
+// The shift lives in visual space only — the browser's physical scroll
+// range does not include it — so an unbounded shift walls off that many
+// pixels of content behind the raw scroll boundary until settle (the
+// ghost-top bounce: systematic estimate error accumulated 2000+px of
+// unreachable content in a Safari trace). Beyond the cap, a correction's
+// remainder becomes an anchor slip: reachability of the content edges
+// beats perfect anchor stability.
+const GESTURE_SHIFT_CAP_FACTOR = 0.5;
 
 export function createVirtualList<T>(
   viewport: HTMLElement,
@@ -202,8 +211,13 @@ export function createVirtualList<T>(
    */
   function applyGestureShift(delta: number): void {
     if (Math.abs(delta) <= SCROLL_WRITE_EPSILON_PX) return;
-    gestureShiftPx += delta;
-    canvas.style.transform = `translateY(${-gestureShiftPx}px)`;
+    // Bounded (see GESTURE_SHIFT_CAP_FACTOR): the clamped remainder shows
+    // as content movement — geometry already moved by the full delta and
+    // only the applied portion is visually counteracted.
+    const cap = viewportHeight() * GESTURE_SHIFT_CAP_FACTOR;
+    gestureShiftPx = Math.min(cap, Math.max(-cap, gestureShiftPx + delta));
+    canvas.style.transform =
+      gestureShiftPx === 0 ? "" : `translateY(${-gestureShiftPx}px)`;
   }
 
   function reconcileGestureShift(): void {

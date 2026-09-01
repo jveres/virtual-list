@@ -79,8 +79,9 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-// Estimated row height for rows the runtime has not measured yet.
-const ESTIMATED_ITEM_HEIGHT = 180;
+// Fallback row-height estimate for an empty message (a thinking
+// placeholder); real rows get the content-aware estimate below.
+const ESTIMATED_ITEM_HEIGHT = 96;
 const INITIAL_TRANSCRIPT_COUNT = 100;
 // The loaded data window over the transcript: how much is handed to the
 // virtualizer, and how much each scrollback load prepends.
@@ -441,6 +442,30 @@ function createMessage(message: Omit<Message, "id">): Message {
   return { id: nextMessageId++, ...message };
 }
 
+// Content-aware height estimate for unmeasured rows. Estimates live only in
+// visual space until a row is measured, and SYSTEMATIC error accumulates
+// into the runtime's bounded gesture shift during fast scrollback (the
+// ghost-top bounce came from a flat estimate ~100px under the real average).
+// Being within a few dozen pixels — and mean-zero — matters far more than
+// being simple.
+const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\([^)]*\)/g;
+
+function estimateMessageHeight(message: Message): number {
+  const text = message.markdown;
+  if (text === "") return ESTIMATED_ITEM_HEIGHT;
+  // Embedded images dominate a row's height and inflate text length
+  // (data URIs); count them separately.
+  const imageCount = (text.match(MARKDOWN_IMAGE_RE) ?? []).length;
+  const withoutImages =
+    imageCount > 0 ? text.replace(MARKDOWN_IMAGE_RE, "") : text;
+  // Lines come from explicit breaks and from wrapping (~70 chars per
+  // rendered line at the demo's measure); blank lines add block spacing.
+  const breaks = (withoutImages.match(/\n/g) ?? []).length;
+  const wrapped = Math.ceil(withoutImages.length / 70);
+  const lines = Math.max(breaks + 1, wrapped);
+  return Math.min(2400, 64 + lines * 26 + imageCount * 330);
+}
+
 function cloneToolCalls(toolCalls: readonly ChatToolCall[]): ChatToolCall[] {
   return toolCalls.map((toolCall) => ({ ...toolCall }));
 }
@@ -525,11 +550,15 @@ function appendToActiveBranch(nextMessages: readonly Message[]): void {
 
 // --- The loaded window and the virtualizer bridge ---------------------------
 
+// Nominal average row height for sizing scrollback chunks (data windowing
+// only — per-row estimates come from estimateMessageHeight).
+const NOMINAL_ROW_HEIGHT = 200;
+
 function loadChunkCount(): number {
   return Math.max(
     20,
     Math.ceil(
-      (viewport.clientHeight * DATA_WINDOW_FACTOR) / ESTIMATED_ITEM_HEIGHT,
+      (viewport.clientHeight * DATA_WINDOW_FACTOR) / NOMINAL_ROW_HEIGHT,
     ),
   );
 }
@@ -1644,7 +1673,7 @@ virtualList = createVirtualList<Message>(viewport, {
     }
     return buildRow(message);
   },
-  estimateSize: ESTIMATED_ITEM_HEIGHT,
+  estimateSize: estimateMessageHeight,
   onState: (state) => {
     if (debugGhost && state.count !== lastLoggedCount) {
       ghostLog("count-commit", { from: lastLoggedCount, to: state.count });

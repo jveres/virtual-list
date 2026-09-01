@@ -140,7 +140,18 @@ user's finger (I1 during gestures) with zero scroll writes. Content
 coordinates diverge from raw scrollTop by the accumulated shift for the
 duration of the gesture; at settle the translation is exchanged for one
 scrollTop write in the same frame — visually a no-op — before the flush
-transaction runs. Anchor-driven moving writes (the end-follow catch-up)
+transaction runs.
+
+The shift is BOUNDED to half a viewport: it lives in visual space only,
+so accumulated shift walls that many pixels of content off behind the
+raw scroll boundary until settle — a systematically biased estimate
+walked a Safari trace to 2367px of unreachable content and a
+rubber-band bounce at a ghost top. Beyond the cap, a correction's
+remainder becomes an anchor slip (content moves): reachability of the
+content edges beats perfect anchor stability. Corrections with
+mean-zero error keep the shift far from the cap — an accurate
+`estimateSize` is the host's lever, and the flat-estimate chat demo now
+derives per-message estimates from content. Anchor-driven moving writes (the end-follow catch-up)
 remain refused until settle; an explicit command instead interrupts the
 gesture, as above.
 
