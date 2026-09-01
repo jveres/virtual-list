@@ -150,12 +150,25 @@ const chunksRemaining: Record<Boundary, number> = {
   bottom: MAX_CHUNKS,
 };
 let chunksApplied = 0;
-let loading: Boundary | null = null;
-let queuedChunk: {
-  fragment: DocumentFragment;
-  count: number;
-  boundary: Boundary;
-} | null = null;
+// Each boundary loads and queues independently: a chunk waiting for settle
+// at one edge must not block the other edge from loading, and one settle
+// commits everything queued.
+const loadingBoundary: Record<Boundary, boolean> = {
+  top: false,
+  bottom: false,
+};
+const queuedChunks: Record<
+  Boundary,
+  { fragment: DocumentFragment; count: number } | null
+> = { top: null, bottom: null };
+
+function anythingLoading(): boolean {
+  return loadingBoundary.top || loadingBoundary.bottom;
+}
+
+function anythingQueued(): boolean {
+  return queuedChunks.top !== null || queuedChunks.bottom !== null;
+}
 // scrollTop targets the LAB itself is about to write (the commit's
 // anchor-preserving write); their scroll events must not feed the
 // premature-settle heuristic.
@@ -209,10 +222,15 @@ function scheduleStatus(): void {
     stat.gestures.textContent = String(gestures);
     stat.settles.textContent = String(settles);
     stat.chunks.textContent = `${chunksApplied} (T:${chunksRemaining.top} B:${chunksRemaining.bottom} left)`;
-    stat.queuedDot.className = `dot${queuedChunk ? " pending" : ""}`;
-    stat.queuedText.textContent = queuedChunk
-      ? "waiting for settle"
-      : loading !== null
+    stat.queuedDot.className = `dot${anythingQueued() ? " pending" : ""}`;
+    stat.queuedText.textContent = anythingQueued()
+      ? `waiting (${[
+          queuedChunks.top ? "T" : "",
+          queuedChunks.bottom ? "B" : "",
+        ]
+          .filter(Boolean)
+          .join("+")})`
+      : anythingLoading()
         ? "loading"
         : "no";
     stat.premature.textContent = String(prematureCount);
@@ -221,13 +239,13 @@ function scheduleStatus(): void {
 
 // --- The settle-time structural commit (the v2 contract in miniature) -------
 
-function applyQueuedChunk(reason: string): void {
-  const pending = queuedChunk;
+function applyQueuedChunk(boundary: Boundary, reason: string): void {
+  const pending = queuedChunks[boundary];
   if (!pending) return;
-  queuedChunk = null;
+  queuedChunks[boundary] = null;
   const beforeTop = viewport.scrollTop;
   const beforeHeight = viewport.scrollHeight;
-  if (pending.boundary === "top") {
+  if (boundary === "top") {
     rows.insertBefore(pending.fragment, rows.firstChild);
     const delta = viewport.scrollHeight - beforeHeight;
     const target = beforeTop + delta;
@@ -255,16 +273,22 @@ function applyQueuedChunk(reason: string): void {
     );
   }
   chunksApplied += 1;
-  if (chunksRemaining[pending.boundary] > 0) {
+  if (chunksRemaining[boundary] > 0) {
     hidePill(true);
   } else {
     showPill(
-      pending.boundary === "top" ? "at the top" : "at the bottom",
-      pending.boundary,
+      boundary === "top" ? "at the top" : "at the bottom",
+      boundary,
       true,
     );
   }
   scheduleStatus();
+}
+
+/** ONE settle commits everything queued, both edges, atomically in turn. */
+function applyAllQueuedChunks(reason: string): void {
+  applyQueuedChunk("top", reason);
+  applyQueuedChunk("bottom", reason);
 }
 
 function buildChunk(boundary: Boundary): DocumentFragment {
@@ -289,22 +313,21 @@ function buildChunk(boundary: Boundary): DocumentFragment {
 
 function startLoad(reason: string, boundary: Boundary): void {
   if (
-    loading !== null ||
-    queuedChunk !== null ||
+    loadingBoundary[boundary] ||
+    queuedChunks[boundary] !== null ||
     chunksRemaining[boundary] <= 0
   ) {
     return;
   }
-  loading = boundary;
+  loadingBoundary[boundary] = true;
   showPill(boundary === "top" ? "loading older…" : "loading newer…", boundary);
   log(`load start (${reason}, ${boundary})`);
   window.setTimeout(() => {
-    loading = null;
+    loadingBoundary[boundary] = false;
     chunksRemaining[boundary] -= 1;
-    queuedChunk = {
+    queuedChunks[boundary] = {
       fragment: buildChunk(boundary),
       count: CHUNK_ROWS,
-      boundary,
     };
     log(`load ready (${CHUNK_ROWS} rows, ${boundary})`);
     if (controller.isUserScrollActive()) {
@@ -314,7 +337,7 @@ function startLoad(reason: string, boundary: Boundary): void {
       log("HELD: gesture active, committing at settle", "mark");
       scheduleStatus();
     } else {
-      applyQueuedChunk("idle");
+      applyQueuedChunk(boundary, "idle");
     }
   }, LOAD_LATENCY_MS);
 }
@@ -344,8 +367,8 @@ function buildController(): ScrollSettleController {
     // on top but not bottom in FF" lab finding).
     canLoadAtBoundary: (boundary) =>
       chunksRemaining[boundary] > 0 ||
-      loading === boundary ||
-      queuedChunk?.boundary === boundary,
+      loadingBoundary[boundary] ||
+      queuedChunks[boundary] !== null,
     // A genuine user scroll interrupts the button glide.
     cancelActiveSmoothScroll: () => glide?.cancel(),
     // Scrollends emitted mid-glide are not the user's release.
@@ -368,8 +391,8 @@ function buildController(): ScrollSettleController {
       const lag = lastSettleAt - lastScrollEventAt;
       stat.lag.textContent = `${lag.toFixed(0)}ms`;
       log(`SETTLE (lag ${lag.toFixed(0)}ms after last scroll)`, "mark");
-      applyQueuedChunk("settle");
-      if (queuedChunk === null && loading === null) hidePill();
+      applyAllQueuedChunks("settle");
+      if (!anythingQueued() && !anythingLoading()) hidePill();
       scheduleStatus();
     },
     onGestureReset: () => scheduleStatus(),
@@ -490,8 +513,10 @@ function rebuildList(): void {
   chunksRemaining.top = MAX_CHUNKS;
   chunksRemaining.bottom = MAX_CHUNKS;
   chunksApplied = 0;
-  loading = null;
-  queuedChunk = null;
+  loadingBoundary.top = false;
+  loadingBoundary.bottom = false;
+  queuedChunks.top = null;
+  queuedChunks.bottom = null;
   labExpectedTops.length = 0;
   gestures = 0;
   settles = 0;

@@ -86,6 +86,14 @@ const EDGE_SETTLE_QUIET_MS = 450;
 // ambiguity — can commit under resting fingers.
 const FIREFOX_EDGE_RELEASE_CONFIRM_MS = 450;
 const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
+// Post-scrollend wheels at or below this magnitude, and not growing past
+// their predecessor, are trailing momentum-end markers (a release whose
+// scrollend landed inside the decaying tail), not a continuing gesture —
+// they postpone the short confirm window but do not contest the release.
+// A momentum tail decays (…6,5,5,4,3,2,1); a continuing gesture adds
+// energy (3 → 4 → 7 in the mid-hold lab trace). Growth beyond the small
+// jitter allowance, or any large delta, contests.
+const FIREFOX_TRAILING_MARKER_MAX_DELTA = 2;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
 // cooldown, and a settle inside the tail performs anchor-preserving
@@ -199,6 +207,7 @@ export function createScrollSettleController(
   // Wheel input arrived after the pending edge scrollend: it was a pause,
   // not the release. Contested releases use the full stability window.
   let firefoxEdgeReleaseContested = false;
+  let lastFirefoxWheelMagnitude = 0;
   let lastFirefoxWheelInputAt = Number.NEGATIVE_INFINITY;
   let firefoxProtectedEdge: ScrollBoundary | null = null;
   let settleFrame = 0;
@@ -889,14 +898,28 @@ export function createScrollSettleController(
       }
       if (event.deltaY !== 0) cancelFirefoxEdgeCommitForInput();
       // V2 DEVIATION (see the window constants): wheel input after an edge
-      // scrollend proves the gesture continued past it — that scrollend
-      // was a mid-momentum/mid-hold pause, not the release. Mark the
-      // pending release CONTESTED: it may only settle after the full
-      // stability window of wheel silence, never the short release-confirm
-      // window. (Dropping it entirely was tried and hangs: a decaying
-      // momentum tail at a pinned edge emits no second scrollend.)
-      if (event.deltaY !== 0 && hasPendingFirefoxEdgeRelease()) {
-        firefoxEdgeReleaseContested = true;
+      // scrollend that ADDS ENERGY proves the gesture continued past it —
+      // that scrollend was a mid-momentum/mid-hold pause, not the release.
+      // Mark the pending release CONTESTED: it may only settle after the
+      // full stability window of wheel silence, never the short
+      // release-confirm window. Decaying trailing markers (small, not
+      // growing) are a release whose scrollend landed inside the momentum
+      // tail; they merely postpone the confirm window. (Dropping contested
+      // releases entirely was tried and hangs: a decaying tail at a pinned
+      // edge emits no second scrollend.)
+      if (event.deltaY !== 0) {
+        const magnitude = Math.abs(event.deltaY);
+        if (
+          hasPendingFirefoxEdgeRelease() &&
+          magnitude >
+            Math.max(
+              FIREFOX_TRAILING_MARKER_MAX_DELTA,
+              lastFirefoxWheelMagnitude + 1,
+            )
+        ) {
+          firefoxEdgeReleaseContested = true;
+        }
+        lastFirefoxWheelMagnitude = magnitude;
       }
       if (!handleUserScrollStart()) return;
       if (outwardBoundary) userScrollMoved = true;
