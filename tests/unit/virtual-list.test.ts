@@ -368,6 +368,86 @@ describe("virtual list runtime", () => {
     expect(reached).toBe(2);
   });
 
+  it("executes a newer command queued from onState after the original, so it wins", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let once = false;
+    const { viewport, list } = mount(range(0, 100), {
+      onState: (state) => {
+        if (!listRef || once || state.atEnd) return;
+        once = true;
+        // Queued mid-command: must drain after the whole scrollTo("m30")
+        // operation, so this newer command's write lands last.
+        listRef.scrollTo("end");
+      },
+    });
+    listRef = list;
+
+    list.scrollTo("m30");
+    expect(viewport.scrollTop).toBe(100 * ESTIMATE - VIEWPORT_H);
+    expect(list.state.atEnd).toBe(true);
+  });
+
+  it("honors an explicit viewport anchor at settle even while following", () => {
+    const { viewport, list } = mount(range(0, 50));
+    userScroll(viewport, 4402); // Gesture at the end; follow stays engaged.
+
+    list.setItems(range(0, 52), { anchor: "viewport" });
+    expect(list.state.count).toBe(50); // Explicit policy ⇒ deferred.
+
+    settleGesture(viewport);
+    expect(list.state.count).toBe(52);
+    // The stated policy wins over follow state: position held, no end jump.
+    expect(viewport.scrollTop).toBe(4402);
+  });
+
+  it("honors an explicit end anchor at settle even after follow disengaged", () => {
+    const { viewport, list } = mount(range(0, 50));
+    userScroll(viewport, 4402);
+    userScroll(viewport, 4300); // Upward past the threshold: follow disarms.
+
+    list.setItems(range(0, 52), { anchor: "end" });
+    expect(list.state.count).toBe(50); // Explicit policy ⇒ deferred.
+
+    settleGesture(viewport);
+    expect(viewport.scrollTop).toBe(52 * ESTIMATE - VIEWPORT_H);
+    expect(list.state.atEnd).toBe(true);
+  });
+
+  it("disengages follow on cumulative sub-pixel upward drift", () => {
+    const { viewport, list } = mount(range(0, 50));
+    userScroll(viewport, 4402);
+    // -0.75px per event: no single step exceeds the threshold, but the
+    // cumulative distance from the gesture's high-water mark does.
+    for (const top of [4401.25, 4400.5, 4399.75, 4399, 4398.25, 4397.5]) {
+      userScroll(viewport, top);
+    }
+
+    settleGesture(viewport);
+    // Follow disengaged: settle preserves the position, no snap to the end.
+    expect(viewport.scrollTop).toBe(4397.5);
+    expect(list.state.atEnd).toBe(false);
+  });
+
+  it("disposal from a callback halts publication immediately", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let reached = 0;
+    const { viewport, list } = mount(range(0, 100), {
+      onReachStart: () => {
+        reached += 1;
+      },
+      onState: (state) => {
+        if (listRef && state.atStart) listRef.dispose();
+      },
+    });
+    listRef = list;
+
+    list.scrollTo("start");
+    // The reach-start signal comes after onState in the same publication;
+    // disposal in the callback must stop it from firing.
+    expect(reached).toBe(0);
+    expect(viewport.children.length).toBe(0);
+  });
+
   it("dispose removes the canvas and stops reacting", () => {
     const { viewport, list } = mount(range(0, 10));
     list.dispose();

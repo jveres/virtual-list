@@ -100,7 +100,14 @@ One scroll arbiter owns every scrollTop write, one policy per frame:
 user gesture > explicit command > end-anchor > position-anchor.
 An explicit command issued while a gesture is active is deferred (latest
 wins) and executes at settle, where it outranks the anchor policies; it is
-never dropped and never fights the user's finger.
+never dropped and never fights the user's finger. The same holds for data:
+during a gesture only `anchor: "auto"` end-compatible updates commit
+immediately (their resolved target is where the user already is); updates
+with an explicit anchor policy defer and are flushed at settle under that
+stated policy, never one re-derived from follow state.
+
+`dispose()` is terminal and immediate — callable from any host callback, it
+halts publication mid-flight and drops all queued work.
 
 End-follow is explicit runtime state, not a per-commit re-derivation:
 engaged when a commit lands at the end, disengaged when the user scrolls

@@ -28,9 +28,10 @@ import { type Glide, glideDuration, startGlide } from "./glide";
 // ResizeObserver measurements commit synchronously inside the observer
 // callback — after layout, before paint — so a discrete in-row height change
 // lands in the same painted frame (I6). During an active user gesture,
-// structural updates and above-viewport corrections defer and flush at
-// settle; once anything structural is deferred, every later snapshot
-// replaces it (latest wins).
+// structural updates, explicitly anchored updates, and above-viewport
+// corrections defer and flush at settle (the explicit policy is honored
+// there); once a snapshot is deferred, every later one replaces it
+// (latest wins).
 //
 // Edge chrome does not exist here (I3): `onReachStart/End` are proximity
 // signals with entry/exit hysteresis; loaders are the host's overlays.
@@ -72,6 +73,7 @@ const EDGE_EXIT_PX = 1200;
 const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
+const FOLLOW_DISENGAGE_PX = 2;
 
 export function createVirtualList<T>(
   viewport: HTMLElement,
@@ -123,6 +125,7 @@ export function createVirtualList<T>(
   let glide: Glide | null = null;
   let following = false;
   let lastScrollTop = 0;
+  let gestureHighWaterTop = 0;
   let reachStartArmed = true;
   let reachEndArmed = true;
   let lastState: VirtualListState | null = null;
@@ -159,27 +162,46 @@ export function createVirtualList<T>(
   }
 
   // --- The commit pipeline --------------------------------------------------
-  function transaction(policy: AnchorPolicy, mutate: () => void): void {
-    if (disposed) return;
-    if (enqueueDuringCommit(() => transaction(policy, mutate))) return;
+  /**
+   * Run one complete logical operation under the I4 guard: host callbacks
+   * invoked anywhere inside (render, onState, edge signals) see their API
+   * calls queued, and the queue drains only after the whole operation — so
+   * a newer command queued mid-operation always executes last and wins.
+   */
+  function guarded(work: () => void): void {
+    if (inTransaction) {
+      work(); // Nested inside an open guard: the outer drain handles it.
+      return;
+    }
     inTransaction = true;
     try {
-      const capture = geometry.capture(currentViewport(), policy);
-      mutate();
-      const commit = geometry.resolve(capture);
-
-      canvas.style.height = `${commit.totalSize}px`;
-      if (arbitratedWrite(commit.scrollTop)) {
-        following = atEndTop(commit.scrollTop);
-      }
-      // A gesture-refused write keeps its intent: `following` is untouched
-      // and the settle flush lands on the end exactly (I2).
-      renderWindow();
-      publish();
+      work();
     } finally {
       inTransaction = false;
     }
-    while (afterCommit.length > 0) afterCommit.shift()?.();
+    while (!disposed && afterCommit.length > 0) afterCommit.shift()?.();
+  }
+
+  function transaction(policy: AnchorPolicy, mutate: () => void): void {
+    if (disposed) return;
+    if (enqueueDuringCommit(() => transaction(policy, mutate))) return;
+    guarded(() => commitOnce(policy, mutate));
+  }
+
+  function commitOnce(policy: AnchorPolicy, mutate: () => void): void {
+    const capture = geometry.capture(currentViewport(), policy);
+    mutate();
+    const commit = geometry.resolve(capture);
+
+    canvas.style.height = `${commit.totalSize}px`;
+    if (arbitratedWrite(commit.scrollTop)) {
+      following = atEndTop(commit.scrollTop);
+    }
+    // A gesture-refused write keeps its intent: `following` is untouched
+    // and the settle flush lands on the end exactly (I2).
+    renderWindow();
+    if (disposed) return;
+    publish();
   }
 
   // --- Keyed renderer -------------------------------------------------------
@@ -278,6 +300,10 @@ export function createVirtualList<T>(
   const sensor: GestureSensor = createGestureSensor(viewport, {
     onStart: () => {
       glide?.cancel();
+      // Disengagement is cumulative per gesture, from the downward
+      // high-water mark — the pre-gesture position or the first event's,
+      // whichever is lower on the page.
+      gestureHighWaterTop = Math.max(viewport.scrollTop, lastScrollTop);
     },
     onSettle: () => {
       if (disposed) return;
@@ -310,18 +336,28 @@ export function createVirtualList<T>(
   function handleScroll(): void {
     if (disposed || inTransaction) return;
     const top = viewport.scrollTop;
-    if (sensor.active && top < lastScrollTop - AT_EDGE_EPSILON_PX) {
-      // The user scrolled upward: follow disengages until they return.
-      following = false;
+    if (sensor.active) {
+      if (top > gestureHighWaterTop) {
+        gestureHighWaterTop = top;
+      } else if (top < gestureHighWaterTop - FOLLOW_DISENGAGE_PX) {
+        // Cumulative upward motion beyond the threshold disengages follow
+        // until the user returns to the end — measured against the
+        // gesture's high-water mark, so sub-pixel per-event jitter cannot
+        // scroll away without ever disarming.
+        following = false;
+      }
     }
     lastScrollTop = top;
     // Geometry is unchanged by scrolling; only the window and signals move.
-    renderWindow();
-    publish();
+    guarded(() => {
+      renderWindow();
+      if (!disposed) publish();
+    });
   }
 
   // --- Events ---------------------------------------------------------------
   function publish(): void {
+    if (disposed) return;
     const vp = currentViewport();
     const range = geometry.window(vp, overscanPx);
     const maxTop = geometry.maxScrollTop(vp.height);
@@ -341,6 +377,7 @@ export function createVirtualList<T>(
       );
     lastState = state;
     if (changed) options.onState?.(state);
+    if (disposed) return; // Disposal from a callback halts publication.
 
     // Proximity signals with entry/exit hysteresis (I3): fire on entering
     // the near zone, re-arm only after leaving the wider exit zone — so
@@ -353,6 +390,7 @@ export function createVirtualList<T>(
     } else if (startDistance > EDGE_EXIT_PX) {
       reachStartArmed = true;
     }
+    if (disposed) return;
     if (endDistance <= EDGE_ENTER_PX && reachEndArmed) {
       reachEndArmed = false;
       options.onReachEnd?.();
@@ -396,11 +434,18 @@ export function createVirtualList<T>(
     if (disposed) return;
     if (enqueueDuringCommit(() => setItems(next, setOptions))) return;
     const anchor = setOptions.anchor ?? "auto";
-    // Mid-gesture, structural changes defer — and once anything is deferred,
-    // every later snapshot replaces it: a newer end-compatible update must
-    // not leapfrog an older structural one (latest wins at settle).
-    if (sensor.active && (deferredItems !== null || !isEndCompatible(next))) {
-      deferredItems = { items: next, anchor };
+    // Mid-gesture, only "auto" end-compatible updates commit immediately
+    // (their resolved target is where the user already is). Everything else
+    // defers: structural changes, and any explicit anchor policy — settle
+    // must honor the stated policy, not re-derive one from follow state.
+    // Once anything is deferred, every later snapshot replaces it (latest
+    // wins; a newer update must not leapfrog an older deferred one). The
+    // snapshot is copied on acceptance — the caller's array stays theirs.
+    if (
+      sensor.active &&
+      (deferredItems !== null || anchor !== "auto" || !isEndCompatible(next))
+    ) {
+      deferredItems = { items: [...next], anchor };
       return;
     }
     transaction(anchor, () => adoptItems(next));
@@ -421,12 +466,6 @@ export function createVirtualList<T>(
     }
     glide?.cancel();
 
-    // A keyed target with align:"start" reserves the shortfall (I5) inside
-    // the same transaction that computes the destination.
-    transaction("none", () => {
-      if (target !== "start" && target !== "end") geometry.pin(target);
-    });
-
     const destination = (): number => {
       const height = viewportHeight();
       if (target === "start") return 0;
@@ -437,29 +476,43 @@ export function createVirtualList<T>(
         : Math.min(offset, geometry.maxScrollTop(height));
     };
 
-    if (scrollOptions.behavior !== "smooth") {
-      arbitratedWrite(destination());
-      following = atEndTop(viewport.scrollTop);
-      renderWindow();
-      publish();
-      return;
-    }
+    // The whole command — pin commit (a keyed target with align:"start"
+    // reserves the shortfall, I5), write or glide start, render, publish —
+    // is ONE guarded operation. A newer command queued by a callback inside
+    // it drains only afterwards, so it executes last and wins.
+    guarded(() => {
+      commitOnce("none", () => {
+        if (target !== "start" && target !== "end") geometry.pin(target);
+      });
+      if (disposed) return;
 
-    glide = startGlide(
-      {
-        read: () => viewport.scrollTop,
-        write: (top) => {
-          if (arbitratedWrite(top)) renderWindow();
-        },
-        target: destination,
-      },
-      glideDuration(destination() - viewport.scrollTop, viewportHeight()),
-      () => {
-        glide = null;
+      if (scrollOptions.behavior !== "smooth") {
+        arbitratedWrite(destination());
         following = atEndTop(viewport.scrollTop);
-        publish();
-      },
-    );
+        renderWindow();
+        if (!disposed) publish();
+        return;
+      }
+
+      glide = startGlide(
+        {
+          read: () => viewport.scrollTop,
+          write: (top) =>
+            // Guarded: mounting invokes the host's render() callback.
+            guarded(() => {
+              if (arbitratedWrite(top)) renderWindow();
+            }),
+          target: destination,
+        },
+        glideDuration(destination() - viewport.scrollTop, viewportHeight()),
+        () =>
+          guarded(() => {
+            glide = null;
+            following = atEndTop(viewport.scrollTop);
+            publish();
+          }),
+      );
+    });
   }
 
   // --- Boot -----------------------------------------------------------------
@@ -473,7 +526,12 @@ export function createVirtualList<T>(
       return lastState ?? { ...publishInitial() };
     },
     dispose(): void {
+      // Terminal and immediate, deliberately not queued: callable from any
+      // host callback, it halts publication mid-flight (publish checks
+      // `disposed` around every callback) and empties the pending queue.
+      if (disposed) return;
       disposed = true;
+      afterCommit.length = 0;
       glide?.cancel();
       sensor.dispose();
       itemResizeObserver.disconnect();
