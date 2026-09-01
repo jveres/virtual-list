@@ -67,8 +67,12 @@ const INPUT_WINDOW_MS = 120;
 const EXPECTED_WRITE_TTL_MS = 400;
 const QUIET_FRAMES = 3;
 const PX_EPSILON = 1;
-/** Anchor drift: browser rounding is ~0.1–0.25px; a 1px step is visible. */
-const ANCHOR_EPSILON = 0.5;
+/**
+ * Anchor drift: rectangles keep subpixel precision while Chromium rounds
+ * scrollTop to whole pixels, so a correct commit can read up to ~0.5px of
+ * movement (0.52px observed); a 1px step is visible and still caught.
+ */
+const ANCHOR_EPSILON = 0.55;
 const LOG_RING_MAX = 4000;
 const LOG_DOM_MAX = 350;
 
@@ -764,7 +768,10 @@ let watchFrame = 0;
 
 function watchRow(slot: Element): void {
   const row = slot.firstElementChild;
-  if (!row) return;
+  if (row) watchElement(row);
+}
+
+function watchElement(row: Element): void {
   pendingWatches.push(row);
   if (watchFrame !== 0) return;
   watchFrame = requestAnimationFrame(() => {
@@ -836,7 +843,20 @@ function classifyBatch(records: MutationRecord[]): void {
   const firstOldStyle = new Map<Element, string | null>();
   for (const record of records) {
     if (record.type === "childList") {
-      if (record.target !== canvas) continue;
+      if (record.target !== canvas) {
+        // An element swapped inside a slot — a promoted equal-height
+        // update, or a detached remeasure moving it out and back: the
+        // paint observer follows the element now in the slot.
+        if ((record.target as Element).parentElement === canvas) {
+          for (const node of record.removedNodes) {
+            if (node instanceof Element) paintObserver?.unobserve(node);
+          }
+          for (const node of record.addedNodes) {
+            if (node instanceof Element) watchElement(node);
+          }
+        }
+        continue;
+      }
       for (const node of record.addedNodes) {
         if (node instanceof Element) {
           added.add(node);

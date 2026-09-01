@@ -347,12 +347,62 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(62 * ROW_H - VIEWPORT_H);
   });
 
+  it("promotes an equal-height update at once during a phase: swapped into the slot, no geometry change", () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    h.userScroll(3005);
+    const row = h.rowElement("msg 32");
+    const slot = h.slotOf(row);
+
+    const next = [...initial];
+    next[32] = message(32, "same-height token"); // Measures ROW_H, like m32.
+    h.list.setItems(next);
+    const promoted = h.rowElement("same-height token");
+    expect(promoted).not.toBe(row);
+    expect(h.slotOf(promoted)).toBe(slot); // Into the committed slot...
+    expect(row.isConnected).toBe(false);
+    expect(h.destroyed).toEqual([32]); // ...the displaced element gone once.
+    expect(slot.style.height).toBe(`${ROW_H}px`);
+    expect(h.list.state.totalSize).toBe(50 * ROW_H);
+    expect(h.viewport.scrollTop).toBe(3005);
+    expect(h.list.state.held).toBe(false); // Nothing waits for settle.
+
+    // The observer follows the promoted element: a later growth is held.
+    h.heights.set(32, 300);
+    fireResize(0, promoted, 300);
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+    expect(slot.style.height).toBe("300px");
+  });
+
+  it("promotion leaves a pending page load (and its anchor) waiting for settle", () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    h.userScroll(3005);
+    h.userScroll(50 * ROW_H - VIEWPORT_H);
+    const atEnd = h.viewport.scrollTop;
+    const withPage = [...initial, ...range(50, 62)];
+    h.list.setItems(withPage, { anchor: "viewport" });
+
+    const withToken = [...withPage];
+    withToken[48] = message(48, "same-height token"); // In the window.
+    h.list.setItems(withToken);
+    expect(h.rowElement("same-height token")).toBeDefined(); // Promoted now.
+    expect(h.list.state.held).toBe(true); // The chunk still waits.
+    expect(h.list.state.count).toBe(50);
+
+    h.settle();
+    expect(h.list.state.count).toBe(62);
+    expect(h.viewport.scrollTop).toBe(atEnd); // Its anchor survived too.
+  });
+
   it("freezes committed rows outside the window too: a mid-phase remount shows committed content", () => {
     const initial = range(0, 50);
     const h = mount(initial);
     h.userScroll(3005); // m5 is committed but unmounted.
     const next = [...initial];
     next[5] = message(5, "changed");
+    h.heights.set(5, 300); // A height change: held, not promoted.
     h.list.setItems(next);
     h.userScroll(0); // Still the same gesture: m5 mounts at its committed height.
     const row = h.rowElement("msg 5");

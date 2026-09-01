@@ -29,10 +29,13 @@ import {
 //    decoded since preparation), so the latest heights commit once.
 // 4. During a phase, committed elements are frozen along with geometry: a
 //    same-key update (streaming text, toggles, a decoded image) is rendered
-//    fresh and premeasured off-scroller, and the settle commit swaps
-//    content, height, offsets, canvas, and anchor together — nothing
-//    mounted ever shows content that disagrees with its slot. Idle, the
-//    same update renders in place and commits immediately. A mounted row
+//    fresh and premeasured off-scroller. If its height equals the committed
+//    height it is PROMOTED at once — swapped into the committed slot, no
+//    geometry change — so streaming keeps flowing under a scroll; once a
+//    wrap changes the height, the settle commit swaps content, height,
+//    offsets, canvas, and anchor together — nothing mounted ever shows
+//    content that disagrees with its slot. Idle, the same update renders
+//    in place and commits immediately. A mounted row
 //    lives inside a dimensionally stable SLOT (fixed height, clipped) as
 //    the safety net for changes the host makes outside setItems (direct
 //    DOM mutation, late resources): the ResizeObserver marks the row dirty
@@ -516,6 +519,8 @@ export function createVirtualList<T>(
     const newRows = new Map<string, Row<T>>();
     const built: Row<T>[] = [];
     const inPlace: { row: Row<T>; item: T }[] = [];
+    /** Equal-height phase-time updates: swapped into committed slots in phase 2. */
+    const promotions: { row: Row<T>; fresh: Row<T> }[] = [];
     const adopted = new Set<string>();
 
     // Every in-place candidate is recorded BEFORE its render is invoked:
@@ -623,11 +628,24 @@ export function createVirtualList<T>(
               // A scroll phase is active: committed elements are frozen —
               // content as much as geometry, mounted or not (an unmounted
               // row may mount mid-phase at its committed height). The
-              // update is rendered FRESH, premeasured off-scroller, and
-              // swapped in atomically at settle with its height; later
-              // updates in the same phase advance that replacement in
-              // place (it is off-scroller) through the adoption branch.
-              newRows.set(key, measureFresh(key, item, render(item)));
+              // update is rendered FRESH and premeasured off-scroller.
+              // Equal height (within the measurement epsilon) on a clean
+              // committed row: PROMOTED — swapped into the committed slot
+              // in phase 2 with geometry untouched, so streaming keeps
+              // flowing under a scroll until a wrap changes the height.
+              // Otherwise it is retained and swapped in atomically at
+              // settle with its height; later updates in the same phase
+              // advance that replacement in place (it is off-scroller)
+              // through the adoption branch.
+              const fresh = measureFresh(key, item, render(item));
+              if (
+                !committed.dirty &&
+                Math.abs(fresh.height - committed.height) <= MEASURE_EPSILON_PX
+              ) {
+                promotions.push({ row: committed, fresh });
+              } else {
+                newRows.set(key, fresh);
+              }
             }
           }
         }
@@ -664,15 +682,45 @@ export function createVirtualList<T>(
         .filter(([key]) => !adopted.has(key))
         .map(([, row]) => row);
       teardownFailures.push(...destroyAll(superseded));
-      if (disposed) {
-        teardownFailures.push(...destroyAll(built));
-        return {
-          prepared: { keys, itemByKey, newRows: new Map(), anchor },
-          teardownFailures,
-        };
+    }
+    // Promotions: the fresh element moves into the committed row's slot
+    // (same height, same offset — no geometry change) and the displaced
+    // element is destroyed. The fresh row object is retired so `built`
+    // can never destroy that element a second time; a host disposing from
+    // a destruction stops the loop and the rest of `built` is torn down.
+    for (const { row, fresh } of promotions) {
+      if (disposed || row.destroyed) break;
+      const displaced = row.element;
+      const displacedItem = row.item;
+      if (row.mounted) rowObserver.unobserve(displaced);
+      fresh.element.remove();
+      displaced.replaceWith(fresh.element);
+      row.element = fresh.element;
+      row.item = fresh.item;
+      row.renderedItem = fresh.item;
+      row.renderUnknown = false;
+      fresh.destroyed = true;
+      if (row.mounted) observeRow(row);
+      try {
+        options.onDestroy?.(displaced, displacedItem);
+      } catch (error) {
+        teardownFailures.push(error);
       }
     }
+    if (disposed) {
+      teardownFailures.push(...destroyAll(built));
+      return {
+        prepared: { keys, itemByKey, newRows: new Map(), anchor },
+        teardownFailures,
+      };
+    }
     return { prepared: { keys, itemByKey, newRows, anchor }, teardownFailures };
+  }
+
+  /** The prepared key order is the committed one: no structural change. */
+  function sameKeysAsCommitted(keys: readonly string[]): boolean {
+    if (keys.length !== geometry.count) return false;
+    return keys.every((key, index) => geometry.keyAt(index) === key);
   }
 
   // --- The atomic commit ----------------------------------------------------
@@ -987,6 +1035,14 @@ export function createVirtualList<T>(
       if (disposed) return;
       if (idle()) {
         flush(prepared);
+      } else if (
+        prepared.newRows.size === 0 &&
+        sameKeysAsCommitted(prepared.keys)
+      ) {
+        // Everything in this snapshot was promoted (or nothing changed):
+        // nothing waits for settle, and it supersedes whatever did.
+        pending = null;
+        publish();
       } else {
         pending = prepared;
         publish();

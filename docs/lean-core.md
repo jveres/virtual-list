@@ -48,12 +48,17 @@ as preserved primitives, with the smaller API built around them.
    image decode, font swaps — are geometry changes and follow the same
    rule. During a scroll phase the committed elements are **frozen along
    with geometry**: the update is rendered fresh (`render(item)` without
-   `existing`) and premeasured off-scroller, retained, and the settle
-   commit swaps content, height, offsets, canvas, and anchor together —
-   nothing mounted ever shows content that disagrees with its slot (a
-   fixed-height clipped box would clip growth and gap shrinkage, which is
-   visibly wrong). Later updates in the same phase advance that
-   off-scroller replacement in place; one fresh render per key per phase.
+   `existing`) and premeasured off-scroller. **Equal-height promotion**:
+   if its height equals the committed height (within the measurement
+   epsilon) it is swapped into the committed slot immediately — same
+   height, same offset, no geometry change — so streaming keeps flowing
+   under a scroll; only once wrapping changes the height is the update
+   retained, and the settle commit then swaps content, height, offsets,
+   canvas, and anchor together — nothing mounted ever shows content that
+   disagrees with its slot (a fixed-height clipped box would clip growth
+   and gap shrinkage, which is visibly wrong). Later updates in a held
+   phase advance that off-scroller replacement in place; one fresh render
+   per key per phase once held, one per update while promotable.
    While the surface is idle, the update renders in place and commits
    immediately (same pipeline). Changes made outside `setItems` — direct
    DOM mutation of a mounted row, a late resource growing an element — are
