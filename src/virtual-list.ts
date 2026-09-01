@@ -178,7 +178,11 @@ export function createVirtualList<T>(
 
   let disposed = false;
   let inCommit = false;
-  const afterCommit: { run: () => void; discard?: () => void }[] = [];
+  // The OPEN transaction's queue. Every top-level transaction owns a fresh
+  // scope: what its callbacks queue drains after it commits, each entry as
+  // its own transaction with its own scope — so a failing queued entry
+  // discards only the work it created, never its siblings.
+  let afterCommit: { run: () => void; discard?: () => void }[] = [];
   let glide: Glide | null = null;
   let glideTarget: (() => number) | null = null;
   // A landed glide resolves only once its phase settles and held work has
@@ -233,28 +237,32 @@ export function createVirtualList<T>(
       work();
       return;
     }
+    const scope: { run: () => void; discard?: () => void }[] = [];
+    afterCommit = scope;
     inCommit = true;
     try {
       work();
     } catch (error) {
       inCommit = false;
-      // A genuine failure: what its callbacks queued would run against a
-      // state that was never reached. Discard it — settling every queued
-      // command's promise (false) so nothing hangs.
-      for (const entry of afterCommit) entry.discard?.();
-      afterCommit.length = 0;
+      // A genuine failure: what THIS transaction's callbacks queued would
+      // run against a state that was never reached. Discard exactly that
+      // scope — settling every queued command's promise (false) so nothing
+      // hangs — and nothing outside it.
+      for (const entry of scope) entry.discard?.();
+      scope.length = 0;
       const deferred = takeDeferredTeardown();
       if (deferred.length === 0) throw error;
       throw new AggregateError([error, ...deferred], "transaction failed");
     }
     inCommit = false;
     const failures = takeDeferredTeardown();
-    // Drain everything queued; each entry runs as its own transaction and
-    // any failure it surfaces joins the report instead of stranding the
-    // entries behind it.
-    while (!disposed && afterCommit.length > 0) {
+    // Drain this scope; each entry runs as its own top-level transaction
+    // (with its own scope), and any failure it surfaces joins the report
+    // instead of stranding the entries behind it.
+    while (!disposed && scope.length > 0) {
+      const entry = scope.shift();
       try {
-        afterCommit.shift()?.run();
+        entry?.run();
       } catch (error) {
         failures.push(...failuresOf(error));
       }

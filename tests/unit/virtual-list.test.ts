@@ -526,6 +526,32 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.viewport.scrollTop).toBe(0);
   });
 
+  it("a failing queued transaction discards only its own scope, not its siblings (I4)", async () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let queuedCommand: Promise<boolean> | null = null;
+    let armed = false;
+    const h = mount(range(0, 100), {
+      throwOn: "boom",
+      onState: (state) => {
+        if (state.count !== 99 || armed || !listRef) return;
+        armed = true;
+        // Two siblings queued by the same committed transaction: a setItems
+        // that will fail during render, then a command.
+        listRef.setItems([...range(1, 100), message(200, "boom")]);
+        queuedCommand = listRef.scrollTo("start");
+      },
+    });
+    listRef = h.list;
+
+    expect(() => h.list.setItems(range(1, 100))).toThrow("render failed: boom");
+    // The failing sibling discarded nothing but its own scope: the command
+    // still ran, and the committed state is the removal's, not the failed
+    // snapshot's.
+    await expect(queuedCommand).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(0);
+    expect(h.list.state.count).toBe(99);
+  });
+
   it("hands off the new snapshot before surfacing a supersession teardown failure", () => {
     const h = mount(range(0, 30), {
       onDestroy: (element) => {
