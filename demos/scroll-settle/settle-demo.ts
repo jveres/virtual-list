@@ -79,14 +79,22 @@ function buildRow(index: number): HTMLElement {
   const random = mulberry32(index * 2654435761);
   const row = document.createElement("div");
   row.className = "row";
-  row.style.height = `${Math.round(40 + random() * 220)}px`;
+  const height = Math.round(48 + random() * 212);
+  row.style.height = `${height}px`;
   const idx = document.createElement("span");
   idx.className = "idx";
   idx.textContent = `#${index}`;
-  const bar = document.createElement("span");
-  bar.className = "bar";
-  bar.style.maxWidth = `${Math.round(20 + random() * 80)}%`;
-  row.append(idx, bar);
+  row.appendChild(idx);
+  // Fill the row with skeleton text lines so varied heights read as
+  // varied content, not empty boxes.
+  const lines = Math.max(1, Math.floor((height - 46) / 21));
+  for (let line = 0; line < lines; line++) {
+    const element = document.createElement("span");
+    element.className = "line";
+    const last = line === lines - 1;
+    element.style.width = `${Math.round((last ? 25 : 68) + random() * 30)}%`;
+    row.appendChild(element);
+  }
   return row;
 }
 

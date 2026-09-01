@@ -86,24 +86,24 @@
       }
       .row {
         display: flex;
-        align-items: center;
-        gap: 12px;
+        flex-direction: column;
+        justify-content: center;
+        gap: 9px;
         border-bottom: 1px solid var(--border);
-        padding: 0 12px;
+        padding: 14px 12px;
         font-variant-numeric: tabular-nums;
+        overflow: hidden;
       }
       .row .idx {
         color: var(--fg-dim);
         font-size: 12px;
-        min-width: 52px;
+        font-weight: 600;
       }
-      .row .bar {
-        flex: 1;
-        height: 8px;
-        border-radius: 4px;
-        background:
-          linear-gradient(90deg, var(--accent), transparent 80%);
-        opacity: 0.35;
+      .row .line {
+        height: 12px;
+        border-radius: 6px;
+        background: color-mix(in srgb, var(--fg-dim) 22%, transparent);
+        flex: none;
       }
       .row.fresh {
         animation: fresh 0.9s ease-out;
