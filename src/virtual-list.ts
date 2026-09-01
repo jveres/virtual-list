@@ -213,6 +213,21 @@ export function createVirtualList<T>(
     return true;
   }
 
+  // Host teardown failures raised by a COMMITTED operation are not
+  // transaction failures: the state the host observed was fully reached.
+  // They are deferred here and surfaced by the outermost guard only after
+  // the queued work has drained — a scrollTo() issued from onState after a
+  // commit whose onDestroy threw still runs (I4).
+  const deferredTeardown: unknown[] = [];
+
+  function deferTeardown(failures: readonly unknown[]): void {
+    deferredTeardown.push(...failures);
+  }
+
+  function takeDeferredTeardown(): unknown[] {
+    return deferredTeardown.splice(0);
+  }
+
   function guarded(work: () => void): void {
     if (inCommit) {
       work();
@@ -223,15 +238,28 @@ export function createVirtualList<T>(
       work();
     } catch (error) {
       inCommit = false;
-      // The transaction failed: what its callbacks queued would run against
-      // a state that was never reached. Discard it — settling every queued
+      // A genuine failure: what its callbacks queued would run against a
+      // state that was never reached. Discard it — settling every queued
       // command's promise (false) so nothing hangs.
       for (const entry of afterCommit) entry.discard?.();
       afterCommit.length = 0;
-      throw error;
+      const deferred = takeDeferredTeardown();
+      if (deferred.length === 0) throw error;
+      throw new AggregateError([error, ...deferred], "transaction failed");
     }
     inCommit = false;
-    while (!disposed && afterCommit.length > 0) afterCommit.shift()?.run();
+    const failures = takeDeferredTeardown();
+    // Drain everything queued; each entry runs as its own transaction and
+    // any failure it surfaces joins the report instead of stranding the
+    // entries behind it.
+    while (!disposed && afterCommit.length > 0) {
+      try {
+        afterCommit.shift()?.run();
+      } catch (error) {
+        failures.push(...failuresOf(error));
+      }
+    }
+    throwTeardown(failures);
   }
 
   // --- Rows: build, measure, retain, destroy --------------------------------
@@ -685,7 +713,7 @@ export function createVirtualList<T>(
       if (disposed) return;
       publish();
     } finally {
-      throwTeardown(teardownFailures);
+      deferTeardown(teardownFailures);
     }
   }
 
@@ -900,22 +928,17 @@ export function createVirtualList<T>(
     // render() is a host callback); committed now only when idle.
     guarded(() => {
       const { prepared, teardownFailures } = prepare(snapshot, anchor);
-      const failures = [...teardownFailures];
-      if (!disposed) {
-        // Hand-off happens regardless of supersession teardown failures;
-        // they surface only once the snapshot is pending or committed.
-        if (idle()) {
-          try {
-            flush(prepared);
-          } catch (error) {
-            failures.push(...failuresOf(error));
-          }
-        } else {
-          pending = prepared;
-          publish();
-        }
+      // Hand-off happens regardless of supersession teardown failures;
+      // they are deferred to the outermost guard, which surfaces them only
+      // after the snapshot is pending or committed AND queued work drained.
+      deferTeardown(teardownFailures);
+      if (disposed) return;
+      if (idle()) {
+        flush(prepared);
+      } else {
+        pending = prepared;
+        publish();
       }
-      throwTeardown(failures);
     });
   }
 
