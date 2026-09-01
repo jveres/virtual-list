@@ -2,6 +2,7 @@ import { detectScrollSettleStrategy } from "../../src/scroll-settle.js";
 import {
   createVirtualList,
   type ReachContext,
+  type ScrollingUpdates,
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
@@ -174,6 +175,8 @@ interface Item {
   imageDelayMs: number;
   imageAspect: number;
   imageLoaded: boolean;
+  /** Actively receiving tokens (carried by the item so a render shows it). */
+  streaming: boolean;
   hue: number;
 }
 
@@ -206,6 +209,7 @@ function makeItem(id: number): Item {
     imageDelayMs: kind === "image" ? 400 + Math.floor(random() * 3600) : 0,
     imageAspect: 0.3 + random() * 0.5,
     imageLoaded: false,
+    streaming: false,
     hue: Math.floor(random() * 360),
   };
 }
@@ -357,7 +361,7 @@ function update(item: Item, row: HTMLElement): void {
     "done",
     item.kind === "stream" && item.words.length >= item.streamTarget,
   );
-  row.classList.toggle("live", streams.has(item.id));
+  row.classList.toggle("live", item.streaming);
   const pic = row.querySelector<HTMLImageElement>(".pic");
   if (pic) {
     // Known size once loaded: the box is CSS-sized, independent of decode.
@@ -714,11 +718,9 @@ function onState(state: VirtualListState): void {
   scheduleStatus();
 }
 
-function scrollingMode(): "freeze" | "same-height" | "live" {
-  return mustGet<HTMLSelectElement>("scrolling-updates").value as
-    | "freeze"
-    | "same-height"
-    | "live";
+function scrollingMode(): ScrollingUpdates {
+  return mustGet<HTMLSelectElement>("scrolling-updates")
+    .value as ScrollingUpdates;
 }
 
 function createList(): void {
@@ -1059,7 +1061,11 @@ function classifyBatch(records: MutationRecord[]): void {
 }
 
 function checkSlotClips(slot: Element): void {
+  // A slot mounted and unmounted within one task has no computed style to
+  // read (Firefox reports "" for a disconnected element).
+  if (!slot.isConnected) return;
   const overflow = getComputedStyle(slot).overflowY;
+  if (overflow === "") return;
   if (overflow !== "clip" && overflow !== "hidden") {
     violation(
       "O",
@@ -1299,9 +1305,15 @@ function maintainStreams(): void {
   }
 }
 
-/** The "streaming" label belongs only to rows actively receiving tokens. */
+/** The "streaming" label belongs only to rows actively receiving tokens —
+ * and reaches the DOM through setItems like every other change. */
 function syncLive(id: number): void {
-  elementById.get(id)?.classList.toggle("live", streams.has(id));
+  const item = itemById.get(id);
+  const streaming = streams.has(id);
+  if (item && item.streaming !== streaming && items.includes(item)) {
+    item.streaming = streaming;
+    changeContent(item, `stream #${id} ${streaming ? "live" : "idle"}`);
+  }
 }
 
 function endStream(id: number): void {
@@ -1385,10 +1397,7 @@ function burst(): void {
   for (let count = 0; count < 5; count++) {
     const item = pick(items, random);
     item.words.push(pick(WORDS, random));
-    const updated = { ...item, version: item.version + 1 };
-    replaceItem(updated);
-    list.setItems(items);
-    recordContentChange(item.id, `burst #${item.id}`);
+    changeContent(item, `burst #${item.id}`);
   }
 }
 

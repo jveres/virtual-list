@@ -993,14 +993,19 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.list.state.held).toBe(false);
   });
 
-  it("freshness-checks a retained committed row before remount, queuing without geometry change", () => {
+  it("a retained row that changed while detached is observed on remount and queued without geometry change", () => {
     const h = mount(range(0, 100));
     void h.list.scrollTo("m20"); // m95 unmounts, retained.
     h.heights.set(95, 300); // It changes while detached.
 
     h.userScroll(9005); // A gesture brings it back into the window.
-    const slot = h.slotOf(h.rowElement("msg 95"));
+    const row = h.rowElement("msg 95");
+    const slot = h.slotOf(row);
     expect(slot.style.height).toBe(`${ROW_H}px`); // Mounted at the committed height.
+    // The observer's initial delivery for the remounted element (after
+    // layout, before the mount's first paint) is the freshness check.
+    fireResize(0, row, 300);
+    expect(slot.style.height).toBe(`${ROW_H}px`);
     expect(h.list.state.totalSize).toBe(100 * ROW_H); // Geometry untouched...
     expect(h.list.state.held).toBe(true); // ...the difference is queued.
 

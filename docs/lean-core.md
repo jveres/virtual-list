@@ -82,7 +82,9 @@ as preserved primitives, with the smaller API built around them.
 Corollaries: no ResizeObserver-driven mid-gesture geometry correction, no
 gesture-time canvas translation, no "safe update" exceptions. What v1
 handled with compensation machinery simply cannot occur: heights are known
-before mount, and geometry changes only at settle.
+before mount, and geometry changes only at settle — the one deliberate
+exception being `"live"`'s no-write commits below the anchor, a product
+choice with its trade-off stated above.
 
 Settles during active input or motion are defects, always. The v2
 Firefox deviation (in the preserved controller, flagged in-source) is a

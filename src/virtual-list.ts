@@ -24,28 +24,31 @@ import {
 //    leaves committed and pending state untouched.
 // 3. Only when the phase settles (or immediately while idle) does ONE
 //    atomic commit apply keys, heights, canvas geometry, the mounted window,
-//    and a single anchor-preserving scroll write. Retained nodes are
-//    re-measured immediately before they commit (a detached image may have
-//    decoded since preparation), so the latest heights commit once.
-// 4. During a phase, committed elements are frozen along with geometry: a
-//    same-key update (streaming text, toggles, a decoded image) is rendered
-//    fresh and premeasured off-scroller. If its height equals the committed
-//    height it is PROMOTED at once — swapped into the committed slot, no
-//    geometry change — so streaming keeps flowing under a scroll; once a
-//    wrap changes the height, the settle commit swaps content, height,
+//    and a single anchor-preserving scroll write. Retained nodes that
+//    waited for a settle are re-measured immediately before they commit (a
+//    detached image may have decoded since preparation), so the latest
+//    heights commit once.
+// 4. Same-key updates during a phase follow `scrollingUpdates`. Default
+//    ("same-height"): committed elements are frozen along with geometry;
+//    the update is rendered fresh and premeasured off-scroller, PROMOTED
+//    into the committed slot at once when its height is unchanged, and
+//    otherwise retained until the settle commit swaps content, height,
 //    offsets, canvas, and anchor together — nothing mounted ever shows
-//    content that disagrees with its slot. Idle, the same update renders
-//    in place and commits immediately. A mounted row
-//    lives inside a dimensionally stable SLOT (fixed height, clipped) as
-//    the safety net for changes the host makes outside setItems (direct
-//    DOM mutation, late resources): the ResizeObserver marks the row dirty
-//    and its real height commits at settle, or in the same delivery when
-//    idle — geometry never drifts, but such content clips or gaps until
-//    then, so hosts route size changes through setItems.
+//    content that disagrees with its slot. "freeze" holds every such
+//    update; "live" renders it in place and commits its height at once
+//    whenever no scroll write is needed for it (rows at or below the
+//    anchor row). Idle, every mode renders in place and commits at once.
+//    A mounted row lives inside a dimensionally stable SLOT (fixed
+//    height, clipped) as the safety net for changes made outside setItems
+//    (direct DOM mutation, late resources): the ResizeObserver marks the
+//    row dirty and its real height commits at settle, or in the same
+//    delivery when idle — geometry never drifts, but such content clips
+//    or gaps until then, so hosts route size changes through setItems.
 //
 // There is no compensation machinery: no mid-gesture corrections, no
 // canvas translation, no "safe update" exceptions. What v1 patched cannot
-// occur here because geometry never changes under a live scroll.
+// occur here because geometry never changes under a live scroll — except
+// what "live" commits below the anchor by explicit product choice.
 
 export interface ReachContext {
   /**
@@ -57,18 +60,20 @@ export interface ReachContext {
   signal: AbortSignal;
 }
 
+export type ScrollingUpdates = "freeze" | "same-height" | "live";
+
 export interface VirtualListOptions<T> {
   items: readonly T[];
   key: (item: T) => string;
   /**
    * Build a row's element, or update `existing` in place for a same-key
    * item change (return it) or replace it (return a new element).
-   * `existing` is offered only when mutating it is safe: while the list is
-   * idle, or when it is an off-scroller element (a pending replacement).
-   * During a scroll phase a committed row's update is rendered fresh
-   * (no `existing`), premeasured, and — see `scrollingUpdates` — either
-   * swapped into the committed slot at once when its height is unchanged
-   * or retained and swapped in at settle.
+   * `existing` is offered when mutating it is safe: while the list is
+   * idle, when it is an off-scroller element (a pending replacement), or
+   * in "live" mode. In the other modes a committed row's phase-time update
+   * is rendered fresh (no `existing`), premeasured, and either promoted
+   * into the committed slot at once (height unchanged) or swapped in at
+   * settle.
    */
   render: (item: T, existing?: HTMLElement) => HTMLElement;
   overscanPx?: number;
@@ -102,7 +107,7 @@ export interface VirtualListOptions<T> {
    *   and commits at settle (or the moment the viewport reaches it). The
    *   trade-off is a scroll range that changes under a live scroll.
    */
-  scrollingUpdates?: "freeze" | "same-height" | "live";
+  scrollingUpdates?: ScrollingUpdates;
 }
 
 export interface VirtualListState {
@@ -139,11 +144,21 @@ const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
 
+const EMPTY_STATE: VirtualListState = {
+  count: 0,
+  start: 0,
+  end: 0,
+  atStart: true,
+  atEnd: true,
+  totalSize: 0,
+  held: false,
+};
+
 interface Row<T> {
   key: string;
   /** The committed (or, for a pending row, prepared) item. */
   item: T;
-  /** The item the element's DOM currently reflects (when known). */
+  /** The item the element's DOM reflects — meaningful unless `renderUnknown`. */
   renderedItem: T;
   /**
    * A render on this element threw — the host may have mutated it before
@@ -156,23 +171,29 @@ interface Row<T> {
   /** Dimensionally stable container: fixed committed height, clipped. */
   slot: HTMLElement;
   height: number;
+  /** The offset last written to the slot's transform (NaN: never). */
+  offset: number;
   mounted: boolean;
-  /** Content changed (or the width did): re-measure at the next commit. */
+  /**
+   * Its size may differ from `height`: content or width changed, or it
+   * waited for a settle. Re-measured at the next commit.
+   */
   dirty: boolean;
-  /** The commit that last measured this row (freshness on remount). */
-  measuredEpoch: number;
   destroyed: boolean;
 }
 
 interface Prepared<T> {
   keys: readonly string[];
-  itemByKey: Map<string, T>;
   /** Rows built and premeasured off-scroller for new or replaced keys. */
   newRows: Map<string, Row<T>>;
   anchor: AnchorPolicy;
 }
 
 type Edge = "start" | "end";
+type ScrollTarget = string | "start" | "end";
+type ScrollOptions = { align?: "start"; behavior?: "auto" | "smooth" };
+type Transaction = { run: () => void; discard?: () => void };
+type Scope = Transaction[];
 
 /** Preparation bail-out: the host disposed the list from inside a callback. */
 class DisposedDuringPreparation extends Error {}
@@ -182,7 +203,8 @@ export function createVirtualList<T>(
   options: VirtualListOptions<T>,
 ): VirtualList<T> {
   const { key: keyOf, render } = options;
-  const scrollingUpdates = options.scrollingUpdates ?? "same-height";
+  const scrollingUpdates: ScrollingUpdates =
+    options.scrollingUpdates ?? "same-height";
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
   const overscanPx = options.overscanPx ?? Math.max(300, viewport.clientHeight);
@@ -192,15 +214,16 @@ export function createVirtualList<T>(
   // so the kernel's estimate is only a validation placeholder.
   const geometry = new Geometry(1);
   const rows = new Map<string, Row<T>>();
-  let commitEpoch = 0;
+  const mountedRows = new Set<Row<T>>();
+  /** Committed rows whose size may differ from their committed height. */
+  const dirtyRows = new Set<Row<T>>();
+  /** Advances on every geometry change; window reconciliation is memoized on it. */
+  let geometryEpoch = 0;
 
   // --- Pending work (waits for the scroll phase to settle) ------------------
   let pending: Prepared<T> | null = null;
   /** The snapshot mid-commit: its not-yet-adopted rows are dispose()'s too. */
   let committing: Prepared<T> | null = null;
-  let anyDirty = false;
-  let idleFlushFrame = 0;
-  let inFlush = false;
 
   // --- DOM ------------------------------------------------------------------
   const canvas = document.createElement("div");
@@ -208,15 +231,20 @@ export function createVirtualList<T>(
   canvas.style.width = "100%";
   canvas.style.overflowAnchor = "none";
   viewport.appendChild(canvas);
-  const measurer: ItemMeasurer = createItemMeasurer({ viewport });
+  let lastViewportWidth = viewport.clientWidth;
+  // The measurer's width comes from the viewport observer, not a layout
+  // read per measurement.
+  const measurer: ItemMeasurer = createItemMeasurer({
+    viewport,
+    viewportWidth: () => lastViewportWidth,
+  });
 
   let disposed = false;
-  let inCommit = false;
+  let inTransaction = false;
   // The OPEN transaction's queue. Every top-level transaction owns a fresh
   // scope: what its callbacks queue drains after it commits, each entry as
   // its own transaction with its own scope — so a failing queued entry
   // discards only the work it created, never its siblings.
-  type Scope = { run: () => void; discard?: () => void }[];
   let afterCommit: Scope = [];
   // Every scope with undrained entries, outermost first: a parent scope
   // mid-drain still holds its remaining siblings while a child transaction
@@ -238,7 +266,9 @@ export function createVirtualList<T>(
     end: new Set(),
   };
 
-  function viewportState(): { scrollTop: number; height: number } {
+  type ViewportState = { scrollTop: number; height: number };
+
+  function viewportState(): ViewportState {
     return { scrollTop: viewport.scrollTop, height: viewport.clientHeight };
   }
 
@@ -246,12 +276,17 @@ export function createVirtualList<T>(
     return !controller.isUserScrollActive();
   }
 
+  function writeScrollTop(top: number): void {
+    controller.recordProgrammaticScrollTop(top);
+    viewport.scrollTop = top;
+  }
+
   // --- Reentrancy (I4): API calls from host callbacks queue behind the commit
-  function enqueueDuringCommit(
+  function enqueueDuringTransaction(
     work: () => void,
     discard?: () => void,
   ): boolean {
-    if (!inCommit) return false;
+    if (!inTransaction) return false;
     afterCommit.push({ run: work, discard });
     return true;
   }
@@ -277,7 +312,7 @@ export function createVirtualList<T>(
   }
 
   function guarded(work: () => void): void {
-    if (inCommit) {
+    if (inTransaction) {
       work();
       return;
     }
@@ -285,12 +320,12 @@ export function createVirtualList<T>(
     const outer = afterCommit;
     afterCommit = scope;
     liveScopes.push(scope);
-    inCommit = true;
+    inTransaction = true;
     try {
       try {
         work();
       } catch (error) {
-        inCommit = false;
+        inTransaction = false;
         // A genuine failure: what THIS transaction's callbacks queued would
         // run against a state that was never reached. Discard exactly that
         // scope — settling every queued command's promise (false) so nothing
@@ -300,7 +335,7 @@ export function createVirtualList<T>(
         if (deferred.length === 0) throw error;
         throw new AggregateError([error, ...deferred], "transaction failed");
       }
-      inCommit = false;
+      inTransaction = false;
       const failures = takeDeferredTeardown();
       // Drain this scope; each entry runs as its own top-level transaction
       // (with its own scope), and any failure it surfaces joins the report
@@ -353,9 +388,9 @@ export function createVirtualList<T>(
       element,
       slot,
       height,
+      offset: Number.NaN,
       mounted: false,
       dirty: false,
-      measuredEpoch: -1,
       destroyed: false,
     };
   }
@@ -379,6 +414,7 @@ export function createVirtualList<T>(
     if (row.destroyed) return;
     row.destroyed = true;
     if (row.mounted) unmountRow(row);
+    dirtyRows.delete(row);
     row.slot.remove();
     options.onDestroy?.(row.element, row.item);
   }
@@ -413,11 +449,12 @@ export function createVirtualList<T>(
     return error instanceof AggregateError ? [...error.errors] : [error];
   }
 
-  /** A retained, unmounted row is measured detached with the width synced. */
-  function remeasureDetached(row: Row<T>): number {
-    const { height } = measurer.measure(() => row.element);
-    row.slot.appendChild(row.element); // The measurer detaches it.
-    return height;
+  /** Retained, unmounted rows are measured detached, all in one layout. */
+  function remeasureDetached(detached: readonly Row<T>[]): number[] {
+    if (detached.length === 0) return [];
+    const heights = measurer.measureMany(detached.map((row) => row.element));
+    for (const row of detached) row.slot.appendChild(row.element); // Detached by the measurer.
+    return heights;
   }
 
   function measureInPlace(row: Row<T>): number {
@@ -429,6 +466,10 @@ export function createVirtualList<T>(
   // Observing from inside the observer's own delivery schedules
   // undeliverable notifications ("loop completed with undelivered
   // notifications"); registrations made during a delivery wait a frame.
+  // The observer's INITIAL delivery for a newly observed element is also
+  // the freshness check of a retained row that changed while detached (a
+  // decoded image): it arrives after layout, before the mount's first
+  // paint, and queues any difference like any other size change.
   let inMeasurementDelivery = false;
   const pendingObserves: HTMLElement[] = [];
   let observeFlushFrame = 0;
@@ -456,19 +497,10 @@ export function createVirtualList<T>(
     }
   }
 
+  /** Committed rows join the dirty set; pending rows are remeasured at commit anyway. */
   function markDirty(row: Row<T>): void {
     row.dirty = true;
-    anyDirty = true;
-  }
-
-  /** Idle dirty work commits at the next frame (never inside reconciliation). */
-  function scheduleIdleFlush(): void {
-    if (idleFlushFrame !== 0 || disposed) return;
-    idleFlushFrame = requestAnimationFrame(() => {
-      idleFlushFrame = 0;
-      if (disposed || !anyDirty || !idle()) return;
-      flush(null);
-    });
+    if (rows.get(row.key) === row) dirtyRows.add(row);
   }
 
   const rowObserver = new ResizeObserver((entries) => {
@@ -491,9 +523,8 @@ export function createVirtualList<T>(
     // "live" can commit without a scroll write, which commits now.
     inMeasurementDelivery = true;
     try {
-      if (idle()) flush(null);
-      else if (liveUpdates) liveCommit();
-      else publish();
+      if (idle()) commit(null);
+      else if (!(liveUpdates && liveCommit())) publish();
     } finally {
       inMeasurementDelivery = false;
     }
@@ -501,7 +532,6 @@ export function createVirtualList<T>(
 
   // A width change invalidates every held measurement: mounted rows are
   // re-read in place, retained rows re-premeasured, all at the next commit.
-  let lastViewportWidth = viewport.clientWidth;
   const viewportObserver = new ResizeObserver(() => {
     if (disposed) return;
     const width = viewport.clientWidth;
@@ -511,12 +541,19 @@ export function createVirtualList<T>(
       for (const row of rows.values()) markDirty(row);
       if (pending) for (const row of pending.newRows.values()) markDirty(row);
     }
-    if (idle()) flush(null, "viewport");
+    if (idle()) commit(null, "viewport");
     else publish();
   });
   viewportObserver.observe(viewport);
 
   // --- Preparation (off-scroller, failure-atomic) ---------------------------
+  function emptyPrepared(
+    keys: readonly string[],
+    anchor: AnchorPolicy,
+  ): Prepared<T> {
+    return { keys, newRows: new Map(), anchor };
+  }
+
   function prepare(
     next: readonly T[],
     explicitAnchor: AnchorPolicy | undefined,
@@ -547,6 +584,8 @@ export function createVirtualList<T>(
     /** Equal-height phase-time updates: swapped into committed slots in phase 2. */
     const promotions: { row: Row<T>; fresh: Row<T> }[] = [];
     const adopted = new Set<string>();
+    /** Teardown failures of what a mid-preparation dispose destroyed. */
+    const disposeFailures: unknown[] = [];
 
     // Every in-place candidate is recorded BEFORE its render is invoked:
     // the host may mutate the element and then throw, and rollback must
@@ -588,7 +627,11 @@ export function createVirtualList<T>(
       element: HTMLElement,
     ): Row<T> => {
       if (disposed) {
-        options.onDestroy?.(element, item);
+        try {
+          options.onDestroy?.(element, item);
+        } catch (error) {
+          disposeFailures.push(error);
+        }
         throw new DisposedDuringPreparation();
       }
       const measured = premeasure(item, () => element);
@@ -618,26 +661,67 @@ export function createVirtualList<T>(
       return measureFresh(row.key, item, rendered);
     };
 
+    /** A key with a prepared-but-uncommitted row: adopt or advance it. */
+    const prepareAdopted = (
+      key: string,
+      item: T,
+      preparedBefore: Row<T>,
+    ): void => {
+      adopted.add(key);
+      if (
+        preparedBefore.renderedItem === item &&
+        !preparedBefore.renderUnknown
+      ) {
+        newRows.set(key, preparedBefore);
+        return;
+      }
+      const replacement = renderInPlaceOrReplace(preparedBefore, item);
+      if (replacement === null) {
+        newRows.set(key, preparedBefore);
+      } else {
+        newRows.set(key, replacement); // preparedBefore dies in phase 2.
+        adopted.delete(key);
+      }
+    };
+
+    /** A committed key whose item changed. */
+    const prepareChanged = (key: string, item: T, committed: Row<T>): void => {
+      if (idle() || liveUpdates) {
+        // In place (a "live" phase-time render mutates the mounted
+        // element; liveCommit then commits its height at once when no
+        // scroll write is needed for it).
+        const replacement = renderInPlaceOrReplace(committed, item);
+        if (replacement !== null) newRows.set(key, replacement);
+        return;
+      }
+      // A scroll phase is active: committed elements are frozen — content
+      // as much as geometry, mounted or not (an unmounted row may mount
+      // mid-phase at its committed height). The update is rendered FRESH
+      // and premeasured off-scroller. Equal height (within the measurement
+      // epsilon) on a clean committed row: PROMOTED — swapped into the
+      // committed slot in phase 2 with geometry untouched, so streaming
+      // keeps flowing under a scroll until a wrap changes the height.
+      // Otherwise it is retained and swapped in atomically at settle with
+      // its height; later updates in the same phase advance that
+      // replacement in place (it is off-scroller) through adoption.
+      const fresh = measureFresh(key, item, render(item));
+      if (
+        promoteSameHeight &&
+        !committed.dirty &&
+        Math.abs(fresh.height - committed.height) <= MEASURE_EPSILON_PX
+      ) {
+        promotions.push({ row: committed, fresh });
+      } else {
+        newRows.set(key, fresh);
+      }
+    };
+
     try {
       for (const key of keys) {
         const item = itemByKey.get(key) as T;
         const preparedBefore = previous?.newRows.get(key);
         if (preparedBefore) {
-          adopted.add(key);
-          if (
-            preparedBefore.renderedItem === item &&
-            !preparedBefore.renderUnknown
-          ) {
-            newRows.set(key, preparedBefore);
-          } else {
-            const replacement = renderInPlaceOrReplace(preparedBefore, item);
-            if (replacement === null) {
-              newRows.set(key, preparedBefore);
-            } else {
-              newRows.set(key, replacement); // preparedBefore dies in phase 2.
-              adopted.delete(key);
-            }
-          }
+          prepareAdopted(key, item, preparedBefore);
         } else {
           const committed = rows.get(key);
           if (committed === undefined) {
@@ -646,36 +730,7 @@ export function createVirtualList<T>(
             committed.renderUnknown ||
             committed.renderedItem !== item
           ) {
-            if (idle() || liveUpdates) {
-              // In place (a "live" phase-time render mutates the mounted
-              // element; liveCommit then commits its height at once when
-              // no scroll write is needed for it).
-              const replacement = renderInPlaceOrReplace(committed, item);
-              if (replacement !== null) newRows.set(key, replacement);
-            } else {
-              // A scroll phase is active: committed elements are frozen —
-              // content as much as geometry, mounted or not (an unmounted
-              // row may mount mid-phase at its committed height). The
-              // update is rendered FRESH and premeasured off-scroller.
-              // Equal height (within the measurement epsilon) on a clean
-              // committed row: PROMOTED — swapped into the committed slot
-              // in phase 2 with geometry untouched, so streaming keeps
-              // flowing under a scroll until a wrap changes the height.
-              // Otherwise it is retained and swapped in atomically at
-              // settle with its height; later updates in the same phase
-              // advance that replacement in place (it is off-scroller)
-              // through the adoption branch.
-              const fresh = measureFresh(key, item, render(item));
-              if (
-                promoteSameHeight &&
-                !committed.dirty &&
-                Math.abs(fresh.height - committed.height) <= MEASURE_EPSILON_PX
-              ) {
-                promotions.push({ row: committed, fresh });
-              } else {
-                newRows.set(key, fresh);
-              }
-            }
+            prepareChanged(key, item, committed);
           }
         }
         if (disposed) throw new DisposedDuringPreparation();
@@ -683,10 +738,10 @@ export function createVirtualList<T>(
     } catch (error) {
       // DOM restoration and local cleanup complete first; teardown
       // failures then surface together with the original error.
-      const failures = rollBack();
+      const failures = [...disposeFailures, ...rollBack()];
       if (error instanceof DisposedDuringPreparation) {
         return {
-          prepared: { keys, itemByKey, newRows: new Map(), anchor },
+          prepared: emptyPrepared(keys, anchor),
           teardownFailures: failures,
         };
       }
@@ -698,9 +753,10 @@ export function createVirtualList<T>(
     }
 
     // Phase 2 — apply. The only host calls are destructions of what the
-    // superseded pending snapshot prepared and this one did not adopt; a
-    // host disposing from one of them must not leak what was built here,
-    // so preparation keeps cleanup ownership until the hand-off returns.
+    // superseded pending snapshot prepared and this one did not adopt, and
+    // of elements displaced by promotions; a host disposing from one of
+    // them must not leak what was built here, so preparation keeps cleanup
+    // ownership until the hand-off returns.
     for (const entry of inPlace) {
       entry.row.item = entry.item;
       markDirty(entry.row);
@@ -712,11 +768,25 @@ export function createVirtualList<T>(
         .map(([, row]) => row);
       teardownFailures.push(...destroyAll(superseded));
     }
-    // Promotions: the fresh element moves into the committed row's slot
-    // (same height, same offset — no geometry change) and the displaced
-    // element is destroyed. The fresh row object is retired so `built`
-    // can never destroy that element a second time; a host disposing from
-    // a destruction stops the loop and the rest of `built` is torn down.
+    teardownFailures.push(...applyPromotions(promotions));
+    if (disposed) {
+      teardownFailures.push(...destroyAll(built));
+      return { prepared: emptyPrepared(keys, anchor), teardownFailures };
+    }
+    return { prepared: { keys, newRows, anchor }, teardownFailures };
+  }
+
+  /**
+   * Promotions: the fresh element moves into the committed row's slot
+   * (same height, same offset — no geometry change) and the displaced
+   * element is destroyed. The fresh row object is retired so `built` can
+   * never destroy that element a second time; a host disposing from a
+   * destruction stops the loop and the caller tears down the rest.
+   */
+  function applyPromotions(
+    promotions: readonly { row: Row<T>; fresh: Row<T> }[],
+  ): unknown[] {
+    const failures: unknown[] = [];
     for (const { row, fresh } of promotions) {
       if (disposed || row.destroyed) break;
       const displaced = row.element;
@@ -733,26 +803,49 @@ export function createVirtualList<T>(
       try {
         options.onDestroy?.(displaced, displacedItem);
       } catch (error) {
-        teardownFailures.push(error);
+        failures.push(error);
       }
     }
-    if (disposed) {
-      teardownFailures.push(...destroyAll(built));
-      return {
-        prepared: { keys, itemByKey, newRows: new Map(), anchor },
-        teardownFailures,
-      };
-    }
-    return { prepared: { keys, itemByKey, newRows, anchor }, teardownFailures };
+    return failures;
   }
 
   /** The prepared key order is the committed one: no structural change. */
   function sameKeysAsCommitted(keys: readonly string[]): boolean {
     if (keys.length !== geometry.count) return false;
-    return keys.every((key, index) => geometry.keyAt(index) === key);
+    for (let index = 0; index < keys.length; index++) {
+      if (geometry.keyAt(index) !== keys[index]) return false;
+    }
+    return true;
   }
 
   // --- The atomic commit ----------------------------------------------------
+  function commitHeight(row: Row<T>, height: number): void {
+    row.dirty = false;
+    dirtyRows.delete(row);
+    row.height = height;
+    row.slot.style.height = `${height}px`;
+    geometry.measure(row.key, height);
+  }
+
+  /**
+   * Commit the heights of these rows: every read (mounted rows in place,
+   * detached rows in one measurement layout) happens before any slot
+   * write, so a commit never thrashes layout row by row.
+   */
+  function commitMeasured(toMeasure: Iterable<Row<T>>): void {
+    const mounted: Row<T>[] = [];
+    const detached: Row<T>[] = [];
+    for (const row of toMeasure) (row.mounted ? mounted : detached).push(row);
+    const mountedHeights = mounted.map(measureInPlace);
+    const detachedHeights = remeasureDetached(detached);
+    mounted.forEach((row, index) => {
+      commitHeight(row, mountedHeights[index] as number);
+    });
+    detached.forEach((row, index) => {
+      commitHeight(row, detachedHeights[index] as number);
+    });
+  }
+
   /**
    * "live": commit the dirty heights that need NO scroll write — rows at
    * or below the viewport's anchor row — right now, mid-phase. The anchor
@@ -762,49 +855,34 @@ export function createVirtualList<T>(
    * anchor are entirely off-screen and stay dirty for settle — or for the
    * scroll event that makes one of them the anchor, which commits it
    * before that frame paints. Structural snapshots stay settle-gated.
+   * Returns whether it published (it did whenever it committed).
    */
-  function liveCommit(): void {
-    if (disposed || !anyDirty) return;
+  function liveCommit(): boolean {
+    if (disposed || dirtyRows.size === 0) return false;
+    let published = false;
     guarded(() => {
-      commitEpoch += 1;
-      inFlush = true;
-      try {
-        const vp = viewportState();
-        const anchor = geometry.anchorAt(vp);
-        const anchorIndex = anchor === null ? 0 : geometry.indexOf(anchor.key);
-        const capture = geometry.capture(vp, "none");
-        let remaining = false;
-        let changed = false;
-        for (const row of rows.values()) {
-          if (!row.dirty) continue;
-          if (geometry.indexOf(row.key) < anchorIndex) {
-            remaining = true;
-            continue;
-          }
-          commitHeight(
-            row,
-            row.mounted ? measureInPlace(row) : remeasureDetached(row),
-          );
-          changed = true;
-        }
-        // Pending (uncommitted) rows are remeasured at their commit anyway.
-        anyDirty = remaining || (pending?.newRows.size ?? 0) > 0;
-        if (!changed) {
-          publish();
-          return;
-        }
-        const commit = geometry.resolve(capture);
-        canvas.style.height = `${commit.totalSize}px`;
-        // No scroll write, by construction.
-        reconcileWindow();
-        publish();
-      } finally {
-        inFlush = false;
+      const vp = viewportState();
+      const anchor = geometry.anchorAt(vp);
+      const anchorIndex = anchor === null ? 0 : geometry.indexOf(anchor.key);
+      const committable: Row<T>[] = [];
+      for (const row of dirtyRows) {
+        if (geometry.indexOf(row.key) >= anchorIndex) committable.push(row);
       }
+      if (committable.length === 0) return;
+      const capture = geometry.capture(vp, "none");
+      commitMeasured(committable);
+      geometryEpoch += 1;
+      const result = geometry.resolve(capture);
+      canvas.style.height = `${result.totalSize}px`;
+      // No scroll write, by construction.
+      reconcileWindow(vp);
+      publish(vp);
+      published = true;
     });
+    return published;
   }
 
-  function flush(
+  function commit(
     snapshot: Prepared<T> | null,
     policyOverride?: AnchorPolicy,
   ): void {
@@ -813,18 +891,15 @@ export function createVirtualList<T>(
       const applying = snapshot ?? pending;
       pending = null;
       committing = applying;
-      commitEpoch += 1;
-      inFlush = true;
       try {
-        flushBody(applying, policyOverride);
+        commitBody(applying, policyOverride);
       } finally {
-        inFlush = false;
         committing = null;
       }
     });
   }
 
-  function flushBody(
+  function commitBody(
     applying: Prepared<T> | null,
     policyOverride: AnchorPolicy | undefined,
   ): void {
@@ -833,119 +908,115 @@ export function createVirtualList<T>(
     const teardownFailures: unknown[] = [];
     try {
       const policy = policyOverride ?? applying?.anchor ?? "auto";
-      const capture = geometry.capture(viewportState(), policy);
+      const before = viewportState();
+      const capture = geometry.capture(before, policy);
+      const toMeasure: Row<T>[] = [...dirtyRows];
 
       if (applying) {
         // Keys and rows: drop removed, swap replaced, adopt new. A row is
         // removed from the map BEFORE its destruction so a host disposing
-        // from onDestroy can never destroy it twice.
-        const nextKeys = new Set(applying.keys);
-        const removed: Row<T>[] = [];
-        for (const [key, row] of [...rows]) {
-          if (nextKeys.has(key)) continue;
-          rows.delete(key);
-          removed.push(row);
+        // from onDestroy can never destroy it twice. A same-key snapshot
+        // (every streaming token) skips the removal scan and the key
+        // rebuild entirely.
+        const keysChanged = !sameKeysAsCommitted(applying.keys);
+        const doomed: Row<T>[] = [];
+        if (keysChanged) {
+          const nextKeys = new Set(applying.keys);
+          for (const [key, row] of [...rows]) {
+            if (nextKeys.has(key)) continue;
+            rows.delete(key);
+            doomed.push(row);
+          }
         }
-        const replaced: Row<T>[] = [];
         for (const [key, row] of applying.newRows) {
           const old = rows.get(key);
           rows.set(key, row);
-          if (old && old !== row) replaced.push(old);
+          if (old && old !== row) doomed.push(old);
         }
-        teardownFailures.push(...destroyAll([...removed, ...replaced]));
+        teardownFailures.push(...destroyAll(doomed));
         if (disposed) return;
-        for (const [key, item] of applying.itemByKey) {
-          const row = rows.get(key);
-          if (row) row.item = item;
-        }
-        geometry.setKeys(applying.keys);
-        // Latest heights, exactly once: every retained node is measured
-        // again immediately before it commits — a detached image may have
-        // decoded since preparation — and replacements ALWAYS reach the
-        // kernel (the key was measured before, but with the old element).
+        if (keysChanged) geometry.setKeys(applying.keys);
+        // Latest heights, exactly once. A row prepared in this very
+        // transaction was measured moments ago; one that waited for a
+        // settle (dirty) is measured again — a detached image may have
+        // decoded since. Replacements ALWAYS reach the kernel: the key was
+        // measured before, but with the old element.
         for (const row of applying.newRows.values()) {
-          commitHeight(row, remeasureDetached(row));
+          if (row.dirty) toMeasure.push(row);
+          else commitHeight(row, row.height);
         }
       }
 
-      for (const row of rows.values()) {
-        if (!row.dirty) continue;
-        commitHeight(
-          row,
-          row.mounted ? measureInPlace(row) : remeasureDetached(row),
-        );
-      }
-      anyDirty = false;
+      commitMeasured(toMeasure);
+      geometryEpoch += 1;
 
-      const commit = geometry.resolve(capture);
-      canvas.style.height = `${commit.totalSize}px`;
+      const result = geometry.resolve(capture);
+      canvas.style.height = `${result.totalSize}px`;
       // Engines quantize scroll positions differently: Chromium rounds a
       // fractional write, WebKit floors it (the anchor then lands up to a
       // full pixel short). Writing a whole pixel bounds the anchor's
       // landing error to half a pixel everywhere.
-      const target = Math.round(commit.scrollTop);
-      if (Math.abs(target - viewport.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
-        controller.recordProgrammaticScrollTop(target);
-        viewport.scrollTop = target;
+      const target = Math.round(result.scrollTop);
+      if (Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
+        writeScrollTop(target);
       }
-      reconcileWindow();
+      // Read once after the write: the engine may have clamped it.
+      const after = viewportState();
+      reconcileWindow(after);
       if (disposed) return;
-      publish();
+      publish(after);
     } finally {
       deferTeardown(teardownFailures);
     }
   }
 
-  function commitHeight(row: Row<T>, height: number): void {
-    row.dirty = false;
-    row.height = height;
-    row.measuredEpoch = commitEpoch;
-    row.slot.style.height = `${height}px`;
-    geometry.measure(row.key, height);
-  }
-
   // --- Window reconciliation (allowed during scrolling) ---------------------
   function mountRow(row: Row<T>): void {
-    // A retained row may have changed while detached (an image decoded)
-    // with no observer to notice. Check its freshness before it remounts —
-    // unless this very commit just measured it: any difference is QUEUED,
-    // the slot mounts at the committed height, geometry stays put, and the
-    // new height commits at settle (or the next idle frame). Never inside
-    // an active scroll.
-    const justMeasured = inFlush && row.measuredEpoch === commitEpoch;
-    if (!justMeasured) {
-      const height = remeasureDetached(row);
-      if (Math.abs(height - row.height) > MEASURE_EPSILON_PX) {
-        markDirty(row);
-        if (idle()) scheduleIdleFlush();
-      }
-    }
     row.mounted = true;
+    mountedRows.add(row);
     canvas.appendChild(row.slot);
     observeRow(row);
   }
 
   function unmountRow(row: Row<T>): void {
     row.mounted = false;
+    mountedRows.delete(row);
     rowObserver.unobserve(row.element);
     row.slot.remove();
   }
 
-  function reconcileWindow(): void {
-    const range = geometry.window(viewportState(), overscanPx);
-    const wanted = new Set<string>();
+  let lastReconcile = { scrollTop: Number.NaN, height: Number.NaN, epoch: -1 };
+
+  function reconcileWindow(vp: ViewportState = viewportState()): void {
+    // A glide write and the scroll event it produces both reconcile; the
+    // second pass finds nothing to do.
+    if (
+      lastReconcile.scrollTop === vp.scrollTop &&
+      lastReconcile.height === vp.height &&
+      lastReconcile.epoch === geometryEpoch
+    ) {
+      return;
+    }
+    lastReconcile = {
+      scrollTop: vp.scrollTop,
+      height: vp.height,
+      epoch: geometryEpoch,
+    };
+    const range = geometry.window(vp, overscanPx);
+    for (const row of [...mountedRows]) {
+      const index = geometry.indexOf(row.key);
+      if (index < range.start || index >= range.end) unmountRow(row);
+    }
     for (let index = range.start; index < range.end; index++) {
       const key = geometry.keyAt(index);
-      if (key !== undefined) wanted.add(key);
-    }
-    for (const row of rows.values()) {
-      if (row.mounted && !wanted.has(row.key)) unmountRow(row);
-    }
-    for (const key of wanted) {
-      const row = rows.get(key);
+      const row = key === undefined ? undefined : rows.get(key);
       if (!row) continue;
       if (!row.mounted) mountRow(row);
-      row.slot.style.transform = `translateY(${geometry.offsetOf(key)}px)`;
+      const offset = geometry.offsetOf(row.key);
+      if (row.offset !== offset) {
+        row.offset = offset;
+        row.slot.style.transform = `translateY(${offset}px)`;
+      }
     }
   }
 
@@ -970,9 +1041,20 @@ export function createVirtualList<T>(
     callback({ signal: abort.signal });
   }
 
-  function publish(): void {
+  function sameState(a: VirtualListState, b: VirtualListState): boolean {
+    return (
+      a.count === b.count &&
+      a.start === b.start &&
+      a.end === b.end &&
+      a.atStart === b.atStart &&
+      a.atEnd === b.atEnd &&
+      a.totalSize === b.totalSize &&
+      a.held === b.held
+    );
+  }
+
+  function publish(vp: ViewportState = viewportState()): void {
     if (disposed) return;
-    const vp = viewportState();
     const range = geometry.window(vp, overscanPx);
     const maxTop = geometry.maxScrollTop(vp.height);
     const state: VirtualListState = {
@@ -982,13 +1064,9 @@ export function createVirtualList<T>(
       atStart: vp.scrollTop <= AT_EDGE_EPSILON_PX,
       atEnd: maxTop - vp.scrollTop <= AT_EDGE_EPSILON_PX,
       totalSize: geometry.totalSize,
-      held: pending !== null || anyDirty,
+      held: pending !== null || dirtyRows.size > 0,
     };
-    const changed =
-      lastState === null ||
-      (Object.keys(state) as (keyof VirtualListState)[]).some(
-        (field) => lastState?.[field] !== state[field],
-      );
+    const changed = lastState === null || !sameState(lastState, state);
     lastState = state;
     if (changed) options.onState?.(state);
     if (disposed) return;
@@ -1011,6 +1089,13 @@ export function createVirtualList<T>(
     }
   }
 
+  /** Window reconciliation plus ("live") what commits without a write. */
+  function onScrolled(): void {
+    const vp = viewportState();
+    reconcileWindow(vp);
+    if (!(liveUpdates && liveCommit())) publish(vp);
+  }
+
   // --- The settle controller (the scroll-phase authority) -------------------
   const controller: ScrollSettleController = createScrollSettleController({
     viewport,
@@ -1027,7 +1112,7 @@ export function createVirtualList<T>(
     // user owns the viewport from here, whatever the settle later finds.
     cancelActiveSmoothScroll: () => {
       glide?.cancel();
-      cancelParkedCommand();
+      settleParked(() => false);
     },
     smoothScrollReachedTarget: () =>
       glide === null ||
@@ -1038,45 +1123,35 @@ export function createVirtualList<T>(
     onGestureSettled: () => {
       // The phase reached idle: everything held commits, once — and only
       // then does a landed command learn whether it is still on target.
-      if (pending !== null || anyDirty) flush(null);
+      if (pending !== null || dirtyRows.size > 0) commit(null);
       else publish();
-      resolveAwaitingSettle();
+      settleParked((landed) => !disposed && landed());
     },
     onGestureReset: () => {},
     onScrollEventObserved: () => {
-      if (disposed || inCommit) return;
+      if (disposed || inTransaction) return;
       // Geometry is untouchable here; only the window moves.
-      guarded(() => {
-        reconcileWindow();
-        // "live": a dirty row the viewport just reached commits before
-        // this frame paints.
-        if (liveUpdates && anyDirty) liveCommit();
-        publish();
-      });
+      guarded(onScrolled);
     },
     onNativeScrollEndIdle: () => {},
   });
 
-  function resolveAwaitingSettle(): void {
+  /**
+   * Take the command parked for its settle, if any, and resolve it:
+   * `verdict` receives its landing check (interrupted → `() => false`).
+   */
+  function settleParked(verdict: (landed: () => boolean) => boolean): void {
     const awaiting = awaitingSettle;
     if (!awaiting) return;
     awaitingSettle = null;
-    awaiting.done(!disposed && awaiting.landed());
-  }
-
-  /** A landed command parked for its settle is superseded: false, now. */
-  function cancelParkedCommand(): void {
-    const awaiting = awaitingSettle;
-    if (!awaiting) return;
-    awaitingSettle = null;
-    awaiting.done(false);
+    awaiting.done(verdict(awaiting.landed));
   }
 
   /**
    * An explicit command takes the viewport over: genuinely stop the
-   * browser-owned animation (a clamped write plus an overflow toggle
-   * through a forced reflow — merely clearing timers would leave momentum
-   * alive), then settle the phase so held work commits before the command.
+   * browser-owned animation (a write plus an overflow toggle through a
+   * forced reflow — merely clearing timers would leave momentum alive),
+   * then settle the phase so held work commits before the command.
    */
   function interruptNativeScroll(): void {
     if (!controller.isUserScrollActive()) return;
@@ -1084,8 +1159,7 @@ export function createVirtualList<T>(
     // rounded scrollHeight moved the viewport by a pixel (scrollTop may be
     // fractional where scrollHeight is not); the engine clamps writes.
     const currentTop = viewport.scrollTop;
-    controller.recordProgrammaticScrollTop(currentTop);
-    viewport.scrollTop = currentTop;
+    writeScrollTop(currentTop);
     const previousOverflowY = viewport.style.overflowY;
     viewport.style.overflowY = "hidden";
     void viewport.offsetHeight;
@@ -1102,7 +1176,7 @@ export function createVirtualList<T>(
     if (disposed) return;
     const snapshot = [...next];
     const anchor = setOptions.anchor;
-    if (enqueueDuringCommit(() => applyItems(snapshot, anchor))) return;
+    if (enqueueDuringTransaction(() => applyItems(snapshot, anchor))) return;
     applyItems(snapshot, anchor);
   }
 
@@ -1121,36 +1195,35 @@ export function createVirtualList<T>(
       deferTeardown(teardownFailures);
       if (disposed) return;
       if (idle()) {
-        flush(prepared);
-      } else if (
-        prepared.newRows.size === 0 &&
-        sameKeysAsCommitted(prepared.keys)
-      ) {
+        commit(prepared);
+        return;
+      }
+      if (prepared.newRows.size === 0 && sameKeysAsCommitted(prepared.keys)) {
         // Everything in this snapshot was promoted (or nothing changed):
         // nothing waits for settle, and it supersedes whatever did.
         pending = null;
-        publish();
       } else {
+        // These rows will wait: their heights are re-read at the settle.
+        for (const row of prepared.newRows.values()) row.dirty = true;
         pending = prepared;
-        publish();
       }
-      if (liveUpdates && !idle()) liveCommit();
+      if (!(liveUpdates && liveCommit())) publish();
     });
   }
 
   // --- Commands -------------------------------------------------------------
   function scrollTo(
-    target: string | "start" | "end",
-    scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" } = {},
+    target: ScrollTarget,
+    scrollOptions: ScrollOptions = {},
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
-    const owned = {
+    const owned: ScrollOptions = {
       align: scrollOptions.align,
       behavior: scrollOptions.behavior,
     };
     return new Promise((resolve) => {
       if (
-        enqueueDuringCommit(
+        enqueueDuringTransaction(
           () => {
             void scrollTo(target, owned).then(resolve);
           },
@@ -1164,7 +1237,7 @@ export function createVirtualList<T>(
   }
 
   /** Whether the viewport is on the command's target under current geometry. */
-  function landedOn(target: string | "start" | "end"): boolean {
+  function landedOn(target: ScrollTarget): boolean {
     const top = viewport.scrollTop;
     const maxTop = geometry.maxScrollTop(viewport.clientHeight);
     if (target === "start") return top <= AT_EDGE_EPSILON_PX;
@@ -1175,8 +1248,8 @@ export function createVirtualList<T>(
   }
 
   function performScrollTo(
-    target: string | "start" | "end",
-    scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" },
+    target: ScrollTarget,
+    scrollOptions: ScrollOptions,
     done: (completed: boolean) => void,
   ): void {
     const keyed = target !== "start" && target !== "end";
@@ -1186,14 +1259,10 @@ export function createVirtualList<T>(
     // is cancelled. Then: explicit command > gesture — take the viewport
     // over, settling held work first so the command sees committed
     // geometry.
-    cancelParkedCommand();
+    settleParked(() => false);
     glide?.cancel();
     interruptNativeScroll();
-    if (disposed) {
-      done(false);
-      return;
-    }
-    if (keyed && geometry.indexOf(target) < 0) {
+    if (disposed || (keyed && geometry.indexOf(target) < 0)) {
       done(false);
       return;
     }
@@ -1201,7 +1270,7 @@ export function createVirtualList<T>(
     // geometry change, committed now (the phase is idle).
     if (keyed && scrollOptions.align === "start") {
       geometry.pin(target);
-      flush(null, "none");
+      commit(null, "none");
     }
 
     const destination = (): number => {
@@ -1214,13 +1283,13 @@ export function createVirtualList<T>(
     };
 
     if (scrollOptions.behavior !== "smooth") {
-      const top = destination();
+      const top = Math.round(destination());
       if (Math.abs(top - viewport.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
-        controller.recordProgrammaticScrollTop(top);
-        viewport.scrollTop = top;
+        writeScrollTop(top);
       }
-      reconcileWindow();
-      publish();
+      const vp = viewportState();
+      reconcileWindow(vp);
+      publish(vp);
       done(!disposed && landedOn(target));
       return;
     }
@@ -1235,12 +1304,10 @@ export function createVirtualList<T>(
         read: () => viewport.scrollTop,
         write: (top) =>
           guarded(() => {
-            controller.recordProgrammaticScrollTop(top);
-            viewport.scrollTop = top;
+            writeScrollTop(top);
             // Before this frame paints: mount what the write exposed, and
             // ("live") commit any dirty row the viewport just reached.
-            reconcileWindow();
-            if (liveUpdates && anyDirty) liveCommit();
+            onScrolled();
           }),
         target: destination,
       },
@@ -1259,56 +1326,47 @@ export function createVirtualList<T>(
     );
   }
 
+  function dispose(): void {
+    if (disposed) return;
+    disposed = true;
+    // Every queued command in EVERY live scope settles (false): the open
+    // transaction's, and each parent scope still holding undrained
+    // siblings behind the child that is disposing.
+    for (const scope of liveScopes) discardScope(scope);
+    discardScope(afterCommit);
+    glide?.cancel();
+    settleParked(() => false);
+    abortEdge("start");
+    abortEdge("end");
+    controller.dispose();
+    if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);
+    rowObserver.disconnect();
+    viewportObserver.disconnect();
+    measurer.dispose();
+    canvas.remove();
+    // Every retained node — committed or pending — is destroyed exactly
+    // once (destroyRow is idempotent, so a host disposing from onDestroy
+    // mid-commit cannot double-destroy).
+    const doomed = [...rows.values()];
+    rows.clear();
+    const pendingRows = pending ? [...pending.newRows.values()] : [];
+    pending = null;
+    const committingRows = committing ? [...committing.newRows.values()] : [];
+    committing = null;
+    // One pass over everything: a throwing teardown never prevents the
+    // remaining destructions; failures surface together afterwards.
+    throwTeardown(destroyAll([...doomed, ...pendingRows, ...committingRows]));
+  }
+
   // --- Boot -----------------------------------------------------------------
-  flush(prepare(options.items, "end").prepared);
+  commit(prepare(options.items, "end").prepared);
 
   return {
     setItems,
     scrollTo,
     get state(): VirtualListState {
-      return (
-        lastState ?? {
-          count: 0,
-          start: 0,
-          end: 0,
-          atStart: true,
-          atEnd: true,
-          totalSize: 0,
-          held: false,
-        }
-      );
+      return lastState ?? EMPTY_STATE;
     },
-    dispose(): void {
-      if (disposed) return;
-      disposed = true;
-      // Every queued command in EVERY live scope settles (false): the open
-      // transaction's, and each parent scope still holding undrained
-      // siblings behind the child that is disposing.
-      for (const scope of liveScopes) discardScope(scope);
-      discardScope(afterCommit);
-      glide?.cancel();
-      cancelParkedCommand();
-      abortEdge("start");
-      abortEdge("end");
-      controller.dispose();
-      if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);
-      if (idleFlushFrame !== 0) cancelAnimationFrame(idleFlushFrame);
-      rowObserver.disconnect();
-      viewportObserver.disconnect();
-      measurer.dispose();
-      canvas.remove();
-      // Every retained node — committed or pending — is destroyed exactly
-      // once (destroyRow is idempotent, so a host disposing from onDestroy
-      // mid-commit cannot double-destroy).
-      const doomed = [...rows.values()];
-      rows.clear();
-      const pendingRows = pending ? [...pending.newRows.values()] : [];
-      pending = null;
-      const committingRows = committing ? [...committing.newRows.values()] : [];
-      committing = null;
-      // One pass over everything: a throwing teardown never prevents the
-      // remaining destructions; failures surface together afterwards.
-      throwTeardown(destroyAll([...doomed, ...pendingRows, ...committingRows]));
-    },
+    dispose,
   };
 }

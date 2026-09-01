@@ -155,37 +155,30 @@ export interface ScrollSettleHost {
   cancelActiveSmoothScroll(): void;
   /** False only while a programmatic smooth scroll is still short of its target. */
   smoothScrollReachedTarget(): boolean;
-  /** Any gesture signal: stop auto-follow and drop the sub-pixel scroll residual. */
+  /** Any gesture signal (input or motion) was observed. */
   onGestureActivity(): void;
-  /** The gesture transitioned idle → active: arm boundaries, fire onScrollStart. */
+  /** The gesture transitioned idle → active: a scroll phase began. */
   onGestureStarted(): void;
-  /** The gesture fully settled: flush deferred work, re-render, fire onScrollEnd. */
+  /** The gesture fully settled: held work may commit — the one structural moment. */
   onGestureSettled(): void;
-  /** Gesture state was reset (settle or cancel): clear placeholder fast mode. */
+  /** Gesture state was reset (settle or cancel). */
   onGestureReset(): void;
-  /** A scroll event landed: schedule a render pass. */
+  /** A scroll event landed: reconcile the window (geometry stays untouched). */
   onScrollEventObserved(): void;
-  /** A native scroll end arrived and the gesture is quiet: placeholders may hydrate. */
+  /** A native scroll end arrived and the gesture is quiet (informational). */
   onNativeScrollEndIdle(): void;
 }
 
 export interface ScrollSettleController {
   isUserScrollActive(): boolean;
-  /** Instantaneous scroll speed (px/ms), damped by the time since the last sample. */
-  currentVelocity(): number;
-  /** Absolute scrollTop delta of the most recent scroll sample. */
-  lastSampleDelta(): number;
-  resetVelocity(scrollTop?: number): void;
   /** Pre-record a programmatic scrollTop write so its event isn't misread as a user scroll. */
   recordProgrammaticScrollTop(target: number): void;
   /** Enter the gesture state machine for a library-driven scroll (no smooth-scroll cancel). */
   beginProgrammaticGesture(): void;
   /** Mark the native scroll as ended and start the settle cooldown. */
   markSettlePending(): void;
-  /** Settle the gesture now: reset state, then flush/render/notify via the host. */
+  /** Settle the gesture now: reset state, then commit/notify via the host. */
   finishGesture(): void;
-  /** Abandon the gesture: reset state without the settle side effects. */
-  cancelGesture(): void;
   dispose(): void;
 }
 
@@ -196,17 +189,14 @@ export function createScrollSettleController(
 
   let userScrollActive = false;
   let userScrollMoved = false;
-  let scrollVelocity = 0;
-  let lastScrollSampleDelta = 0;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
-  // Targets written by programmatic scrolls (follow, scrollToIndex, measurement
-  // corrections) that haven't been matched to a scroll event yet. A single frame
-  // can write more than once (e.g. a measurement correction plus a follow chase)
-  // and the browser may emit a scroll event per write, so we match an incoming
-  // scroll against ANY pending target instead of a single, easily-clobbered slot.
-  // Without this a follow-scroll's own event can look like a user scroll and tear
-  // down auto-follow mid-stream.
+  // Targets written by programmatic scrolls (commands, glide frames, the
+  // settle commit's anchor write) that haven't been matched to a scroll
+  // event yet. A single frame can write more than once and the browser may
+  // emit a scroll event per write, so we match an incoming scroll against
+  // ANY pending target instead of a single, easily-clobbered slot. Without
+  // this a runtime write's own event can look like a user scroll.
   const programmaticScrollTops: number[] = [];
   let nativeScrollEndPending = false;
   let wheelPendingNativeScrollEndTop: number | null = null;
@@ -238,29 +228,14 @@ export function createScrollSettleController(
     return Math.max(0, viewport.scrollHeight - viewport.clientHeight);
   }
 
-  function resetScrollVelocity(scrollTop = viewport.scrollTop): void {
-    scrollVelocity = 0;
-    lastScrollSampleDelta = 0;
+  function resetScrollSample(scrollTop = viewport.scrollTop): void {
     lastScrollSampleTop = scrollTop;
     lastScrollSampleAt = performance.now();
   }
 
-  function updateScrollVelocity(scrollTop = viewport.scrollTop): void {
-    const now = performance.now();
-    const elapsed = now - lastScrollSampleAt;
-    lastScrollSampleDelta = Math.abs(scrollTop - lastScrollSampleTop);
-    if (elapsed > 0) {
-      scrollVelocity = lastScrollSampleDelta / elapsed;
-    }
+  function updateScrollSample(scrollTop = viewport.scrollTop): void {
     lastScrollSampleTop = scrollTop;
-    lastScrollSampleAt = now;
-  }
-
-  function currentScrollVelocity(): number {
-    if (lastScrollSampleDelta <= 0) return scrollVelocity;
-    const elapsed = performance.now() - lastScrollSampleAt;
-    if (elapsed <= 0) return scrollVelocity;
-    return Math.min(scrollVelocity, lastScrollSampleDelta / elapsed);
+    lastScrollSampleAt = performance.now();
   }
 
   function recordProgrammaticScrollTop(target: number): void {
@@ -302,7 +277,7 @@ export function createScrollSettleController(
     if (!userScrollActive && moved && !programmaticScroll) {
       if (!handleUserScrollStart()) return;
     }
-    updateScrollVelocity(nextScrollTop);
+    updateScrollSample(nextScrollTop);
     if (
       (strategy === "firefox-wheel" || strategy === "safari-wheel") &&
       nativeScrollEndPending &&
@@ -514,7 +489,7 @@ export function createScrollSettleController(
     clearPendingNativeScrollEnd();
     userScrollActive = false;
     userScrollMoved = false;
-    resetScrollVelocity();
+    resetScrollSample();
     if (host.isDisposed()) return;
     host.onGestureReset();
   }
@@ -797,7 +772,7 @@ export function createScrollSettleController(
     if (!wasActive) {
       clearPendingNativeScrollEnd();
       userScrollMoved = false;
-      resetScrollVelocity();
+      resetScrollSample();
       chromiumWheelSawNativeScrollEnd = false;
       chromiumWheelAwaitingFinalScrollEnd = false;
       chromiumEdgeWheelSuppressed = false;
@@ -1064,9 +1039,6 @@ export function createScrollSettleController(
 
   return {
     isUserScrollActive: () => userScrollActive,
-    currentVelocity: currentScrollVelocity,
-    lastSampleDelta: () => lastScrollSampleDelta,
-    resetVelocity: resetScrollVelocity,
     recordProgrammaticScrollTop,
     beginProgrammaticGesture: () => handleUserScrollStart(true),
     markSettlePending: () => {
@@ -1075,7 +1047,6 @@ export function createScrollSettleController(
       schedulePendingNativeScrollEnd();
     },
     finishGesture: finishUserScroll,
-    cancelGesture: cancelUserScroll,
     dispose: () => {
       cancelUserScrollTimers();
       viewport.removeEventListener("scroll", handleScroll);

@@ -146,6 +146,39 @@ describe("item measurer", () => {
     measurer.dispose();
   });
 
+  it("measures many retained elements in one pass and hands them all back detached", () => {
+    const viewport = makeViewport();
+    const measurer = createItemMeasurer({ viewport });
+    const root = document.body.lastElementChild as HTMLElement;
+    const elements = [0, 1, 2].map(() => document.createElement("div"));
+    const heights = measurer.measureMany(elements);
+    expect(heights).toHaveLength(3);
+    for (const height of heights) expect(height).toBeGreaterThan(0);
+    for (const element of elements) {
+      expect(element.isConnected).toBe(false);
+      expect(element.style.position).toBe("absolute");
+    }
+    expect(root.childNodes.length).toBe(0);
+    expect(measurer.measureMany([])).toEqual([]);
+    measurer.dispose();
+    expect(() => measurer.measureMany(elements)).toThrow(/disposed/);
+  });
+
+  it("takes its width from the host's source when one is supplied", () => {
+    const viewport = makeViewport(640);
+    let width = 500;
+    const measurer = createItemMeasurer({
+      viewport,
+      viewportWidth: () => width,
+    });
+    const root = document.body.lastElementChild as HTMLElement;
+    expect(root.style.width).toBe("500px");
+    width = 720;
+    measurer.measure(() => document.createElement("div"));
+    expect(root.style.width).toBe("720px");
+    measurer.dispose();
+  });
+
   it("re-syncs the root width to the viewport on every measure", () => {
     let width = 500;
     const viewport = document.createElement("div");

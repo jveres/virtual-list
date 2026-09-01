@@ -18,8 +18,15 @@
 export interface ItemMeasurerConfig {
   viewport: HTMLElement;
   /** Class names applied to the measurement root so item CSS that keys off
-   * the canvas (e.g. `.chat-canvas .message`) matches during measurement. */
+   * the canvas (e.g. `.chat-canvas .message`) matches during measurement.
+   * (Labs and tests; the runtime does not forward one.) */
   canvasClassName?: string;
+  /**
+   * The width to measure at. Supplied by a host that already tracks the
+   * viewport width (a ResizeObserver) so a measurement never forces a
+   * layout just to read `clientWidth`; defaults to reading the viewport.
+   */
+  viewportWidth?: () => number;
 }
 
 export interface ItemMeasurer {
@@ -41,6 +48,13 @@ export interface ItemMeasurer {
     build: () => HTMLElement,
     destroy?: (element: HTMLElement) => void,
   ): { element: HTMLElement; height: number };
+  /**
+   * Measure already-built, retained elements together: all are appended
+   * to the root (each is absolutely positioned at its top, so they overlay
+   * independently), one layout serves every read, all are detached again.
+   * The caller keeps ownership; nothing is destroyed here.
+   */
+  measureMany(elements: readonly HTMLElement[]): number[];
   dispose(): void;
 }
 
@@ -70,15 +84,20 @@ function prepareMeasuredItem(element: HTMLElement): HTMLElement {
 function syncMeasurementRootWidth(
   measureRoot: HTMLDivElement,
   viewport: HTMLElement,
+  viewportWidth: (() => number) | undefined,
 ): void {
-  const viewportWidth =
-    viewport.clientWidth || viewport.getBoundingClientRect().width;
-  measureRoot.style.width = viewportWidth > 0 ? `${viewportWidth}px` : "100%";
+  const width =
+    viewportWidth?.() ||
+    viewport.clientWidth ||
+    viewport.getBoundingClientRect().width;
+  const next = width > 0 ? `${width}px` : "100%";
+  if (measureRoot.style.width !== next) measureRoot.style.width = next;
 }
 
 function createMeasurementRoot(
   viewport: HTMLElement,
   canvasClassName: string | undefined,
+  viewportWidth: (() => number) | undefined,
 ): HTMLDivElement {
   const measureRoot = document.createElement("div");
   addClassNames(measureRoot, canvasClassName);
@@ -91,14 +110,18 @@ function createMeasurementRoot(
     visibility: "hidden",
     pointerEvents: "none",
   });
-  syncMeasurementRootWidth(measureRoot, viewport);
+  syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
   document.body.appendChild(measureRoot);
   return measureRoot;
 }
 
 export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
-  const { viewport, canvasClassName } = config;
-  const measureRoot = createMeasurementRoot(viewport, canvasClassName);
+  const { viewport, canvasClassName, viewportWidth } = config;
+  const measureRoot = createMeasurementRoot(
+    viewport,
+    canvasClassName,
+    viewportWidth,
+  );
 
   let disposed = false;
 
@@ -108,7 +131,7 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
         throw new Error("cannot measure with a disposed item measurer");
       }
 
-      syncMeasurementRootWidth(measureRoot, viewport);
+      syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
       measureRoot.replaceChildren();
       let element: HTMLElement | null = null;
       let height = 0;
@@ -144,6 +167,21 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
       }
       // Success: the caller owns the live element (see the ownership rule).
       return { element, height };
+    },
+    measureMany(elements) {
+      if (disposed) {
+        throw new Error("cannot measure with a disposed item measurer");
+      }
+      if (elements.length === 0) return [];
+      syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
+      measureRoot.replaceChildren(...elements.map(prepareMeasuredItem));
+      try {
+        return elements.map((element) =>
+          positiveSize(element.getBoundingClientRect().height),
+        );
+      } finally {
+        measureRoot.replaceChildren();
+      }
     },
     dispose() {
       if (disposed) return;
