@@ -110,7 +110,15 @@ const AT_EDGE_EPSILON_PX = 1;
 
 interface Row<T> {
   key: string;
+  /** The committed (or, for a pending row, prepared) item. */
   item: T;
+  /**
+   * The item the element's DOM currently reflects. Diverges from `item`
+   * when an in-place render was rolled back unsuccessfully after a failed
+   * preparation; the next preparation re-renders such a row even if its
+   * item is unchanged.
+   */
+  renderedItem: T;
   element: HTMLElement;
   /** Dimensionally stable container: fixed committed height, clipped. */
   slot: HTMLElement;
@@ -149,6 +157,8 @@ export function createVirtualList<T>(
 
   // --- Pending work (waits for the scroll phase to settle) ------------------
   let pending: Prepared<T> | null = null;
+  /** The snapshot mid-commit: its not-yet-adopted rows are dispose()'s too. */
+  let committing: Prepared<T> | null = null;
   let anyDirty = false;
   let idleFlushFrame = 0;
   let inFlush = false;
@@ -239,6 +249,7 @@ export function createVirtualList<T>(
     return {
       key,
       item,
+      renderedItem: item,
       element,
       slot,
       height,
@@ -384,68 +395,104 @@ export function createVirtualList<T>(
     }
 
     // Phase 1 — render and measure into local structures only. Nothing in
-    // `rows` or `pending` is mutated until every host call has succeeded;
-    // a throw rolls back the rows built so far (destroyed exactly once).
+    // `rows` or `pending` is mutated until every host call has succeeded.
+    // In-place renders DO touch existing elements' DOM as they go; on a
+    // later failure they are rolled back by re-rendering the row's own
+    // item, and a row whose rollback fails stays marked so the next
+    // preparation re-renders it regardless of item identity.
     const previous = pending;
     const newRows = new Map<string, Row<T>>();
     const built: Row<T>[] = [];
     const inPlace: { row: Row<T>; item: T }[] = [];
     const adopted = new Set<string>();
+
+    const renderInPlaceOrReplace = (row: Row<T>, item: T): Row<T> | null => {
+      const rendered = render(item, row.element);
+      if (rendered === row.element) {
+        row.renderedItem = item;
+        inPlace.push({ row, item });
+        return null;
+      }
+      const { element, height } = premeasure(item, () => rendered);
+      const replacement = retain(row.key, item, element, height);
+      built.push(replacement);
+      return replacement;
+    };
+
+    const rollBack = (): void => {
+      for (const row of built) destroyRow(row);
+      for (const { row } of inPlace) {
+        if (row.destroyed) continue;
+        try {
+          const back = render(row.item, row.element);
+          if (back === row.element) {
+            row.renderedItem = row.item;
+          } else {
+            // The host handed back a fresh element we will never adopt.
+            options.onDestroy?.(back, row.item);
+          }
+        } catch {
+          // Left marked (renderedItem ≠ item): re-rendered next time.
+        }
+        markDirty(row); // The DOM changed either way; re-measure.
+      }
+    };
+
     try {
       for (const key of keys) {
         const item = itemByKey.get(key) as T;
         const preparedBefore = previous?.newRows.get(key);
         if (preparedBefore) {
           adopted.add(key);
-          if (preparedBefore.item === item) {
-            newRows.set(key, preparedBefore);
-            continue;
-          }
-          const rendered = render(item, preparedBefore.element);
-          if (rendered === preparedBefore.element) {
-            inPlace.push({ row: preparedBefore, item });
+          if (preparedBefore.renderedItem === item) {
             newRows.set(key, preparedBefore);
           } else {
-            const { element, height } = premeasure(item, () => rendered);
+            const replacement = renderInPlaceOrReplace(preparedBefore, item);
+            if (replacement === null) {
+              newRows.set(key, preparedBefore);
+            } else {
+              newRows.set(key, replacement); // preparedBefore dies in phase 2.
+              adopted.delete(key);
+            }
+          }
+        } else {
+          const committed = rows.get(key);
+          if (committed === undefined) {
+            const { element, height } = premeasure(item, () => render(item));
             const row = retain(key, item, element, height);
             built.push(row);
-            newRows.set(key, row); // preparedBefore is destroyed in phase 2.
-            adopted.delete(key);
+            newRows.set(key, row);
+          } else if (committed.renderedItem !== item) {
+            const replacement = renderInPlaceOrReplace(committed, item);
+            if (replacement !== null) newRows.set(key, replacement);
           }
-          continue;
         }
-        const committed = rows.get(key);
-        if (committed === undefined) {
-          const { element, height } = premeasure(item, () => render(item));
-          const row = retain(key, item, element, height);
-          built.push(row);
-          newRows.set(key, row);
-        } else if (committed.item !== item) {
-          const rendered = render(item, committed.element);
-          if (rendered === committed.element) {
-            inPlace.push({ row: committed, item });
-          } else {
-            const { element, height } = premeasure(item, () => rendered);
-            const row = retain(key, item, element, height);
-            built.push(row);
-            newRows.set(key, row); // The committed row is destroyed at commit.
-          }
+        if (disposed) {
+          rollBack();
+          return { keys, itemByKey, newRows: new Map(), anchor };
         }
       }
     } catch (error) {
-      for (const row of built) destroyRow(row);
+      rollBack();
       throw error;
     }
 
-    // Phase 2 — apply, no host calls except destruction of what the
-    // superseded pending snapshot prepared and this one did not adopt.
+    // Phase 2 — apply. The only host calls are destructions of what the
+    // superseded pending snapshot prepared and this one did not adopt; a
+    // host disposing from one of them must not leak what was built here,
+    // so preparation keeps cleanup ownership until the hand-off returns.
     for (const entry of inPlace) {
       entry.row.item = entry.item;
       markDirty(entry.row);
     }
     if (previous) {
       for (const [key, row] of previous.newRows) {
-        if (!adopted.has(key)) destroyRow(row);
+        if (adopted.has(key)) continue;
+        destroyRow(row);
+        if (disposed) {
+          for (const builtRow of built) destroyRow(builtRow);
+          return { keys, itemByKey, newRows: new Map(), anchor };
+        }
       }
     }
     return { keys, itemByKey, newRows, anchor };
@@ -460,12 +507,14 @@ export function createVirtualList<T>(
     guarded(() => {
       const applying = snapshot ?? pending;
       pending = null;
+      committing = applying;
       commitEpoch += 1;
       inFlush = true;
       try {
         flushBody(applying, policyOverride);
       } finally {
         inFlush = false;
+        committing = null;
       }
     });
   }
@@ -661,7 +710,17 @@ export function createVirtualList<T>(
       boundary === "top"
         ? options.onReachStart !== undefined
         : options.onReachEnd !== undefined,
-    cancelActiveSmoothScroll: () => glide?.cancel(),
+    // Genuine user input: an in-flight glide is cancelled, and a landed
+    // command still parked for its settle resolves interrupted NOW — the
+    // user owns the viewport from here, whatever the settle later finds.
+    cancelActiveSmoothScroll: () => {
+      glide?.cancel();
+      const awaiting = awaitingSettle;
+      if (awaiting) {
+        awaitingSettle = null;
+        awaiting.done(false);
+      }
+    },
     smoothScrollReachedTarget: () =>
       glide === null ||
       glideTarget === null ||
@@ -900,8 +959,11 @@ export function createVirtualList<T>(
       rows.clear();
       const pendingRows = pending ? [...pending.newRows.values()] : [];
       pending = null;
+      const committingRows = committing ? [...committing.newRows.values()] : [];
+      committing = null;
       for (const row of doomed) destroyRow(row);
       for (const row of pendingRows) destroyRow(row);
+      for (const row of committingRows) destroyRow(row);
     },
   };
 }

@@ -366,6 +366,54 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.destroyed).toEqual([42]);
   });
 
+  it("rolls back in-place DOM mutations made before a later render fails", () => {
+    const h = mount(range(0, 30), { throwOn: "boom" });
+    void h.list.scrollTo("m25");
+    const row = h.rowElement("msg 29");
+
+    // m29 is re-rendered in place (its DOM now says "mutated before
+    // failure"), then m40's render throws. The committed item is still the
+    // old one — so the DOM must be restored to match it.
+    const next = [
+      ...range(0, 29),
+      message(29, "mutated before failure"),
+      message(40, "boom"),
+    ];
+    expect(() => h.list.setItems(next)).toThrow("render failed: boom");
+    expect(row.textContent).toBe("msg 29");
+    expect(h.list.state.count).toBe(30);
+
+    // Re-sending the committed snapshot is a no-op and stays correct.
+    h.list.setItems(range(0, 30));
+    expect(h.rowElement("msg 29").textContent).toBe("msg 29");
+  });
+
+  it("destroys locally built rows when a supersession-time onDestroy disposes the list", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let disposedOnce = false;
+    const h = mount(range(0, 30), {
+      onDestroy: () => {
+        if (disposedOnce) return;
+        disposedOnce = true;
+        listRef?.dispose();
+      },
+    });
+    listRef = h.list;
+    h.userScroll(1505);
+    h.list.setItems([...range(0, 30), message(40, "held")]); // Held: m40 built.
+
+    // B drops m40 (destroyed at supersession → the host disposes) and
+    // builds m41 locally. m41 exists only inside the preparation at that
+    // moment — it must still be destroyed exactly once, not leaked.
+    expect(() =>
+      h.list.setItems([...range(0, 30), message(41, "local")]),
+    ).not.toThrow();
+    expect(h.destroyed).toContain(40);
+    expect(h.destroyed).toContain(41);
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+    expect(h.destroyedElements).toHaveLength(32); // 30 committed + m40 + m41.
+  });
+
   it("destroys an element whose measurement fails after its build", () => {
     const h = mount(range(0, 10), { measureFailOn: "bad" });
     expect(() =>
@@ -498,6 +546,21 @@ describe("v2 runtime — commands", () => {
     expect(resolved).toBe(null); // ...but not yet reported: phase active.
     vi.advanceTimersByTime(200);
     await expect(command).resolves.toBe(true);
+  });
+
+  it("resolves a parked landed command false on genuine user input before its settle", async () => {
+    const h = mount(range(0, 100));
+    const command = h.list.scrollTo("start", { behavior: "smooth" });
+    for (let t = 0; t < 3000 && h.viewport.scrollTop !== 0; t += 16) {
+      vi.advanceTimersByTime(16);
+    }
+    expect(h.viewport.scrollTop).toBe(0); // Landed, result parked for settle.
+
+    // An outward wheel at the target: the user owns the viewport now.
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    await expect(command).resolves.toBe(false);
+
+    h.settle(); // The user's gesture settling must not re-resolve anything.
   });
 
   it("resolves false when the settle-time snapshot removed a keyed glide target", async () => {
