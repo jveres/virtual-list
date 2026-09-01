@@ -89,9 +89,9 @@ const LOAD_OLDER_DELAY_MS = 180;
 // How long the "At the top" overlay lingers before fading.
 const EDGE_NO_MORE_HIDE_MS = 1400;
 // After a chunk loads with more history remaining, the loading pill lingers
-// briefly instead of hiding — the next chunk usually follows within this
-// window (a glide re-entering the edge zone), and hiding between chunks
-// reads as a flashing loader.
+// briefly instead of hiding — a user still scrolling back re-enters the
+// edge zone within this window, and hiding between chunks reads as a
+// flashing loader.
 const EDGE_HIDE_LINGER_MS = 400;
 
 const demoParams = new URLSearchParams(location.search);
@@ -573,13 +573,14 @@ function scheduleEdgeHide(): void {
   );
 }
 
-// The in-flight scrollback load, so concurrent requesters (a reach-start
-// signal, the top-navigation chain) share one load instead of racing.
+// The in-flight scrollback load, so concurrent reach-start signals share
+// one load instead of racing.
 let activeLoad: Promise<void> | null = null;
 
-// Loads one older chunk; resolves after the prepend has been committed. The
-// prepend preserves the reading position (I1); the runtime re-arms the
-// reach-start signal once the viewport is past the exit zone.
+// Loads one older chunk; resolves once the snapshot has been handed to the
+// runtime — which may defer the actual commit until the active scroll phase
+// settles. The prepend preserves the reading position (I1), and the runtime
+// re-arms the reach-start signal once the viewport is past the exit zone.
 function loadOlderChunk(): Promise<void> {
   if (activeLoad) return activeLoad;
   if (!canLoadOlderMessages()) return Promise.resolve();

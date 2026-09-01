@@ -174,9 +174,12 @@ export function createVirtualList<T>(
   }
 
   // --- The scroll arbiter (the only scrollTop writer) -----------------------
-  /** Returns false when an active user gesture owns the viewport. */
+  /**
+   * Returns false when an active NATIVE gesture owns the viewport; a
+   * programmatic phase (our own glide) writes freely.
+   */
   function arbitratedWrite(top: number): boolean {
-    if (sensor.active) return false;
+    if (sensor.active && !sensor.programmatic) return false;
     if (Math.abs(top - viewport.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
       sensor.expectWrite(top);
       viewport.scrollTop = top;
@@ -393,7 +396,7 @@ export function createVirtualList<T>(
     // While the user owns the viewport, the commit anchors to the visible
     // item and applies as a pure compensation write; end-follow catch-up
     // still happens at settle (I2).
-    const gesture = sensor.active;
+    const gesture = sensor.active && !sensor.programmatic;
     inMeasurementDelivery = true;
     try {
       transaction(
@@ -412,7 +415,7 @@ export function createVirtualList<T>(
     if (disposed) return;
     // Compensated: a mid-gesture viewport resize (mobile URL bar) must not
     // shift the anchor either.
-    transaction("viewport", () => {}, sensor.active);
+    transaction("viewport", () => {}, sensor.active && !sensor.programmatic);
   });
   viewportResizeObserver.observe(viewport);
 
@@ -465,7 +468,7 @@ export function createVirtualList<T>(
   function handleScroll(): void {
     if (disposed || inTransaction) return;
     const top = viewport.scrollTop;
-    if (sensor.active) {
+    if (sensor.active && !sensor.programmatic) {
       if (top > gestureHighWaterTop) {
         gestureHighWaterTop = top;
       } else if (top < gestureHighWaterTop - FOLLOW_DISENGAGE_PX) {
@@ -573,17 +576,18 @@ export function createVirtualList<T>(
   /** `snapshot` is runtime-owned (copied by setItems at call time). */
   function applySetItems(snapshot: readonly T[], anchor: AnchorPolicy): void {
     if (disposed) return;
-    // Native gestures AND programmatic glides are both active scroll
-    // phases. During either, only "auto" end-compatible updates commit
-    // immediately (their resolved target is where the user already is, or
-    // the live end a glide is tracking). Everything else defers: structural
-    // changes, and any explicit anchor policy — the flush must honor the
-    // stated policy, not re-derive one from follow state. Once anything is
-    // deferred, every later snapshot replaces it (latest wins); the single
-    // kept snapshot commits once, anchored, when the phase truly ends —
-    // the browser-adaptive settle, or the glide's completion.
+    // The sensor tracks BOTH scroll-phase flavors — native gestures and
+    // programmatic glides. During either, only "auto" end-compatible
+    // updates commit immediately (their resolved target is where the user
+    // already is, or the live end a glide is tracking). Everything else
+    // defers: structural changes, and any explicit anchor policy — the
+    // flush must honor the stated policy, not re-derive one from follow
+    // state. Once anything is deferred, every later snapshot replaces it
+    // (latest wins); the single kept snapshot commits once, anchored, when
+    // the OVERALL phase reaches idle — a glide→gesture handoff never
+    // flushes in between.
     if (
-      (sensor.active || glide !== null) &&
+      sensor.active &&
       (deferredItems !== null ||
         anchor !== "auto" ||
         !isEndCompatible(snapshot))
@@ -702,6 +706,11 @@ export function createVirtualList<T>(
         return;
       }
 
+      // The glide is a programmatic scroll phase inside the sensor's state
+      // machine: scroll events cannot cancel it (only user input takes it
+      // over), and deferred structural updates stay held for the whole
+      // phase — across a glide→gesture handoff too.
+      sensor.beginProgrammaticScroll();
       glide = startGlide(
         {
           read: () => viewport.scrollTop,
@@ -718,18 +727,29 @@ export function createVirtualList<T>(
         (completed) =>
           guarded(() => {
             glide = null;
-            // The glide phase ended: commit the single kept deferred
-            // snapshot, anchored — the prepend appears without movement.
-            const pendingItems = deferredItems;
-            deferredItems = null;
-            if (pendingItems && !disposed) {
-              commitOnce(pendingItems.anchor, () =>
-                adoptItems(pendingItems.items),
-              );
-            }
+            // Follow reflects where the glide actually ended BEFORE the
+            // settle below — its flush policy consults `following`, and a
+            // stale true would snap a glide-away-from-the-end back down.
             following = atEndTop(viewport.scrollTop);
-            if (!disposed) publish();
-            done(completed && !targetLost && !disposed);
+            // If the phase is still programmatic this settles it — the
+            // settle hook flushes the kept deferred snapshot, anchored.
+            // After a native takeover it is a no-op: the user's gesture
+            // settles on its own terms and flushes then.
+            sensor.endProgrammaticScroll();
+            if (disposed) {
+              done(false);
+              return;
+            }
+            // Revalidate after the phase-end flush: the committed snapshot
+            // may have removed the keyed target — landing on where it used
+            // to be is not landing on it.
+            const targetGone =
+              targetLost ||
+              (target !== "start" &&
+                target !== "end" &&
+                geometry.indexOf(target) < 0);
+            publish();
+            done(completed && !targetGone && !disposed);
           }),
       );
     });

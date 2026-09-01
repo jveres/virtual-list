@@ -117,12 +117,29 @@ export interface GestureSensorHooks {
 }
 
 export interface GestureSensor {
+  /** True while ANY scroll phase — native gesture or programmatic — runs. */
   readonly active: boolean;
+  /** True while the active phase is programmatic (a library glide). */
+  readonly programmatic: boolean;
   /** Record an upcoming self-inflicted scroll so it is not misread. */
   expectWrite(scrollTop: number): void;
   /**
+   * Enter the scroll-phase state machine for a library-driven glide. Scroll
+   * events during a programmatic phase never begin a native gesture and
+   * never cancel the glide (Firefox coalesces/rounds reported positions);
+   * only input events — wheel, touch, pointer — take the phase over,
+   * transitioning programmatic → native without settling or flushing.
+   */
+  beginProgrammaticScroll(): void;
+  /**
+   * The glide finished or was cancelled. If the phase is still programmatic
+   * (no native takeover happened), it settles now; after a takeover this is
+   * a no-op — the native gesture settles on its own terms.
+   */
+  endProgrammaticScroll(): void;
+  /**
    * Explicit-command takeover: genuinely cancel native momentum, then
-   * settle the gesture NOW (onSettle fires synchronously).
+   * settle the phase NOW (onSettle fires synchronously).
    */
   interrupt(): void;
   dispose(): void;
@@ -135,6 +152,7 @@ export function createGestureSensor(
 ): GestureSensor {
   let disposed = false;
   let userScrollActive = false;
+  let programmaticScrollActive = false;
   let userScrollMoved = false;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
@@ -203,6 +221,15 @@ export function createGestureSensor(
     const moved =
       Math.abs(nextScrollTop - previousScrollTop) > MEASURE_EPSILON_PX;
     const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
+    if (userScrollActive && programmaticScrollActive) {
+      // A programmatic (glide) phase: scroll events here are the glide's own
+      // writes — possibly coalesced or rounded by the engine (Firefox
+      // reports positions that need not match any single write). They never
+      // begin a native gesture and never cancel the glide; only input
+      // events (wheel, touch, pointer) take the phase over.
+      recordSample(nextScrollTop);
+      return;
+    }
     if (strategy === "firefox-wheel" && moved && !programmaticScroll) {
       firefoxProtectedEdge ??= loadableBoundaryAtNativeEdge();
     }
@@ -415,6 +442,7 @@ export function createGestureSensor(
   function resetUserScrollState(): void {
     clearPendingNativeScrollEnd();
     userScrollActive = false;
+    programmaticScrollActive = false;
     userScrollMoved = false;
     recordSample();
   }
@@ -662,24 +690,39 @@ export function createGestureSensor(
     schedulePendingNativeScrollEnd();
   }
 
-  // A genuine user scroll interrupts any in-flight programmatic glide so the
+  /** Reset the per-gesture state a fresh (or taken-over) phase starts with. */
+  function armFreshGesture(): void {
+    clearPendingNativeScrollEnd();
+    userScrollMoved = false;
+    recordSample();
+    chromiumWheelSawNativeScrollEnd = false;
+    chromiumWheelAwaitingFinalScrollEnd = false;
+    chromiumEdgeWheelSuppressed = false;
+    cancelChromiumEdgeSettleTimer();
+    hooks.onStart?.();
+  }
+
+  // A genuine user input interrupts any in-flight programmatic glide so the
   // user can actually scroll away, instead of the library re-issuing the
   // animation and pulling them back.
-  function handleUserScrollStart(): boolean {
-    if (disposed) return false;
-    hooks.cancelSmoothScroll?.();
+  function handleUserScrollStart(isProgrammatic = false): boolean {
     if (disposed) return false;
     const wasActive = userScrollActive;
+    const wasProgrammatic = programmaticScrollActive;
+    if (!isProgrammatic) {
+      // Flavor FIRST: the cancelled glide's completion callback must
+      // observe the native takeover — a still-programmatic phase would
+      // settle and flush deferred geometry mid-gesture.
+      programmaticScrollActive = false;
+      hooks.cancelSmoothScroll?.();
+      if (disposed) return false;
+    }
     userScrollActive = true;
-    if (!wasActive) {
-      clearPendingNativeScrollEnd();
-      userScrollMoved = false;
-      recordSample();
-      chromiumWheelSawNativeScrollEnd = false;
-      chromiumWheelAwaitingFinalScrollEnd = false;
-      chromiumEdgeWheelSuppressed = false;
-      cancelChromiumEdgeSettleTimer();
-      hooks.onStart?.();
+    if (!wasActive || (wasProgrammatic && !isProgrammatic)) {
+      // Idle → active, or programmatic → native: either way the native
+      // phase starts fresh — WITHOUT the overall phase going idle, so
+      // nothing settles and nothing flushes across the handoff.
+      armFreshGesture();
       if (disposed) return false;
     } else if (strategy !== "firefox-wheel" && strategy !== "safari-wheel") {
       cancelPendingUserScrollEnd();
@@ -927,7 +970,20 @@ export function createGestureSensor(
     get active() {
       return userScrollActive;
     },
+    get programmatic() {
+      return userScrollActive && programmaticScrollActive;
+    },
     expectWrite,
+    beginProgrammaticScroll(): void {
+      if (disposed || userScrollActive) return;
+      programmaticScrollActive = true;
+      handleUserScrollStart(true);
+    },
+    endProgrammaticScroll(): void {
+      if (disposed || !userScrollActive || !programmaticScrollActive) return;
+      programmaticScrollActive = false;
+      finishUserScroll();
+    },
     interrupt(): void {
       if (disposed || !userScrollActive) return;
       cancelNativeMomentum();

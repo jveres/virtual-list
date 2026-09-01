@@ -327,6 +327,39 @@ describe("virtual list runtime", () => {
     expect(list.state.count).toBe(105);
   });
 
+  it("keeps a deferred snapshot through a glide→gesture handoff until settle", () => {
+    const { viewport, list } = mount(range(0, 100));
+    void list.scrollTo("start", { behavior: "smooth" });
+    vi.advanceTimersByTime(48);
+
+    list.setItems(range(-10, 100)); // Structural: deferred (glide phase).
+    expect(list.state.count).toBe(100);
+
+    // The user takes over mid-glide with real input. The phase transitions
+    // programmatic → native WITHOUT going idle: nothing settles, nothing
+    // flushes — the cancelled glide must not commit the snapshot.
+    viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    userScroll(viewport, viewport.scrollTop + 120);
+    expect(list.state.count).toBe(100);
+
+    // Only the native gesture's true settle flushes it.
+    settleGesture(viewport);
+    expect(list.state.count).toBe(110);
+  });
+
+  it("resolves false when a glide-deferred snapshot removed the keyed target", async () => {
+    const { list } = mount(range(0, 100));
+    const command = list.scrollTo("m2", { behavior: "smooth" });
+    vi.advanceTimersByTime(48);
+
+    list.setItems(range(3, 100)); // Removes m2; deferred to the phase end.
+    vi.advanceTimersByTime(6000); // The glide lands, then the flush commits.
+
+    // The landing spot is where m2 USED to be; the target itself is gone.
+    await expect(command).resolves.toBe(false);
+    expect(list.state.count).toBe(97);
+  });
+
   it("defers structural updates during a glide and flushes at glide end", async () => {
     const { viewport, list } = mount(range(0, 100));
     const command = list.scrollTo("start", { behavior: "smooth" });

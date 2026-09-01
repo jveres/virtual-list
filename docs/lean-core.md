@@ -111,12 +111,18 @@ exchanges the gesture shift and flushes the deferred snapshot), and the
 command starts.
 
 **The scroll-phase rule (architectural):** a native gesture and a
-programmatic glide are both active scroll phases. While either is active,
-structural `setItems` updates defer — only the latest snapshot is kept —
-and commit once, anchored, when the phase truly ends: the
-browser-adaptive settle for gestures, completion (or cancellation) for
-glides. A deferred prepend therefore appears without movement after
-settlement; nothing restructures the list under a live scroll. The
+programmatic glide are both active scroll phases, tracked by ONE state
+machine in the sensor. While either is active, structural `setItems`
+updates defer — only the latest snapshot is kept — and commit once,
+anchored, when the OVERALL phase reaches idle: the browser-adaptive
+settle for gestures, completion for glides. User input (wheel, touch,
+pointer) mid-glide hands the phase programmatic → native without going
+idle — nothing settles, nothing flushes across the handoff. Scroll
+events never cancel a glide (Firefox coalesces and rounds reported
+positions); only input does. A deferred prepend therefore appears
+without movement after settlement; nothing restructures the list under
+a live scroll. A keyed command is revalidated after the phase-end
+flush: a snapshot that removed its target resolves it interrupted. The
 gesture sensor is the proven browser-adaptive controller carried over
 from the old runtime as a preserved asset (per directive 3): per-engine
 settle lifecycles for Chromium (wheel-idle windows, single-scrollend

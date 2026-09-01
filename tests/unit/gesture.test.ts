@@ -132,6 +132,80 @@ describe("gesture sensor (default strategy)", () => {
     sensor.dispose();
   });
 
+  it("a programmatic phase ignores scroll events and settles from its end call", () => {
+    const viewport = makeViewport();
+    let cancelled = 0;
+    let settled = 0;
+    const sensor = createGestureSensor(
+      viewport,
+      {
+        cancelSmoothScroll: () => {
+          cancelled += 1;
+        },
+        onSettle: () => {
+          settled += 1;
+        },
+      },
+      "default",
+    );
+
+    sensor.beginProgrammaticScroll();
+    expect(sensor.active).toBe(true);
+    expect(sensor.programmatic).toBe(true);
+
+    // Coalesced/rounded engine events matching no glide write must not
+    // cancel the glide or begin a native gesture.
+    scrollTo(viewport, 700);
+    expect(cancelled).toBe(0);
+    expect(sensor.programmatic).toBe(true);
+
+    sensor.endProgrammaticScroll();
+    expect(settled).toBe(1);
+    expect(sensor.active).toBe(false);
+    sensor.dispose();
+  });
+
+  it("user input takes a programmatic phase over without settling it", () => {
+    const viewport = makeViewport();
+    let cancelled = 0;
+    let settled = 0;
+    const sensor = createGestureSensor(
+      viewport,
+      {
+        cancelSmoothScroll: () => {
+          cancelled += 1;
+        },
+        onSettle: () => {
+          settled += 1;
+        },
+      },
+      "default",
+    );
+
+    sensor.beginProgrammaticScroll();
+    viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+
+    // programmatic → native: the glide is cancelled, the phase stays
+    // active, and — critically — nothing settled across the handoff.
+    expect(cancelled).toBe(1);
+    expect(sensor.active).toBe(true);
+    expect(sensor.programmatic).toBe(false);
+    expect(settled).toBe(0);
+
+    // The cancelled glide's completion callback: a no-op now.
+    sensor.endProgrammaticScroll();
+    expect(settled).toBe(0);
+    expect(sensor.active).toBe(true);
+
+    // The native gesture settles on its own terms.
+    scrollTo(viewport, 700);
+    scrollEnd(viewport);
+    vi.advanceTimersByTime(200);
+    expect(settled).toBe(1);
+    expect(sensor.active).toBe(false);
+    sensor.dispose();
+  });
+
   it("a user scroll cancels an in-flight glide via the hook", () => {
     const viewport = makeViewport();
     let cancelled = 0;
