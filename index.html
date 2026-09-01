@@ -6,11 +6,22 @@
     <title>virtual-list · lean-core</title>
   </head>
   <body>
-    <h1>virtual-list — lean-core branch</h1>
+    <h1>virtual-list — lean-core-v2 branch</h1>
     <p>
-      The from-scratch runtime rewrite (see <code>docs/lean-core.md</code>),
-      hosting the acceptance target:
-      <a href="/demos/streaming/index.html">streaming chat</a>
+      The v2 rewrite (see <code>docs/lean-core.md</code>), built on two
+      preserved primitives: the browser-adaptive scroll-settle controller and
+      detached premeasurement.
     </p>
+    <ul>
+      <li>
+        <a href="/demos/scroll-settle/index.html">scroll-settle lab</a> —
+        verify the settle signal and settle-time structural commits in every
+        browser
+      </li>
+      <li>
+        streaming chat — the acceptance target; returns once the v2 runtime
+        can host it
+      </li>
+    </ul>
   </body>
 </html>

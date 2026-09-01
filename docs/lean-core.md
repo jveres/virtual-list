@@ -1,205 +1,96 @@
-# lean-core
+# lean-core-v2
 
-A from-scratch rewrite of the virtualizer runtime. The old code is a
-behavioral reference and a test oracle, never a porting source — rewriting is
-the point; porting would preserve the spaghetti. Unused code is deleted on
-this branch (git keeps history). A dramatic LOC decrease is an explicit goal,
-not a hope.
+The second from-scratch attempt. v1 (branch `lean-core`, kept for
+reference) proved the small API and the keyed geometry kernel, but its DOM
+runtime tried to compensate *after* mutations — estimates, ResizeObserver
+corrections, gesture translations, exceptions for "safe" updates — and
+thereby re-entered the browser-specific failure space `main` had already
+solved. v2 is built on the two cornerstones v1 missed, ported from `main`
+as preserved primitives, with the smaller API built around them.
 
-## Directives (fixed)
+## The two cornerstones
 
-1. **Pin-to-top carries over.** The send flow — anchor a message to the
-   viewport top, reserving scrollable space below until real content consumes
-   it — works very well today and is a first-class contract item, not an
-   adapter afterthought.
-2. **Clean cut.** No compatibility wrapper, no porting scaffold. The old
-   runtime, its tests, and every demo except streaming chat were deleted in
-   this branch's first commit; `main` is the behavioral baseline for
-   comparison. The streaming demo stays in-tree as the acceptance target
-   (excluded from typecheck until the lean runtime can host it).
-3. **Rewrite, don't port.** The two proven assets — Fenwick-based layout and
-   the adaptive browser gesture handling — are preserved as *behavior*:
-   re-derived from scratch against a written quirk list and the ported unit
-   harnesses (e.g. the integer-floor scrollTop test), not copy-pasted.
+1. **Cross-browser scrollend detection** — the scroll-settle controller:
+   per-engine heuristics (Chromium wheel-idle windows and single-scrollend
+   sequences, Firefox edge stability windows against APZ ghost ends, Safari
+   rubber-band tails, a scrollend+cooldown default) that tell PRECISELY when
+   structural changes to the scroller are possible. Ported verbatim from
+   `main` (`src/scroll-settle.ts`); its behavior is empirically verified and
+   is not re-derived.
+2. **Chunk premeasurement** — items are built and measured OFF-scroller
+   (a detached, width-synced measurement root) before they ever enter the
+   scroll surface, so no DOM mutation of the scroller happens during
+   scrolling and heights are real, not estimated, at commit time. Ported
+   from `main`'s detached item measurer.
 
-## Invariants (the definition of correct)
+## The core contract (normative)
 
-I1. The visible anchor's viewport coordinate never changes when items are
-    prepended, appended, removed, measured, or updated.
-I2. While following the end, streaming growth stays pinned with no terminal
-    jump — landing is exact on integer-rounding engines (WebKit floors
-    scrollTop writes; glides must advance ≥1px/frame).
-I3. Edge loading never changes scroll geometry: loaders are overlays;
-    `onReachStart/End` are proximity signals only.
-I4. One logical data update = one atomic commit (reconcile → measure →
-    correct → publish). Host callbacks run after the commit; calls made from
-    them are inputs to the next commit. No reentrancy machinery.
-I5. Pin-to-top: `scrollTo(key, { align: "start" })` on a tail item reserves
-    the shortfall as core-owned geometry. The reserve is consumed by content
-    growth and regrown by shrinkage symmetrically; it is never destroyed by
-    a transient change and never collapses out from under the viewport
-    (the tail-gap lessons, as invariants).
-I6. A discrete in-row height change (a toggled disclosure) commits in the
-    same painted frame as the change — no one-frame tear.
+1. During an active native scroll, the scroll surface is **structurally
+   immutable**.
+2. New chunks may be fetched, rendered, and measured **off-scroller**.
+3. Only after the proven cross-browser settle signal may the runtime
+   **atomically commit**, in one frame:
+   - keys,
+   - pre-measured heights,
+   - canvas geometry,
+   - the mounted window,
+   - one anchor-preserving scroll position.
 
-Performance floor: O(log n) offsets, bounded mounted DOM, no layout reads in
-scroll handlers, parity with `main` at 60/120Hz and on the 10k-row
-variable-height benchmark.
+Corollaries: no ResizeObserver-driven mid-gesture geometry correction, no
+gesture-time canvas translation, no "safe update" exceptions. What v1
+handled with compensation machinery simply cannot occur: heights are known
+before mount, and structure changes only at settle.
 
-Performance checklist (non-blocking, revisit at the benchmark gate):
-- `Geometry.window` scans forward from `start` (O(k log n)); replace with a
-  direct `indexAt(bottom)` lookup.
+## Preserved from v1 (signed off there, carried forward)
 
-## API contract (complete surface — additions require architecture review)
+- `src/fenwick.ts` + `src/geometry.ts`: the pure keyed geometry kernel
+  (capture → mutate → resolve transactions, anchor policies, pin-to-top
+  reserve I5) with its oracle/property tests. Its role narrows: heights fed
+  to it are premeasured, not estimated-then-corrected.
+- `src/glide.ts`: the programmatic glide (exact landing, ≥1px/frame on
+  floored engines, endpoint rebase).
+- The v1 API surface as the goal shape:
+  `createVirtualList(viewport, { items, key, render, estimateSize?,
+  onState?, onReachStart/End?, onUnmount? })`,
+  `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior? })
+  → Promise<boolean>`, `state`, `dispose()` — details re-reviewed when the
+  runtime is built on the new foundation.
+- Invariants I1–I6 stand as the definition of correct; their *mechanisms*
+  change (I6's "same painted frame" is satisfied by premeasured commits,
+  not RO-synchronous corrections).
 
-```ts
-const list = createVirtualList(viewport, {
-  items,                       // owned keyed snapshot
-  key: (item) => string,       // unique per item — duplicates are rejected
-  render: (item, existing?) => HTMLElement,
-  estimateSize?: number | ((item) => number),   // finite and > 0 — enforced
-  onState?, onReachStart?, onReachEnd?,
-  onUnmount?: (element, item) => void,  // row left the DOM: scrolled out,
-                                        // replaced, or disposed
-});
+## Verification vehicles
 
-list.setItems(next, { anchor?: "auto" | "viewport" | "end" | "none" });
-list.scrollTo(key | "start" | "end", { align?, behavior? });  // align:"start" ⇒ I5 reserve
-  // → Promise<boolean>: true = landed on target, false = interrupted
-  //   (user gesture, newer command, dispose) or target missing/removed.
-  //   Always settles, dispose() included.
-list.state;                   // read-only snapshot
-list.dispose();
-```
-
-Internally, one logical update is one geometry transaction (I4): anchor
-intent is captured on the old geometry (`capture`), mutations apply
-(`setKeys`/`measure`/`pin`), and `resolve` returns one absolute scroll
-target computed against the final geometry — so end-follow always reaches
-the measured end, never an estimated one (I2).
-
-`anchor: "auto"` follows the end only for end-compatible updates while at
-the end — the old keys are an unchanged prefix of the new (pure appends, or
-the identical list carrying streaming measurements). Prepends, reorders,
-and replacements preserve the viewport even at the end. A removed anchor
-falls to its first surviving successor, inheriting the in-row offset
-(replacement, not backwards navigation); with no successor, the predecessor
-end-aligned.
-
-Identity is the key; indexes are derived positions. Heights live in one
-internal cache keyed by identity: estimates for unseen keys, learned
-measurements after mount, ResizeObserver corrections inside the same commit.
-Detached premeasure is an optimization only (it cannot see undecoded
-images — proven); correctness comes from anchored in-commit correction.
-
-## Architecture
-
-```
-keyed snapshot → size/index model (Fenwick + key↔index)
-             → anchor commit (reconcile, measure, correct — once, non-reentrant)
-             → DOM renderer (mount/update/position/unmount by key)
-gesture sensor (browser-adaptive) gates when commits may apply
-```
-
-One scroll arbiter owns every scrollTop write, one policy per frame:
-explicit command > user gesture > end-anchor > position-anchor.
-An explicit command issued while a gesture is active supersedes it
-immediately: in one guarded operation the sensor genuinely cancels native
-momentum (clamped write + overflow toggle + forced reflow — trailing
-events cannot masquerade as a new gesture), settles the gesture (which
-exchanges the gesture shift and flushes the deferred snapshot), and the
-command starts.
-
-**The scroll-phase rule (architectural):** a native gesture and a
-programmatic glide are both active scroll phases, tracked by ONE state
-machine in the sensor. While either is active, every key-sequence-changing
-`setItems` defers — only the latest snapshot is kept — and commits once,
-anchored, when the OVERALL phase reaches idle: the browser-adaptive
-settle for gestures, completion for glides. User input (wheel, touch,
-pointer) mid-glide hands the phase programmatic → native without going
-idle — nothing settles, nothing flushes across the handoff. Scroll
-events never cancel a glide (Firefox coalesces and rounds reported
-positions); only input does. A deferred prepend therefore appears
-without movement after settlement; nothing restructures the list under
-a live scroll. A keyed command is revalidated after the phase-end
-flush: a snapshot that removed its target resolves it interrupted. The
-gesture sensor is the proven browser-adaptive controller carried over
-from the old runtime as a preserved asset (per directive 3): per-engine
-settle lifecycles for Chromium (wheel-idle windows, single-scrollend
-sequences), Firefox (edge stability windows against APZ ghost ends),
-and Safari (rubber-band tails), with a scrollend+cooldown default.
-jsdom exercises only the default path; the engine lifecycles are
-real-browser-verified behavior.
-
-Measurements always commit, gesture or not — deferring them would leave
-mounted rows positioned by stale geometry and visually overlapping. While
-a gesture is active the runtime writes NO scrollTop at all: the
-anchor-preserving delta is applied as a temporary canvas translation of
-the opposite sign (the *gesture shift*), keeping the page still under the
-user's finger (I1 during gestures) with zero scroll writes. Content
-coordinates diverge from raw scrollTop by the accumulated shift for the
-duration of the gesture; at settle the translation is exchanged for one
-scrollTop write in the same frame — visually a no-op — before the flush
-transaction runs.
-
-The shift is BOUNDED to half a viewport: it lives in visual space only,
-so accumulated shift walls that many pixels of content off behind the
-raw scroll boundary until settle — a systematically biased estimate
-walked a Safari trace to 2367px of unreachable content and a
-rubber-band bounce at a ghost top. Beyond the cap, a correction's
-remainder becomes an anchor slip (content moves): reachability of the
-content edges beats perfect anchor stability. Corrections with
-mean-zero error keep the shift far from the cap — an accurate
-`estimateSize` is the host's lever, and the flat-estimate chat demo now
-derives per-message estimates from content. Anchor-driven moving writes (the end-follow catch-up)
-remain refused until settle; an explicit command instead interrupts the
-gesture, as above.
-
-Within an active scroll phase, only `anchor: "auto"` IDENTICAL-KEY
-updates commit immediately — same-key streaming replacements that change
-row content, never the key sequence. Every key-sequence change (append,
-prepend, removal, reorder) defers, as does any explicitly anchored
-update; the flush honors an explicit policy verbatim, and resolves a
-deferred "auto" through follow state (a deferred append while following
-lands the new end exactly).
-
-The glide rebases (never snaps) when either of its endpoints moves
-externally: an anchor-preserving prepend shifting the position, or a
-snapshot moving the live target, restarts the curve from the current
-position — re-deriving its pace for the remaining distance. No frame ever
-jumps the full distance.
-
-`dispose()` is terminal and immediate — callable from any host callback, it
-halts publication mid-flight and drops all queued work.
-
-End-follow is explicit runtime state, not a per-commit re-derivation:
-engaged when a commit lands at the end, disengaged when the user scrolls
-upward, re-engaged when they return to the end. A gesture may refuse an
-end-resolved commit's write, but the intent survives and the settle flush
-lands on the (new) end exactly (I2).
-
-`onReachStart/End` fire on entering an 800px proximity zone and re-arm only
-after leaving a wider 1200px exit zone — boundary oscillation inside the
-hysteresis band cannot refire them (I3).
-
-## Verification gates
-
-- The session bug gauntlet as scripted scenarios: toggle-collapse at bottom,
-  expand/collapse over the reserve, stream-end stillness, scroll-away during
-  image then return, rapid edge re-entry, interrupted smooth scroll.
-- Real browsers (Chromium/Firefox/WebKit); jsdom cannot see any of this.
-- Dev-mode per-frame invariant assertions (I1–I6).
-- Recorded scroll traces compared old vs new on identical data.
-- API pressure test: the full streaming chat demo without one escape hatch.
+- **demos/scroll-settle** — the settle lab: a plain (non-virtualized)
+  natively scrolling list wired straight to the verbatim controller.
+  Chunks load during scrolling but commit only at settle (prepend + one
+  anchor-preserving write). Live panel: strategy, gesture state, settle
+  lag, post-settle-motion counter (premature-settle detector), and an
+  exportable event/decision trace. The settle signal is validated per
+  browser HERE, before any runtime exists on top of it.
+- **demos/streaming** — the chat acceptance target (kept in-tree, excluded
+  from typecheck until the v2 runtime hosts it), compared against `main`.
 
 ## Execution order
 
-1. Clean slate: delete the old runtime, its tests, and every demo except
-   streaming chat. Done in this branch's first commit; `main` is the
-   comparison baseline.
-2. Step 1: keyed geometry kernel (`src/geometry.ts`, pure, no DOM) +
-   invariant property tests. **Review checkpoint.**
-3. Commit pipeline + scroll arbiter + gesture sensor.
-4. Chat mode (end-follow, pin-to-top reserve, edge overlays); host the
-   streaming demo on the lean runtime; gauntlet against `main`.
-5. Re-introduce further demos only as lean-core features earn them.
+1. Branch setup, clean slate, this contract. Port `scroll-settle.ts`
+   verbatim; build the settle lab. **Review + all-browser lab checkpoint.**
+2. Port the detached premeasurement primitive (`src/premeasure.ts`) and
+   direct-host characterization tests for the settle controller's engine
+   strategies. **Review checkpoint.**
+3. The v2 runtime on the contract above: off-scroller chunk pipeline
+   (build → premeasure → hold), settle-gated atomic commit into the kernel
+   and DOM, commands/glide via the controller's programmatic gesture.
+   **Review checkpoint.**
+4. Host the streaming chat demo; gauntlet against `main` in
+   Chromium/Firefox/Safari.
+
+## Lessons carried as law
+
+- jsdom has no layout engine: engine lifecycles and premeasurement are
+  validated in real browsers (the lab), never asserted from jsdom.
+- WebKit floors scrollTop writes; Safari kills momentum on writes; Firefox
+  keeps a pre-apply scroll-limit snapshot for the rest of a gesture
+  (ghost end) — the reasons the settle controller is ported, not rewritten.
+- Estimates are a scrollbar courtesy, not geometry: v1's ghost-top bounce
+  came from letting estimate error into live scroll space.

@@ -1,89 +1,98 @@
-// The gesture sensor: per-engine heuristics for classifying scrolls as user
-// gestures vs. the library's own programmatic writes, and for deciding when
-// a user gesture has truly finished — the moment deferred structural updates
-// may flush and the viewport may be written again.
-//
-// This is the proven browser-adaptive lifecycle carried over from the old
-// runtime (a preserved asset, not a re-derivation): engines disagree on when
-// (and whether) `scrollend` fires relative to wheel momentum, so each
-// strategy encodes one engine's observed sequencing — chromium's wheel-idle
-// window and boundary-scrollend suppression, firefox's early scrollend
-// during a glide, safari's rubber-band tails, and a plain
-// scrollend+cooldown default. The sensor owns the viewport's
-// scroll/scrollend/wheel/pointer/touch listeners and all gesture state.
-//
-// ## The per-engine gesture contract at overscrolled edges
-//
-// Deferred list updates (boundary loads, prepends/appends) must apply only
-// when the gesture settles, and each engine bounds what "settled" can mean:
-//
-// - **Chromium**: touchpad release is NOT detectable during overscroll — the
-//   engine emits one scrollend per scroll sequence (often early, at the
-//   edge) and momentum wheel events are indistinguishable from fingers-down
-//   input. The accepted contract is settling after a quiet delay
-//   (EDGE_SETTLE_QUIET_MS + the cooldown); applying a list update
-//   mid-overscroll after that delay is fine because Chromium repaints the
-//   anchored content without a visible flash.
-// - **Firefox**: at an overscrolled edge, settle only from a scrollend after
-//   an extended last-input stability window — never from a bare timer.
-//   Firefox emits a scrollend whenever scrolling pauses, so one can land
-//   inside a momentum-wheel gap mid-hold; wheels arriving inside the
-//   stability window postpone the settle. Applying while the engine gesture
-//   is alive is unfixable, verified empirically: besides the visible flash,
-//   Firefox's async scroll machinery keeps the pre-apply scroll-limit
-//   snapshot for the remainder of the gesture — the next scroll bounces
-//   against that "ghost end" — and no main-thread reset clears it. The
-//   generic 280ms fallback never arms near an edge either, and a
-//   scrollend-less hold never applies at all: the next gesture's settle
-//   recovers it.
-// - **Safari**: rubber-bands past the scroll range, and any scrollTop write
-//   during native motion kills the momentum animation. The contract is:
-//   never settle while rubber-banded or while any motion — even sub-pixel —
-//   continues; settle from the release scrollend or true quiet. Near an
-//   edge, settling additionally requires SAFARI_EDGE_SETTLE_QUIET_MS of
-//   scroll-event silence.
-//
-// Two tolerances make this robust: EDGE_PROXIMITY_EPSILON_PX accepts the
-// fractional gap (up to ~1px, more under zoom) engines leave between a
-// pinned scroll position and the exact limit, and SETTLE_MOTION_EPSILON_PX
-// cancels a pending settle on any real movement so decaying momentum can't
-// be settled into.
-//
-// An explicit command takes ownership back via interrupt(): native momentum
-// is genuinely cancelled (clamped write + overflow toggle + forced reflow),
-// then the gesture settles immediately.
+/**
+ * The scroll-settle state machine: per-engine heuristics for classifying
+ * scrolls as user gestures vs. the library's own programmatic writes, and for
+ * deciding when a user gesture has finished — the moment deferred layout
+ * updates and measurements may flush and `onScrollEnd` may fire.
+ *
+ * Engines disagree on when (and whether) `scrollend` fires relative to wheel
+ * momentum, so each strategy encodes one engine's observed sequencing:
+ * chromium's wheel-idle window and boundary-scrollend suppression, firefox's
+ * early scrollend during a glide, safari's similar wheel behavior, and a
+ * plain scrollend+cooldown default. The controller owns the viewport's
+ * scroll/scrollend/wheel/pointer/touch listeners and all gesture state; the
+ * virtualizer supplies everything else through {@link ScrollSettleHost}.
+ *
+ * ## The per-engine gesture contract at overscrolled edges
+ *
+ * Deferred list updates (boundary loads, prepends/appends) must apply only
+ * when the gesture settles, and each engine bounds what "settled" can mean:
+ *
+ * - **Chromium**: touchpad release is NOT detectable during overscroll — the
+ *   engine emits one scrollend per scroll sequence (often early, at the edge)
+ *   and momentum wheel events are indistinguishable from fingers-down input.
+ *   The accepted contract is settling after a quiet delay
+ *   (EDGE_SETTLE_QUIET_MS + the cooldown); applying a list update
+ *   mid-overscroll after that delay is fine because Chromium repaints the
+ *   anchored content without a visible flash.
+ * - **Firefox**: at an overscrolled edge, settle only from a scrollend after
+ *   an extended last-input stability window — never from a bare timer.
+ *   Firefox emits a scrollend whenever scrolling pauses, so
+ *   one can land inside a momentum-wheel gap mid-hold; wheels arriving
+ *   inside the stability window postpone the settle (trailing momentum markers
+ *   after a real release delay it briefly, a continuing gesture pushes it
+ *   to its own release scrollend). Applying while the engine gesture is
+ *   alive is unfixable, verified empirically: besides the visible flash,
+ *   Firefox's async scroll machinery keeps the pre-apply scroll-limit
+ *   snapshot for the remainder of the gesture — the next scroll bounces
+ *   against that "ghost end" — and no main-thread reset clears it (an
+ *   overflow toggle with forced reflow and a real-value scrollTop nudge
+ *   were both tried). The generic 280ms fallback never arms near an edge
+ *   either, and a scrollend-less hold never applies at all: the loading
+ *   slot keeps spinning and the next gesture's settle recovers it. A
+ *   mid-hold scrollend followed by a motionless hold longer than the window
+ *   remains indistinguishable from a release and will apply then.
+ * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
+ *   during native motion kills the momentum animation. The contract is:
+ *   never settle while rubber-banded or while any motion — even sub-pixel —
+ *   continues; settle from the release scrollend or true quiet. Near an
+ *   edge, settling additionally requires SAFARI_EDGE_SETTLE_QUIET_MS of
+ *   scroll-event silence: the bounce tail decays through event gaps longer
+ *   than the cooldown, and the settle's anchor-preserving writes (a bottom
+ *   load trims the retained top, which writes scrollTop) snap the bounce if
+ *   they land inside it.
+ *
+ * Two tolerances make this robust: EDGE_PROXIMITY_EPSILON_PX accepts the
+ * fractional gap (up to ~1px, more under zoom) engines leave between a pinned
+ * scroll position and the exact limit, and SETTLE_MOTION_EPSILON_PX cancels a
+ * pending settle on any real movement so decaying momentum can't be settled
+ * into.
+ */
 
-const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_SETTLE_COOLDOWN_MS = 140;
 const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 // Quiet window for settling a chromium gesture whose release is not directly
 // observable: no wheel activity for this long at an edge means the fingers
-// are gone (or motionless, which is indistinguishable).
+// are gone (or motionless, which is indistinguishable). Long enough to
+// outlast the gaps in a decaying momentum-wheel tail.
 const EDGE_SETTLE_QUIET_MS = 450;
 // Firefox publishes range growth to APZ asynchronously after the main-thread
 // commit. A rapid re-grab can otherwise join the pre-growth overscroll state
-// and bounce at a ghost edge. There is no content-visible APZ
-// acknowledgement, so keep a conservative, empirically verified quiet window
-// from the latest DOM wheel signal.
+// and bounce at a ghost edge. There is no content-visible APZ acknowledgement,
+// so keep a conservative, empirically verified quiet window from the latest
+// DOM wheel signal. This is a race buffer, not an engine transaction constant.
 const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
 // cooldown, and a settle inside the tail performs anchor-preserving
-// scrollTop writes that snap the animation.
+// scrollTop writes (window trims, prepends) that snap the animation.
 const SAFARI_EDGE_SETTLE_QUIET_MS = 350;
 // Engines pin an overscrolled position up to ~1px (more under zoom/DPI
-// scaling) shy of the exact scroll limit; a fractional miss here sends a
-// held-at-the-edge gesture down the wrong settle path.
+// scaling) shy of the exact scroll limit, so edge proximity must be judged
+// looser than the 0.5px measurement epsilon — a fractional miss here sends a
+// held-at-the-edge gesture down the wrong settle path (see the contract
+// above; this was the root of mid-overscroll flashes and wedged loads).
 const EDGE_PROXIMITY_EPSILON_PX = 2;
 // Any real movement at or above this cancels a pending wheel settle; decaying
-// momentum moves in sub-0.5px steps that must still count as motion.
+// momentum moves in sub-0.5px steps that must still count as motion, or the
+// settle (and its scrollTop write) lands mid-animation and kills it.
 const SETTLE_MOTION_EPSILON_PX = 0.05;
-// Upper bound on unmatched programmatic scroll targets kept for user-vs-self
-// classification. One frame writes at most a few times; this only guards
-// against runaway.
-const MAX_PENDING_WRITES = 8;
 
-export type GestureStrategy =
+// Upper bound on unmatched programmatic scroll targets kept for user-vs-self
+// scroll classification. One follow frame writes at most twice, and a scroll
+// event matches within a frame or two, so this only guards against runaway.
+const MAX_PENDING_PROGRAMMATIC_SCROLLS = 8;
+
+export type VirtualListScrollSettleStrategy =
   | "default"
   | "chromium-wheel"
   | "firefox-wheel"
@@ -91,9 +100,9 @@ export type GestureStrategy =
 
 type ScrollBoundary = "top" | "bottom";
 
-export function detectGestureStrategy(
+export function detectScrollSettleStrategy(
   userAgent = navigator.userAgent,
-): GestureStrategy {
+): VirtualListScrollSettleStrategy {
   if (/\bFirefox\//.test(userAgent)) return "firefox-wheel";
   if (/\bVersion\/[\d.]+.*\bSafari\//.test(userAgent)) {
     return "safari-wheel";
@@ -103,60 +112,71 @@ export function detectGestureStrategy(
     : "default";
 }
 
-export interface GestureSensorHooks {
-  /** The gesture transitioned idle → active. */
-  onStart?: () => void;
-  /** The gesture truly settled: deferred work may flush. */
-  onSettle?: () => void;
-  /** Whether reaching this edge can grow the list (guards edge protection). */
-  canLoadAtBoundary?: (boundary: ScrollBoundary) => boolean;
-  /** Cancel an in-flight programmatic glide — a real user gesture began. */
-  cancelSmoothScroll?: () => void;
-  /** True while a programmatic glide is still short of its target. */
-  smoothScrollActive?: () => boolean;
+/** What the settle controller needs from the virtualizer that owns it. */
+export interface ScrollSettleHost {
+  viewport: HTMLElement;
+  strategy: VirtualListScrollSettleStrategy;
+  measureEpsilon: number;
+  isDisposed(): boolean;
+  /** Whether reaching this edge can enqueue boundary growth. */
+  canLoadAtBoundary(boundary: ScrollBoundary): boolean;
+  /** Cancel an in-flight programmatic smooth scroll — a real user gesture began. */
+  cancelActiveSmoothScroll(): void;
+  /** False only while a programmatic smooth scroll is still short of its target. */
+  smoothScrollReachedTarget(): boolean;
+  /** Any gesture signal: stop auto-follow and drop the sub-pixel scroll residual. */
+  onGestureActivity(): void;
+  /** The gesture transitioned idle → active: arm boundaries, fire onScrollStart. */
+  onGestureStarted(): void;
+  /** The gesture fully settled: flush deferred work, re-render, fire onScrollEnd. */
+  onGestureSettled(): void;
+  /** Gesture state was reset (settle or cancel): clear placeholder fast mode. */
+  onGestureReset(): void;
+  /** A scroll event landed: schedule a render pass. */
+  onScrollEventObserved(): void;
+  /** A native scroll end arrived and the gesture is quiet: placeholders may hydrate. */
+  onNativeScrollEndIdle(): void;
 }
 
-export interface GestureSensor {
-  /** True while ANY scroll phase — native gesture or programmatic — runs. */
-  readonly active: boolean;
-  /** True while the active phase is programmatic (a library glide). */
-  readonly programmatic: boolean;
-  /** Record an upcoming self-inflicted scroll so it is not misread. */
-  expectWrite(scrollTop: number): void;
-  /**
-   * Enter the scroll-phase state machine for a library-driven glide. Scroll
-   * events during a programmatic phase never begin a native gesture and
-   * never cancel the glide (Firefox coalesces/rounds reported positions);
-   * only input events — wheel, touch, pointer — take the phase over,
-   * transitioning programmatic → native without settling or flushing.
-   */
-  beginProgrammaticScroll(): void;
-  /**
-   * The glide finished or was cancelled. If the phase is still programmatic
-   * (no native takeover happened), it settles now; after a takeover this is
-   * a no-op — the native gesture settles on its own terms.
-   */
-  endProgrammaticScroll(): void;
-  /**
-   * Explicit-command takeover: genuinely cancel native momentum, then
-   * settle the phase NOW (onSettle fires synchronously).
-   */
-  interrupt(): void;
+export interface ScrollSettleController {
+  isUserScrollActive(): boolean;
+  /** Instantaneous scroll speed (px/ms), damped by the time since the last sample. */
+  currentVelocity(): number;
+  /** Absolute scrollTop delta of the most recent scroll sample. */
+  lastSampleDelta(): number;
+  resetVelocity(scrollTop?: number): void;
+  /** Pre-record a programmatic scrollTop write so its event isn't misread as a user scroll. */
+  recordProgrammaticScrollTop(target: number): void;
+  /** Enter the gesture state machine for a library-driven scroll (no smooth-scroll cancel). */
+  beginProgrammaticGesture(): void;
+  /** Mark the native scroll as ended and start the settle cooldown. */
+  markSettlePending(): void;
+  /** Settle the gesture now: reset state, then flush/render/notify via the host. */
+  finishGesture(): void;
+  /** Abandon the gesture: reset state without the settle side effects. */
+  cancelGesture(): void;
   dispose(): void;
 }
 
-export function createGestureSensor(
-  viewport: HTMLElement,
-  hooks: GestureSensorHooks = {},
-  strategy: GestureStrategy = detectGestureStrategy(),
-): GestureSensor {
-  let disposed = false;
+export function createScrollSettleController(
+  host: ScrollSettleHost,
+): ScrollSettleController {
+  const { viewport, strategy, measureEpsilon } = host;
+
   let userScrollActive = false;
-  let programmaticScrollActive = false;
   let userScrollMoved = false;
+  let scrollVelocity = 0;
+  let lastScrollSampleDelta = 0;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
-  const expected: number[] = [];
+  // Targets written by programmatic scrolls (follow, scrollToIndex, measurement
+  // corrections) that haven't been matched to a scroll event yet. A single frame
+  // can write more than once (e.g. a measurement correction plus a follow chase)
+  // and the browser may emit a scroll event per write, so we match an incoming
+  // scroll against ANY pending target instead of a single, easily-clobbered slot.
+  // Without this a follow-scroll's own event can look like a user scroll and tear
+  // down auto-follow mid-stream.
+  const programmaticScrollTops: number[] = [];
   let nativeScrollEndPending = false;
   let wheelPendingNativeScrollEndTop: number | null = null;
   let pendingNativeScrollEndDelayMs = SCROLL_SETTLE_COOLDOWN_MS;
@@ -181,62 +201,71 @@ export function createGestureSensor(
     return Math.max(0, viewport.scrollHeight - viewport.clientHeight);
   }
 
-  function canLoadAtBoundary(boundary: ScrollBoundary): boolean {
-    return hooks.canLoadAtBoundary?.(boundary) ?? false;
-  }
-
-  function recordSample(scrollTop = viewport.scrollTop): void {
+  function resetScrollVelocity(scrollTop = viewport.scrollTop): void {
+    scrollVelocity = 0;
+    lastScrollSampleDelta = 0;
     lastScrollSampleTop = scrollTop;
     lastScrollSampleAt = performance.now();
   }
 
-  function expectWrite(target: number): void {
-    expected.push(target);
-    if (expected.length > MAX_PENDING_WRITES) expected.shift();
+  function updateScrollVelocity(scrollTop = viewport.scrollTop): void {
+    const now = performance.now();
+    const elapsed = now - lastScrollSampleAt;
+    lastScrollSampleDelta = Math.abs(scrollTop - lastScrollSampleTop);
+    if (elapsed > 0) {
+      scrollVelocity = lastScrollSampleDelta / elapsed;
+    }
+    lastScrollSampleTop = scrollTop;
+    lastScrollSampleAt = now;
+  }
+
+  function currentScrollVelocity(): number {
+    if (lastScrollSampleDelta <= 0) return scrollVelocity;
+    const elapsed = performance.now() - lastScrollSampleAt;
+    if (elapsed <= 0) return scrollVelocity;
+    return Math.min(scrollVelocity, lastScrollSampleDelta / elapsed);
+  }
+
+  function recordProgrammaticScrollTop(target: number): void {
+    programmaticScrollTops.push(target);
+    // Bound the buffer; pending writes are matched within a frame or two, so a
+    // few entries is plenty. Drop the oldest if it somehow accumulates.
+    if (programmaticScrollTops.length > MAX_PENDING_PROGRAMMATIC_SCROLLS) {
+      programmaticScrollTops.shift();
+    }
   }
 
   function consumeProgrammaticScrollWrite(scrollTop: number): boolean {
-    if (expected.length === 0) return false;
-    const tolerance = Math.max(1, MEASURE_EPSILON_PX);
-    const matchIndex = expected.findIndex(
+    if (programmaticScrollTops.length === 0) return false;
+    const tolerance = Math.max(1, measureEpsilon);
+    const matchIndex = programmaticScrollTops.findIndex(
       (target) => Math.abs(scrollTop - target) <= tolerance,
     );
     if (matchIndex === -1) {
-      // The scroll landed on no pending programmatic target — a real user
-      // scroll took over. Drop the stale targets so they can't shadow later
-      // events.
-      expected.length = 0;
+      // The scroll landed on no pending programmatic target — a real user scroll
+      // took over. Drop the stale targets so they can't shadow later events.
+      programmaticScrollTops.length = 0;
       return false;
     }
-    // Discard this target and any older ones it superseded; keep newer
-    // writes for their own events.
-    expected.splice(0, matchIndex + 1);
+    // Discard this target and any older ones it superseded (the scroll has caught
+    // up to here); keep newer writes for their own events.
+    programmaticScrollTops.splice(0, matchIndex + 1);
     return true;
   }
 
   function handleScroll(): void {
-    if (disposed) return;
+    if (host.isDisposed()) return;
     const previousScrollTop = lastScrollSampleTop;
     const nextScrollTop = viewport.scrollTop;
-    const moved =
-      Math.abs(nextScrollTop - previousScrollTop) > MEASURE_EPSILON_PX;
+    const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
     const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
-    if (userScrollActive && programmaticScrollActive) {
-      // A programmatic (glide) phase: scroll events here are the glide's own
-      // writes — possibly coalesced or rounded by the engine (Firefox
-      // reports positions that need not match any single write). They never
-      // begin a native gesture and never cancel the glide; only input
-      // events (wheel, touch, pointer) take the phase over.
-      recordSample(nextScrollTop);
-      return;
-    }
     if (strategy === "firefox-wheel" && moved && !programmaticScroll) {
       firefoxProtectedEdge ??= loadableBoundaryAtNativeEdge();
     }
     if (!userScrollActive && moved && !programmaticScroll) {
       if (!handleUserScrollStart()) return;
     }
-    recordSample(nextScrollTop);
+    updateScrollVelocity(nextScrollTop);
     if (
       (strategy === "firefox-wheel" || strategy === "safari-wheel") &&
       nativeScrollEndPending &&
@@ -258,6 +287,7 @@ export function createGestureSensor(
     } else {
       scheduleWheelScrollEndFallback();
     }
+    host.onScrollEventObserved();
   }
 
   function hasActiveTouchOrPointerInput(): boolean {
@@ -268,8 +298,7 @@ export function createGestureSensor(
     const scrollTop = viewport.scrollTop;
     const maxScrollTop = nativeMaxScrollTop();
     return (
-      scrollTop < -MEASURE_EPSILON_PX ||
-      scrollTop - maxScrollTop > MEASURE_EPSILON_PX
+      scrollTop < -measureEpsilon || scrollTop - maxScrollTop > measureEpsilon
     );
   }
 
@@ -288,9 +317,8 @@ export function createGestureSensor(
 
   function cancelFirefoxEdgeCommitForInput(): void {
     if (!cancelFirefoxEdgeCommitFrame()) return;
-    // Input after the entire stability window is a new gesture, not a
-    // trailing momentum marker. Require this gesture's own scrollend before
-    // growth.
+    // Input after the entire stability window is a new gesture, not a trailing
+    // momentum marker. Require this gesture's own scrollend before growth.
     cancelPendingUserScrollEnd();
   }
 
@@ -360,12 +388,15 @@ export function createGestureSensor(
 
   function loadableBoundaryAtNativeEdge(): ScrollBoundary | null {
     const scrollTop = viewport.scrollTop;
-    if (canLoadAtBoundary("top") && scrollTop <= EDGE_PROXIMITY_EPSILON_PX) {
+    if (
+      host.canLoadAtBoundary("top") &&
+      scrollTop <= EDGE_PROXIMITY_EPSILON_PX
+    ) {
       return "top";
     }
     const maxScrollTop = nativeMaxScrollTop();
     if (
-      canLoadAtBoundary("bottom") &&
+      host.canLoadAtBoundary("bottom") &&
       maxScrollTop > EDGE_PROXIMITY_EPSILON_PX &&
       maxScrollTop - scrollTop <= EDGE_PROXIMITY_EPSILON_PX
     ) {
@@ -389,7 +420,9 @@ export function createGestureSensor(
       !isRubberBandOverscrolled() &&
       // Safari bounce tails deliver scroll events at gaps longer than the
       // settle cooldown; wait for genuine event silence near an edge so the
-      // settle's scrollTop writes can't snap a live bounce.
+      // settle's scrollTop writes can't snap a live bounce. maybeFinish's
+      // pending-check rAF loop re-tests this every frame, so the settle
+      // lands right when the silence window closes.
       !(
         strategy === "safari-wheel" &&
         isNearScrollEdge() &&
@@ -409,7 +442,8 @@ export function createGestureSensor(
       // Firefox contract: at an edge, only the release scrollend may settle
       // the gesture. A timer-driven settle here applies deferred loads under
       // held fingers, which visibly flashes — and the rest of the gesture
-      // routes to the overscroll effect.
+      // routes to the overscroll effect, so the user can't even scroll into
+      // the newly applied content until release.
       !(strategy === "firefox-wheel" && isNearProtectedFirefoxEdge())
     );
   }
@@ -442,17 +476,18 @@ export function createGestureSensor(
   function resetUserScrollState(): void {
     clearPendingNativeScrollEnd();
     userScrollActive = false;
-    programmaticScrollActive = false;
     userScrollMoved = false;
-    recordSample();
+    resetScrollVelocity();
+    if (host.isDisposed()) return;
+    host.onGestureReset();
   }
 
   function finishUserScroll(): void {
     cancelUserScrollTimers();
     resetScrollSettleState();
     resetUserScrollState();
-    if (disposed) return;
-    hooks.onSettle?.();
+    if (host.isDisposed()) return;
+    host.onGestureSettled();
   }
 
   function cancelUserScroll(): void {
@@ -462,7 +497,7 @@ export function createGestureSensor(
   }
 
   function maybeFinishUserScroll(): void {
-    if (disposed || !userScrollActive || !nativeScrollEndPending) {
+    if (host.isDisposed() || !userScrollActive || !nativeScrollEndPending) {
       return;
     }
     if (!canSettleUserScroll()) {
@@ -489,11 +524,11 @@ export function createGestureSensor(
   // stability window. This keeps the list geometry and its render in one
   // main-thread pass; it is not an acknowledgement from Firefox's APZ thread.
   function scheduleFirefoxEdgeCommit(): void {
-    if (firefoxEdgeCommitFrame || disposed) return;
+    if (firefoxEdgeCommitFrame || host.isDisposed()) return;
     firefoxEdgeCommitFrame = requestAnimationFrame(() => {
       firefoxEdgeCommitFrame = 0;
       if (
-        disposed ||
+        host.isDisposed() ||
         !hasPendingFirefoxEdgeRelease() ||
         !canSettleUserScroll()
       ) {
@@ -504,20 +539,20 @@ export function createGestureSensor(
   }
 
   function schedulePendingSettleCheck(): void {
-    if (settleFrame || disposed) return;
+    if (settleFrame || host.isDisposed()) return;
     settleFrame = requestAnimationFrame(() => {
       settleFrame = 0;
-      if (disposed) return;
+      if (host.isDisposed()) return;
       maybeFinishUserScroll();
     });
   }
 
   function scheduleSettleCooldown(delayMs = SCROLL_SETTLE_COOLDOWN_MS): void {
     cancelSettleTimer();
-    if (disposed) return;
+    if (host.isDisposed()) return;
     settleTimer = window.setTimeout(() => {
       settleTimer = 0;
-      if (disposed) return;
+      if (host.isDisposed()) return;
       maybeFinishUserScroll();
     }, delayMs);
   }
@@ -546,10 +581,10 @@ export function createGestureSensor(
   }
 
   // Preserve the policy chosen when the native scrollend was observed. In
-  // particular, pinned scroll events and neutral wheel jitter must not turn
-  // a Firefox edge stability wait into the generic short cooldown.
+  // particular, pinned scroll events and neutral wheel jitter must not turn a
+  // Firefox edge stability wait into the generic short cooldown.
   function schedulePendingNativeScrollEnd(): void {
-    if (disposed || !nativeScrollEndPending) return;
+    if (host.isDisposed() || !nativeScrollEndPending) return;
     const delayMs = hasPendingFirefoxEdgeRelease()
       ? Math.max(
           0,
@@ -570,6 +605,16 @@ export function createGestureSensor(
     );
   }
 
+  function hydratePlaceholdersAfterNativeScrollEnd(): void {
+    if (!nativeScrollEndPending) return;
+    // Placeholder hydration swaps mounted DOM just like a layout flush. Keep
+    // it behind the same Firefox stability wait instead of hydrating when
+    // neutral wheel jitter merely goes idle.
+    if (hasPendingFirefoxEdgeRelease()) return;
+    if (!canSettleUserScroll()) return;
+    host.onNativeScrollEndIdle();
+  }
+
   function markPendingWheelScrollEnd(): void {
     setPendingNativeScrollEnd({
       scrollTop: Math.max(
@@ -577,31 +622,34 @@ export function createGestureSensor(
         Math.min(nativeMaxScrollTop(), viewport.scrollTop),
       ),
     });
+    hydratePlaceholdersAfterNativeScrollEnd();
     schedulePendingNativeScrollEnd();
   }
 
   function scheduleWheelScrollEndFallback(): void {
-    if (disposed || !canScheduleWheelScrollEndFallback()) return;
+    if (host.isDisposed() || !canScheduleWheelScrollEndFallback()) return;
     cancelSettleTimer();
     settleTimer = window.setTimeout(() => {
       settleTimer = 0;
-      if (disposed || !canScheduleWheelScrollEndFallback()) return;
+      if (host.isDisposed() || !canScheduleWheelScrollEndFallback()) return;
       markPendingWheelScrollEnd();
     }, SCROLL_SETTLE_COOLDOWN_MS);
   }
 
   // Close the wheel-idle dead-end: when the last wheel of a gesture is judged
-  // neither outward (no edge fallback) nor preceded by an unconsumed
-  // scrollend (no cooldown), nothing else would ever settle the gesture —
-  // chromium fires only one scrollend per scroll sequence, and a trailing
-  // wheel consumed it. Without this, the gesture stays active forever and
-  // deferred boundary loads sit unapplied until the user scrolls again.
+  // neither outward (no edge fallback) nor preceded by an unconsumed scrollend
+  // (no cooldown), nothing else would ever settle the gesture — chromium fires
+  // only one scrollend per scroll sequence, and a trailing wheel consumed it.
+  // Without this, the gesture stays active forever and deferred boundary loads
+  // sit unapplied until the user scrolls again ("stuck" loads). Settling after
+  // the same quiet delay as the edge fallback matches the accepted chromium
+  // contract (see the module header).
   function scheduleChromiumStallFallback(): void {
     cancelChromiumEdgeSettleTimer();
     chromiumEdgeSettleTimer = window.setTimeout(() => {
       chromiumEdgeSettleTimer = 0;
       if (
-        disposed ||
+        host.isDisposed() ||
         !userScrollActive ||
         wheelInputActive ||
         nativeScrollEndPending ||
@@ -619,7 +667,7 @@ export function createGestureSensor(
     chromiumEdgeSettleTimer = window.setTimeout(() => {
       chromiumEdgeSettleTimer = 0;
       if (
-        disposed ||
+        host.isDisposed() ||
         !userScrollActive ||
         wheelInputActive ||
         !chromiumEdgeWheelSuppressed ||
@@ -638,9 +686,9 @@ export function createGestureSensor(
   }
 
   function handleScrollEnd(): void {
-    if (disposed) return;
-    // Ignore scrollends produced while our own glide is still mid-flight.
-    if (hooks.smoothScrollActive?.() === true) return;
+    if (host.isDisposed()) return;
+    const smoothScrollReachedTarget = host.smoothScrollReachedTarget();
+    if (host.isDisposed() || !smoothScrollReachedTarget) return;
 
     if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
       if (!userScrollActive) return;
@@ -654,7 +702,7 @@ export function createGestureSensor(
       ) {
         // This may be the release — or a scrollend that slipped into a
         // momentum-wheel gap mid-hold. Honor it only after the stability
-        // window. Preserve an already-classified edge release even if
+        // window. Preserve an already-classified edge release even if spinner
         // chrome has since grown the native scroll range.
         setPendingNativeScrollEnd({
           scrollTop: Math.max(
@@ -687,43 +735,34 @@ export function createGestureSensor(
       chromiumEdgeWheelActive = null;
       chromiumEdgeWheelIdle = false;
     }
+    hydratePlaceholdersAfterNativeScrollEnd();
     schedulePendingNativeScrollEnd();
   }
 
-  /** Reset the per-gesture state a fresh (or taken-over) phase starts with. */
-  function armFreshGesture(): void {
-    clearPendingNativeScrollEnd();
-    userScrollMoved = false;
-    recordSample();
-    chromiumWheelSawNativeScrollEnd = false;
-    chromiumWheelAwaitingFinalScrollEnd = false;
-    chromiumEdgeWheelSuppressed = false;
-    cancelChromiumEdgeSettleTimer();
-    hooks.onStart?.();
-  }
-
-  // A genuine user input interrupts any in-flight programmatic glide so the
-  // user can actually scroll away, instead of the library re-issuing the
-  // animation and pulling them back.
+  // `isProgrammatic` is set only by the library's own smooth-scroll driver
+  // (scrollToNativeTop). A genuine user scroll (everything else) interrupts any
+  // in-flight programmatic smooth scroll so the user can actually scroll away,
+  // instead of the library re-issuing the animation and pulling them back.
   function handleUserScrollStart(isProgrammatic = false): boolean {
-    if (disposed) return false;
-    const wasActive = userScrollActive;
-    const wasProgrammatic = programmaticScrollActive;
+    if (host.isDisposed()) return false;
     if (!isProgrammatic) {
-      // Flavor FIRST: the cancelled glide's completion callback must
-      // observe the native takeover — a still-programmatic phase would
-      // settle and flush deferred geometry mid-gesture.
-      programmaticScrollActive = false;
-      hooks.cancelSmoothScroll?.();
-      if (disposed) return false;
+      host.cancelActiveSmoothScroll();
+      if (host.isDisposed()) return false;
     }
+    host.onGestureActivity();
+    if (host.isDisposed()) return false;
+    const wasActive = userScrollActive;
     userScrollActive = true;
-    if (!wasActive || (wasProgrammatic && !isProgrammatic)) {
-      // Idle → active, or programmatic → native: either way the native
-      // phase starts fresh — WITHOUT the overall phase going idle, so
-      // nothing settles and nothing flushes across the handoff.
-      armFreshGesture();
-      if (disposed) return false;
+    if (!wasActive) {
+      clearPendingNativeScrollEnd();
+      userScrollMoved = false;
+      resetScrollVelocity();
+      chromiumWheelSawNativeScrollEnd = false;
+      chromiumWheelAwaitingFinalScrollEnd = false;
+      chromiumEdgeWheelSuppressed = false;
+      cancelChromiumEdgeSettleTimer();
+      host.onGestureStarted();
+      if (host.isDisposed()) return false;
     } else if (strategy !== "firefox-wheel" && strategy !== "safari-wheel") {
       cancelPendingUserScrollEnd();
     }
@@ -753,7 +792,7 @@ export function createGestureSensor(
     cancelWheelInputTimer();
     wheelInputTimer = window.setTimeout(() => {
       wheelInputTimer = 0;
-      if (disposed) return;
+      if (host.isDisposed()) return;
       wheelInputActive = false;
       if (outwardBoundary) {
         chromiumEdgeWheelIdle = true;
@@ -767,6 +806,7 @@ export function createGestureSensor(
       } else {
         scheduleChromiumStallFallback();
       }
+      hydratePlaceholdersAfterNativeScrollEnd();
       schedulePendingNativeScrollEnd();
     }, WHEEL_INPUT_IDLE_MS);
   }
@@ -781,10 +821,12 @@ export function createGestureSensor(
     cancelWheelInputTimer();
     wheelInputTimer = window.setTimeout(() => {
       wheelInputTimer = 0;
-      if (disposed) return;
+      if (host.isDisposed()) return;
       wheelInputActive = false;
       if (strategy === "firefox-wheel" && outwardBoundary !== null) {
-        // Firefox contract at an overscrolled edge (see the header).
+        // Firefox contract at an overscrolled edge (see the module header):
+        // skipping placeholder hydration here is deliberate in both branches
+        // — it swaps DOM and flashes just like a layout apply would.
         if (nativeScrollEndPending) {
           // A scrollend already fired and wheels followed it — either
           // trailing momentum-end markers after a real release, or the
@@ -795,11 +837,12 @@ export function createGestureSensor(
         }
         // No scrollend yet: fingers may still be down, and Firefox defers
         // scrollend until the gesture truly ends — wait for it, with no
-        // timer backstop (timer applies mid-hold are unfixable: they flash
-        // and leave a ghost end). A missed scrollend recovers at the next
-        // gesture's settle.
+        // timer backstop (see the module header: timer applies mid-hold are
+        // unfixable, they flash and leave a ghost end). A missed scrollend
+        // recovers at the next gesture's settle.
         return;
       }
+      hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) {
         schedulePendingNativeScrollEnd();
         return;
@@ -809,7 +852,7 @@ export function createGestureSensor(
   }
 
   function handleWheel(event: WheelEvent): void {
-    if (disposed) return;
+    if (host.isDisposed()) return;
     if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
       if (strategy === "firefox-wheel") {
         lastFirefoxWheelInputAt = performance.now();
@@ -818,7 +861,7 @@ export function createGestureSensor(
       if (
         strategy === "firefox-wheel" &&
         outwardBoundary !== null &&
-        canLoadAtBoundary(outwardBoundary)
+        host.canLoadAtBoundary(outwardBoundary)
       ) {
         firefoxProtectedEdge ??= outwardBoundary;
       }
@@ -875,6 +918,9 @@ export function createGestureSensor(
 
     // The client area spans [left + clientLeft, + clientWidth) of the border
     // box; anything outside it horizontally is scrollbar gutter (or border).
+    // Bounding at the client edges — rather than offsetting the combined gutter
+    // width from each border-box edge — keeps borders and the opposite edge's
+    // gutter from widening the zones into the content.
     const rect = viewport.getBoundingClientRect();
     const clientLeftEdge = rect.left + viewport.clientLeft;
     const clientRightEdge = clientLeftEdge + viewport.clientWidth;
@@ -915,26 +961,6 @@ export function createGestureSensor(
     handleUserScrollMaybeEnd();
   }
 
-  /**
-   * Genuinely stop the browser-owned scroll animation: write the clamped
-   * current position, then force an overflow toggle through a reflow —
-   * merely clearing timers would leave APZ momentum alive and its trailing
-   * events would masquerade as a new gesture.
-   */
-  function cancelNativeMomentum(): void {
-    const currentTop = Math.max(
-      0,
-      Math.min(viewport.scrollTop, nativeMaxScrollTop()),
-    );
-    expectWrite(currentTop);
-    viewport.scrollTop = currentTop;
-    const previousOverflowY = viewport.style.overflowY;
-    viewport.style.overflowY = "hidden";
-    void viewport.offsetHeight;
-    viewport.style.overflowY = previousOverflowY;
-    viewport.scrollTop = currentTop;
-  }
-
   viewport.addEventListener("scroll", handleScroll, { passive: true });
   viewport.addEventListener("scrollend", handleScrollEnd, { passive: true });
   viewport.addEventListener("wheel", handleWheel, { passive: true });
@@ -967,30 +993,20 @@ export function createGestureSensor(
   }
 
   return {
-    get active() {
-      return userScrollActive;
+    isUserScrollActive: () => userScrollActive,
+    currentVelocity: currentScrollVelocity,
+    lastSampleDelta: () => lastScrollSampleDelta,
+    resetVelocity: resetScrollVelocity,
+    recordProgrammaticScrollTop,
+    beginProgrammaticGesture: () => handleUserScrollStart(true),
+    markSettlePending: () => {
+      if (host.isDisposed()) return;
+      setPendingNativeScrollEnd();
+      schedulePendingNativeScrollEnd();
     },
-    get programmatic() {
-      return userScrollActive && programmaticScrollActive;
-    },
-    expectWrite,
-    beginProgrammaticScroll(): void {
-      if (disposed || userScrollActive) return;
-      programmaticScrollActive = true;
-      handleUserScrollStart(true);
-    },
-    endProgrammaticScroll(): void {
-      if (disposed || !userScrollActive || !programmaticScrollActive) return;
-      programmaticScrollActive = false;
-      finishUserScroll();
-    },
-    interrupt(): void {
-      if (disposed || !userScrollActive) return;
-      cancelNativeMomentum();
-      finishUserScroll();
-    },
-    dispose(): void {
-      disposed = true;
+    finishGesture: finishUserScroll,
+    cancelGesture: cancelUserScroll,
+    dispose: () => {
       cancelUserScrollTimers();
       viewport.removeEventListener("scroll", handleScroll);
       viewport.removeEventListener("scrollend", handleScrollEnd);

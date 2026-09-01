@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <title>virtual-list · scroll-settle lab</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-panel: #f6f7f9;
+        --fg: #1a1d23;
+        --fg-dim: #8b93a1;
+        --border: #e3e6ea;
+        --accent: #4f6df5;
+        --good: #16a34a;
+        --warn: #d97706;
+        --bad: #dc2626;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181d;
+          --bg-panel: #1d2027;
+          --fg: #d5d9e1;
+          --fg-dim: #737b89;
+          --border: #2a2e37;
+          --accent: #7d92ff;
+          color-scheme: dark;
+        }
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.45 system-ui, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 {
+        font-size: 15px;
+      }
+      header .ua {
+        color: var(--fg-dim);
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      .stage {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+      }
+      #viewport {
+        height: 100%;
+        overflow-y: auto;
+        overscroll-behavior-y: contain;
+      }
+      #rows {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 0 16px;
+      }
+      .row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        border-bottom: 1px solid var(--border);
+        padding: 0 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      .row .idx {
+        color: var(--fg-dim);
+        font-size: 12px;
+        min-width: 52px;
+      }
+      .row .bar {
+        flex: 1;
+        height: 8px;
+        border-radius: 4px;
+        background:
+          linear-gradient(90deg, var(--accent), transparent 80%);
+        opacity: 0.35;
+      }
+      .row.fresh {
+        animation: fresh 0.9s ease-out;
+      }
+      @keyframes fresh {
+        from {
+          background: color-mix(in srgb, var(--accent) 18%, transparent);
+        }
+      }
+      #pill {
+        position: absolute;
+        top: 10px;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: center;
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 0.15s ease;
+      }
+      #pill.visible {
+        opacity: 1;
+      }
+      #pill span {
+        padding: 5px 14px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--bg-panel);
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--fg-dim);
+        box-shadow: 0 4px 14px rgb(0 0 0 / 0.15);
+      }
+      aside {
+        width: 380px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid var(--border);
+        background: var(--bg-panel);
+        min-height: 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        background: var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+      .cell {
+        background: var(--bg-panel);
+        padding: 8px 10px;
+      }
+      .cell b {
+        display: block;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--fg-dim);
+      }
+      .cell .val {
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+      }
+      .cell .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--fg-dim);
+        margin-right: 5px;
+        vertical-align: baseline;
+      }
+      .cell .dot.on {
+        background: var(--good);
+      }
+      .cell .dot.pending {
+        background: var(--warn);
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 10px;
+        border-bottom: 1px solid var(--border);
+        align-items: center;
+      }
+      .controls button,
+      .controls select {
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 10px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--bg);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .controls label {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 12px;
+      }
+      #log {
+        flex: 1;
+        margin: 0;
+        padding: 10px;
+        overflow-y: auto;
+        font: 11px/1.5 ui-monospace, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--fg-dim);
+      }
+      #log .mark {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      #log .good {
+        color: var(--good);
+        font-weight: 700;
+      }
+      #log .warn {
+        color: var(--warn);
+        font-weight: 700;
+      }
+      @media (max-width: 760px) {
+        main {
+          flex-direction: column;
+        }
+        aside {
+          width: 100%;
+          height: 46%;
+          border-left: none;
+          border-top: 1px solid var(--border);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>scroll-settle lab</h1>
+      <span class="ua" id="ua"></span>
+    </header>
+    <main>
+      <div class="stage">
+        <div id="viewport"><div id="rows"></div></div>
+        <div id="pill"><span id="pill-label"></span></div>
+      </div>
+      <aside>
+        <div class="grid">
+          <div class="cell"><b>strategy</b><span class="val" id="s-strategy">–</span></div>
+          <div class="cell">
+            <b>gesture</b>
+            <span><i class="dot" id="s-active"></i><span class="val" id="s-active-t">idle</span></span>
+          </div>
+          <div class="cell"><b>scrolltop</b><span class="val" id="s-top">0</span></div>
+          <div class="cell"><b>gestures</b><span class="val" id="s-gestures">0</span></div>
+          <div class="cell"><b>settles</b><span class="val" id="s-settles">0</span></div>
+          <div class="cell"><b>settle lag</b><span class="val" id="s-lag">–</span></div>
+          <div class="cell"><b>chunks</b><span class="val" id="s-chunks">0</span></div>
+          <div class="cell">
+            <b>queued</b>
+            <span><i class="dot" id="s-queued"></i><span class="val" id="s-queued-t">no</span></span>
+          </div>
+          <div class="cell"><b>post-settle motion</b><span class="val" id="s-premature">0</span></div>
+        </div>
+        <div class="controls">
+          <label
+            ><input type="checkbox" id="auto-load" checked />auto-load at
+            top</label
+          >
+          <button id="queue-now" type="button">queue prepend</button>
+          <button id="append-now" type="button">append</button>
+          <button id="reset" type="button">reset</button>
+          <select id="strategy" title="Force a settle strategy"></select>
+          <button id="copy" type="button">copy trace</button>
+          <button id="clear" type="button">clear log</button>
+        </div>
+        <pre id="log"></pre>
+      </aside>
+    </main>
+    <script type="module" src="./settle-demo.ts"></script>
+  </body>
+</html>
