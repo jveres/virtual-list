@@ -3,12 +3,24 @@ import { FenwickTree } from "../fenwick";
 // The lean core's geometry kernel: keyed items, learned heights, offsets,
 // anchoring, and the pin-to-top reserve — as pure math. No DOM, no
 // scheduling, no side effects; the runtime (step 2) feeds it measurements
-// and applies the scroll deltas it returns. Identity is the key; indexes are
-// derived positions and never survive an update.
+// and applies the single scroll target it resolves. Identity is the key;
+// indexes are derived positions and never survive an update.
+//
+// One logical update is one transaction (I4):
+//
+//   const capture = geometry.capture(viewport, policy);
+//   geometry.setKeys(nextKeys);      // any number of mutations
+//   geometry.measure(key, height);
+//   const commit = geometry.resolve(capture);  // one absolute scroll target
+//
+// Anchor intent is captured on the old geometry; the commit is resolved
+// against the final geometry, so measurements landing inside the
+// transaction are fully reflected (end-follow reaches the *measured* end,
+// never an estimated one — I2).
 //
 // Invariants owned here (see docs/lean-core.md):
-//   I1  the visible anchor's viewport coordinate is preserved across
-//       setKeys/measure (the returned scrollDelta makes it so);
+//   I1  the resolved scroll target keeps the visible anchor's viewport
+//       coordinate stationary;
 //   I5  a pinned key can always be scrolled to the viewport top: the
 //       reserve makes up the shortfall, is consumed by growth and regrown
 //       by shrinkage, and never collapses out from under the viewport.
@@ -21,27 +33,37 @@ export interface GeometryViewport {
 }
 
 export interface Commit {
-  /** Add to scrollTop so the resolved anchor stays stationary. */
-  scrollDelta: number;
+  /** Absolute scroll target — the arbiter performs exactly one write. */
+  scrollTop: number;
   /** Content size plus reserve — the scroll surface height. */
   totalSize: number;
+}
+
+/** Opaque transaction token from `capture`; spend it once in `resolve`. */
+export interface Capture {
+  readonly viewport: GeometryViewport;
+  readonly policy: AnchorPolicy;
+  readonly atEnd: boolean;
+  readonly oldKeys: readonly string[];
+  readonly anchor: { key: string; offset: number; oldIndex: number } | null;
 }
 
 const EPSILON = 0.5;
 
 export class Geometry {
-  private keys: string[] = [];
+  private keys: readonly string[] = [];
   private indexByKey = new Map<string, number>();
   private tree = new FenwickTree(new Float64Array(0));
   /** Learned (measured) heights by identity; estimates fill the rest. */
   private readonly heightByKey = new Map<string, number>();
   private readonly measuredKeys = new Set<string>();
-  private readonly estimate: (key: string) => number;
+  private readonly estimateForKey: (key: string) => number;
   private pinnedKey: string | null = null;
   private reservePx = 0;
 
   constructor(estimate: number | ((key: string) => number)) {
-    this.estimate = typeof estimate === "number" ? () => estimate : estimate;
+    this.estimateForKey =
+      typeof estimate === "number" ? () => estimate : estimate;
   }
 
   get count(): number {
@@ -56,8 +78,17 @@ export class Geometry {
     return this.indexByKey.get(key) ?? -1;
   }
 
+  /** Learned height, or the (validated) estimate for unseen keys. */
   heightOf(key: string): number {
-    return this.heightByKey.get(key) ?? this.estimate(key);
+    const learned = this.heightByKey.get(key);
+    if (learned !== undefined) return learned;
+    const estimate = this.estimateForKey(key);
+    if (!Number.isFinite(estimate) || estimate <= 0) {
+      throw new Error(
+        `estimate for "${key}" must be finite and > 0, got ${estimate}`,
+      );
+    }
+    return estimate;
   }
 
   isMeasured(key: string): boolean {
@@ -82,8 +113,12 @@ export class Geometry {
     return this.contentSize + this.reservePx;
   }
 
-  maxScrollTop(viewport: GeometryViewport): number {
-    return Math.max(0, this.totalSize - viewport.height);
+  get pinned(): string | null {
+    return this.pinnedKey;
+  }
+
+  maxScrollTop(viewportHeight: number): number {
+    return Math.max(0, this.totalSize - viewportHeight);
   }
 
   /** The item owning the viewport top, and how far into it the top sits. */
@@ -113,125 +148,170 @@ export class Geometry {
     return { start, end };
   }
 
-  /**
-   * Replace the item order. The anchor is resolved on the OLD geometry per
-   * `policy`, the tree is rebuilt from learned heights (estimates for unseen
-   * keys), and the returned delta repositions the viewport so that anchor is
-   * stationary — or at the end, for the end policy. A removed anchor falls
-   * back to its nearest surviving neighbor in the old order.
-   */
-  setKeys(
-    nextKeys: readonly string[],
-    viewport: GeometryViewport,
-    policy: AnchorPolicy = "auto",
-  ): Commit {
-    const resolved = this.resolvePolicy(nextKeys, viewport, policy);
-    const anchor =
-      resolved === "viewport" ? this.survivingAnchor(nextKeys, viewport) : null;
+  /** Open a transaction: resolve anchor intent on the current geometry. */
+  capture(viewport: GeometryViewport, policy: AnchorPolicy = "auto"): Capture {
+    const anchor = this.anchorAt(viewport);
+    return {
+      viewport: { ...viewport },
+      policy,
+      atEnd:
+        this.maxScrollTop(viewport.height) - viewport.scrollTop <= 2 * EPSILON,
+      oldKeys: this.keys,
+      anchor:
+        anchor === null
+          ? null
+          : { ...anchor, oldIndex: this.indexByKey.get(anchor.key) as number },
+    };
+  }
 
-    this.keys = [...nextKeys];
-    this.indexByKey = new Map(this.keys.map((key, index) => [key, index]));
-    const sizes = new Float64Array(this.keys.length);
-    for (let index = 0; index < this.keys.length; index++) {
-      sizes[index] = this.heightOf(this.keys[index] as string);
+  /**
+   * Replace the item order. Keys are identity: duplicates are rejected.
+   * Learned heights survive by key; heights of removed keys are dropped; a
+   * removed pin is cleared.
+   */
+  setKeys(nextKeys: readonly string[]): void {
+    const keys = [...nextKeys];
+    const indexByKey = new Map(keys.map((key, index) => [key, index]));
+    if (indexByKey.size !== keys.length) {
+      const seen = new Set<string>();
+      for (const key of keys) {
+        if (seen.has(key)) throw new Error(`duplicate key: "${key}"`);
+        seen.add(key);
+      }
+    }
+    this.keys = keys;
+    this.indexByKey = indexByKey;
+    const sizes = new Float64Array(keys.length);
+    for (let index = 0; index < keys.length; index++) {
+      sizes[index] = this.heightOf(keys[index] as string);
     }
     this.tree = new FenwickTree(sizes);
     for (const key of this.measuredKeys) {
-      if (!this.indexByKey.has(key)) {
+      if (!indexByKey.has(key)) {
         this.measuredKeys.delete(key);
         this.heightByKey.delete(key);
       }
     }
-    if (this.pinnedKey !== null && !this.indexByKey.has(this.pinnedKey)) {
+    if (this.pinnedKey !== null && !indexByKey.has(this.pinnedKey)) {
       this.pinnedKey = null;
     }
-
-    let scrollDelta = 0;
-    if (resolved === "end") {
-      this.recomputeReserve(viewport, viewport.scrollTop);
-      scrollDelta = this.maxScrollTop(viewport) - viewport.scrollTop;
-    } else if (anchor !== null) {
-      // The anchor's viewport coordinate is preserved by definition:
-      // scrollTop' = anchorTop' + offset (for a fallback neighbor, offset 0
-      // places it exactly at the viewport top).
-      const nextScrollTop = this.offsetOf(anchor.key) + anchor.offset;
-      scrollDelta = nextScrollTop - viewport.scrollTop;
-      this.recomputeReserve(viewport, viewport.scrollTop + scrollDelta);
-    } else {
-      this.recomputeReserve(viewport, viewport.scrollTop);
-    }
-    return { scrollDelta, totalSize: this.totalSize };
   }
 
-  /**
-   * Commit a learned height. The delta keeps the current anchor stationary:
-   * changes above the viewport top shift the content the viewport rides on;
-   * changes at or below it do not move the anchor.
-   */
-  measure(key: string, height: number, viewport: GeometryViewport): Commit {
+  /** Commit a learned height. Unknown keys and non-changes are no-ops. */
+  measure(key: string, height: number): void {
     const index = this.indexByKey.get(key);
-    if (
-      index === undefined ||
-      !Number.isFinite(height) ||
-      height <= 0 ||
-      Math.abs(height - this.heightOf(key)) <= EPSILON
-    ) {
-      return { scrollDelta: 0, totalSize: this.totalSize };
+    if (index === undefined || !Number.isFinite(height) || height <= 0) return;
+    const delta = height - this.heightOf(key);
+    if (Math.abs(delta) <= EPSILON) {
+      this.measuredKeys.add(key);
+      return;
     }
-    const oldHeight = this.heightOf(key);
-    const delta = height - oldHeight;
     this.heightByKey.set(key, height);
     this.measuredKeys.add(key);
     this.tree.add(index, delta);
-
-    // prefix(index) excludes the item's own height, so the top is stable.
-    const itemTop = this.tree.prefix(index);
-    const offsetIntoItem = viewport.scrollTop - itemTop;
-    let scrollDelta = 0;
-    if (offsetIntoItem >= oldHeight) {
-      // Fully above the viewport top: the whole change shifts the anchor.
-      scrollDelta = delta;
-    } else if (offsetIntoItem > 0) {
-      // The viewport top sits inside the item: it stays at the same offset
-      // into it, clamped to the new extent (a shrink cannot push the
-      // viewport above the item's own bounds).
-      scrollDelta = Math.min(0, height - offsetIntoItem);
-    }
-    this.recomputeReserve(viewport, viewport.scrollTop + scrollDelta);
-    return { scrollDelta, totalSize: this.totalSize };
   }
 
   /**
-   * Pin a key: reserve enough trailing space that the key's top can sit at
-   * the viewport top (the chat send flow). `null` releases the pin; the
-   * remaining reserve then drains only when it is out of view (I5).
+   * Pin a key: reserve enough trailing space that its top can sit at the
+   * viewport top (the chat send flow). `null` releases the pin; remaining
+   * reserve then drains only once the viewport no longer stands on it (I5).
    */
-  pin(key: string | null, viewport: GeometryViewport): Commit {
+  pin(key: string | null): void {
     this.pinnedKey = key !== null && this.indexByKey.has(key) ? key : null;
-    this.recomputeReserve(viewport, viewport.scrollTop);
-    return { scrollDelta: 0, totalSize: this.totalSize };
   }
 
-  get pinned(): string | null {
-    return this.pinnedKey;
+  /**
+   * Close the transaction: one absolute scroll target against the final
+   * geometry.
+   * - end mode (explicit, or auto while at the end when the old keys are an
+   *   unchanged prefix of the new — appends and same-key streaming updates):
+   *   the measured end, including the recomputed reserve.
+   * - anchor mode: the captured anchor's viewport coordinate is preserved.
+   *   A removed anchor falls to its first surviving successor (inheriting
+   *   the in-row offset — the content was replaced, the reading position
+   *   was not), else to the predecessor end-aligned.
+   * - none: the captured scrollTop, clamped.
+   */
+  resolve(capture: Capture): Commit {
+    const { viewport } = capture;
+    const mode = this.resolveMode(capture);
+
+    if (mode === "end") {
+      this.recomputeReserve(viewport.height, viewport.scrollTop);
+      return {
+        scrollTop: this.maxScrollTop(viewport.height),
+        totalSize: this.totalSize,
+      };
+    }
+
+    let target = viewport.scrollTop;
+    if (mode === "anchor" && capture.anchor !== null) {
+      target = this.anchorTarget(capture) ?? viewport.scrollTop;
+    }
+    this.recomputeReserve(viewport.height, target);
+    return {
+      scrollTop: Math.max(
+        0,
+        Math.min(target, this.maxScrollTop(viewport.height)),
+      ),
+      totalSize: this.totalSize,
+    };
   }
 
-  /** Re-evaluate the reserve after a viewport resize. */
-  refresh(viewport: GeometryViewport): Commit {
-    this.recomputeReserve(viewport, viewport.scrollTop);
-    return { scrollDelta: 0, totalSize: this.totalSize };
+  private resolveMode(capture: Capture): "end" | "anchor" | "none" {
+    if (capture.policy === "end") return "end";
+    if (capture.policy === "none") return "none";
+    if (capture.policy === "viewport") return "anchor";
+    // auto: follow the end only for end-compatible updates — the old keys
+    // are an unchanged prefix of the new (pure appends, or the identical
+    // list carrying streaming measurements). Prepends, reorders, and
+    // replacements preserve the viewport even at the end.
+    if (!capture.atEnd) return "anchor";
+    const oldKeys = capture.oldKeys;
+    const endCompatible =
+      this.keys.length >= oldKeys.length &&
+      oldKeys.every((key, index) => this.keys[index] === key);
+    return endCompatible ? "end" : "anchor";
+  }
+
+  private anchorTarget(capture: Capture): number | null {
+    const anchor = capture.anchor;
+    if (anchor === null) return null;
+
+    if (this.indexByKey.has(anchor.key)) {
+      // Clamp the in-row offset to the (possibly shrunken) current extent: a
+      // shrink cannot push the viewport above the item's own bounds.
+      const offset = Math.min(anchor.offset, this.heightOf(anchor.key));
+      return this.offsetOf(anchor.key) + offset;
+    }
+    // First surviving successor, inheriting the removed anchor's in-row
+    // offset: the content under the viewport was replaced; the position
+    // should feel like replacement, not backwards navigation.
+    for (let i = anchor.oldIndex + 1; i < capture.oldKeys.length; i++) {
+      const key = capture.oldKeys[i];
+      if (key !== undefined && this.indexByKey.has(key)) {
+        const offset = Math.min(anchor.offset, this.heightOf(key));
+        return this.offsetOf(key) + offset;
+      }
+    }
+    // No successor: predecessor, end-aligned (its bottom at the viewport
+    // top would show removed space; align the viewport top to its bottom).
+    for (let i = anchor.oldIndex - 1; i >= 0; i--) {
+      const key = capture.oldKeys[i];
+      if (key !== undefined && this.indexByKey.has(key)) {
+        return this.offsetOf(key) + this.heightOf(key);
+      }
+    }
+    return null;
   }
 
   // The reserve rules, distilled from the tail-gap lessons:
   // - target: the pinned key's shortfall (0 when unpinned);
   // - floor: never let the total collapse out from under the viewport in
   //   one commit — existing reserve covering the viewport is kept until it
-  //   is out of view (drains via target once the viewport no longer needs
-  //   it), so transient growth cannot destroy it and shrinkage regrows it.
-  private recomputeReserve(
-    viewport: GeometryViewport,
-    nextScrollTop: number,
-  ): void {
+  //   is out of view, so transient growth cannot destroy it and shrinkage
+  //   regrows it.
+  private recomputeReserve(viewportHeight: number, scrollTop: number): void {
     const content = this.contentSize;
     let target = 0;
     if (this.pinnedKey !== null) {
@@ -240,59 +320,14 @@ export class Geometry {
         // Anchoring the very start needs no reserve; drop the stale pin.
         this.pinnedKey = null;
       } else {
-        target = Math.max(0, pinnedTop + viewport.height - content);
+        target = Math.max(0, pinnedTop + viewportHeight - content);
       }
     }
     const viewportNeeds = Math.max(
       0,
-      Math.max(0, nextScrollTop) + viewport.height - content,
+      Math.max(0, scrollTop) + viewportHeight - content,
     );
     const floor = Math.min(this.reservePx, viewportNeeds);
     this.reservePx = Math.max(target, floor);
-  }
-
-  private resolvePolicy(
-    nextKeys: readonly string[],
-    viewport: GeometryViewport,
-    policy: AnchorPolicy,
-  ): "viewport" | "end" | "none" {
-    if (policy !== "auto") return policy;
-    if (this.keys.length === 0) return "end";
-    const atEnd =
-      this.maxScrollTop(viewport) - viewport.scrollTop <= 2 * EPSILON;
-    if (!atEnd) return "viewport";
-    // At the end, appends follow; anything else preserves the viewport.
-    const lastKey = this.keys[this.keys.length - 1] as string;
-    const lastNext = nextKeys.length === 0 ? undefined : nextKeys[0];
-    const appended =
-      nextKeys.length >= this.keys.length &&
-      nextKeys.length > 0 &&
-      lastNext !== undefined &&
-      nextKeys.includes(lastKey);
-    return appended ? "end" : "viewport";
-  }
-
-  private survivingAnchor(
-    nextKeys: readonly string[],
-    viewport: GeometryViewport,
-  ): { key: string; offset: number } | null {
-    const anchor = this.anchorAt(viewport);
-    if (anchor === null) return null;
-    const next = new Set(nextKeys);
-    if (next.has(anchor.key)) return anchor;
-    // Nearest surviving neighbor in the old order, preferring earlier items
-    // (they keep the reading position above the removal).
-    const from = this.indexByKey.get(anchor.key) ?? 0;
-    for (let distance = 1; distance < this.keys.length; distance++) {
-      const before = this.keys[from - distance];
-      if (before !== undefined && next.has(before)) {
-        return { key: before, offset: 0 };
-      }
-      const after = this.keys[from + distance];
-      if (after !== undefined && next.has(after)) {
-        return { key: after, offset: 0 };
-      }
-    }
-    return null;
   }
 }

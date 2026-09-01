@@ -12,9 +12,11 @@ not a hope.
    viewport top, reserving scrollable space below until real content consumes
    it — works very well today and is a first-class contract item, not an
    adapter afterthought.
-2. **Clean cut.** No compatibility wrapper, no incremental hollowing of the
-   old orchestrator. New runtime lives in `src/lean/` beside the old one
-   until the demos migrate; then the old runtime is deleted.
+2. **Clean cut.** No compatibility wrapper, no porting scaffold. The old
+   runtime, its tests, and every demo except streaming chat were deleted in
+   this branch's first commit; `main` is the behavioral baseline for
+   comparison. The streaming demo stays in-tree as the acceptance target
+   (excluded from typecheck until the lean runtime can host it).
 3. **Rewrite, don't port.** The two proven assets — Fenwick-based layout and
    the adaptive browser gesture handling — are preserved as *behavior*:
    re-derived from scratch against a written quirk list and the ported unit
@@ -37,7 +39,7 @@ I5. Pin-to-top: `scrollTo(key, { align: "start" })` on a tail item reserves
     growth and regrown by shrinkage symmetrically; it is never destroyed by
     a transient change and never collapses out from under the viewport
     (the tail-gap lessons, as invariants).
-6.  A discrete in-row height change (a toggled disclosure) commits in the
+I6. A discrete in-row height change (a toggled disclosure) commits in the
     same painted frame as the change — no one-frame tear.
 
 Performance floor: O(log n) offsets, bounded mounted DOM, no layout reads in
@@ -49,9 +51,9 @@ variable-height benchmark.
 ```ts
 const list = createVirtualList(viewport, {
   items,                       // owned keyed snapshot
-  key: (item) => string,
+  key: (item) => string,       // unique per item — duplicates are rejected
   render: (item, existing?) => HTMLElement,
-  estimateSize?: number | ((item) => number),
+  estimateSize?: number | ((item) => number),   // finite and > 0 — enforced
   onState?, onReachStart?, onReachEnd?,
 });
 
@@ -61,9 +63,19 @@ list.state;                   // read-only snapshot
 list.dispose();
 ```
 
-`anchor: "auto"`: prepend → preserve first visible key; append at end →
-stay at end; append elsewhere → preserve viewport; changed row → preserve
-anchor; removed anchor → nearest surviving key.
+Internally, one logical update is one geometry transaction (I4): anchor
+intent is captured on the old geometry (`capture`), mutations apply
+(`setKeys`/`measure`/`pin`), and `resolve` returns one absolute scroll
+target computed against the final geometry — so end-follow always reaches
+the measured end, never an estimated one (I2).
+
+`anchor: "auto"` follows the end only for end-compatible updates while at
+the end — the old keys are an unchanged prefix of the new (pure appends, or
+the identical list carrying streaming measurements). Prepends, reorders,
+and replacements preserve the viewport even at the end. A removed anchor
+falls to its first surviving successor, inheriting the in-row offset
+(replacement, not backwards navigation); with no successor, the predecessor
+end-aligned.
 
 Identity is the key; indexes are derived positions. Heights live in one
 internal cache keyed by identity: estimates for unseen keys, learned
@@ -95,11 +107,12 @@ user gesture > explicit command > end-anchor > position-anchor.
 
 ## Execution order
 
-1. Strip all unused code from the old runtime on this branch (demos stay
-   green — they are the oracle).
+1. Clean slate: delete the old runtime, its tests, and every demo except
+   streaming chat. Done in this branch's first commit; `main` is the
+   comparison baseline.
 2. `src/lean/` step 1: keyed geometry kernel (pure, no DOM) + invariant
    property tests. **Review checkpoint.**
 3. Commit pipeline + scroll arbiter + gesture sensor.
-4. Chat mode (end-follow, pin-to-top reserve, edge overlays); port the
-   streaming demo behind a flag; gauntlet.
-5. Remaining demos; delete the old runtime and its tests.
+4. Chat mode (end-follow, pin-to-top reserve, edge overlays); host the
+   streaming demo on the lean runtime; gauntlet against `main`.
+5. Re-introduce further demos only as lean-core features earn them.

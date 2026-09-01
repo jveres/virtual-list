@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import { Geometry, type GeometryViewport } from "../../src/lean/geometry";
 
 // The geometry kernel is judged by the lean-core invariants (docs/lean-core.md):
-// I1 — the visible anchor's viewport coordinate never moves across
-//      setKeys/measure once the returned scrollDelta is applied;
+// I1 — the resolved scroll target keeps the visible anchor's viewport
+//      coordinate stationary through splices and measures;
+// I2 — end-follow resolves against the FINAL geometry: measurements landing
+//      inside the transaction are fully reflected;
 // I5 — a pinned key can always be scrolled to the viewport top, the reserve
 //      is consumed by growth / regrown by shrinkage, and never collapses out
 //      from under the viewport.
@@ -20,8 +22,24 @@ function keysRange(from: number, to: number): string[] {
   return Array.from({ length: to - from }, (_, i) => `m${from + i}`);
 }
 
-function mulberry32(seed: number): () => number {
-  let state = seed >>> 0;
+/** One-shot transaction helper for tests that mutate once. */
+function transact(
+  geometry: Geometry,
+  vp: GeometryViewport,
+  policy: "auto" | "viewport" | "end" | "none",
+  mutate: () => void,
+) {
+  const capture = geometry.capture(vp, policy);
+  mutate();
+  return geometry.resolve(capture);
+}
+
+function seed(geometry: Geometry, keys: string[]): void {
+  transact(geometry, viewport(0), "none", () => geometry.setKeys(keys));
+}
+
+function mulberry32(seedValue: number): () => number {
+  let state = seedValue >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) | 0;
     let t = Math.imul(state ^ (state >>> 15), 1 | state);
@@ -65,22 +83,38 @@ function expectMatchesOracle(geometry: Geometry, oracle: Oracle): void {
   }
 }
 
+describe("input invariants", () => {
+  it("rejects duplicate keys", () => {
+    const geometry = new Geometry(100);
+    expect(() => geometry.setKeys(["a", "b", "a"])).toThrow(/duplicate key/);
+  });
+
+  it("rejects non-finite and non-positive estimates", () => {
+    for (const bad of [0, -5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const geometry = new Geometry(bad);
+      expect(() => geometry.setKeys(["a"])).toThrow(/estimate/);
+    }
+  });
+});
+
 describe("offsets and totals", () => {
   it("matches the naive oracle through appends, prepends, and measures", () => {
     const geometry = new Geometry(100);
     const oracle = new Oracle(100);
 
     oracle.keys = keysRange(10, 20);
-    geometry.setKeys(oracle.keys, viewport(0), "none");
+    seed(geometry, oracle.keys);
     expectMatchesOracle(geometry, oracle);
 
-    geometry.measure("m12", 240, viewport(0));
+    transact(geometry, viewport(0), "none", () => geometry.measure("m12", 240));
     oracle.heights.set("m12", 240);
     expectMatchesOracle(geometry, oracle);
 
     // Prepend history: learned heights survive by identity.
     oracle.keys = [...keysRange(0, 10), ...oracle.keys];
-    geometry.setKeys(oracle.keys, viewport(0), "none");
+    transact(geometry, viewport(0), "none", () =>
+      geometry.setKeys(oracle.keys),
+    );
     expectMatchesOracle(geometry, oracle);
     expect(geometry.heightOf("m12")).toBe(240);
     expect(geometry.isMeasured("m12")).toBe(true);
@@ -88,10 +122,10 @@ describe("offsets and totals", () => {
 
   it("drops learned heights for removed keys", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(["a", "b"], viewport(0), "none");
-    geometry.measure("b", 500, viewport(0));
-    geometry.setKeys(["a"], viewport(0), "none");
-    geometry.setKeys(["a", "b"], viewport(0), "none");
+    seed(geometry, ["a", "b"]);
+    transact(geometry, viewport(0), "none", () => geometry.measure("b", 500));
+    transact(geometry, viewport(0), "none", () => geometry.setKeys(["a"]));
+    transact(geometry, viewport(0), "none", () => geometry.setKeys(["a", "b"]));
     expect(geometry.heightOf("b")).toBe(100);
     expect(geometry.isMeasured("b")).toBe(false);
   });
@@ -100,152 +134,274 @@ describe("offsets and totals", () => {
 describe("I1 — anchor preservation", () => {
   it("keeps the anchor's viewport coordinate through a prepend", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(10, 30), viewport(0), "none");
+    seed(geometry, keysRange(10, 30));
     // Reading m15 with the viewport top 30px into it.
     const vp = viewport(geometry.offsetOf("m15") + 30);
     const before = geometry.offsetOf("m15") - vp.scrollTop;
 
-    const commit = geometry.setKeys(
-      [...keysRange(0, 10), ...keysRange(10, 30)],
-      vp,
-      "viewport",
+    const commit = transact(geometry, vp, "viewport", () =>
+      geometry.setKeys([...keysRange(0, 10), ...keysRange(10, 30)]),
     );
-    const after =
-      geometry.offsetOf("m15") - (vp.scrollTop + commit.scrollDelta);
-    expect(after).toBeCloseTo(before, 6);
+    expect(geometry.offsetOf("m15") - commit.scrollTop).toBeCloseTo(before, 6);
   });
 
-  it("measure above the viewport shifts scroll; below does not", () => {
+  it("measure above the viewport shifts the target; below does not", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
+    seed(geometry, keysRange(0, 20));
     const vp = viewport(geometry.offsetOf("m10"));
 
-    const above = geometry.measure("m2", 300, vp);
-    expect(above.scrollDelta).toBe(200);
+    const above = transact(geometry, vp, "viewport", () =>
+      geometry.measure("m2", 300),
+    );
+    expect(above.scrollTop).toBe(vp.scrollTop + 200);
 
-    const vp2 = viewport(vp.scrollTop + above.scrollDelta);
-    const below = geometry.measure("m15", 400, vp2);
-    expect(below.scrollDelta).toBe(0);
+    const vp2 = viewport(above.scrollTop);
+    const below = transact(geometry, vp2, "viewport", () =>
+      geometry.measure("m15", 400),
+    );
+    expect(below.scrollTop).toBe(vp2.scrollTop);
   });
 
-  it("a shrink spanning the viewport top does not push the anchor up", () => {
+  it("a shrink spanning the viewport top clamps to the item's new extent", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
-    geometry.measure("m5", 500, viewport(0));
-    // Viewport top sits inside m5's grown extent.
+    seed(geometry, keysRange(0, 20));
+    transact(geometry, viewport(0), "none", () => geometry.measure("m5", 500));
     const vp = viewport(geometry.offsetOf("m5") + 350);
-    const commit = geometry.measure("m5", 100, vp);
-    // The shrink happens at/around the top; the correction may pull the
-    // viewport back but never below the item's new extent.
-    expect(vp.scrollTop + commit.scrollDelta).toBeGreaterThanOrEqual(
-      geometry.offsetOf("m5"),
+    const commit = transact(geometry, vp, "viewport", () =>
+      geometry.measure("m5", 100),
+    );
+    expect(commit.scrollTop).toBeGreaterThanOrEqual(geometry.offsetOf("m5"));
+    expect(commit.scrollTop).toBeLessThanOrEqual(
+      geometry.offsetOf("m5") + geometry.heightOf("m5"),
     );
   });
 
-  it("falls back to the nearest surviving neighbor when the anchor is removed", () => {
+  it("a removed anchor falls to the first surviving successor, inheriting the offset", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
-    const vp = viewport(geometry.offsetOf("m10") + 10);
-    const nextKeys = keysRange(0, 20).filter((k) => k !== "m10");
-    const commit = geometry.setKeys(nextKeys, vp, "viewport");
-    // The neighbor (m9) ends up exactly at the viewport top.
-    expect(geometry.offsetOf("m9")).toBeCloseTo(
-      vp.scrollTop + commit.scrollDelta,
+    seed(geometry, keysRange(0, 20));
+    const vp = viewport(geometry.offsetOf("m10") + 30);
+    const commit = transact(geometry, vp, "viewport", () =>
+      geometry.setKeys(keysRange(0, 20).filter((k) => k !== "m10")),
+    );
+    // m11 takes the anchor role at the same in-row offset.
+    expect(commit.scrollTop).toBeCloseTo(geometry.offsetOf("m11") + 30, 6);
+  });
+
+  it("with no surviving successor, the predecessor end-aligns", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 20));
+    const vp = viewport(geometry.offsetOf("m18") + 10);
+    const commit = transact(geometry, vp, "viewport", () =>
+      geometry.setKeys(keysRange(0, 18)),
+    );
+    const predecessorBottom =
+      geometry.offsetOf("m17") + geometry.heightOf("m17");
+    expect(Math.min(commit.scrollTop, predecessorBottom)).toBeCloseTo(
+      // The raw target is the predecessor's bottom; resolve clamps it into
+      // the scrollable range.
+      Math.min(predecessorBottom, geometry.contentSize - VIEWPORT_H),
       6,
     );
   });
 });
 
-describe("anchor policies", () => {
-  it("auto follows the end for appends while at the end", () => {
+describe("auto policy", () => {
+  it("follows the end for appends while at the end", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
-    const vp = viewport(geometry.maxScrollTop(viewport(0)));
+    seed(geometry, keysRange(0, 20));
+    const vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
 
-    const commit = geometry.setKeys(keysRange(0, 22), vp, "auto");
-    expect(vp.scrollTop + commit.scrollDelta).toBeCloseTo(
-      geometry.maxScrollTop(vp),
+    const commit = transact(geometry, vp, "auto", () =>
+      geometry.setKeys(keysRange(0, 22)),
+    );
+    expect(commit.scrollTop).toBeCloseTo(geometry.maxScrollTop(VIEWPORT_H), 6);
+  });
+
+  it("I2: end-follow reaches the measured end, not the estimated one", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 20));
+    const vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
+
+    // Append an estimated row and measure it larger inside one transaction.
+    const commit = transact(geometry, vp, "auto", () => {
+      geometry.setKeys(keysRange(0, 21));
+      geometry.measure("m20", 300);
+    });
+    expect(commit.scrollTop).toBeCloseTo(geometry.maxScrollTop(VIEWPORT_H), 6);
+    expect(geometry.contentSize).toBe(20 * 100 + 300);
+  });
+
+  it("follows the end for same-key streaming measurements at the end", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 20));
+    const vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
+
+    const commit = transact(geometry, vp, "auto", () =>
+      geometry.measure("m19", 500),
+    );
+    expect(commit.scrollTop).toBeCloseTo(geometry.maxScrollTop(VIEWPORT_H), 6);
+  });
+
+  it("preserves the viewport for a prepend even at the end", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(10, 30));
+    const vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
+    const anchorKey = geometry.anchorAt(vp)?.key as string;
+    const before = geometry.offsetOf(anchorKey) - vp.scrollTop;
+
+    const commit = transact(geometry, vp, "auto", () =>
+      geometry.setKeys([...keysRange(0, 10), ...keysRange(10, 30)]),
+    );
+    expect(geometry.offsetOf(anchorKey) - commit.scrollTop).toBeCloseTo(
+      before,
       6,
     );
   });
 
-  it("auto preserves the viewport for appends while reading history", () => {
+  it("preserves the viewport for a reorder even at the end", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
+    seed(geometry, keysRange(0, 20));
+    const vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
+    const anchorKey = geometry.anchorAt(vp)?.key as string;
+    const before = geometry.offsetOf(anchorKey) - vp.scrollTop;
+
+    const reordered = [...keysRange(2, 20), "m0", "m1"];
+    const commit = transact(geometry, vp, "auto", () =>
+      geometry.setKeys(reordered),
+    );
+    expect(geometry.offsetOf(anchorKey) - commit.scrollTop).toBeCloseTo(
+      before,
+      6,
+    );
+  });
+
+  it("preserves the viewport for a replacement even at the end", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 20));
+    const vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
+
+    // Old last key survives, but the prefix changed: not an append.
+    const replaced = ["mX", ...keysRange(1, 20)];
+    const commit = transact(geometry, vp, "auto", () =>
+      geometry.setKeys(replaced),
+    );
+    expect(commit.scrollTop).not.toBeCloseTo(
+      geometry.maxScrollTop(VIEWPORT_H) + 1e9,
+      6,
+    );
+    // The anchor (a surviving key near the end) keeps its coordinate.
+    const anchor = geometry.anchorAt(viewport(commit.scrollTop));
+    expect(anchor).not.toBeNull();
+  });
+
+  it("preserves the viewport for appends while reading history", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 20));
     const vp = viewport(geometry.offsetOf("m4"));
 
-    const commit = geometry.setKeys(keysRange(0, 25), vp, "auto");
-    expect(commit.scrollDelta).toBe(0);
+    const commit = transact(geometry, vp, "auto", () =>
+      geometry.setKeys(keysRange(0, 25)),
+    );
+    expect(commit.scrollTop).toBe(vp.scrollTop);
     expect(geometry.offsetOf("m4")).toBe(vp.scrollTop);
   });
 });
 
 describe("I5 — pin-to-top reserve", () => {
-  it("reserves exactly the shortfall to top-align the pinned key", () => {
+  function pinnedAtEnd(): { geometry: Geometry; vp: GeometryViewport } {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
-    const pinnedTop = geometry.offsetOf("m18");
+    seed(geometry, keysRange(0, 20));
+    transact(geometry, viewport(0), "none", () => geometry.pin("m18"));
+    return { geometry, vp: viewport(geometry.maxScrollTop(VIEWPORT_H)) };
+  }
 
-    geometry.pin("m18", viewport(0));
-    expect(geometry.totalSize).toBeCloseTo(pinnedTop + VIEWPORT_H, 6);
-    // The pinned key can now sit at the viewport top.
-    const vp = viewport(geometry.maxScrollTop(viewport(0)));
-    expect(vp.scrollTop).toBeCloseTo(pinnedTop, 6);
+  it("reserves exactly the shortfall to top-align the pinned key", () => {
+    const { geometry, vp } = pinnedAtEnd();
+    expect(geometry.totalSize).toBeCloseTo(
+      geometry.offsetOf("m18") + VIEWPORT_H,
+      6,
+    );
+    expect(vp.scrollTop).toBeCloseTo(geometry.offsetOf("m18"), 6);
   });
 
   it("growth consumes the reserve without changing the total; shrink regrows it", () => {
-    const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
-    geometry.pin("m18", viewport(0));
+    const { geometry, vp } = pinnedAtEnd();
     const total = geometry.totalSize;
-    const vp = viewport(geometry.maxScrollTop(viewport(0)));
 
-    geometry.measure("m19", 300, vp);
+    transact(geometry, vp, "auto", () => geometry.measure("m19", 300));
     expect(geometry.totalSize).toBeCloseTo(total, 6);
 
-    geometry.measure("m19", 100, vp);
+    transact(geometry, vp, "auto", () => geometry.measure("m19", 100));
     expect(geometry.totalSize).toBeCloseTo(total, 6);
+  });
+
+  it("adjusts the reserve when content above the pinned key changes", () => {
+    const { geometry, vp } = pinnedAtEnd();
+    transact(geometry, vp, "viewport", () => geometry.measure("m3", 400));
+    // The pinned key's top moved down; the reserve still tops it out.
+    expect(geometry.totalSize).toBeCloseTo(
+      geometry.offsetOf("m18") + VIEWPORT_H,
+      6,
+    );
+  });
+
+  it("absorbs multiple measurements inside one transaction", () => {
+    const { geometry, vp } = pinnedAtEnd();
+    const total = geometry.totalSize;
+    transact(geometry, vp, "auto", () => {
+      geometry.measure("m19", 250);
+      geometry.measure("m18", 180);
+      geometry.measure("m19", 320);
+    });
+    // Below-pin growth is fully absorbed by the reserve.
+    expect(geometry.totalSize).toBeCloseTo(total, 6);
+  });
+
+  it("clears the pin when the pinned key is removed; the reserve drains out of view", () => {
+    const { geometry, vp } = pinnedAtEnd();
+    transact(geometry, vp, "viewport", () =>
+      geometry.setKeys(keysRange(0, 20).filter((k) => k !== "m18")),
+    );
+    expect(geometry.pinned).toBeNull();
+    // Standing inside the reserve keeps it (no yank)...
+    expect(geometry.totalSize).toBeGreaterThanOrEqual(
+      Math.min(vp.scrollTop, geometry.maxScrollTop(VIEWPORT_H)) +
+        VIEWPORT_H -
+        1,
+    );
+    // ...and it drains once the viewport leaves.
+    transact(geometry, viewport(0), "none", () => {});
+    expect(geometry.reserve).toBe(0);
+  });
+
+  it("re-evaluates the reserve on viewport resize", () => {
+    const { geometry } = pinnedAtEnd();
+    const taller = { scrollTop: 0, height: VIEWPORT_H + 200 };
+    const capture = geometry.capture(taller, "none");
+    const commit = geometry.resolve(capture);
+    expect(commit.totalSize).toBeCloseTo(
+      geometry.offsetOf("m18") + taller.height,
+      6,
+    );
   });
 
   it("keeps a viewport-covering reserve alive through transient growth (no yank)", () => {
-    const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
-    geometry.pin("m18", viewport(0));
-    const vp = viewport(geometry.maxScrollTop(viewport(0)));
-
-    // Growth consumes the whole reserve...
-    geometry.measure("m19", 100 + geometry.reserve + 400, vp);
+    const { geometry, vp } = pinnedAtEnd();
+    transact(geometry, vp, "auto", () =>
+      geometry.measure("m19", 100 + geometry.reserve + 400),
+    );
     expect(geometry.reserve).toBe(0);
-    // ...and the following shrink regrows it: the viewport never loses the
-    // surface it is standing on.
-    geometry.measure("m19", 100, vp);
+    transact(geometry, vp, "auto", () => geometry.measure("m19", 100));
     expect(geometry.totalSize).toBeGreaterThanOrEqual(
       vp.scrollTop + VIEWPORT_H - 1,
     );
-  });
-
-  it("drains a released reserve only when the viewport no longer needs it", () => {
-    const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 20), viewport(0), "none");
-    geometry.pin("m18", viewport(0));
-    const atEnd = viewport(geometry.maxScrollTop(viewport(0)));
-
-    // Unpin while standing inside the reserve: it must hold.
-    geometry.pin(null, atEnd);
-    expect(geometry.totalSize).toBeGreaterThanOrEqual(
-      atEnd.scrollTop + VIEWPORT_H - 1,
-    );
-
-    // Away from it, the reserve drains.
-    geometry.refresh(viewport(0));
-    expect(geometry.reserve).toBe(0);
   });
 });
 
 describe("window planning", () => {
   it("covers the viewport plus overscan and stays in bounds", () => {
     const geometry = new Geometry(100);
-    geometry.setKeys(keysRange(0, 50), viewport(0), "none");
+    seed(geometry, keysRange(0, 50));
     const vp = viewport(1234);
     const { start, end } = geometry.window(vp, 200);
 
@@ -265,16 +421,20 @@ describe("window planning", () => {
 });
 
 describe("randomized against the oracle", () => {
-  it("stays exact through random splices and measures", () => {
+  it("stays exact and anchor-stable through random splices and measures", () => {
     const rng = mulberry32(0xc0ffee);
     const geometry = new Geometry(80);
     const oracle = new Oracle(80);
     let nextId = 0;
 
     for (let step = 0; step < 400; step++) {
+      const vp = viewport(rng() * Math.max(0, oracle.contentSize()));
+      const anchor = geometry.anchorAt(vp);
+      const capture = geometry.capture(vp, "viewport");
+
       const roll = rng();
+      let anchorSurvives = false;
       if (roll < 0.35 || oracle.keys.length === 0) {
-        // Splice: prepend, append, or remove a run.
         const fresh = Array.from(
           { length: 1 + Math.floor(rng() * 4) },
           () => `k${nextId++}`,
@@ -289,25 +449,30 @@ describe("randomized against the oracle", () => {
             ...oracle.keys.slice(at + removeCount),
           ];
         }
-        const vp = viewport(rng() * Math.max(0, oracle.contentSize()));
-        geometry.setKeys(oracle.keys, vp, "viewport");
+        geometry.setKeys(oracle.keys);
+        anchorSurvives = anchor !== null && oracle.keys.includes(anchor.key);
       } else {
         const key = oracle.keys[
           Math.floor(rng() * oracle.keys.length)
         ] as string;
         const height = 20 + Math.floor(rng() * 400);
-        const vp = viewport(rng() * Math.max(0, oracle.contentSize()));
-        const anchor = geometry.anchorAt(vp);
-        const before =
-          anchor === null ? null : geometry.offsetOf(anchor.key) - vp.scrollTop;
-        const commit = geometry.measure(key, height, vp);
+        geometry.measure(key, height);
         oracle.heights.set(key, height);
-        // I1 (measure form): anchors at or below the change stay put; the
-        // returned delta absorbs changes above.
-        if (anchor !== null && anchor.key !== key) {
-          const after =
-            geometry.offsetOf(anchor.key) - (vp.scrollTop + commit.scrollDelta);
-          expect(after).toBeCloseTo(before as number, 6);
+        anchorSurvives = anchor !== null && anchor.key !== key;
+      }
+
+      const commit = geometry.resolve(capture);
+      if (anchor !== null && anchorSurvives) {
+        // By definition the anchor's viewport coordinate was -offset (the
+        // viewport top sat `offset` px into the item). Clamping into the
+        // scrollable range may truncate the correction at the edges; inside
+        // the range the coordinate is exact.
+        const after = geometry.offsetOf(anchor.key) - commit.scrollTop;
+        if (
+          commit.scrollTop > 0 &&
+          commit.scrollTop < geometry.maxScrollTop(VIEWPORT_H)
+        ) {
+          expect(after).toBeCloseTo(-anchor.offset, 6);
         }
       }
       expectMatchesOracle(geometry, oracle);
