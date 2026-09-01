@@ -114,8 +114,8 @@ user gesture > explicit command > end-anchor > position-anchor.
 1. Clean slate: delete the old runtime, its tests, and every demo except
    streaming chat. Done in this branch's first commit; `main` is the
    comparison baseline.
-2. `src/lean/` step 1: keyed geometry kernel (pure, no DOM) + invariant
-   property tests. **Review checkpoint.**
+2. Step 1: keyed geometry kernel (`src/geometry.ts`, pure, no DOM) +
+   invariant property tests. **Review checkpoint.**
 3. Commit pipeline + scroll arbiter + gesture sensor.
 4. Chat mode (end-follow, pin-to-top reserve, edge overlays); host the
    streaming demo on the lean runtime; gauntlet against `main`.

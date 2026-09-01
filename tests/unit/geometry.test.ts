@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Geometry, type GeometryViewport } from "../../src/lean/geometry";
+import { Geometry, type GeometryViewport } from "../../src/geometry";
 
 // The geometry kernel is judged by the lean-core invariants (docs/lean-core.md):
 // I1 — the resolved scroll target keeps the visible anchor's viewport

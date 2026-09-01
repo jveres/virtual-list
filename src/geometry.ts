@@ -1,4 +1,4 @@
-import { FenwickTree } from "../fenwick";
+import { FenwickTree } from "./fenwick";
 
 // The lean core's geometry kernel: keyed items, learned heights, offsets,
 // anchoring, and the pin-to-top reserve — as pure math. No DOM, no

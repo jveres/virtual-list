@@ -3,9 +3,9 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  createLeanVirtualList,
-  type LeanVirtualListState,
-} from "../../src/lean/virtual-list";
+  createVirtualList,
+  type VirtualListState,
+} from "../../src/virtual-list";
 
 // Runtime smoke tests under jsdom: no layout engine, so heights are always
 // estimates (the setup stubs ResizeObserver) and geometry is exact by
@@ -40,9 +40,9 @@ function makeViewport(): HTMLElement {
 
 function mount(items: Msg[], hooks: { onReachStart?: () => void } = {}) {
   const viewport = makeViewport();
-  const states: LeanVirtualListState[] = [];
+  const states: VirtualListState[] = [];
   const renders: number[] = [];
-  const list = createLeanVirtualList<Msg>(viewport, {
+  const list = createVirtualList<Msg>(viewport, {
     items,
     key: (m) => `m${m.id}`,
     estimateSize: ESTIMATE,

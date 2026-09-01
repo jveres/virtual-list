@@ -25,19 +25,19 @@ import { type Glide, glideDuration, startGlide } from "./glide";
 // Edge chrome does not exist here (I3): `onReachStart/End` are proximity
 // signals; loaders are the host's overlays.
 
-export interface LeanVirtualListOptions<T> {
+export interface VirtualListOptions<T> {
   items: readonly T[];
   key: (item: T) => string;
   render: (item: T, existing?: HTMLElement) => HTMLElement;
   /** Height guess for unmeasured items; finite and > 0 (enforced). */
   estimateSize?: number | ((item: T) => number);
   overscanPx?: number;
-  onState?: (state: LeanVirtualListState) => void;
+  onState?: (state: VirtualListState) => void;
   onReachStart?: () => void;
   onReachEnd?: () => void;
 }
 
-export interface LeanVirtualListState {
+export interface VirtualListState {
   count: number;
   start: number;
   end: number;
@@ -46,13 +46,13 @@ export interface LeanVirtualListState {
   totalSize: number;
 }
 
-export interface LeanVirtualList<T> {
+export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
   scrollTo(
     target: string | "start" | "end",
     options?: { align?: "start"; behavior?: "auto" | "smooth" },
   ): void;
-  readonly state: LeanVirtualListState;
+  readonly state: VirtualListState;
   dispose(): void;
 }
 
@@ -62,10 +62,10 @@ const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
 
-export function createLeanVirtualList<T>(
+export function createVirtualList<T>(
   viewport: HTMLElement,
-  options: LeanVirtualListOptions<T>,
-): LeanVirtualList<T> {
+  options: VirtualListOptions<T>,
+): VirtualList<T> {
   const { key: keyOf, render } = options;
   const overscanPx = options.overscanPx ?? Math.max(300, viewportHeight());
 
@@ -107,7 +107,7 @@ export function createLeanVirtualList<T>(
   let glide: Glide | null = null;
   let reachStartArmed = true;
   let reachEndArmed = true;
-  let lastState: LeanVirtualListState | null = null;
+  let lastState: VirtualListState | null = null;
 
   function viewportHeight(): number {
     return viewport.clientHeight;
@@ -276,7 +276,7 @@ export function createLeanVirtualList<T>(
     const vp = currentViewport();
     const range = geometry.window(vp, overscanPx);
     const maxTop = geometry.maxScrollTop(vp.height);
-    const state: LeanVirtualListState = {
+    const state: VirtualListState = {
       count: geometry.count,
       start: range.start,
       end: range.end,
@@ -288,7 +288,7 @@ export function createLeanVirtualList<T>(
       lastState === null ||
       Object.entries(state).some(
         ([field, value]) =>
-          lastState?.[field as keyof LeanVirtualListState] !== value,
+          lastState?.[field as keyof VirtualListState] !== value,
       );
     lastState = state;
     if (changed) options.onState?.(state);
@@ -398,7 +398,7 @@ export function createLeanVirtualList<T>(
   return {
     setItems,
     scrollTo,
-    get state(): LeanVirtualListState {
+    get state(): VirtualListState {
       return lastState ?? { ...publishInitial() };
     },
     dispose(): void {
@@ -413,8 +413,8 @@ export function createLeanVirtualList<T>(
     },
   };
 
-  function publishInitial(): LeanVirtualListState {
+  function publishInitial(): VirtualListState {
     publish();
-    return lastState as LeanVirtualListState;
+    return lastState as VirtualListState;
   }
 }

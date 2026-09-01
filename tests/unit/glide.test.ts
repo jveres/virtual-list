@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { glideDuration, startGlide } from "../../src/lean/glide";
+import { glideDuration, startGlide } from "../../src/glide";
 
 // The glide's contractual behaviors (I2): exact landing, and at least one
 // whole pixel of progress per frame — WebKit floors scrollTop writes, and a

@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createGestureSensor } from "../../src/lean/gesture";
+import { createGestureSensor } from "../../src/gesture";
 
 // The sensor's classification core: scrolls landing on announced writes are
 // self-inflicted; anything else is the user, until scrollend or idle settle.
