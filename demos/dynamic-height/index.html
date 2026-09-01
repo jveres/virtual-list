@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <title>virtual-list · dynamic-height lab</title>
+    <style>
+      :root {
+        --bg: #ffffff;
+        --bg-panel: #f6f7f9;
+        --fg: #1a1d23;
+        --fg-dim: #8b93a1;
+        --border: #e3e6ea;
+        --accent: #4f6df5;
+        --good: #16a34a;
+        --warn: #d97706;
+        --bad: #dc2626;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16181d;
+          --bg-panel: #1d2027;
+          --fg: #d5d9e1;
+          --fg-dim: #737b89;
+          --border: #2a2e37;
+          --accent: #7d92ff;
+          color-scheme: dark;
+        }
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+      }
+      html,
+      body {
+        height: 100%;
+        overflow: hidden;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        background: var(--bg);
+        color: var(--fg);
+        font: 14px/1.45 system-ui, sans-serif;
+      }
+      header {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      header h1 {
+        font-size: 15px;
+      }
+      header .ua {
+        color: var(--fg-dim);
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      main {
+        flex: 1;
+        display: flex;
+        min-height: 0;
+      }
+      .stage {
+        position: relative;
+        flex: 1;
+        min-width: 0;
+        /* Without this, the stacked (mobile) layout sizes the stage to its
+           content: the viewport then has no internal overflow and nothing
+           scrolls at all on iOS. */
+        min-height: 0;
+        display: flex;
+        justify-content: center;
+      }
+      #viewport {
+        height: 100%;
+        width: 100%;
+        max-width: 720px;
+        overflow-y: auto;
+        overscroll-behavior-y: contain;
+        /* The runtime performs the single anchor-preserving write; native
+           scroll anchoring would add its own correction first. */
+        overflow-anchor: none;
+        transition: max-width 0s;
+      }
+      .stage.narrow #viewport {
+        max-width: 440px;
+      }
+      /* Rows are absolutely positioned by the runtime inside fixed-height,
+         clipped slots; their own height is content-driven. */
+      .row {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 12px 14px;
+        border-bottom: 1px solid var(--border);
+        font-variant-numeric: tabular-nums;
+        overflow-wrap: anywhere;
+      }
+      .row .idx {
+        color: var(--fg-dim);
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+      }
+      .row.stream .idx::after {
+        content: " · streaming";
+        color: var(--accent);
+      }
+      .row.stream.done .idx::after {
+        content: " · streamed";
+        color: var(--fg-dim);
+      }
+      .row .body {
+        line-height: 1.5;
+      }
+      .row .tg {
+        align-self: flex-start;
+        font: inherit;
+        font-size: 12px;
+        padding: 3px 10px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--bg-panel);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .row .extra {
+        padding: 10px 12px;
+        border-left: 3px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 8%, transparent);
+        font-size: 13px;
+      }
+      .row .pic {
+        display: block;
+        width: 100%;
+        height: auto;
+        border-radius: 8px;
+      }
+      .row .code {
+        margin: 0;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: color-mix(in srgb, var(--fg-dim) 14%, transparent);
+        font: 12px/1.5 ui-monospace, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      aside {
+        width: 400px;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid var(--border);
+        background: var(--bg-panel);
+        min-height: 0;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 1px;
+        background: var(--border);
+        border-bottom: 1px solid var(--border);
+      }
+      .cell {
+        background: var(--bg-panel);
+        padding: 7px 10px;
+      }
+      .cell b {
+        display: block;
+        font-size: 10px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--fg-dim);
+      }
+      .cell .val {
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+      }
+      .cell .val.bad {
+        color: var(--bad);
+        font-weight: 700;
+      }
+      .cell .dot {
+        display: inline-block;
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        background: var(--fg-dim);
+        margin-right: 5px;
+        vertical-align: baseline;
+      }
+      .cell .dot.on {
+        background: var(--good);
+      }
+      .cell .dot.pending {
+        background: var(--warn);
+      }
+      .controls {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        padding: 8px 10px;
+        border-bottom: 1px solid var(--border);
+        align-items: center;
+      }
+      .controls button,
+      .controls select {
+        font: inherit;
+        font-size: 12px;
+        padding: 4px 9px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--bg);
+        color: var(--fg);
+        cursor: pointer;
+      }
+      .controls label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        font-size: 12px;
+      }
+      #log {
+        flex: 1;
+        margin: 0;
+        padding: 10px;
+        overflow-y: auto;
+        font: 11px/1.5 ui-monospace, monospace;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+        color: var(--fg-dim);
+      }
+      #log .mark {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      #log .good {
+        color: var(--good);
+        font-weight: 700;
+      }
+      #log .warn {
+        color: var(--warn);
+        font-weight: 700;
+      }
+      #log .bad {
+        color: var(--bad);
+        font-weight: 700;
+      }
+      @media (max-width: 760px) {
+        main {
+          flex-direction: column;
+        }
+        aside {
+          width: 100%;
+          height: 48%;
+          border-left: none;
+          border-top: 1px solid var(--border);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>dynamic-height lab</h1>
+      <span class="ua" id="ua"></span>
+    </header>
+    <main>
+      <div class="stage" id="stage">
+        <div id="viewport"></div>
+      </div>
+      <aside>
+        <div class="grid">
+          <div class="cell"><b>strategy</b><span class="val" id="s-strategy">–</span></div>
+          <div
+            class="cell"
+            title="The lab's own evidence of native scrolling: touch down, wheel/key input, or unattributed scroll events within the last 120ms"
+          >
+            <b>native scroll</b>
+            <span><i class="dot" id="s-active"></i><span class="val" id="s-active-t">idle</span></span>
+          </div>
+          <div class="cell" title="state.held: prepared rows or dirty heights are waiting for settle">
+            <b>held</b>
+            <span><i class="dot" id="s-held"></i><span class="val" id="s-held-t">no</span></span>
+          </div>
+          <div class="cell"><b>rows / mounted</b><span class="val" id="s-rows">0</span></div>
+          <div class="cell" title="Geometry-changing commits observed on the canvas"><b>commits</b><span class="val" id="s-commits">0</span></div>
+          <div class="cell"><b>violations</b><span class="val" id="s-violations">0</span></div>
+          <div class="cell" title="Elements the lab rendered / destroyed exactly once by the runtime / still alive"><b>nodes c/d/live</b><span class="val" id="s-nodes">0/0/0</span></div>
+          <div
+            class="cell"
+            title="Mounted rows whose content height differs from the committed slot height — expected while held, must return to 0 after settle"
+          ><b>clipped</b><span class="val" id="s-clipped">0</span></div>
+          <div class="cell" title="Frames from an idle content change to its committed slot height (last / max)"><b>idle latency</b><span class="val" id="s-latency">–</span></div>
+          <div class="cell"><b>streams</b><span class="val" id="s-streams">0</span></div>
+          <div class="cell" title="Late images: waiting for their src / loaded"><b>images</b><span class="val" id="s-images">0/0</span></div>
+          <div class="cell" title="Chunks left per edge; loads aborted through the reach signal"><b>loads</b><span class="val" id="s-loads">–</span></div>
+        </div>
+        <div class="controls">
+          <label><input type="checkbox" id="auto-load" checked />edge loads</label>
+          <label><input type="checkbox" id="streaming" checked />streaming</label>
+          <label><input type="checkbox" id="toggles" checked />toggles</label>
+          <label><input type="checkbox" id="images" checked />late images</label>
+          <label><input type="checkbox" id="width-jitter" />width jitter</label>
+          <label
+            >channel
+            <select id="channel" title="How content changes reach the runtime">
+              <option value="dom">DOM</option>
+              <option value="items">setItems</option>
+            </select></label
+          >
+          <label title="A same-key re-render returns a NEW element instead of updating in place"
+            ><input type="checkbox" id="replace" />replace</label
+          >
+          <label><input type="checkbox" id="verbose" />verbose</label>
+        </div>
+        <div class="controls">
+          <button id="glide-top" type="button">⤒ top</button>
+          <button id="glide-bottom" type="button">⤓ bottom</button>
+          <button id="width" type="button">narrow/wide</button>
+          <button id="delete-anchor" type="button">delete anchor</button>
+          <button id="delete-random" type="button">delete random</button>
+          <button id="burst" type="button">burst ×5</button>
+          <button id="reset" type="button">reset</button>
+          <button id="copy" type="button">copy trace</button>
+          <button id="clear" type="button">clear log</button>
+        </div>
+        <pre id="log"></pre>
+      </aside>
+    </main>
+    <script type="module" src="./dynamic-demo.ts"></script>
+  </body>
+</html>

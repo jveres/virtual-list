@@ -128,6 +128,18 @@ commit frequency in practice.
   lag, post-settle-motion counter (premature-settle detector), and an
   exportable event/decision trace. The settle signal is validated per
   browser HERE, before any runtime exists on top of it.
+- **demos/dynamic-height** — the dynamic-height lab: the v2 runtime under
+  adversarial content (streaming rows, toggles, late-loading images,
+  width-sensitive code, edge loads with abort, superseding bursts,
+  deletions, width jitter) through both mutation channels (direct DOM,
+  setItems in-place or replacing). Its telemetry observes the runtime
+  strictly from outside — a scrollTop write hook, a MutationObserver on
+  the canvas, the lab's own native-scroll evidence — and reports each
+  contract violation by code: G geometry changed under a live scroll
+  phase, W scrollTop written under native scroll, O slot overlap or a
+  non-clipping slot, A anchor moved across a commit, S stale slot height
+  while quiet, L idle change over the frame budget, T height re-committed
+  without a change, D destroy-once/leak failures.
 - **demos/streaming** — the chat acceptance target (kept in-tree, excluded
   from typecheck until the v2 runtime hosts it), compared against `main`.
 

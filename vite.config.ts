@@ -9,6 +9,10 @@ export default defineConfig({
           "demos/scroll-settle/index.html",
           import.meta.url,
         ).pathname,
+        "dynamic-height": new URL(
+          "demos/dynamic-height/index.html",
+          import.meta.url,
+        ).pathname,
         // The streaming chat demo is the acceptance target; it returns to
         // the build once the v2 runtime can host it.
       },
