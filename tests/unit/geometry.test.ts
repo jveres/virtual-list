@@ -220,6 +220,25 @@ describe("I1 — anchor preservation", () => {
     );
   });
 
+  it("anchors the visually top-aligned row when the previous row has a subpixel remainder", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 20));
+    // 0.016px of m0 remains below the viewport top: m1 is the top row.
+    const vp = viewport(geometry.offsetOf("m1") - 0.016);
+    expect(geometry.anchorAt(vp)?.key).toBe("m1");
+    // A visible remainder still anchors the previous row.
+    expect(
+      geometry.anchorAt(viewport(geometry.offsetOf("m1") - 0.6))?.key,
+    ).toBe("m0");
+
+    const before = geometry.offsetOf("m1") - vp.scrollTop;
+    // m0 gains a line: m1 must not move by that line.
+    const commit = transact(geometry, vp, "viewport", () =>
+      geometry.measure("m0", 121),
+    );
+    expect(geometry.offsetOf("m1") - commit.scrollTop).toBeCloseTo(before, 6);
+  });
+
   it("a removed anchor falls to the first surviving successor, inheriting the offset", () => {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 20));

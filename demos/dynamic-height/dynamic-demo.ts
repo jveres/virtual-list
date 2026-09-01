@@ -44,7 +44,8 @@ import {
 //   S  a mounted slot's committed height differs from its content while
 //      everything is quiet (stale height: held work never committed, or a
 //      width/resource change was not honored);
-//   L  an idle content change took more frames to commit than the budget;
+//   L  an idle row painted clipped: taller than its slot at the post-runtime
+//      ResizeObserver delivery, so the frame paints it cut off;
 //   T  a slot height was committed again with no content or width change
 //      in between (heights must commit once, latest);
 //   D  an element destroyed twice, never rendered by the lab, still in the
@@ -61,7 +62,6 @@ const WIDTH_JITTER_MS = 2500;
 const INPUT_WINDOW_MS = 120;
 const EXPECTED_WRITE_TTL_MS = 400;
 const QUIET_FRAMES = 3;
-const IDLE_COMMIT_FRAME_BUDGET = 3;
 const PX_EPSILON = 1;
 const LOG_RING_MAX = 4000;
 const LOG_DOM_MAX = 350;
@@ -108,7 +108,7 @@ const stat = {
   violations: mustGet("s-violations"),
   nodes: mustGet("s-nodes"),
   clipped: mustGet("s-clipped"),
-  latency: mustGet("s-latency"),
+  paints: mustGet("s-paints"),
   streams: mustGet("s-streams"),
   images: mustGet("s-images"),
   loads: mustGet("s-loads"),
@@ -334,6 +334,7 @@ function update(item: Item, row: HTMLElement): void {
     "done",
     item.kind === "stream" && item.words.length >= item.streamTarget,
   );
+  row.classList.toggle("live", streams.has(item.id));
   row.dataset.version = String(item.version);
 }
 
@@ -368,16 +369,11 @@ let touchDown = false;
 let lastWheelAt = Number.NEGATIVE_INFINITY;
 let lastKeyAt = Number.NEGATIVE_INFINITY;
 let lastNativeScrollAt = Number.NEGATIVE_INFINITY;
-let activitySerial = 0;
 let frameHadNativeScroll = false;
 const expectedWrites: { top: number; at: number }[] = [];
 const runtimeWriteTimes: number[] = [];
 let commandIssuing = false;
 let smoothPending = 0;
-
-function noteActivity(): void {
-  activitySerial += 1;
-}
 
 function nativeActive(now = performance.now()): boolean {
   return (
@@ -435,7 +431,6 @@ function traceInput(): void {
     "wheel",
     (event) => {
       lastWheelAt = performance.now();
-      noteActivity();
       if (verbose()) log(`wheel dy=${Math.round(event.deltaY)}`);
     },
     { passive: true },
@@ -444,14 +439,12 @@ function traceInput(): void {
     "touchstart",
     () => {
       touchDown = true;
-      noteActivity();
       if (verbose()) log("touchstart");
     },
     { passive: true },
   );
   const touchUp = (name: string) => () => {
     touchDown = false;
-    noteActivity();
     if (verbose()) log(name);
   };
   window.addEventListener("touchend", touchUp("touchend"), { passive: true });
@@ -473,7 +466,6 @@ function traceInput(): void {
         ].includes(event.key)
       ) {
         lastKeyAt = performance.now();
-        noteActivity();
       }
     },
     { passive: true },
@@ -499,7 +491,6 @@ function traceInput(): void {
       }
       lastNativeScrollAt = now;
       frameHadNativeScroll = true;
-      noteActivity();
       if (verbose()) log(`scroll top=${Math.round(top)}`);
     },
     { passive: true },
@@ -521,12 +512,6 @@ const contentSerialByKey = new Map<string, number>();
 let lastContentChangeFrame = Number.NEGATIVE_INFINITY;
 let frame = 0;
 let stateHeld = false;
-const latencyProbes = new Map<
-  string,
-  { frame: number; activity: number; serial: number }
->();
-let lastLatencyFrames: number | null = null;
-let maxLatencyFrames = 0;
 
 function effectiveSerial(key: string): number {
   return Math.max(contentSerialByKey.get(key) ?? 0, globalChangeSerial);
@@ -538,21 +523,12 @@ function recordContentChange(id: number, what: string): void {
   contentSerialByKey.set(key, contentSerial);
   lastContentChangeFrame = frame;
   if (verbose()) log(what);
-  // An idle change to a MOUNTED row must commit within the frame budget.
-  if (!nativeActive() && !stateHeld && smoothPending === 0 && slotOf(key)) {
-    latencyProbes.set(key, {
-      frame,
-      activity: activitySerial,
-      serial: contentSerial,
-    });
-  }
 }
 
 function recordWidthChange(): void {
   contentSerial += 1;
   globalChangeSerial = contentSerial;
   lastContentChangeFrame = frame;
-  latencyProbes.clear();
 }
 
 // --- The runtime ------------------------------------------------------------
@@ -690,6 +666,65 @@ function createList(): void {
   canvas = viewport.firstElementChild as HTMLElement | null;
   if (!canvas) throw new Error("runtime canvas not found");
   observeCanvas(canvas);
+  createPaintObserver();
+}
+
+// --- Paint-time clipping: a lab-owned ResizeObserver ------------------------
+// ResizeObservers deliver after layout and before paint, in creation order.
+// This one is created AFTER the runtime's, so it runs after the runtime's
+// same-delivery idle commit: a row still taller than its slot HERE is a
+// frame that paints clipped. (A rAF-time comparison would run before the
+// delivery and report transient, never-painted mismatches.)
+
+let paintObserver: ResizeObserver | null = null;
+const clippedKeys = new Set<string>();
+let clippedPaints = 0;
+
+function createPaintObserver(): void {
+  paintObserver?.disconnect();
+  paintObserver = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const row = entry.target as HTMLElement;
+      const slot = row.parentElement;
+      if (!slot || slot.parentElement !== canvas) continue;
+      const key = row.dataset.id ?? "?";
+      const contentHeight = row.getBoundingClientRect().height;
+      const slotHeight = parseHeight(slot.getAttribute("style"));
+      const mismatch =
+        slotHeight !== null &&
+        Math.abs(contentHeight - slotHeight) > PX_EPSILON;
+      if (!mismatch) {
+        clippedKeys.delete(key);
+        continue;
+      }
+      clippedKeys.add(key);
+      // Held (a scroll phase is active by the runtime's reckoning) or
+      // natively scrolling: clipping is the contract. Idle: a defect.
+      if (!stateHeld && !nativeActive() && smoothPending === 0) {
+        clippedPaints += 1;
+        violation(
+          "L",
+          `#${key} paints clipped while idle (slot ${slotHeight.toFixed(1)}px, content ${contentHeight.toFixed(1)}px)`,
+        );
+      }
+    }
+    scheduleStatus();
+  });
+  if (canvas) {
+    for (const slot of canvas.children) watchRow(slot);
+  }
+}
+
+function watchRow(slot: Element): void {
+  const row = slot.firstElementChild;
+  if (row) paintObserver?.observe(row);
+}
+
+function unwatchRow(slot: Element): void {
+  const row = slot.firstElementChild as HTMLElement | null;
+  if (!row) return;
+  paintObserver?.unobserve(row);
+  clippedKeys.delete(row.dataset.id ?? "?");
 }
 
 function slotOf(key: string): HTMLElement | null {
@@ -749,7 +784,11 @@ function classifyBatch(records: MutationRecord[]): void {
         if (node instanceof Element) {
           added.add(node);
           knownSlots.add(node);
+          watchRow(node);
         }
+      }
+      for (const node of record.removedNodes) {
+        if (node instanceof Element) unwatchRow(node);
       }
       removed += record.removedNodes.length;
       continue;
@@ -815,6 +854,15 @@ function classifyBatch(records: MutationRecord[]): void {
 
   // T: a height commits once per change, the latest.
   for (const change of heightChanges) {
+    // A committed height that matches the content un-clips the row.
+    const slot = slotOf(change.key);
+    const row = slot?.firstElementChild as HTMLElement | null;
+    if (
+      row &&
+      Math.abs(row.getBoundingClientRect().height - change.to) <= PX_EPSILON
+    ) {
+      clippedKeys.delete(change.key);
+    }
     const serial = effectiveSerial(change.key);
     if (committedSerial.get(change.key) === serial) {
       violation(
@@ -944,7 +992,6 @@ function checkAnchor(
 
 const staleFrames = new Map<string, number>();
 const staleReported = new Set<string>();
-let clippedNow = 0;
 let statusFrame = 0;
 
 function frameLoop(): void {
@@ -971,31 +1018,14 @@ function frameLoop(): void {
     smoothPending === 0 &&
     frame - lastContentChangeFrame > QUIET_FRAMES;
 
-  let clipped = 0;
+  // S: persistent stale heights while quiet. (This rAF-time read runs
+  // BEFORE the frame's ResizeObserver delivery, so a single-frame mismatch
+  // here is transient and never painted; only persistence counts.)
   for (const { slot, key, h } of mountedSlots()) {
     const row = slot.firstElementChild as HTMLElement | null;
     if (!row) continue;
     const rect = row.getBoundingClientRect();
     const mismatch = Math.abs(rect.height - h) > PX_EPSILON;
-    if (mismatch) clipped += 1;
-
-    const probe = latencyProbes.get(key);
-    if (probe) {
-      if (probe.activity !== activitySerial || stateHeld) {
-        latencyProbes.delete(key);
-      } else if (!mismatch) {
-        const frames = frame - probe.frame;
-        lastLatencyFrames = frames;
-        maxLatencyFrames = Math.max(maxLatencyFrames, frames);
-        latencyProbes.delete(key);
-        if (frames > IDLE_COMMIT_FRAME_BUDGET) {
-          violation(
-            "L",
-            `idle change to #${key} committed after ${frames} frames`,
-          );
-        }
-      }
-    }
 
     if (quiet && mismatch) {
       const count = (staleFrames.get(key) ?? 0) + 1;
@@ -1012,8 +1042,6 @@ function frameLoop(): void {
       staleReported.delete(key);
     }
   }
-  clippedNow = clipped;
-
   if (frame % 6 === 0) scheduleStatus();
   requestAnimationFrame(frameLoop);
 }
@@ -1032,11 +1060,9 @@ function scheduleStatus(): void {
     stat.violations.textContent = String(violations);
     stat.violations.className = `val${violations > 0 ? " bad" : ""}`;
     stat.nodes.textContent = `${created}/${destroyed}/${created - destroyed}`;
-    stat.clipped.textContent = String(clippedNow);
-    stat.latency.textContent =
-      lastLatencyFrames === null
-        ? "–"
-        : `${lastLatencyFrames}f / max ${maxLatencyFrames}f`;
+    stat.clipped.textContent = String(clippedKeys.size);
+    stat.paints.textContent = String(clippedPaints);
+    stat.paints.className = `val${clippedPaints > 0 ? " bad" : ""}`;
     stat.streams.textContent = `${streams.size} active`;
     stat.images.textContent = `${imagesPending}/${imagesLoaded}`;
     stat.loads.textContent = `T:${chunksLeft.start} B:${chunksLeft.end} left · ${loadsAborted} aborted`;
@@ -1076,12 +1102,24 @@ function maintainStreams(): void {
   }
 }
 
+/** The "streaming" label belongs only to rows actively receiving tokens. */
+function syncLive(id: number): void {
+  elementById.get(id)?.classList.toggle("live", streams.has(id));
+}
+
+function endStream(id: number): void {
+  const timer = streams.get(id);
+  if (timer !== undefined) window.clearTimeout(timer);
+  streams.delete(id);
+  syncLive(id);
+}
+
 function startStream(id: number): void {
   log(`stream #${id} start`);
   const tick = () => {
     const item = itemById.get(id);
     if (!item || !checkbox("streaming").checked || !items.includes(item)) {
-      streams.delete(id);
+      endStream(id);
       return;
     }
     const burst = 1 + Math.floor(random() * 3);
@@ -1089,7 +1127,7 @@ function startStream(id: number): void {
       item.words.push(pick(WORDS, random));
     changeContent(item, `stream #${id} +${burst} words`);
     if (item.words.length >= item.streamTarget) {
-      streams.delete(id);
+      endStream(id);
       log(`stream #${id} done`);
       maintainStreams();
       scheduleStatus();
@@ -1098,12 +1136,12 @@ function startStream(id: number): void {
     streams.set(id, window.setTimeout(tick, 60 + random() * 160));
   };
   streams.set(id, window.setTimeout(tick, 100));
+  syncLive(id);
   scheduleStatus();
 }
 
 function stopStreams(): void {
-  for (const timer of streams.values()) window.clearTimeout(timer);
-  streams.clear();
+  for (const id of [...streams.keys()]) endStream(id);
 }
 
 function flipToggle(id: number, why: string): void {
@@ -1210,7 +1248,7 @@ function boot(): void {
   committedSerial.clear();
   staleFrames.clear();
   staleReported.clear();
-  latencyProbes.clear();
+  clippedKeys.clear();
   createList();
   // Start mid-list so both edge zones need a deliberate scroll.
   const middle = items[Math.floor(items.length / 2)];
@@ -1237,6 +1275,17 @@ function reset(): void {
     log(`dispose: every element destroyed exactly once (${destroyed})`, "good");
   }
   elementById.clear();
+  paintObserver?.disconnect();
+  // A fresh run: every counter starts over (the leak check above was the
+  // last use of the old ones), so the panel never shows violations whose
+  // traces belong to a previous run.
+  violations = 0;
+  commits = 0;
+  clippedPaints = 0;
+  created = 0;
+  destroyed = 0;
+  imagesLoaded = 0;
+  loadsAborted = 0;
   boot();
 }
 
@@ -1264,6 +1313,10 @@ mustGet("reset").addEventListener("click", () => {
 mustGet("clear").addEventListener("click", () => {
   logElement.replaceChildren();
   traceRing.length = 0;
+  // Violations without their traces are meaningless: the count restarts.
+  violations = 0;
+  clippedPaints = 0;
+  scheduleStatus();
 });
 mustGet("copy").addEventListener("click", () => {
   const trace = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\nviolations=${violations}\n${traceRing.join("\n")}`;

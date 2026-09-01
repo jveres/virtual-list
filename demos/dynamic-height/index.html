@@ -111,7 +111,8 @@
         font-weight: 600;
         letter-spacing: 0.03em;
       }
-      .row.stream .idx::after {
+      /* Only a row actively receiving tokens says so. */
+      .row.stream.live .idx::after {
         content: " · streaming";
         color: var(--accent);
       }
@@ -335,9 +336,12 @@
           <div class="cell" title="Elements the lab rendered / destroyed exactly once by the runtime / still alive"><b>nodes c/d/live</b><span class="val" id="s-nodes">0/0/0</span></div>
           <div
             class="cell"
-            title="Mounted rows whose content height differs from the committed slot height — expected while held, must return to 0 after settle"
+            title="Mounted rows whose painted content height differs from the committed slot height — expected while held, must return to 0 after settle"
           ><b>clipped</b><span class="val" id="s-clipped">0</span></div>
-          <div class="cell" title="Frames from an idle content change to its committed slot height (last / max)"><b>idle latency</b><span class="val" id="s-latency">–</span></div>
+          <div
+            class="cell"
+            title="ResizeObserver deliveries (post-runtime, pre-paint) in which an idle row was taller than its slot — a frame that paints clipped; must stay 0"
+          ><b>clipped paints</b><span class="val" id="s-paints">0</span></div>
           <div class="cell"><b>streams</b><span class="val" id="s-streams">0</span></div>
           <div class="cell" title="Late images: waiting for their src / loaded"><b>images</b><span class="val" id="s-images">0/0</span></div>
           <div class="cell" title="Chunks left per edge; loads aborted through the reach signal"><b>loads</b><span class="val" id="s-loads">–</span></div>
