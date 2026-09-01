@@ -418,8 +418,18 @@ export function createVirtualList<T>(
 
   // --- Gesture sensor + settle flush ----------------------------------------
   const sensor: GestureSensor = createGestureSensor(viewport, {
+    // Edge protection (Firefox stability windows etc.) applies only where
+    // the host can actually grow the list.
+    canLoadAtBoundary: (boundary) =>
+      boundary === "top"
+        ? options.onReachStart !== undefined
+        : options.onReachEnd !== undefined,
+    // A genuine user gesture interrupts an in-flight glide immediately.
+    cancelSmoothScroll: () => glide?.cancel(),
+    // Scrollends emitted while our own glide is mid-flight are not the
+    // user's gesture ending.
+    smoothScrollActive: () => glide !== null,
     onStart: () => {
-      glide?.cancel();
       // Disengagement is cumulative per gesture, from the downward
       // high-water mark — the pre-gesture position or the first event's,
       // whichever is lower on the page.
@@ -427,22 +437,27 @@ export function createVirtualList<T>(
     },
     onSettle: () => {
       if (disposed) return;
-      // Exchange the gesture shift for its one scrollTop write (visually a
-      // no-op) before anything reads raw positions.
-      reconcileGestureShift();
-      // Returning to the end by hand re-engages following.
-      if (atEndTop(viewport.scrollTop)) following = true;
-      const pendingItems = deferredItems;
-      deferredItems = null;
-      // One flush transaction: the deferred structural update, reserve
-      // re-evaluation (released reserve drains once out of view) — and
-      // the suppressed end-follow catch-up (I2).
-      transaction(
-        pendingItems?.anchor ?? (following ? "end" : "viewport"),
-        () => {
-          if (pendingItems) adoptItems(pendingItems.items);
-        },
-      );
+      // Guarded (nest-tolerant): a command takeover invokes this settle
+      // synchronously from inside its own guard, and the flush must land
+      // BEFORE the command runs, not drain after it.
+      guarded(() => {
+        // Exchange the gesture shift for its one scrollTop write (visually
+        // a no-op) before anything reads raw positions.
+        reconcileGestureShift();
+        // Returning to the end by hand re-engages following.
+        if (atEndTop(viewport.scrollTop)) following = true;
+        const pendingItems = deferredItems;
+        deferredItems = null;
+        // One flush commit: the deferred structural update, reserve
+        // re-evaluation (released reserve drains once out of view) — and
+        // the suppressed end-follow catch-up (I2).
+        commitOnce(
+          pendingItems?.anchor ?? (following ? "end" : "viewport"),
+          () => {
+            if (pendingItems) adoptItems(pendingItems.items);
+          },
+        );
+      });
     },
   });
 
@@ -558,14 +573,17 @@ export function createVirtualList<T>(
   /** `snapshot` is runtime-owned (copied by setItems at call time). */
   function applySetItems(snapshot: readonly T[], anchor: AnchorPolicy): void {
     if (disposed) return;
-    // Mid-gesture, only "auto" end-compatible updates commit immediately
-    // (their resolved target is where the user already is). Everything else
-    // defers: structural changes, and any explicit anchor policy — settle
-    // must honor the stated policy, not re-derive one from follow state.
-    // Once anything is deferred, every later snapshot replaces it (latest
-    // wins; a newer update must not leapfrog an older deferred one).
+    // Native gestures AND programmatic glides are both active scroll
+    // phases. During either, only "auto" end-compatible updates commit
+    // immediately (their resolved target is where the user already is, or
+    // the live end a glide is tracking). Everything else defers: structural
+    // changes, and any explicit anchor policy — the flush must honor the
+    // stated policy, not re-derive one from follow state. Once anything is
+    // deferred, every later snapshot replaces it (latest wins); the single
+    // kept snapshot commits once, anchored, when the phase truly ends —
+    // the browser-adaptive settle, or the glide's completion.
     if (
-      sensor.active &&
+      (sensor.active || glide !== null) &&
       (deferredItems !== null ||
         anchor !== "auto" ||
         !isEndCompatible(snapshot))
@@ -602,22 +620,14 @@ export function createVirtualList<T>(
       guarded(() => {
         if (sensor.active) {
           // Explicit command > gesture (documented precedence): take the
-          // viewport over NOW — end the gesture without settling (the
-          // sensor absorbs trailing momentum in its grace window),
-          // exchange the gesture shift, flush the deferred snapshot, and
-          // start the command; one guarded operation.
+          // viewport over NOW. The sensor genuinely cancels native momentum
+          // and settles the gesture synchronously — its settle hook
+          // exchanges the gesture shift and flushes the deferred snapshot —
+          // then the command starts; one guarded operation.
           sensor.interrupt();
-          reconcileGestureShift();
-          const pendingItems = deferredItems;
-          deferredItems = null;
-          if (pendingItems) {
-            commitOnce(pendingItems.anchor, () =>
-              adoptItems(pendingItems.items),
-            );
-            if (disposed) {
-              resolve(false);
-              return;
-            }
+          if (disposed) {
+            resolve(false);
+            return;
           }
         }
         performScrollTo(target, owned, resolve);
@@ -708,6 +718,15 @@ export function createVirtualList<T>(
         (completed) =>
           guarded(() => {
             glide = null;
+            // The glide phase ended: commit the single kept deferred
+            // snapshot, anchored — the prepend appears without movement.
+            const pendingItems = deferredItems;
+            deferredItems = null;
+            if (pendingItems && !disposed) {
+              commitOnce(pendingItems.anchor, () =>
+                adoptItems(pendingItems.items),
+              );
+            }
             following = atEndTop(viewport.scrollTop);
             if (!disposed) publish();
             done(completed && !targetLost && !disposed);

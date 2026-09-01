@@ -104,10 +104,26 @@ gesture sensor (browser-adaptive) gates when commits may apply
 One scroll arbiter owns every scrollTop write, one policy per frame:
 explicit command > user gesture > end-anchor > position-anchor.
 An explicit command issued while a gesture is active supersedes it
-immediately: in one guarded operation the runtime interrupts the gesture
-(the sensor absorbs trailing momentum events in a short grace window, so
-they cannot masquerade as a new gesture and cancel the command), exchanges
-the gesture shift, flushes the deferred snapshot, and starts the command.
+immediately: in one guarded operation the sensor genuinely cancels native
+momentum (clamped write + overflow toggle + forced reflow — trailing
+events cannot masquerade as a new gesture), settles the gesture (which
+exchanges the gesture shift and flushes the deferred snapshot), and the
+command starts.
+
+**The scroll-phase rule (architectural):** a native gesture and a
+programmatic glide are both active scroll phases. While either is active,
+structural `setItems` updates defer — only the latest snapshot is kept —
+and commit once, anchored, when the phase truly ends: the
+browser-adaptive settle for gestures, completion (or cancellation) for
+glides. A deferred prepend therefore appears without movement after
+settlement; nothing restructures the list under a live scroll. The
+gesture sensor is the proven browser-adaptive controller carried over
+from the old runtime as a preserved asset (per directive 3): per-engine
+settle lifecycles for Chromium (wheel-idle windows, single-scrollend
+sequences), Firefox (edge stability windows against APZ ghost ends),
+and Safari (rubber-band tails), with a scrollend+cooldown default.
+jsdom exercises only the default path; the engine lifecycles are
+real-browser-verified behavior.
 
 Measurements always commit, gesture or not — deferring them would leave
 mounted rows positioned by stale geometry and visually overlapping. While
@@ -122,11 +138,11 @@ transaction runs. Anchor-driven moving writes (the end-follow catch-up)
 remain refused until settle; an explicit command instead interrupts the
 gesture, as above.
 
-Data updates still yield to the gesture: only `anchor: "auto"`
-end-compatible updates commit immediately during one (their resolved
-target is where the user already is); updates with an explicit anchor
-policy defer and are flushed at settle under that stated policy, never
-one re-derived from follow state.
+Within an active scroll phase, only `anchor: "auto"` end-compatible
+updates commit immediately (their resolved target is where the user
+already is, or the live end a glide is tracking); updates with an
+explicit anchor policy defer and are flushed at the phase end under that
+stated policy, never one re-derived from follow state.
 
 The glide rebases (never snaps) when either of its endpoints moves
 externally: an anchor-preserving prepend shifting the position, or a

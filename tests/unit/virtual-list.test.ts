@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createVirtualList,
   type VirtualList,
@@ -40,6 +40,14 @@ function makeViewport(): HTMLElement {
   const viewport = document.createElement("div");
   Object.defineProperty(viewport, "clientHeight", {
     get: () => VIEWPORT_H,
+  });
+  // The sensor's rubber-band check reads the native scroll range; mirror the
+  // canvas height jsdom cannot lay out.
+  Object.defineProperty(viewport, "scrollHeight", {
+    get: () => {
+      const canvas = viewport.firstElementChild as HTMLElement | null;
+      return canvas ? Number.parseFloat(canvas.style.height) || 0 : 0;
+    },
   });
   document.body.appendChild(viewport);
   return viewport;
@@ -84,7 +92,9 @@ function mount(
 
 // A scroll event whose scrollTop matches no recorded programmatic write is
 // classified as a user gesture. Values are chosen ≥ 2px away from any write
-// target so they cannot be consumed by a stale expectation (tolerance 1px).
+// target so they cannot be consumed by a stale expectation (tolerance 1px),
+// and INSIDE the scroll range — an out-of-range position reads as a
+// rubber-band overscroll, which the sensor refuses to settle into.
 function userScroll(viewport: HTMLElement, top: number): void {
   viewport.scrollTop = top;
   viewport.dispatchEvent(new Event("scroll"));
@@ -92,6 +102,7 @@ function userScroll(viewport: HTMLElement, top: number): void {
 
 function settleGesture(viewport: HTMLElement): void {
   viewport.dispatchEvent(new Event("scrollend"));
+  vi.advanceTimersByTime(200); // The default strategy's settle cooldown.
 }
 
 function rowElement(viewport: HTMLElement, body: string): HTMLElement {
@@ -148,7 +159,14 @@ function withControlledResizeObserver<R>(run: (ro: ControlledRO) => R): R {
   }
 }
 
+beforeEach(() => {
+  // The sensor's settle lifecycle is timer-driven (cooldowns, stability
+  // windows); the whole suite runs on fake timers.
+  vi.useFakeTimers();
+});
+
 afterEach(() => {
+  vi.useRealTimers();
   document.body.replaceChildren();
 });
 
@@ -241,12 +259,12 @@ describe("virtual list runtime", () => {
     expect(viewport.scrollTop).toBe(4400);
 
     // Gesture at the end without upward movement (a touch-hold jiggle).
-    userScroll(viewport, 4402);
+    userScroll(viewport, 4398);
 
     list.setItems(range(0, 52));
     // Committed (not deferred), but the user owns the viewport: no write.
     expect(list.state.count).toBe(52);
-    expect(viewport.scrollTop).toBe(4402);
+    expect(viewport.scrollTop).toBe(4398);
 
     settleGesture(viewport);
     // Follow intent survived the suppressed write: exact landing.
@@ -257,12 +275,12 @@ describe("virtual list runtime", () => {
     withControlledResizeObserver((ro) => {
       const { viewport, list } = mount(range(0, 50));
       const lastRow = rowElement(viewport, "msg 49");
-      userScroll(viewport, 4402);
+      userScroll(viewport, 4398);
 
       // The bottom row grows 100 → 300 mid-gesture (streamed image decode).
       ro.fire(0, lastRow, 300);
       expect(list.state.totalSize).toBe(50 * ESTIMATE + 200);
-      expect(viewport.scrollTop).toBe(4402); // Write suppressed.
+      expect(viewport.scrollTop).toBe(4398); // Write suppressed.
 
       settleGesture(viewport);
       expect(viewport.scrollTop).toBe(50 * ESTIMATE + 200 - VIEWPORT_H);
@@ -271,7 +289,7 @@ describe("virtual list runtime", () => {
 
   it("replaces a deferred snapshot with a newer one — latest wins at settle", () => {
     const { viewport, list } = mount(range(0, 50));
-    userScroll(viewport, 4402);
+    userScroll(viewport, 4398);
     userScroll(viewport, 4000); // Upward: a real scroll-away gesture.
 
     list.setItems(range(-10, 50)); // A: structural (prepend) → deferred.
@@ -288,7 +306,7 @@ describe("virtual list runtime", () => {
 
   it("an explicit command supersedes an active gesture immediately", async () => {
     const { viewport, list } = mount(range(0, 100));
-    userScroll(viewport, 9402);
+    userScroll(viewport, 9398);
 
     const command = list.scrollTo("start");
     // No settle wait: the command took the viewport over at once.
@@ -297,24 +315,32 @@ describe("virtual list runtime", () => {
     expect(list.state.atStart).toBe(true);
   });
 
-  it("absorbs trailing momentum events after a takeover — the glide survives", async () => {
-    vi.useFakeTimers();
-    try {
-      const { viewport, list } = mount(range(0, 100));
-      userScroll(viewport, 9402);
+  it("a takeover genuinely ends the gesture — later updates commit immediately", () => {
+    const { viewport, list } = mount(range(0, 100));
+    userScroll(viewport, 9398);
 
-      const command = list.scrollTo("start", { behavior: "smooth" });
-      // Trailing momentum of the interrupted gesture, near its old
-      // trajectory: inside the grace window it must not register as a new
-      // gesture and cancel the command.
-      userScroll(viewport, 9390);
+    void list.scrollTo("start");
+    expect(viewport.scrollTop).toBe(0);
+    // The gesture is over (momentum cancelled, settle fired): a structural
+    // update now commits immediately instead of deferring.
+    list.setItems(range(-5, 100));
+    expect(list.state.count).toBe(105);
+  });
 
-      vi.advanceTimersByTime(4000);
-      await expect(command).resolves.toBe(true);
-      expect(viewport.scrollTop).toBe(0);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("defers structural updates during a glide and flushes at glide end", async () => {
+    const { viewport, list } = mount(range(0, 100));
+    const command = list.scrollTo("start", { behavior: "smooth" });
+    vi.advanceTimersByTime(48);
+
+    list.setItems(range(-10, 100)); // Structural during the glide phase.
+    expect(list.state.count).toBe(100); // Deferred, not committed.
+
+    vi.advanceTimersByTime(4000);
+    await expect(command).resolves.toBe(true);
+    // The glide phase ended: the kept snapshot committed, anchored — the
+    // prepend appears without movement (m0 stays at the viewport top).
+    expect(list.state.count).toBe(110);
+    expect(viewport.scrollTop).toBe(10 * ESTIMATE);
   });
 
   it("rejects an invalid snapshot atomically, leaving the runtime unchanged", () => {
@@ -421,7 +447,7 @@ describe("virtual list runtime", () => {
 
   it("honors an explicit viewport anchor at settle even while following", () => {
     const { viewport, list } = mount(range(0, 50));
-    userScroll(viewport, 4402); // Gesture at the end; follow stays engaged.
+    userScroll(viewport, 4398); // Gesture at the end; follow stays engaged.
 
     list.setItems(range(0, 52), { anchor: "viewport" });
     expect(list.state.count).toBe(50); // Explicit policy ⇒ deferred.
@@ -429,12 +455,12 @@ describe("virtual list runtime", () => {
     settleGesture(viewport);
     expect(list.state.count).toBe(52);
     // The stated policy wins over follow state: position held, no end jump.
-    expect(viewport.scrollTop).toBe(4402);
+    expect(viewport.scrollTop).toBe(4398);
   });
 
   it("honors an explicit end anchor at settle even after follow disengaged", () => {
     const { viewport, list } = mount(range(0, 50));
-    userScroll(viewport, 4402);
+    userScroll(viewport, 4398);
     userScroll(viewport, 4300); // Upward past the threshold: follow disarms.
 
     list.setItems(range(0, 52), { anchor: "end" });
@@ -447,16 +473,16 @@ describe("virtual list runtime", () => {
 
   it("disengages follow on cumulative sub-pixel upward drift", () => {
     const { viewport, list } = mount(range(0, 50));
-    userScroll(viewport, 4402);
+    userScroll(viewport, 4398);
     // -0.75px per event: no single step exceeds the threshold, but the
     // cumulative distance from the gesture's high-water mark does.
-    for (const top of [4401.25, 4400.5, 4399.75, 4399, 4398.25, 4397.5]) {
+    for (const top of [4397.25, 4396.5, 4395.75, 4395, 4394.25, 4393.5]) {
       userScroll(viewport, top);
     }
 
     settleGesture(viewport);
     // Follow disengaged: settle preserves the position, no snap to the end.
-    expect(viewport.scrollTop).toBe(4397.5);
+    expect(viewport.scrollTop).toBe(4393.5);
     expect(list.state.atEnd).toBe(false);
   });
 
@@ -494,7 +520,7 @@ describe("virtual list runtime", () => {
     });
     listRef = list;
 
-    userScroll(viewport, 9402);
+    userScroll(viewport, 9398);
     list.setItems(range(-5, 100)); // Structural: deferred during the gesture.
     // The command takes over: flushes the deferred snapshot (whose
     // publication queues the newer command), then runs — the newer command
@@ -571,7 +597,7 @@ describe("virtual list runtime", () => {
     withControlledResizeObserver((ro) => {
       const { viewport, list } = mount(range(0, 50));
       void list.scrollTo("m30");
-      userScroll(viewport, 3002);
+      userScroll(viewport, 3005);
 
       // A mounted row wholly above the viewport grows 100 → 300 mid-gesture.
       ro.fire(0, rowElement(viewport, "msg 25"), 300);
@@ -584,14 +610,14 @@ describe("virtual list runtime", () => {
       );
       // ...with NO scrollTop write — the anchor delta became a canvas
       // translation of the opposite sign (the gesture shift).
-      expect(viewport.scrollTop).toBe(3002);
+      expect(viewport.scrollTop).toBe(3005);
       const canvas = viewport.firstElementChild as HTMLElement;
       expect(canvas.style.transform).toBe("translateY(-200px)");
 
       settleGesture(viewport);
       // Settle exchanges the shift for one scrollTop write in the same
       // frame — visually a no-op — and the flush preserves the position.
-      expect(viewport.scrollTop).toBe(3002 + 200);
+      expect(viewport.scrollTop).toBe(3005 + 200);
       expect(canvas.style.transform).toBe("");
     });
   });
@@ -631,7 +657,7 @@ describe("virtual list runtime", () => {
     vi.useFakeTimers();
     try {
       const { viewport, list } = mount(range(0, 100));
-      userScroll(viewport, 9402);
+      userScroll(viewport, 9398);
 
       const first = list.scrollTo("start", { behavior: "smooth" }); // Takeover.
       vi.advanceTimersByTime(48);
@@ -700,7 +726,7 @@ describe("virtual list runtime", () => {
 
   it("resolves false when the takeover-flushed snapshot removed the target", async () => {
     const { viewport, list } = mount(range(0, 50));
-    userScroll(viewport, 4402);
+    userScroll(viewport, 4398);
 
     list.setItems(range(0, 49)); // Structural: removes m49, deferred.
     // The takeover flushes the snapshot first; the command's target is gone.
@@ -716,7 +742,7 @@ describe("virtual list runtime", () => {
       withControlledResizeObserver((ro) => {
         const { viewport, list } = mount(range(0, 50));
         void list.scrollTo("m30");
-        userScroll(viewport, 3002);
+        userScroll(viewport, 3005);
         const observedBefore = ro.observed(0).length;
 
         // Shrinking a row above the anchor compensates the scroll upward,

@@ -119,7 +119,6 @@ let nextResponse = 0;
 let loadedStart = 0;
 let loadingTop = false;
 let sendGlideActive = false;
-let topNavigationToken = 0;
 const htmlCache = new Map<string, string>();
 // Live markdown-viewer instances for streaming rows, keyed by row element so
 // remounts and replacements never collide; the runtime's onUnmount callback
@@ -612,56 +611,17 @@ function loadOlderChunk(): Promise<void> {
   return activeLoad;
 }
 
+// onReachStart initiates loading; the prepend itself flows through
+// setItems, which the runtime defers while a scroll phase (gesture or
+// glide) is active and commits — anchored, without movement — when the
+// phase truly settles. The demo never orchestrates scroll phases.
 function loadOlderMessages(): void {
-  // One owner at a time: while a top navigation runs, it drives the loads
-  // itself between glides — a reach-start prepend mid-glide would yank the
-  // scroll position out from under the animation.
-  if (topNavigationActive || activeLoad) return;
+  if (activeLoad) return;
   if (!canLoadOlderMessages()) {
     if (topBoundaryLoadSeen) setEdgeState("no-more");
     return;
   }
   void loadOlderChunk();
-}
-
-// The scroll-top command: ONE continuous journey. While the glide runs, a
-// prefetch loop keeps loading older chunks; each prepend preserves the
-// reading position (I1), which the glide absorbs by rebasing — so the trip
-// reads as a single motion, not glide → load → glide steps. The command
-// completion loop is the safety net for a glide that lands on a partial
-// window's top between chunks: it re-issues the command until the true top,
-// a user interruption, or a newer navigation (token). While the navigation
-// runs it is the only scrollback loader (see above).
-let topNavigationActive = false;
-
-async function navigateToTop(): Promise<void> {
-  if (topNavigationActive) return; // Already heading there.
-  const token = ++topNavigationToken;
-  topNavigationActive = true;
-  let navigating = true;
-  try {
-    void (async () => {
-      while (
-        navigating &&
-        token === topNavigationToken &&
-        canLoadOlderMessages()
-      ) {
-        await loadOlderChunk();
-      }
-    })();
-    while (virtualList) {
-      const completed = await virtualList.scrollTo("start", {
-        behavior: "smooth",
-      });
-      if (!completed || token !== topNavigationToken) return;
-      if (!canLoadOlderMessages()) return; // The true top.
-      await loadOlderChunk();
-      if (token !== topNavigationToken) return;
-    }
-  } finally {
-    navigating = false;
-    topNavigationActive = false;
-  }
 }
 
 // --- Conversations ----------------------------------------------------------
@@ -851,10 +811,8 @@ function seedActiveConversation(): void {
 // other conversation with one explicitly end-anchored snapshot.
 function reloadConversation(): void {
   if (streamAbort) cancelStream(streamAbort);
-  // A conversation swap supersedes any in-flight top navigation, and the
-  // end command below cancels its active glide so it cannot keep scrolling
-  // into the new conversation.
-  topNavigationToken++;
+  // The end command below cancels any in-flight glide so it cannot keep
+  // scrolling into the new conversation.
   seedActiveConversation();
   setEdgeState("hidden");
   pushItems("end");
@@ -1459,7 +1417,6 @@ async function handleSend(): Promise<void> {
 
   const abort: StreamAbort = { cancelled: false, onCancel: new Set() };
   streamAbort = abort;
-  topNavigationToken++; // A send supersedes an in-flight top navigation.
   setStreamingUI(true);
   let assistantId: number | null = null;
   const shouldFlyIn = transcript.length === 0;
@@ -1571,14 +1528,15 @@ initAISettingsPanel({
 });
 
 scrollTopBtn.addEventListener("click", () => {
-  void navigateToTop();
+  // Targets the currently committed snapshot only. If older history loads
+  // while the glide runs, the prepend commits — without movement — when
+  // the phase settles; another press continues from there.
+  void virtualList?.scrollTo("start", { behavior: "smooth" });
 });
 
 scrollBottomBtn.addEventListener("click", () => {
-  // A bottom command supersedes any in-flight top-navigation chain. Landing
-  // at the end re-engages end-follow, so a click during a stream resumes
-  // following (the runtime's follow state, not demo bookkeeping).
-  topNavigationToken++;
+  // Landing at the end re-engages end-follow, so a click during a stream
+  // resumes following (the runtime's follow state, not demo bookkeeping).
   void virtualList?.scrollTo("end", { behavior: "smooth" });
 });
 
