@@ -2,28 +2,38 @@ import { type AnchorPolicy, Geometry } from "./geometry";
 import { createGestureSensor, type GestureSensor } from "./gesture";
 import { type Glide, glideDuration, startGlide } from "./glide";
 
-// The lean runtime: one commit pipeline over the geometry kernel, one scroll
+// The runtime: one commit pipeline over the geometry kernel, one scroll
 // arbiter, a keyed DOM renderer, and the gesture sensor gating when commits
 // may move the viewport.
 //
 // Every logical update runs as one transaction (I4):
 //   capture anchor intent → mutate geometry → resolve one absolute scroll
-//   target → apply (canvas size, one optional scroll write, mount/update/
-//   position/unmount by key) → publish events.
-// Host callbacks run only after the commit; API calls made from them are
-// queued as the next transaction's input — there is no reentrancy machinery
-// because there is no reentrancy.
+//   target → apply (canvas size, one arbitrated scroll write, keyed
+//   mount/update/position/unmount) → publish events.
+// The transaction guard stays up through DOM reconciliation AND publication:
+// API calls made from host callbacks queue and run after the callbacks
+// return, as the next transactions' input.
+//
+// The arbiter is the only scrollTop writer, with the documented precedence:
+// an active user gesture refuses all writes; explicit commands issued during
+// a gesture defer to settle (where they outrank the anchors); end-anchor and
+// position-anchor targets come from the kernel's resolve.
+//
+// End-follow is explicit state: engaged when a commit lands at the end,
+// disengaged when the user scrolls upward, re-engaged when they return to
+// the end. A gesture suppresses the write of an end-resolved commit but not
+// its intent — the settle flush runs with the "end" policy and lands
+// exactly (I2).
 //
 // ResizeObserver measurements commit synchronously inside the observer
 // callback — after layout, before paint — so a discrete in-row height change
 // lands in the same painted frame (I6). During an active user gesture,
-// structural updates (non-appends) and above-viewport measurements are
-// deferred and flushed as one transaction on settle; everything else commits
-// immediately with no scroll write, since its resolved target is the current
-// position.
+// structural updates and above-viewport corrections defer and flush at
+// settle; once anything structural is deferred, every later snapshot
+// replaces it (latest wins).
 //
 // Edge chrome does not exist here (I3): `onReachStart/End` are proximity
-// signals; loaders are the host's overlays.
+// signals with entry/exit hysteresis; loaders are the host's overlays.
 
 export interface VirtualListOptions<T> {
   items: readonly T[];
@@ -57,7 +67,8 @@ export interface VirtualList<T> {
 }
 
 const DEFAULT_ESTIMATE_PX = 100;
-const EDGE_PROXIMITY_PX = 800;
+const EDGE_ENTER_PX = 800;
+const EDGE_EXIT_PX = 1200;
 const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
@@ -92,6 +103,7 @@ export function createVirtualList<T>(
   viewport.appendChild(canvas);
 
   const mounted = new Map<string, HTMLElement>();
+  const renderedItem = new Map<string, T>();
   const keyByElement = new WeakMap<HTMLElement, string>();
 
   // --- Deferred work (flushed as one transaction on gesture settle) ---------
@@ -100,11 +112,17 @@ export function createVirtualList<T>(
     anchor: AnchorPolicy;
   } | null = null;
   const deferredMeasures = new Map<string, number>();
+  let pendingCommand: {
+    target: string;
+    options: { align?: "start"; behavior?: "auto" | "smooth" };
+  } | null = null;
   const afterCommit: (() => void)[] = [];
 
   let inTransaction = false;
   let disposed = false;
   let glide: Glide | null = null;
+  let following = false;
+  let lastScrollTop = 0;
   let reachStartArmed = true;
   let reachEndArmed = true;
   let lastState: VirtualListState | null = null;
@@ -117,14 +135,33 @@ export function createVirtualList<T>(
     return { scrollTop: viewport.scrollTop, height: viewportHeight() };
   }
 
+  function atEndTop(top: number): boolean {
+    return geometry.maxScrollTop(viewportHeight()) - top <= AT_EDGE_EPSILON_PX;
+  }
+
+  /** I4: while a transaction is open, API calls queue as its successors. */
+  function enqueueDuringCommit(work: () => void): boolean {
+    if (!inTransaction) return false;
+    afterCommit.push(work);
+    return true;
+  }
+
+  // --- The scroll arbiter (the only scrollTop writer) -----------------------
+  /** Returns false when an active user gesture owns the viewport. */
+  function arbitratedWrite(top: number): boolean {
+    if (sensor.active) return false;
+    if (Math.abs(top - viewport.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
+      sensor.expectWrite(top);
+      viewport.scrollTop = top;
+      lastScrollTop = top;
+    }
+    return true;
+  }
+
   // --- The commit pipeline --------------------------------------------------
   function transaction(policy: AnchorPolicy, mutate: () => void): void {
     if (disposed) return;
-    if (inTransaction) {
-      // I4: calls from host callbacks are the next transaction's input.
-      afterCommit.push(() => transaction(policy, mutate));
-      return;
-    }
+    if (enqueueDuringCommit(() => transaction(policy, mutate))) return;
     inTransaction = true;
     try {
       const capture = geometry.capture(currentViewport(), policy);
@@ -132,19 +169,16 @@ export function createVirtualList<T>(
       const commit = geometry.resolve(capture);
 
       canvas.style.height = `${commit.totalSize}px`;
-      if (
-        !sensor.active &&
-        Math.abs(commit.scrollTop - viewport.scrollTop) >
-          SCROLL_WRITE_EPSILON_PX
-      ) {
-        sensor.expectWrite(commit.scrollTop);
-        viewport.scrollTop = commit.scrollTop;
+      if (arbitratedWrite(commit.scrollTop)) {
+        following = atEndTop(commit.scrollTop);
       }
+      // A gesture-refused write keeps its intent: `following` is untouched
+      // and the settle flush lands on the end exactly (I2).
       renderWindow();
+      publish();
     } finally {
       inTransaction = false;
     }
-    publish();
     while (afterCommit.length > 0) afterCommit.shift()?.();
   }
 
@@ -162,6 +196,7 @@ export function createVirtualList<T>(
         itemResizeObserver.unobserve(element);
         element.remove();
         mounted.delete(key);
+        renderedItem.delete(key);
       }
     }
 
@@ -170,37 +205,36 @@ export function createVirtualList<T>(
       if (item === undefined) continue;
       let element = mounted.get(key);
       if (element === undefined) {
-        element = mountElement(key, render(item));
+        element = adoptElement(key, render(item));
+        canvas.appendChild(element);
+        itemResizeObserver.observe(element);
+        renderedItem.set(key, item);
+      } else if (renderedItem.get(key) !== item) {
+        // Changed identity (streaming updates): re-render in place. A
+        // replacement element takes over the row's bookkeeping and is
+        // positioned below like any other — inside the transaction.
+        const next = render(item, element);
+        renderedItem.set(key, item);
+        if (next !== element) {
+          itemResizeObserver.unobserve(element);
+          keyByElement.delete(element);
+          element.replaceWith(next);
+          element = adoptElement(key, next);
+          itemResizeObserver.observe(element);
+        }
       }
       element.style.transform = `translateY(${geometry.offsetOf(key)}px)`;
     }
   }
 
-  function mountElement(key: string, element: HTMLElement): HTMLElement {
+  function adoptElement(key: string, element: HTMLElement): HTMLElement {
     element.style.position = "absolute";
     element.style.top = "0";
     element.style.left = "0";
     element.style.right = "0";
     mounted.set(key, element);
     keyByElement.set(element, key);
-    canvas.appendChild(element);
-    itemResizeObserver.observe(element);
     return element;
-  }
-
-  /** Re-render rows whose item object changed identity (streaming updates). */
-  function updateChangedRows(previous: Map<string, T>): void {
-    for (const [key, element] of mounted) {
-      const item = itemByKey.get(key);
-      if (item === undefined || previous.get(key) === item) continue;
-      const next = render(item, element);
-      if (next !== element) {
-        itemResizeObserver.unobserve(element);
-        keyByElement.delete(element);
-        element.replaceWith(next);
-        mountElement(key, next);
-      }
-    }
   }
 
   // --- Measurements (I6: same painted frame) --------------------------------
@@ -247,25 +281,40 @@ export function createVirtualList<T>(
     },
     onSettle: () => {
       if (disposed) return;
+      // Returning to the end by hand re-engages following.
+      if (atEndTop(viewport.scrollTop)) following = true;
       const pendingItems = deferredItems;
       deferredItems = null;
-      const previous = itemByKey;
-      // One flush transaction: structural update, deferred measures, and the
-      // reserve re-evaluation (released reserve drains once out of view).
-      transaction(pendingItems?.anchor ?? "viewport", () => {
-        if (pendingItems) adoptItems(pendingItems.items);
-        for (const [key, height] of deferredMeasures) {
-          geometry.measure(key, height);
-        }
-        deferredMeasures.clear();
-      });
-      if (pendingItems) updateChangedRows(previous);
+      // One flush transaction: the deferred structural update, deferred
+      // measures, reserve re-evaluation (released reserve drains once out
+      // of view) — and the suppressed end-follow catch-up (I2).
+      transaction(
+        pendingItems?.anchor ?? (following ? "end" : "viewport"),
+        () => {
+          if (pendingItems) adoptItems(pendingItems.items);
+          for (const [key, height] of deferredMeasures) {
+            geometry.measure(key, height);
+          }
+          deferredMeasures.clear();
+        },
+      );
+      // A command deferred during the gesture executes now, outranking the
+      // anchor policies it settled with.
+      const command = pendingCommand;
+      pendingCommand = null;
+      if (command) scrollTo(command.target, command.options);
     },
   });
 
   viewport.addEventListener("scroll", handleScroll, { passive: true });
   function handleScroll(): void {
     if (disposed || inTransaction) return;
+    const top = viewport.scrollTop;
+    if (sensor.active && top < lastScrollTop - AT_EDGE_EPSILON_PX) {
+      // The user scrolled upward: follow disengages until they return.
+      following = false;
+    }
+    lastScrollTop = top;
     // Geometry is unchanged by scrolling; only the window and signals move.
     renderWindow();
     publish();
@@ -293,28 +342,43 @@ export function createVirtualList<T>(
     lastState = state;
     if (changed) options.onState?.(state);
 
-    // Proximity signals, re-armed after leaving the zone (I3).
-    const nearStart = vp.scrollTop <= EDGE_PROXIMITY_PX;
-    const nearEnd = maxTop - vp.scrollTop <= EDGE_PROXIMITY_PX;
-    if (nearStart && reachStartArmed) {
+    // Proximity signals with entry/exit hysteresis (I3): fire on entering
+    // the near zone, re-arm only after leaving the wider exit zone — so
+    // oscillation on the boundary cannot refire.
+    const startDistance = vp.scrollTop;
+    const endDistance = maxTop - vp.scrollTop;
+    if (startDistance <= EDGE_ENTER_PX && reachStartArmed) {
       reachStartArmed = false;
       options.onReachStart?.();
-    } else if (!nearStart) {
+    } else if (startDistance > EDGE_EXIT_PX) {
       reachStartArmed = true;
     }
-    if (nearEnd && reachEndArmed) {
+    if (endDistance <= EDGE_ENTER_PX && reachEndArmed) {
       reachEndArmed = false;
       options.onReachEnd?.();
-    } else if (!nearEnd) {
+    } else if (endDistance > EDGE_EXIT_PX) {
       reachEndArmed = true;
     }
   }
 
   // --- Data -----------------------------------------------------------------
   function adoptItems(next: readonly T[]): void {
-    items = [...next];
-    itemByKey = new Map(items.map((item) => [keyOf(item), item]));
-    geometry.setKeys(items.map(keyOf));
+    const nextItems = [...next];
+    const nextByKey = new Map(nextItems.map((item) => [keyOf(item), item]));
+    // The estimator closure reads itemByKey, so validation must see the
+    // candidate snapshot — swap in, validate, roll back on failure, keeping
+    // runtime data and geometry coherent either way.
+    const previousItems = items;
+    const previousByKey = itemByKey;
+    items = nextItems;
+    itemByKey = nextByKey;
+    try {
+      geometry.setKeys(nextItems.map(keyOf));
+    } catch (error) {
+      items = previousItems;
+      itemByKey = previousByKey;
+      throw error;
+    }
   }
 
   function isEndCompatible(next: readonly T[]): boolean {
@@ -330,15 +394,16 @@ export function createVirtualList<T>(
     setOptions: { anchor?: AnchorPolicy } = {},
   ): void {
     if (disposed) return;
+    if (enqueueDuringCommit(() => setItems(next, setOptions))) return;
     const anchor = setOptions.anchor ?? "auto";
-    if (sensor.active && !isEndCompatible(next)) {
-      // Structural change mid-gesture: latest snapshot wins at settle.
+    // Mid-gesture, structural changes defer — and once anything is deferred,
+    // every later snapshot replaces it: a newer end-compatible update must
+    // not leapfrog an older structural one (latest wins at settle).
+    if (sensor.active && (deferredItems !== null || !isEndCompatible(next))) {
       deferredItems = { items: next, anchor };
       return;
     }
-    const previous = itemByKey;
     transaction(anchor, () => adoptItems(next));
-    updateChangedRows(previous);
   }
 
   // --- Commands -------------------------------------------------------------
@@ -347,6 +412,13 @@ export function createVirtualList<T>(
     scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" } = {},
   ): void {
     if (disposed) return;
+    if (enqueueDuringCommit(() => scrollTo(target, scrollOptions))) return;
+    if (sensor.active) {
+      // The user owns the viewport (documented precedence); the command
+      // defers to settle, latest wins.
+      pendingCommand = { target, options: scrollOptions };
+      return;
+    }
     glide?.cancel();
 
     // A keyed target with align:"start" reserves the shortfall (I5) inside
@@ -366,9 +438,8 @@ export function createVirtualList<T>(
     };
 
     if (scrollOptions.behavior !== "smooth") {
-      const top = destination();
-      sensor.expectWrite(top);
-      viewport.scrollTop = top;
+      arbitratedWrite(destination());
+      following = atEndTop(viewport.scrollTop);
       renderWindow();
       publish();
       return;
@@ -378,15 +449,14 @@ export function createVirtualList<T>(
       {
         read: () => viewport.scrollTop,
         write: (top) => {
-          sensor.expectWrite(top);
-          viewport.scrollTop = top;
-          renderWindow();
+          if (arbitratedWrite(top)) renderWindow();
         },
         target: destination,
       },
       glideDuration(destination() - viewport.scrollTop, viewportHeight()),
       () => {
         glide = null;
+        following = atEndTop(viewport.scrollTop);
         publish();
       },
     );
@@ -394,6 +464,7 @@ export function createVirtualList<T>(
 
   // --- Boot -----------------------------------------------------------------
   transaction("end", () => adoptItems(options.items));
+  lastScrollTop = viewport.scrollTop;
 
   return {
     setItems,
@@ -410,6 +481,7 @@ export function createVirtualList<T>(
       viewport.removeEventListener("scroll", handleScroll);
       canvas.remove();
       mounted.clear();
+      renderedItem.clear();
     },
   };
 

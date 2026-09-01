@@ -98,6 +98,19 @@ gesture sensor (browser-adaptive) gates when commits may apply
 
 One scroll arbiter owns every scrollTop write, one policy per frame:
 user gesture > explicit command > end-anchor > position-anchor.
+An explicit command issued while a gesture is active is deferred (latest
+wins) and executes at settle, where it outranks the anchor policies; it is
+never dropped and never fights the user's finger.
+
+End-follow is explicit runtime state, not a per-commit re-derivation:
+engaged when a commit lands at the end, disengaged when the user scrolls
+upward, re-engaged when they return to the end. A gesture may refuse an
+end-resolved commit's write, but the intent survives and the settle flush
+lands on the (new) end exactly (I2).
+
+`onReachStart/End` fire on entering an 800px proximity zone and re-arm only
+after leaving a wider 1200px exit zone — boundary oscillation inside the
+hysteresis band cannot refire them (I3).
 
 ## Verification gates
 
