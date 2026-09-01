@@ -62,10 +62,14 @@ as preserved primitives, with the smaller API built around them.
    `scrollingUpdates` selects the policy: `"same-height"` (default,
    promotion as above), `"freeze"` (every phase-time update held until
    settle), or `"live"` (rendered in place on the committed element at
-   once; geometry stays immutable, so the slot clips growth and gaps
-   shrinkage until settle — the most responsive stream, with visibly cut
-   or blank lines under a scroll; a product choice, not the safe one).
-   Structural changes are settle-gated in every mode.
+   once, and its height committed at once whenever no scroll write is
+   needed for it — the row is at or below the viewport's anchor row, so
+   only it and what lies below it change; the complete updated content is
+   always visible, never a cut or blank line. Rows strictly above the
+   anchor are off-screen and commit at settle or the moment the viewport
+   reaches them. The trade-off is a scroll range that changes under a
+   live scroll.) Structural changes are settle-gated in every mode. The
+   streaming chat uses `"live"` for its streaming last message.
    While the surface is idle, the update renders in place and commits
    immediately (same pipeline). Changes made outside `setItems` — direct
    DOM mutation of a mounted row, a late resource growing an element — are

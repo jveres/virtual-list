@@ -64,7 +64,8 @@ const STREAM_CONCURRENCY = 5;
 const TOGGLE_INTERVAL_MS = 900;
 const WIDTH_JITTER_MS = 2500;
 const INPUT_WINDOW_MS = 120;
-const EXPECTED_WRITE_TTL_MS = 400;
+/** Mirrors the controller: a bounded set of expected targets, no expiry. */
+const EXPECTED_WRITE_MAX = 8;
 const QUIET_FRAMES = 3;
 const PX_EPSILON = 1;
 /**
@@ -396,7 +397,9 @@ let lastWheelAt = Number.NEGATIVE_INFINITY;
 let lastKeyAt = Number.NEGATIVE_INFINITY;
 let lastNativeScrollAt = Number.NEGATIVE_INFINITY;
 let frameHadNativeScroll = false;
-const expectedWrites: { top: number; at: number }[] = [];
+const expectedWrites: number[] = [];
+/** Advances on every runtime scrollTop write. */
+let writeSerial = 0;
 const runtimeWriteTimes: number[] = [];
 let commandIssuing = false;
 let smoothPending = 0;
@@ -450,7 +453,9 @@ function installWriteHook(): void {
       const now = performance.now();
       set.call(this, value);
       const actual = get.call(this) as number;
-      expectedWrites.push({ top: actual, at: now });
+      expectedWrites.push(actual);
+      if (expectedWrites.length > EXPECTED_WRITE_MAX) expectedWrites.shift();
+      writeSerial += 1;
       runtimeWriteTimes.push(now);
       if (runtimeWriteTimes.length > 4) runtimeWriteTimes.shift();
       if (verbose()) log(`write scrollTop=${Math.round(actual)}`);
@@ -526,20 +531,17 @@ function traceInput(): void {
     () => {
       const now = performance.now();
       const top = viewport.scrollTop;
-      while (
-        expectedWrites.length > 0 &&
-        now - (expectedWrites[0]?.at ?? now) > EXPECTED_WRITE_TTL_MS
-      ) {
-        expectedWrites.shift();
-      }
       const index = expectedWrites.findIndex(
-        (write) => Math.abs(write.top - top) <= PX_EPSILON,
+        (target) => Math.abs(target - top) <= PX_EPSILON,
       );
       if (index >= 0) {
         expectedWrites.splice(0, index + 1);
         noteInput(`scroll top=${Math.round(top)} (runtime write)`);
         return;
       }
+      // Unmatched: the user moved the viewport; every expected target is
+      // stale now (the controller clears its targets the same way).
+      expectedWrites.length = 0;
       lastNativeScrollAt = now;
       frameHadNativeScroll = true;
       noteInput(`scroll top=${Math.round(top)}`);
@@ -764,13 +766,19 @@ function createPaintObserver(): void {
       // held or not. The one thing the runtime cannot freeze is a width
       // change landing mid-phase (the browser reflows mounted rows live).
       if (widthChangedInPhase) continue;
-      clippedPaints += 1;
-      // "live" mode accepts exactly this while held: the row was mutated
-      // in place and its height waits for settle. Counted, not reported.
-      if (scrollingMode() === "live" && stateHeld) {
-        if (verbose()) log(`live clip #${key} (held)`);
+      // "live": a dirty row strictly above the anchor waits off-screen —
+      // its bottom is above the viewport top, so nothing of it paints.
+      // Any row with pixels on screen must agree with its slot, held or
+      // not: this is the browser-facing regression for a wrapped line
+      // being visible before settlement.
+      if (
+        scrollingMode() === "live" &&
+        slot.getBoundingClientRect().bottom <=
+          viewport.getBoundingClientRect().top + 0.5
+      ) {
         continue;
       }
+      clippedPaints += 1;
       violation(
         "L",
         `#${key} paints ${contentHeight > slotHeight ? "clipped" : "gapped"} (slot ${slotHeight.toFixed(1)}px, content ${contentHeight.toFixed(1)}px, held=${stateHeld})`,
@@ -832,7 +840,16 @@ const knownSlots = new WeakSet<Element>();
 let canvasObserver: MutationObserver | null = null;
 /** Content serial each slot's last committed height was observed at. */
 const committedSerial = new Map<string, number>();
-let anchorRecord: { key: string; top: number; atEnd: boolean } | null = null;
+interface AnchorRecord {
+  key: string;
+  top: number;
+  atEnd: boolean;
+  /** Viewport position and write serial at capture: a different scrollTop
+   * with the same serial means the viewport moved natively since. */
+  scrollTop: number;
+  writeSerial: number;
+}
+let anchorRecord: AnchorRecord | null = null;
 
 function parseHeight(style: string | null): number | null {
   const match =
@@ -931,10 +948,14 @@ function classifyBatch(records: MutationRecord[]): void {
   }
 
   commits += 1;
-  // Idle streaming commits every few frames; log only settle commits (the
-  // ones that cleared a held phase) unless verbose.
-  if (verbose() || heldCleared) {
-    heldCleared = false;
+  // The commit that cleared a held phase is the settle commit: the one
+  // permitted commit at the end of a programmatic phase (a landed glide's
+  // promise resolves only after it, so smoothPending is still up).
+  const settleCommit = heldCleared;
+  heldCleared = false;
+  // Idle streaming commits every few frames; log only settle commits
+  // unless verbose.
+  if (verbose() || settleCommit) {
     log(
       `COMMIT canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} · ${heightChanges.length} heights · ${offsetChanges} offsets · slots +${added.size}/−${removed}`,
       "good",
@@ -948,7 +969,7 @@ function classifyBatch(records: MutationRecord[]): void {
         "G",
         `geometry changed during native scroll (${heightChanges.length} heights, ${offsetChanges} offsets, canvas ${canvasChange ? "changed" : "same"}) — ${evidence(now)}`,
       );
-    } else if (glideMoving(now)) {
+    } else if (!settleCommit && glideMoving(now)) {
       violation(
         "G",
         `geometry changed while a glide was still moving — ${evidence(now)}`,
@@ -984,6 +1005,10 @@ function classifyBatch(records: MutationRecord[]): void {
   }
   expectAnchoredCommit = false;
   checkOverlap();
+  // Consecutive commits before the next frame (an exempt anchor shrink,
+  // then another commit 7ms later) must each be judged against the
+  // geometry they started from.
+  anchorRecord = captureAnchor();
   scheduleStatus();
 }
 
@@ -1039,7 +1064,7 @@ function atEndNow(): boolean {
   );
 }
 
-function captureAnchor(): { key: string; top: number; atEnd: boolean } | null {
+function captureAnchor(): AnchorRecord | null {
   const viewportTop = viewport.getBoundingClientRect().top;
   let best: { key: string; top: number } | null = null;
   for (const { slot, key } of mountedSlots()) {
@@ -1048,7 +1073,14 @@ function captureAnchor(): { key: string; top: number; atEnd: boolean } | null {
     const top = rect.top - viewportTop;
     if (best === null || top < best.top) best = { key, top };
   }
-  return best === null ? null : { ...best, atEnd: atEndNow() };
+  return best === null
+    ? null
+    : {
+        ...best,
+        atEnd: atEndNow(),
+        scrollTop: viewport.scrollTop,
+        writeSerial,
+      };
 }
 
 function checkAnchor(
@@ -1057,6 +1089,16 @@ function checkAnchor(
 ): void {
   const record = anchorRecord;
   if (!record) return;
+  // The viewport moved with no runtime write since the record — a native
+  // scroll whose event has not fired yet: the baseline is stale, and the
+  // batch is judged by G, not A.
+  if (
+    record.writeSerial === writeSerial &&
+    Math.abs(viewport.scrollTop - record.scrollTop) > ANCHOR_EPSILON
+  ) {
+    if (verbose()) log(`anchor baseline stale (native motion) — skipped`);
+    return;
+  }
   if (atEndNow()) {
     // End-pinned: legitimate for live growth/appends at the end — never
     // for a page load, which asked for the viewport anchor.

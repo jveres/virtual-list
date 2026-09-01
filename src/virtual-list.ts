@@ -93,10 +93,14 @@ export interface VirtualListOptions<T> {
    *   committed slot at once (no geometry change), otherwise held until
    *   settle — streaming keeps flowing until a wrap changes the height;
    * - "freeze": every such update is held until settle;
-   * - "live": rendered in place on the committed element right away, as
-   *   when idle. Geometry stays immutable, so the fixed slot clips growth
-   *   and gaps shrinkage until the height commits at settle — the most
-   *   responsive stream, with visibly cut or blank lines under a scroll.
+   * - "live": rendered in place on the committed element right away, and
+   *   its height commits right away too when nothing on screen has to
+   *   move for it — the row is at or below the viewport's anchor row, so
+   *   only it and what lies below it change, with no scroll write. The
+   *   complete updated content is always visible: never a cut or blank
+   *   line. A dirty row strictly above the anchor is entirely off-screen
+   *   and commits at settle (or the moment the viewport reaches it). The
+   *   trade-off is a scroll range that changes under a live scroll.
    */
   scrollingUpdates?: "freeze" | "same-height" | "live";
 }
@@ -483,10 +487,12 @@ export function createVirtualList<T>(
     }
     if (!changed) return;
     // Idle: commit in the same frame as the delivery (after layout, before
-    // paint — I6). Scrolling: the slot clips; the commit waits for settle.
+    // paint — I6). Scrolling: the commit waits for settle — except what
+    // "live" can commit without a scroll write, which commits now.
     inMeasurementDelivery = true;
     try {
       if (idle()) flush(null);
+      else if (liveUpdates) liveCommit();
       else publish();
     } finally {
       inMeasurementDelivery = false;
@@ -642,8 +648,8 @@ export function createVirtualList<T>(
           ) {
             if (idle() || liveUpdates) {
               // In place (a "live" phase-time render mutates the mounted
-              // element inside its fixed slot; the height commits at
-              // settle, the slot clips or gaps until then).
+              // element; liveCommit then commits its height at once when
+              // no scroll write is needed for it).
               const replacement = renderInPlaceOrReplace(committed, item);
               if (replacement !== null) newRows.set(key, replacement);
             } else {
@@ -747,6 +753,57 @@ export function createVirtualList<T>(
   }
 
   // --- The atomic commit ----------------------------------------------------
+  /**
+   * "live": commit the dirty heights that need NO scroll write — rows at
+   * or below the viewport's anchor row — right now, mid-phase. The anchor
+   * keeps its coordinate by construction (nothing above it changed), so
+   * nothing on screen moves except the changed row and what lies below
+   * it; the canvas grows or shrinks at the bottom. Rows strictly above the
+   * anchor are entirely off-screen and stay dirty for settle — or for the
+   * scroll event that makes one of them the anchor, which commits it
+   * before that frame paints. Structural snapshots stay settle-gated.
+   */
+  function liveCommit(): void {
+    if (disposed || !anyDirty) return;
+    guarded(() => {
+      commitEpoch += 1;
+      inFlush = true;
+      try {
+        const vp = viewportState();
+        const anchor = geometry.anchorAt(vp);
+        const anchorIndex = anchor === null ? 0 : geometry.indexOf(anchor.key);
+        const capture = geometry.capture(vp, "none");
+        let remaining = false;
+        let changed = false;
+        for (const row of rows.values()) {
+          if (!row.dirty) continue;
+          if (geometry.indexOf(row.key) < anchorIndex) {
+            remaining = true;
+            continue;
+          }
+          commitHeight(
+            row,
+            row.mounted ? measureInPlace(row) : remeasureDetached(row),
+          );
+          changed = true;
+        }
+        // Pending (uncommitted) rows are remeasured at their commit anyway.
+        anyDirty = remaining || (pending?.newRows.size ?? 0) > 0;
+        if (!changed) {
+          publish();
+          return;
+        }
+        const commit = geometry.resolve(capture);
+        canvas.style.height = `${commit.totalSize}px`;
+        // No scroll write, by construction.
+        reconcileWindow();
+        publish();
+      } finally {
+        inFlush = false;
+      }
+    });
+  }
+
   function flush(
     snapshot: Prepared<T> | null,
     policyOverride?: AnchorPolicy,
@@ -989,6 +1046,9 @@ export function createVirtualList<T>(
       // Geometry is untouchable here; only the window moves.
       guarded(() => {
         reconcileWindow();
+        // "live": a dirty row the viewport just reached commits before
+        // this frame paints.
+        if (liveUpdates && anyDirty) liveCommit();
         publish();
       });
     },
@@ -1070,6 +1130,7 @@ export function createVirtualList<T>(
         pending = prepared;
         publish();
       }
+      if (liveUpdates && !idle()) liveCommit();
     });
   }
 

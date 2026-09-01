@@ -394,25 +394,63 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.destroyed).toEqual([32]);
   });
 
-  it('scrollingUpdates: "live" renders a phase-time update in place; geometry waits for settle', () => {
+  it('scrollingUpdates: "live" commits a row at/below the anchor at once, with no scroll write', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
-    h.userScroll(3005);
+    h.userScroll(3005); // Anchor: m30.
     const row = h.rowElement("msg 32");
     const slot = h.slotOf(row);
     const next = [...initial];
     next[32] = message(32, "streamed live");
     h.heights.set(32, 300);
     h.list.setItems(next);
-    expect(row.textContent).toBe("streamed live"); // Mutated in place (clipped)...
-    expect(slot.style.height).toBe(`${ROW_H}px`); // ...geometry untouched.
-    expect(h.list.state.totalSize).toBe(50 * ROW_H);
-    expect(h.list.state.held).toBe(true);
-    expect(h.destroyed).toEqual([]);
-    h.settle();
+    // In place AND committed: the slot grew with its content, the canvas
+    // grew below, nothing above moved, no write.
+    expect(row.textContent).toBe("streamed live");
     expect(slot.style.height).toBe("300px");
     expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+    expect(h.slotOf(h.rowElement("msg 33")).style.transform).toBe(
+      `translateY(${33 * ROW_H + 200}px)`,
+    );
     expect(h.viewport.scrollTop).toBe(3005);
+    expect(h.list.state.held).toBe(false);
+    expect(h.destroyed).toEqual([]);
+  });
+
+  it('"live" keeps a dirty row above the anchor for settle, or for the scroll that reaches it', () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(3005); // Anchor: m30; m28 is mounted (overscan), above it.
+    const row = h.rowElement("msg 28");
+    const slot = h.slotOf(row);
+    const next = [...initial];
+    next[28] = message(28, "grown above");
+    h.heights.set(28, 300);
+    h.list.setItems(next);
+    // Committing it would need a scroll write: held, off-screen.
+    expect(slot.style.height).toBe(`${ROW_H}px`);
+    expect(h.list.state.totalSize).toBe(50 * ROW_H);
+    expect(h.list.state.held).toBe(true);
+    expect(h.viewport.scrollTop).toBe(3005);
+
+    // The user scrolls up into it: it is the anchor now and commits in
+    // that scroll event, before the frame paints — still no write.
+    h.userScroll(2850);
+    expect(slot.style.height).toBe("300px");
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+    expect(h.viewport.scrollTop).toBe(2850);
+    expect(h.list.state.held).toBe(false);
+  });
+
+  it('"live" still settle-gates structural changes', () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(3005);
+    h.list.setItems([...initial, ...range(50, 62)]);
+    expect(h.list.state.count).toBe(50);
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+    expect(h.list.state.count).toBe(62);
   });
 
   it("promotion leaves a pending page load (and its anchor) waiting for settle", () => {

@@ -345,7 +345,7 @@
           ><b>clipped</b><span class="val" id="s-clipped">0</span></div>
           <div
             class="cell"
-            title="ResizeObserver deliveries (post-runtime, pre-paint) in which a mounted row disagreed with its slot — a frame that paints clipped or gapped; must stay 0 in same-height and freeze; counts live mode's held-phase clipping without reporting it"
+            title="ResizeObserver deliveries (post-runtime, pre-paint) in which a mounted row disagreed with its slot — a frame that paints clipped or gapped; must stay 0 in every mode (live: off-screen rows above the anchor excepted)"
           ><b>clipped paints</b><span class="val" id="s-paints">0</span></div>
           <div class="cell"><b>streams</b><span class="val" id="s-streams">0</span></div>
           <div class="cell" title="Late images: waiting for their src / loaded"><b>images</b><span class="val" id="s-images">0/0</span></div>
@@ -361,7 +361,7 @@
             ><input type="checkbox" id="replace" />replace</label
           >
           <label
-            title="Phase-time same-key updates: same-height promotes equal-height updates at once; freeze holds every update until settle; live mutates in place and clips/gaps until settle (changing it resets the list)"
+            title="Phase-time same-key updates: same-height promotes equal-height updates at once; freeze holds every update until settle; live renders in place and commits the height at once when no scroll write is needed (changing it resets the list)"
             >scrolling
             <select id="scrolling-updates">
               <option value="same-height">same-height</option>
