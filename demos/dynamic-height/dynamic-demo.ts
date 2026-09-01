@@ -707,6 +707,13 @@ function onState(state: VirtualListState): void {
   scheduleStatus();
 }
 
+function scrollingMode(): "freeze" | "same-height" | "live" {
+  return mustGet<HTMLSelectElement>("scrolling-updates").value as
+    | "freeze"
+    | "same-height"
+    | "live";
+}
+
 function createList(): void {
   list = createVirtualList<Item>(viewport, {
     items,
@@ -716,9 +723,7 @@ function createList(): void {
     onReachStart: (context) => startLoad("start", context),
     onReachEnd: (context) => startLoad("end", context),
     onDestroy,
-    scrollingUpdates: mustGet<HTMLSelectElement>("scrolling-updates").value as
-      | "freeze"
-      | "same-height",
+    scrollingUpdates: scrollingMode(),
   });
   canvas = viewport.firstElementChild as HTMLElement | null;
   if (!canvas) throw new Error("runtime canvas not found");
@@ -760,6 +765,12 @@ function createPaintObserver(): void {
       // change landing mid-phase (the browser reflows mounted rows live).
       if (widthChangedInPhase) continue;
       clippedPaints += 1;
+      // "live" mode accepts exactly this while held: the row was mutated
+      // in place and its height waits for settle. Counted, not reported.
+      if (scrollingMode() === "live" && stateHeld) {
+        if (verbose()) log(`live clip #${key} (held)`);
+        continue;
+      }
       violation(
         "L",
         `#${key} paints ${contentHeight > slotHeight ? "clipped" : "gapped"} (slot ${slotHeight.toFixed(1)}px, content ${contentHeight.toFixed(1)}px, held=${stateHeld})`,

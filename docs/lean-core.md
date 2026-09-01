@@ -60,9 +60,12 @@ as preserved primitives, with the smaller API built around them.
    phase advance that off-scroller replacement in place; one fresh render
    per key per phase once held, one per update while promotable.
    `scrollingUpdates` selects the policy: `"same-height"` (default,
-   promotion as above) or `"freeze"` (every phase-time update held until
-   settle). There is no live-mutation mode. Structural changes are
-   settle-gated in both.
+   promotion as above), `"freeze"` (every phase-time update held until
+   settle), or `"live"` (rendered in place on the committed element at
+   once; geometry stays immutable, so the slot clips growth and gaps
+   shrinkage until settle — the most responsive stream, with visibly cut
+   or blank lines under a scroll; a product choice, not the safe one).
+   Structural changes are settle-gated in every mode.
    While the surface is idle, the update renders in place and commits
    immediately (same pipeline). Changes made outside `setItems` — direct
    DOM mutation of a mounted row, a late resource growing an element — are

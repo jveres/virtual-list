@@ -90,7 +90,7 @@ function mount(
     replaceOnRerender?: boolean;
     onState?: (state: VirtualListState) => void;
     onDestroy?: (element: HTMLElement) => void;
-    scrollingUpdates?: "freeze" | "same-height";
+    scrollingUpdates?: "freeze" | "same-height" | "live";
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     reach?: boolean | "start-only";
@@ -392,6 +392,27 @@ describe("v2 runtime — commits and slots", () => {
     h.settle();
     expect(h.rowElement("same-height token")).not.toBe(row);
     expect(h.destroyed).toEqual([32]);
+  });
+
+  it('scrollingUpdates: "live" renders a phase-time update in place; geometry waits for settle', () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(3005);
+    const row = h.rowElement("msg 32");
+    const slot = h.slotOf(row);
+    const next = [...initial];
+    next[32] = message(32, "streamed live");
+    h.heights.set(32, 300);
+    h.list.setItems(next);
+    expect(row.textContent).toBe("streamed live"); // Mutated in place (clipped)...
+    expect(slot.style.height).toBe(`${ROW_H}px`); // ...geometry untouched.
+    expect(h.list.state.totalSize).toBe(50 * ROW_H);
+    expect(h.list.state.held).toBe(true);
+    expect(h.destroyed).toEqual([]);
+    h.settle();
+    expect(slot.style.height).toBe("300px");
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+    expect(h.viewport.scrollTop).toBe(3005);
   });
 
   it("promotion leaves a pending page load (and its anchor) waiting for settle", () => {

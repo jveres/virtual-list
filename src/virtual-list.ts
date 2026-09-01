@@ -87,16 +87,18 @@ export interface VirtualListOptions<T> {
   settleStrategy?: VirtualListScrollSettleStrategy;
   /**
    * What happens to a same-key update that arrives during a scroll phase
-   * (structural changes are settle-gated in both modes):
+   * (structural changes are settle-gated in every mode):
    * - "same-height" (default): rendered fresh and premeasured off-scroller;
    *   if its height equals the committed height it is swapped into the
    *   committed slot at once (no geometry change), otherwise held until
    *   settle — streaming keeps flowing until a wrap changes the height;
-   * - "freeze": every such update is held until settle.
-   * There is no live-mutation mode: size-changing mutation of a mounted
-   * row produces clipped lines and gaps.
+   * - "freeze": every such update is held until settle;
+   * - "live": rendered in place on the committed element right away, as
+   *   when idle. Geometry stays immutable, so the fixed slot clips growth
+   *   and gaps shrinkage until the height commits at settle — the most
+   *   responsive stream, with visibly cut or blank lines under a scroll.
    */
-  scrollingUpdates?: "freeze" | "same-height";
+  scrollingUpdates?: "freeze" | "same-height" | "live";
 }
 
 export interface VirtualListState {
@@ -176,8 +178,9 @@ export function createVirtualList<T>(
   options: VirtualListOptions<T>,
 ): VirtualList<T> {
   const { key: keyOf, render } = options;
-  const promoteSameHeight =
-    (options.scrollingUpdates ?? "same-height") === "same-height";
+  const scrollingUpdates = options.scrollingUpdates ?? "same-height";
+  const promoteSameHeight = scrollingUpdates === "same-height";
+  const liveUpdates = scrollingUpdates === "live";
   const overscanPx = options.overscanPx ?? Math.max(300, viewport.clientHeight);
 
   // --- Committed state --------------------------------------------------------
@@ -637,7 +640,10 @@ export function createVirtualList<T>(
             committed.renderUnknown ||
             committed.renderedItem !== item
           ) {
-            if (idle()) {
+            if (idle() || liveUpdates) {
+              // In place (a "live" phase-time render mutates the mounted
+              // element inside its fixed slot; the height commits at
+              // settle, the slot clips or gaps until then).
               const replacement = renderInPlaceOrReplace(committed, item);
               if (replacement !== null) newRows.set(key, replacement);
             } else {
