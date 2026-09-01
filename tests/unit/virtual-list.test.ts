@@ -503,6 +503,29 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.list.state.held).toBe(false);
   });
 
+  it("drains work queued by onState of a committed transaction before surfacing its teardown failure (I4)", async () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let queued: Promise<boolean> | null = null;
+    const h = mount(range(0, 100), {
+      onDestroy: (element) => {
+        if (element.dataset.id === "0") throw new Error("teardown 0");
+      },
+      onState: (state) => {
+        if (state.count === 99 && queued === null) {
+          queued = listRef?.scrollTo("start") ?? null;
+        }
+      },
+    });
+    listRef = h.list;
+
+    // The removal commits fully (onState observes count 99) and its
+    // teardown throws: a committed transaction with teardown errors, not a
+    // failed one — the queued command must run, not be discarded.
+    expect(() => h.list.setItems(range(1, 100))).toThrow("teardown 0");
+    await expect(queued).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(0);
+  });
+
   it("hands off the new snapshot before surfacing a supersession teardown failure", () => {
     const h = mount(range(0, 30), {
       onDestroy: (element) => {
