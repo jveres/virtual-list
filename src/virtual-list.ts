@@ -879,12 +879,14 @@ export function createVirtualList<T>(
 
       const commit = geometry.resolve(capture);
       canvas.style.height = `${commit.totalSize}px`;
-      if (
-        Math.abs(commit.scrollTop - viewport.scrollTop) >
-        SCROLL_WRITE_EPSILON_PX
-      ) {
-        controller.recordProgrammaticScrollTop(commit.scrollTop);
-        viewport.scrollTop = commit.scrollTop;
+      // Engines quantize scroll positions differently: Chromium rounds a
+      // fractional write, WebKit floors it (the anchor then lands up to a
+      // full pixel short). Writing a whole pixel bounds the anchor's
+      // landing error to half a pixel everywhere.
+      const target = Math.round(commit.scrollTop);
+      if (Math.abs(target - viewport.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
+        controller.recordProgrammaticScrollTop(target);
+        viewport.scrollTop = target;
       }
       reconcileWindow();
       if (disposed) return;
@@ -1078,8 +1080,10 @@ export function createVirtualList<T>(
    */
   function interruptNativeScroll(): void {
     if (!controller.isUserScrollActive()) return;
-    const maxTop = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    const currentTop = Math.max(0, Math.min(viewport.scrollTop, maxTop));
+    // Write the CURRENT position back untouched: clamping it against a
+    // rounded scrollHeight moved the viewport by a pixel (scrollTop may be
+    // fractional where scrollHeight is not); the engine clamps writes.
+    const currentTop = viewport.scrollTop;
     controller.recordProgrammaticScrollTop(currentTop);
     viewport.scrollTop = currentTop;
     const previousOverflowY = viewport.style.overflowY;
@@ -1233,7 +1237,10 @@ export function createVirtualList<T>(
           guarded(() => {
             controller.recordProgrammaticScrollTop(top);
             viewport.scrollTop = top;
+            // Before this frame paints: mount what the write exposed, and
+            // ("live") commit any dirty row the viewport just reached.
             reconcileWindow();
+            if (liveUpdates && anyDirty) liveCommit();
           }),
         target: destination,
       },

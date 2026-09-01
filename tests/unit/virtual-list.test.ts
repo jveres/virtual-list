@@ -112,7 +112,11 @@ function mount(
     clientHeight: { get: () => VIEWPORT_H },
     clientWidth: { get: () => hooks.width?.() ?? 300 },
     offsetWidth: { get: () => 315 },
-    scrollHeight: { get: () => Math.max(VIEWPORT_H, canvasHeight()) },
+    // Engines report scrollHeight as a whole pixel while scrollTop may be
+    // fractional — the mismatch a takeover must not clamp against.
+    scrollHeight: {
+      get: () => Math.round(Math.max(VIEWPORT_H, canvasHeight())),
+    },
     scrollTop: {
       get: () => Math.max(0, Math.min(maxScrollTop(), scrollTop)),
       set: (next: number) => {
@@ -472,6 +476,23 @@ describe("v2 runtime — commits and slots", () => {
     h.settle();
     expect(h.list.state.count).toBe(62);
     expect(h.viewport.scrollTop).toBe(atEnd); // Its anchor survived too.
+  });
+
+  it("a takeover writes the current position back untouched, never clamped to a rounded scrollHeight", () => {
+    const initial = range(0, 50);
+    let width = 300;
+    const h = mount(initial, { width: () => width });
+    for (let id = 0; id < 50; id++) h.heights.set(id, 100.308); // Total 5015.4.
+    width = 280;
+    fireResize(1, h.viewport, VIEWPORT_H); // Re-measures everything (width path).
+    expect(h.list.state.totalSize).toBeCloseTo(5015.4, 6);
+
+    h.userScroll(3005);
+    h.userScroll(4415.4); // The true maximum; scrollHeight reads 5015.
+    expect(h.viewport.scrollTop).toBeCloseTo(4415.4, 6);
+    void h.list.scrollTo("end", { behavior: "smooth" }); // Takes over: interrupts.
+    // The clamped write (5015 − 600 = 4415) would have moved the viewport.
+    expect(h.viewport.scrollTop).toBeCloseTo(4415.4, 6);
   });
 
   it("freezes committed rows outside the window too: a mid-phase remount shows committed content", () => {

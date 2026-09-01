@@ -131,6 +131,8 @@ stat.strategy.textContent = detectScrollSettleStrategy();
 
 const traceRing: string[] = [];
 const startedAt = performance.now();
+// Tooling hook: automated runs read the full ring, not the trimmed DOM log.
+(window as unknown as { labTrace: string[] }).labTrace = traceRing;
 
 function log(message: string, cls?: "mark" | "good" | "warn" | "bad"): void {
   const line = `+${(performance.now() - startedAt).toFixed(0)}ms ${message}`;
@@ -592,6 +594,9 @@ let list: VirtualList<Item>;
 let canvas: HTMLElement | null = null;
 let booted = false;
 let commits = 0;
+let liveCommits = 0;
+/** writeSerial when the previous geometry batch was classified. */
+let writeSerialAtLastBatch = 0;
 let lastState: VirtualListState | null = null;
 const chunksLeft: Record<"start" | "end", number> = {
   start: MAX_CHUNKS,
@@ -879,6 +884,16 @@ function observeCanvas(target: HTMLElement): void {
 function classifyBatch(records: MutationRecord[]): void {
   if (!canvas) return;
   const now = performance.now();
+  // Synced on EVERY batch (window batches arrive on every scroll event),
+  // so a geometry batch knows whether a runtime write happened since.
+  const wroteScrollTop = writeSerial !== writeSerialAtLastBatch;
+  writeSerialAtLastBatch = writeSerial;
+  // The anchor row NOW (post-commit; a legitimate commit never moves the
+  // rows above it, so this is the pre-commit anchor as well).
+  const anchorNow = captureAnchor();
+  const anchorY = anchorNow
+    ? parseOffset(slotOf(anchorNow.key)?.getAttribute("style") ?? null)
+    : null;
   const added = new Set<Element>();
   let removed = 0;
   const firstOldStyle = new Map<Element, string | null>();
@@ -920,6 +935,7 @@ function classifyBatch(records: MutationRecord[]): void {
   let canvasChange: { from: number | null; to: number | null } | null = null;
   const heightChanges: { key: string; from: number; to: number }[] = [];
   let offsetChanges = 0;
+  let offsetsAboveAnchor = 0;
   for (const [target, oldStyle] of firstOldStyle) {
     const style = target.getAttribute("style");
     if (target === canvas) {
@@ -935,7 +951,14 @@ function classifyBatch(records: MutationRecord[]): void {
     if (heightFrom !== null && heightTo !== null && heightFrom !== heightTo) {
       heightChanges.push({ key, from: heightFrom, to: heightTo });
     }
-    if (parseOffset(oldStyle) !== parseOffset(style)) offsetChanges += 1;
+    const offsetFrom = parseOffset(oldStyle);
+    const offsetTo = parseOffset(style);
+    if (offsetFrom !== offsetTo) {
+      offsetChanges += 1;
+      if (anchorY !== null && offsetTo !== null && offsetTo < anchorY) {
+        offsetsAboveAnchor += 1;
+      }
+    }
   }
 
   const geometryChanged =
@@ -962,8 +985,31 @@ function classifyBatch(records: MutationRecord[]): void {
     );
   }
 
+  // "live": a commit under a live phase is legitimate iff it wrote no
+  // scrollTop and touched only rows at or below the anchor row (the
+  // anchor keeps its coordinate by construction; only what lies below
+  // it, and the canvas end, may change).
+  const liveCommitOk = (): boolean => {
+    if (scrollingMode() !== "live") return false;
+    // A glide writes every frame by design; under native input any write
+    // disqualifies the commit.
+    if (wroteScrollTop && smoothPending === 0) return false;
+    if (anchorY === null) return true; // No anchor on screen to protect.
+    for (const change of heightChanges) {
+      const y = parseOffset(slotOf(change.key)?.getAttribute("style") ?? null);
+      if (y !== null && y < anchorY) return false;
+    }
+    return offsetsAboveAnchor === 0;
+  };
+
   // G: geometry is immutable under a live scroll phase.
-  if (!commandIssuing) {
+  if (
+    !commandIssuing &&
+    (nativeActive(now) || glideMoving(now)) &&
+    liveCommitOk()
+  ) {
+    liveCommits += 1;
+  } else if (!commandIssuing) {
     if (nativeActive(now)) {
       violation(
         "G",
@@ -1211,7 +1257,8 @@ function scheduleStatus(): void {
     stat.heldDot.className = `dot${stateHeld ? " pending" : ""}`;
     stat.heldText.textContent = stateHeld ? "yes" : "no";
     stat.rows.textContent = `${lastState?.count ?? 0} / ${canvas?.children.length ?? 0}`;
-    stat.commits.textContent = String(commits);
+    stat.commits.textContent =
+      liveCommits > 0 ? `${commits} (${liveCommits} live)` : String(commits);
     stat.violations.textContent = String(violations);
     stat.violations.className = `val${violations > 0 ? " bad" : ""}`;
     stat.nodes.textContent = `${created}/${destroyed}/${created - destroyed}`;
