@@ -95,6 +95,50 @@ describe("input invariants", () => {
       expect(() => geometry.setKeys(["a"])).toThrow(/estimate/);
     }
   });
+
+  it("a rejected update leaves the previous geometry fully intact", () => {
+    const geometry = new Geometry((key) => {
+      if (key === "poison") throw new Error("estimate for poison");
+      return 100;
+    });
+    seed(geometry, keysRange(0, 10));
+    transact(geometry, viewport(0), "none", () => geometry.measure("m4", 250));
+    const contentBefore = geometry.contentSize;
+    const offsetBefore = geometry.offsetOf("m7");
+
+    expect(() => geometry.setKeys([...keysRange(0, 10), "poison"])).toThrow(
+      /poison/,
+    );
+    expect(() => geometry.setKeys(["m0", "m1", "m1"])).toThrow(/duplicate key/);
+
+    // Keys, index map, and tree still describe the old snapshot together.
+    expect(geometry.count).toBe(10);
+    expect(geometry.contentSize).toBe(contentBefore);
+    expect(geometry.offsetOf("m7")).toBe(offsetBefore);
+    expect(geometry.indexOf("poison")).toBe(-1);
+    // And the geometry remains fully operable.
+    transact(geometry, viewport(0), "none", () =>
+      geometry.setKeys(keysRange(0, 12)),
+    );
+    expect(geometry.count).toBe(12);
+  });
+
+  it("a measured key never consults the estimator again", () => {
+    let estimate = 100;
+    const geometry = new Geometry(() => estimate);
+    seed(geometry, keysRange(0, 3));
+
+    // Same-as-modeled measurement still freezes the height by identity.
+    transact(geometry, viewport(0), "none", () => geometry.measure("m1", 100));
+    expect(geometry.isMeasured("m1")).toBe(true);
+
+    estimate = 300;
+    transact(geometry, viewport(0), "none", () =>
+      geometry.setKeys(keysRange(0, 4)),
+    );
+    expect(geometry.heightOf("m1")).toBe(100);
+    expect(geometry.heightOf("m3")).toBe(300);
+  });
 });
 
 describe("offsets and totals", () => {
@@ -276,22 +320,32 @@ describe("auto policy", () => {
   });
 
   it("preserves the viewport for a replacement even at the end", () => {
-    const geometry = new Geometry(100);
+    const geometry = new Geometry((key) => (key === "mX" ? 400 : 100));
     seed(geometry, keysRange(0, 20));
     const vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
+    const anchor = geometry.anchorAt(vp);
+    expect(anchor).not.toBeNull();
+    const before =
+      geometry.offsetOf((anchor as { key: string }).key) - vp.scrollTop;
 
-    // Old last key survives, but the prefix changed: not an append.
-    const replaced = ["mX", ...keysRange(1, 20)];
+    // Replace the last row (after the anchor) with a materially larger one:
+    // the prefix up to it is unchanged, but the old keys are NOT a prefix of
+    // the new — this is a replacement, not an append.
+    const replaced = [...keysRange(0, 19), "mX"];
     const commit = transact(geometry, vp, "auto", () =>
       geometry.setKeys(replaced),
     );
-    expect(commit.scrollTop).not.toBeCloseTo(
-      geometry.maxScrollTop(VIEWPORT_H) + 1e9,
+
+    // The anchor coordinate is exact...
+    expect(
+      geometry.offsetOf((anchor as { key: string }).key) - commit.scrollTop,
+    ).toBeCloseTo(before, 6);
+    // ...and following the end would have produced a materially different
+    // target (the replacement grew the content by 300px).
+    expect(geometry.maxScrollTop(VIEWPORT_H) - commit.scrollTop).toBeCloseTo(
+      300,
       6,
     );
-    // The anchor (a surviving key near the end) keeps its coordinate.
-    const anchor = geometry.anchorAt(viewport(commit.scrollTop));
-    expect(anchor).not.toBeNull();
   });
 
   it("preserves the viewport for appends while reading history", () => {

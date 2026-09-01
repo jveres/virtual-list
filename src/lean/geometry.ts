@@ -170,6 +170,9 @@ export class Geometry {
    * removed pin is cleared.
    */
   setKeys(nextKeys: readonly string[]): void {
+    // Build and validate the entire candidate state first — a throwing
+    // estimator or a duplicate key must leave the previous geometry fully
+    // intact, never a half-updated one.
     const keys = [...nextKeys];
     const indexByKey = new Map(keys.map((key, index) => [key, index]));
     if (indexByKey.size !== keys.length) {
@@ -179,13 +182,15 @@ export class Geometry {
         seen.add(key);
       }
     }
-    this.keys = keys;
-    this.indexByKey = indexByKey;
     const sizes = new Float64Array(keys.length);
     for (let index = 0; index < keys.length; index++) {
       sizes[index] = this.heightOf(keys[index] as string);
     }
-    this.tree = new FenwickTree(sizes);
+    const tree = new FenwickTree(sizes);
+
+    this.keys = keys;
+    this.indexByKey = indexByKey;
+    this.tree = tree;
     for (const key of this.measuredKeys) {
       if (!indexByKey.has(key)) {
         this.measuredKeys.delete(key);
@@ -197,18 +202,19 @@ export class Geometry {
     }
   }
 
-  /** Commit a learned height. Unknown keys and non-changes are no-ops. */
+  /**
+   * Commit a learned height, exactly. Unknown keys and invalid heights are
+   * no-ops. A measured key never consults the estimator again: `isMeasured`
+   * implies `heightOf` returns the stored value. Noise suppression (skipping
+   * sub-pixel deltas) is the DOM runtime's concern, not the kernel's.
+   */
   measure(key: string, height: number): void {
     const index = this.indexByKey.get(key);
     if (index === undefined || !Number.isFinite(height) || height <= 0) return;
     const delta = height - this.heightOf(key);
-    if (Math.abs(delta) <= EPSILON) {
-      this.measuredKeys.add(key);
-      return;
-    }
     this.heightByKey.set(key, height);
     this.measuredKeys.add(key);
-    this.tree.add(index, delta);
+    if (delta !== 0) this.tree.add(index, delta);
   }
 
   /**

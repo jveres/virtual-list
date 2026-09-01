@@ -46,6 +46,10 @@ Performance floor: O(log n) offsets, bounded mounted DOM, no layout reads in
 scroll handlers, parity with `main` at 60/120Hz and on the 10k-row
 variable-height benchmark.
 
+Performance checklist (non-blocking, revisit at the benchmark gate):
+- `Geometry.window` scans forward from `start` (O(k log n)); replace with a
+  direct `indexAt(bottom)` lookup.
+
 ## API contract (complete surface — additions require architecture review)
 
 ```ts
