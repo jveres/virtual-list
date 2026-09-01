@@ -501,8 +501,6 @@ export function createVirtualList<T>(
     target: string | "start" | "end",
     scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" },
   ): void {
-    glide?.cancel();
-
     const destination = (): number => {
       const height = viewportHeight();
       if (target === "start") return 0;
@@ -513,11 +511,14 @@ export function createVirtualList<T>(
         : Math.min(offset, geometry.maxScrollTop(height));
     };
 
-    // The whole command — pin commit (a keyed target with align:"start"
-    // reserves the shortfall, I5), write or glide start, render, publish —
-    // is ONE guarded operation. A newer command queued by a callback inside
-    // it drains only afterwards, so it executes last and wins.
+    // The whole command — glide interruption, pin commit (a keyed target
+    // with align:"start" reserves the shortfall, I5), write or glide start,
+    // render, publish — is ONE guarded operation. A newer command queued by
+    // a callback inside it (including the cancelled glide's onDone
+    // publication) drains only afterwards, so it executes last and wins.
     guarded(() => {
+      glide?.cancel();
+      if (disposed) return;
       commitOnce("none", () => {
         if (target !== "start" && target !== "end") geometry.pin(target);
       });

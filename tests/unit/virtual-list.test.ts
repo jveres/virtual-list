@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createVirtualList,
   type VirtualList,
@@ -504,6 +504,36 @@ describe("virtual list runtime", () => {
 
     list.setItems(range(0, 12));
     expect(list.state.count).toBe(5); // The mutation never leaked in.
+  });
+
+  it("lets a command from a cancelled glide's publication beat the interrupter", () => {
+    vi.useFakeTimers();
+    try {
+      let listRef: VirtualList<Msg> | null = null;
+      let once = false;
+      const { viewport, list } = mount(range(0, 100), {
+        onState: (state) => {
+          // First fires from the cancelled glide's onDone publication —
+          // the only pre-cancel publication with atEnd false.
+          if (!listRef || once || state.atEnd) return;
+          once = true;
+          listRef.scrollTo("end");
+        },
+      });
+      listRef = list;
+
+      list.scrollTo("start", { behavior: "smooth" });
+      vi.advanceTimersByTime(48); // A few glide frames toward 0.
+      expect(viewport.scrollTop).toBeLessThan(100 * ESTIMATE - VIEWPORT_H);
+
+      // The interrupting command cancels the glide inside its own guard, so
+      // the newer scrollTo("end") issued by the cancellation's onState
+      // drains after the whole "m30" command — and wins.
+      list.scrollTo("m30");
+      expect(viewport.scrollTop).toBe(100 * ESTIMATE - VIEWPORT_H);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("dispose removes the canvas and stops reacting", () => {
