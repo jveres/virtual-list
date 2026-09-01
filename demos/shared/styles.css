@@ -143,53 +143,41 @@ select.source-select:disabled {
   opacity: 0.6;
 }
 
-/* AI provider settings popover (streaming demo statusbar). */
-.ai-settings {
-  position: relative;
-  flex: none;
-}
-
-.ai-settings-btn {
-  height: auto;
-  padding: 2px 8px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: none;
-  color: var(--fg-dim);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.ai-settings-btn:hover {
-  color: var(--fg);
-  background: var(--bg-surface);
-}
-
-.ai-settings-btn.active {
-  background: none;
-  color: var(--accent);
-}
-
-/* Fixed, not absolute: the statusbar clips overflow to ellipsize its metric
-   spans, and a fixed element escapes that (no transformed ancestors here). */
-.ai-settings-panel {
-  position: fixed;
-  right: 14px;
-  bottom: 44px;
-  z-index: 40;
-  /* The statusbar hosts this panel and sets nowrap for its metric line;
-     panel text must wrap, including unbroken tokens like an echoed key. */
-  white-space: normal;
+/* AI provider settings — a native modal dialog opened from the header. */
+.ai-settings-dialog {
+  /* The global `* { margin: 0 }` reset erases the UA's `margin: auto` that
+     centers a modal dialog; restore it. */
+  margin: auto;
+  width: min(340px, calc(100vw - 32px));
+  max-height: min(85dvh, 640px);
+  overflow-y: auto;
   overflow-wrap: anywhere;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  width: 250px;
-  padding: 12px;
+  padding: 16px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg-surface);
-  box-shadow: 0 8px 24px rgb(0 0 0 / 0.14);
+  color: var(--fg);
+  box-shadow: 0 12px 40px rgb(0 0 0 / 0.22);
+}
+
+.ai-settings-dialog::backdrop {
+  background: rgb(0 0 0 / 0.35);
+}
+
+/* The dialog itself takes initial focus (autofocus) so opening doesn't
+   focus-activate the first select; no ring needed on the surface. */
+.ai-settings-dialog:focus {
+  outline: none;
+}
+
+.ai-settings-dialog > * + * {
+  margin-top: 12px;
+}
+
+.ai-settings-dialog-title {
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .ai-settings-field {
@@ -225,6 +213,12 @@ select.source-select:disabled {
   font-weight: 400;
   line-height: 1.45;
   color: var(--fg-dim);
+}
+
+/* The block-level footnote keeps the dialog's stacking rhythm (the reset
+   above wins the cascade over the dialog's owl selector). */
+p.ai-settings-note {
+  margin-top: 12px;
 }
 
 .ai-tool-option {
@@ -448,6 +442,14 @@ select.source-select:disabled {
 
 .post-image-placeholder {
   pointer-events: none;
+}
+
+/* Local stand-in for a failed or stalled stock photo (see
+   shared/stock-photos.ts): a flat themed fill. The img shows a shared
+   transparent pixel, so the fill paints at the element's exact box in
+   either theme. */
+.stock-photo-fallback {
+  background: var(--bg-bubble);
 }
 
 .message {
@@ -723,18 +725,32 @@ select.source-select:disabled {
   max-width: 100%;
 }
 
-/* The padding swap: every assistant body ends in a constant 1em of breathing
-   room — except while a line-owning streaming cursor (a direct child of
-   .markdown, exactly 1em tall by markdown-viewer's bare-cursor rule) occupies
-   that space instead. Cursor line and padding trade places atomically in the
-   same style recalc, so stream end never shifts the content below: the space
-   is permanent, only its occupant changes. */
+/* The padding swap: every assistant body ends in a constant breathing room —
+   except while a line-owning streaming cursor (a direct child of .markdown,
+   exactly 1em tall by markdown-viewer's bare-cursor rule) occupies that space
+   instead, as the --cursor-gap above the cursor (markdown-viewer zeroes the
+   preceding block's own margin, so without it the cursor hugs the block) plus
+   the cursor's 1em line. Both states total gap + 1em and trade places
+   atomically in one style recalc, so stream end never shifts the content
+   below: the space is permanent, only its occupant changes. Tune the rhythm
+   via --cursor-gap alone; the padding follows. */
 .message.assistant .markdown {
-  padding-bottom: 1em;
+  /* --cursor-line mirrors markdown-viewer's bare-cursor contract (a block
+     cursor line of exactly 1em); --cursor-gap adds optional air above the
+     cursor at the cost of the same amount of constant padding. Zero keeps
+     the reservation at the minimum that still makes stream end motionless:
+     exactly the cursor's own line. */
+  --cursor-line: 1em;
+  --cursor-gap: 0em;
+  padding-bottom: calc(var(--cursor-line) + var(--cursor-gap));
 }
 
 .message.assistant .markdown:has(> .cursor) {
   padding-bottom: 0;
+}
+
+.message.assistant .markdown > .cursor {
+  margin-top: var(--cursor-gap);
 }
 
 /* Code blocks and tables scroll horizontally, but markdown-viewer gives them

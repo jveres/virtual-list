@@ -5,6 +5,7 @@ import {
   type VirtualListBoundarySlot,
   type VirtualListState,
 } from "../../src/virtual-list.js";
+import { loadStockPhoto, stockPhotoUrl } from "../shared/stock-photos.js";
 import { watchSystemTheme } from "../shared/theme.js";
 import {
   at,
@@ -528,9 +529,23 @@ function imageSourceWidth(photo: PlacedPhoto): number {
   );
 }
 
+function gallerySeed(photo: Photo): string {
+  return `virtual-list-gallery-${photo.id}`;
+}
+
+// Single source for the min-height floor: the fallback gradient renders at
+// exactly the box the remote photo would have occupied, so the URL and the
+// element must derive height identically.
+function imageHeightForWidth(photo: Photo, width: number): number {
+  return Math.max(120, Math.round(width * photo.aspectRatio));
+}
+
 function imageUrlForWidth(photo: Photo, width: number): string {
-  const height = Math.max(120, Math.round(width * photo.aspectRatio));
-  return `https://picsum.photos/seed/virtual-list-gallery-${photo.id}/${width}/${height}`;
+  return stockPhotoUrl(
+    gallerySeed(photo),
+    width,
+    imageHeightForWidth(photo, width),
+  );
 }
 
 function imageUrl(photo: PlacedPhoto): string {
@@ -564,8 +579,8 @@ function buildPhotoFrame(photo: PlacedPhoto, bandTop: number): HTMLElement {
   image.draggable = false;
   const sourceWidth = imageSourceWidth(photo);
   image.width = sourceWidth;
-  image.height = Math.max(120, Math.round(sourceWidth * photo.aspectRatio));
-  image.src = imageUrlForWidth(photo, sourceWidth);
+  image.height = imageHeightForWidth(photo, sourceWidth);
+  loadStockPhoto(image, gallerySeed(photo));
 
   frame.append(image);
   photoPreview.bind(frame, photo);

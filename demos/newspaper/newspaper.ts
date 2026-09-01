@@ -4,6 +4,7 @@ import {
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
+import { loadStockPhoto } from "../shared/stock-photos.js";
 import { watchSystemTheme } from "../shared/theme.js";
 import {
   at,
@@ -379,12 +380,6 @@ function bigHeadlineLineHeight(): number {
   return columnWidth() < 640 ? 34 : 46;
 }
 
-function imageUrl(seed: number, width: number, height: number): string {
-  const w = clamp(Math.round(width), 80, 720);
-  const h = Math.max(80, Math.round(height));
-  return `https://picsum.photos/seed/virtual-list-news-${seed}/${w}/${h}`;
-}
-
 function clampText(
   tag: string,
   className: string,
@@ -443,7 +438,7 @@ function buildImage(seed: number, width: number, height: number): HTMLElement {
   const sourceWidth = clamp(Math.round(width), 120, 720);
   image.width = sourceWidth;
   image.height = Math.max(80, Math.round((sourceWidth * height) / width));
-  image.src = imageUrl(seed, sourceWidth, image.height);
+  loadStockPhoto(image, `virtual-list-news-${seed}`);
   return image;
 }
 

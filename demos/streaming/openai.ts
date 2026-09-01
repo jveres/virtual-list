@@ -166,59 +166,138 @@ function storedToolCalls(value: unknown): ChatToolCall[] | undefined {
   return calls.length > 0 ? calls : undefined;
 }
 
-/**
- * The persisted OpenAI conversation — kept separate from the seeded simulated
- * transcript so real chats accumulate across reloads and the demo can exercise
- * genuinely long histories.
- */
-export function loadOpenAIHistory(): StoredTurn[] {
+// Any stored value → validated turns; shared by the IndexedDB record (a
+// structured-clone array) and the legacy localStorage JSON.
+function validateTurns(value: unknown): StoredTurn[] {
+  if (!Array.isArray(value)) return [];
+  const turns: StoredTurn[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) continue;
+    if (entry.role !== "user" && entry.role !== "assistant") continue;
+    if (typeof entry.markdown !== "string" || entry.markdown === "") continue;
+    const toolCalls = storedToolCalls(entry.toolCalls);
+    turns.push({
+      role: entry.role,
+      markdown: entry.markdown,
+      ...(toolCalls ? { toolCalls } : {}),
+    });
+  }
+  return turns;
+}
+
+// The pre-IndexedDB store; still read as a migration source and as the
+// fallback when IndexedDB is unavailable (some private windows).
+function readLegacyHistory(): StoredTurn[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    const turns: StoredTurn[] = [];
-    for (const entry of parsed) {
-      if (!isRecord(entry)) continue;
-      if (entry.role !== "user" && entry.role !== "assistant") continue;
-      if (typeof entry.markdown !== "string" || entry.markdown === "") continue;
-      const toolCalls = storedToolCalls(entry.toolCalls);
-      turns.push({
-        role: entry.role,
-        markdown: entry.markdown,
-        ...(toolCalls ? { toolCalls } : {}),
-      });
-    }
-    return turns;
+    return validateTurns(JSON.parse(raw));
   } catch {
     return [];
   }
 }
 
-export function saveOpenAIHistory(turns: readonly StoredTurn[]): void {
-  try {
-    localStorage.setItem(HISTORY_KEY, JSON.stringify(turns));
-  } catch {
-    // Likely quota: generated images are large even as JPEG. Retry with the
-    // image payloads stripped so at least the text history survives.
-    try {
-      const stripped = turns.map((turn) => ({
-        ...turn,
-        markdown: stripGeneratedImages(turn.markdown),
-      }));
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(stripped));
-    } catch {
-      // Storage blocked or still over quota; the in-memory transcript lives on.
-    }
-  }
-}
-
-export function clearOpenAIHistory(): void {
+function removeLegacyHistory(): void {
   try {
     localStorage.removeItem(HISTORY_KEY);
   } catch {
-    // Storage blocked; nothing was persisted anyway.
+    // Storage blocked; nothing to remove anyway.
   }
+}
+
+const HISTORY_DB = "virtual-list-demo";
+const HISTORY_STORE = "openai-history";
+const HISTORY_RECORD_KEY = "history";
+
+let historyDbPromise: Promise<IDBDatabase> | null = null;
+
+function historyDb(): Promise<IDBDatabase> {
+  historyDbPromise ??= new Promise((resolve, reject) => {
+    const request = indexedDB.open(HISTORY_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(HISTORY_STORE)) {
+        request.result.createObjectStore(HISTORY_STORE);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () =>
+      reject(request.error ?? new Error("IndexedDB open failed"));
+  });
+  return historyDbPromise;
+}
+
+// Writes run strictly in call order; loads wait for pending writes so a
+// provider switch right after a send reads the just-persisted turns.
+let historyWriteChain: Promise<void> = Promise.resolve();
+
+function queueHistoryWrite(write: (db: IDBDatabase) => IDBRequest): void {
+  historyWriteChain = historyWriteChain.then(async () => {
+    try {
+      const db = await historyDb();
+      await new Promise<void>((resolve, reject) => {
+        const request = write(db);
+        request.onsuccess = () => resolve();
+        request.onerror = () =>
+          reject(request.error ?? new Error("IndexedDB write failed"));
+      });
+    } catch {
+      // Storage unavailable; the in-memory transcript lives on.
+    }
+  });
+}
+
+/**
+ * The persisted OpenAI conversation — kept separate from the seeded simulated
+ * transcript so real chats accumulate across reloads and the demo can
+ * exercise genuinely long histories. Stored in IndexedDB (localStorage's
+ * ~5MB quota silently ate generated images); an existing localStorage
+ * history migrates on first load.
+ */
+export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
+  await historyWriteChain;
+  try {
+    const db = await historyDb();
+    const stored = await new Promise<unknown>((resolve, reject) => {
+      const request = db
+        .transaction(HISTORY_STORE, "readonly")
+        .objectStore(HISTORY_STORE)
+        .get(HISTORY_RECORD_KEY);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () =>
+        reject(request.error ?? new Error("IndexedDB read failed"));
+    });
+    if (stored !== undefined) return validateTurns(stored);
+    const legacy = readLegacyHistory();
+    if (legacy.length > 0) {
+      saveOpenAIHistory(legacy);
+      removeLegacyHistory();
+    }
+    return legacy;
+  } catch {
+    return readLegacyHistory();
+  }
+}
+
+// Fire-and-forget by design: persistence runs on send/stream-end hot paths.
+// Callers always pass freshly built arrays, so deferring the structured
+// clone into the queued write is safe.
+export function saveOpenAIHistory(turns: readonly StoredTurn[]): void {
+  queueHistoryWrite((db) =>
+    db
+      .transaction(HISTORY_STORE, "readwrite")
+      .objectStore(HISTORY_STORE)
+      .put(turns, HISTORY_RECORD_KEY),
+  );
+}
+
+export function clearOpenAIHistory(): void {
+  removeLegacyHistory();
+  queueHistoryWrite((db) =>
+    db
+      .transaction(HISTORY_STORE, "readwrite")
+      .objectStore(HISTORY_STORE)
+      .delete(HISTORY_RECORD_KEY),
+  );
 }
 
 async function errorDetail(response: Response): Promise<string> {
@@ -620,9 +699,8 @@ export interface AISettingsPanelOptions {
 export function initAISettingsPanel(
   options: AISettingsPanelOptions = {},
 ): void {
-  const root = mustGet("ai-settings");
   const toggle = mustGet("ai-settings-btn", HTMLButtonElement);
-  const panel = mustGet("ai-settings-panel");
+  const panel = mustGet("ai-settings-panel", HTMLDialogElement);
   const providerSelect = mustGet("ai-provider", HTMLSelectElement);
   const keyInput = mustGet("ai-api-key", HTMLInputElement);
   const modelInput = mustGet("ai-model", HTMLInputElement);
@@ -652,9 +730,8 @@ export function initAISettingsPanel(
   }
 
   const syncToggle = () => {
-    const active = getAISettings().provider === "openai";
-    toggle.classList.toggle("active", active);
-    toggle.textContent = active ? "AI: OpenAI" : "AI: Simulated";
+    // The header icon lights accent while the real provider is active.
+    toggle.classList.toggle("active", getAISettings().provider === "openai");
   };
 
   const persist = () => {
@@ -686,12 +763,21 @@ export function initAISettingsPanel(
     }
   };
 
-  const setOpen = (open: boolean) => {
-    panel.hidden = !open;
-    toggle.setAttribute("aria-expanded", String(open));
-  };
-
-  toggle.addEventListener("click", () => setOpen(!!panel.hidden));
+  toggle.addEventListener("click", () => {
+    if (panel.open) {
+      panel.close();
+      return;
+    }
+    panel.showModal();
+    // Move initial focus to the dialog surface so opening doesn't
+    // focus-activate the first select control.
+    panel.focus();
+  });
+  // Light dismiss: a click on the backdrop (the dialog element itself, never
+  // its content) closes; Escape is native dialog behavior.
+  panel.addEventListener("click", (event) => {
+    if (event.target === panel) panel.close();
+  });
   providerSelect.addEventListener("change", persist);
   keyInput.addEventListener("input", persist);
   modelInput.addEventListener("input", persist);
@@ -714,17 +800,6 @@ export function initAISettingsPanel(
       .finally(() => {
         testKeyBtn.disabled = false;
       });
-  });
-
-  document.addEventListener("pointerdown", (event) => {
-    if (panel.hidden) return;
-    if (event.target instanceof Node && root.contains(event.target)) return;
-    setOpen(false);
-  });
-  document.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || panel.hidden) return;
-    setOpen(false);
-    toggle.focus();
   });
 
   syncToggle();

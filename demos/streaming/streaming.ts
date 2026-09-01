@@ -95,6 +95,24 @@ const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
   demoParams.has("fast-long") || demoParams.get("stream") === "fast-long";
+// Temporary diagnostics for the settle-time gap collapse: ?debug-settle logs
+// geometry around scroll end (last row modeled vs real height, canvas).
+const debugSettle = demoParams.has("debug-settle");
+function logSettle(phase: string): void {
+  if (!debugSettle) return;
+  const viewportEl = document.getElementById("viewport");
+  const lastIndex = messages.length - 1;
+  const lastMessage = messages[lastIndex];
+  const mounted = virtualList.getMountedElement(lastIndex);
+  console.log(
+    `[settle] ${performance.now().toFixed(0)}ms ${phase}`,
+    `scrollTop=${viewportEl?.scrollTop.toFixed(0)}`,
+    `scrollH=${viewportEl?.scrollHeight.toFixed(0)}`,
+    `contentBottom=${virtualList.getItemOffset(messages.length).toFixed(0)}`,
+    `lastModeled=${lastMessage?.itemHeight.toFixed(0)}`,
+    `lastReal=${mounted ? mounted.getBoundingClientRect().height.toFixed(0) : "-"}`,
+  );
+}
 
 const viewport = mustGet("viewport");
 const promptInput = mustGet("prompt", HTMLTextAreaElement);
@@ -769,14 +787,22 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
   return [...languages];
 }
 
-// loadLanguages ignores unknown names, so the raw fence info strings are safe.
-async function prepareOpenAILanguages(): Promise<void> {
-  const languages = historyFenceLanguages(loadOpenAIHistory());
+// The seed-time snapshot of the persisted history. Seeding is synchronous
+// (it runs inside layout transactions), so the async IndexedDB read happens
+// up front — at boot and before a provider switch — into this cache.
+let openAIHistory: readonly StoredTurn[] = [];
+
+// Loads the history snapshot and the fence languages its static render
+// needs (loadLanguages ignores unknown names, so the raw info strings are
+// safe to feed through).
+async function prepareOpenAIConversation(): Promise<void> {
+  openAIHistory = await loadOpenAIHistory();
+  const languages = historyFenceLanguages(openAIHistory);
   if (languages.length > 0) await loadLanguages(languages);
 }
 
 function seedOpenAIConversation(): void {
-  for (const turn of loadOpenAIHistory()) {
+  for (const turn of openAIHistory) {
     addTreeChild(
       activeLeafId(),
       createMessage({
@@ -1392,9 +1418,10 @@ function refreshItem(
   const liveHandle = streamingViewers.get(element);
   if (liveHandle) {
     syncRoleLabel(element, message, index);
-    // Stream end is height-neutral by CSS: the bare cursor's 1em line and
-    // the assistant body's constant 1em bottom padding trade places in the
-    // same style recalc (see the .markdown:has(> .cursor) padding swap).
+    // Stream end is height-neutral by CSS: the bare cursor scene and the
+    // assistant body's constant bottom padding trade places in the same
+    // style recalc (the padding-swap rules in shared/styles.css own the
+    // numbers).
     liveHandle.update({ text: message.markdown, isStreaming: false });
     return;
   }
@@ -1955,8 +1982,17 @@ function finishVirtualizerScrollTracking(): void {
 }
 
 function handleVirtualizerScrollEnd(): void {
+  logSettle("scroll-end");
   finishVirtualizerScrollTracking();
   syncDemoState();
+  if (debugSettle) {
+    let frame = 0;
+    const tick = () => {
+      logSettle(`scroll-end+${++frame}`);
+      if (frame < 5) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
 }
 
 function waitForVirtualizerScrollEnd(abort: StreamAbort): Promise<void> {
@@ -2128,12 +2164,13 @@ initAISettingsPanel({
   onProviderChange: (provider) => {
     if (provider === "openai") {
       // Fence languages must be loaded before the history's static render.
-      void prepareOpenAILanguages().then(() => reloadConversation());
+      void prepareOpenAIConversation().then(() => reloadConversation());
     } else {
       reloadConversation();
     }
   },
   onClearHistory: () => {
+    openAIHistory = [];
     // Only the OpenAI conversation is rendered from that history; a clear
     // while the simulated transcript is showing needs no repaint.
     if (getAISettings().provider === "openai") reloadConversation();
@@ -2176,7 +2213,7 @@ applyDocumentTheme();
 syncThemeButtons();
 autosize();
 measureTemplateHeights();
-if (getAISettings().provider === "openai") await prepareOpenAILanguages();
+if (getAISettings().provider === "openai") await prepareOpenAIConversation();
 seedActiveConversation();
 
 const virtualList = createVirtualList({
@@ -2196,6 +2233,14 @@ const virtualList = createVirtualList({
   onReachTop: loadOlderMessages,
   onScrollStart: handleVirtualizerScrollStart,
   onScrollEnd: handleVirtualizerScrollEnd,
+  // Keep the demo's height model in lockstep with what the virtualizer
+  // learns from the DOM — the clone-based model measurement cannot see
+  // undecoded images or late highlighting, and a drifted model resurfaces
+  // as mis-sized canvases on any path that re-reads it.
+  onItemMeasured: (index, height) => {
+    const message = messages[index];
+    if (message) message.itemHeight = height;
+  },
 });
 setBoundarySlotIdleState("top");
 syncBoundarySlot("top");
@@ -2218,37 +2263,16 @@ viewport.addEventListener("click", (event) => {
   switchMessageVersion(messageId, button.dataset.dir === "prev" ? -1 : 1);
 });
 // Toggling a tool-call <details> changes the row's height inside the click's
-// own task, but ResizeObserver corrections flush a frame later — so the
-// browser would paint the toggle against stale canvas geometry and the
-// correction then shifts everything a frame after (a visible flash/jump).
-// A microtask runs after the details' default toggle action but before
-// paint: committing that one row's real height there (remeasureIndex uses
-// the same anchored-correction path the observer flush uses) keeps the
-// toggle, the canvas resize, and the scroll correction in a single frame.
+// own task, but ResizeObserver corrections flush a frame later — the toggle
+// would paint against stale canvas geometry and then get shifted (a visible
+// flash/jump). remeasureElement owns the timing: it commits the row's real
+// height in the same painted frame as the toggle.
 viewport.addEventListener("click", (event) => {
   if (!(event.target instanceof Element)) return;
-  const summary = event.target.closest(".tool-call-summary");
-  if (!summary) return;
-  const row = summary.closest<HTMLElement>("article.message");
-  if (!row) return;
-  // The summary's activation behavior — the actual open/close mutation — runs
-  // after event dispatch completes, which is later than any microtask queued
-  // here (a microtask checkpoint still measures the pre-toggle height on a
-  // real click). A rAF callback runs in the same rendering update that will
-  // paint the toggled layout, after the mutation but before paint, so
-  // committing there folds the row's height change, the canvas resize, and
-  // the scroll correction into one painted frame.
-  requestAnimationFrame(() => {
-    // Resolve the row's index by element identity at commit time — dataset
-    // indexes can be stale across loaded-window shifts.
-    const { range } = virtualList.state;
-    for (let index = range.start; index < range.end; index++) {
-      if (virtualList.getMountedElement(index) === row) {
-        virtualList.remeasureIndex(index);
-        return;
-      }
-    }
-  });
+  const row = event.target
+    .closest(".tool-call-summary")
+    ?.closest<HTMLElement>("article.message");
+  if (row) virtualList.remeasureElement(row);
 });
 
 await virtualList.scrollToBottom();

@@ -59,6 +59,37 @@
           <span class="sep">·</span>streaming-chat
         </span>
         <div class="header-actions">
+          <button
+            type="button"
+            class="icon-btn"
+            id="ai-settings-btn"
+            title="AI provider settings"
+            aria-label="AI provider settings"
+            aria-haspopup="dialog"
+          >
+            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path
+                d="M2 4.5h6M12.8 4.5H14M2 11.5h1.2M8 11.5h6"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+              <circle
+                cx="10.4"
+                cy="4.5"
+                r="1.9"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+              <circle
+                cx="5.6"
+                cy="11.5"
+                r="1.9"
+                stroke="currentColor"
+                stroke-width="1.5"
+              />
+            </svg>
+          </button>
           <div class="theme-group" role="group" aria-label="Theme">
             <button
               type="button"
@@ -158,93 +189,78 @@
           <button type="button" id="send-btn">Send</button>
         </div>
       </div>
+      <dialog class="ai-settings-dialog" id="ai-settings-panel" tabindex="-1">
+        <div class="ai-settings-dialog-title">AI provider</div>
+        <label class="ai-settings-field">
+          Provider
+          <select id="ai-provider">
+            <option value="simulated">Simulated</option>
+            <option value="openai">OpenAI</option>
+          </select>
+        </label>
+        <label class="ai-settings-field">
+          OpenAI API key
+          <input
+            type="password"
+            id="ai-api-key"
+            placeholder="sk-…"
+            autocomplete="new-password"
+            spellcheck="false"
+          />
+          <span class="ai-settings-note" id="ai-key-status"></span>
+        </label>
+        <label class="ai-settings-field">
+          Model
+          <input
+            type="text"
+            id="ai-model"
+            placeholder="gpt-5-mini"
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </label>
+        <div class="ai-settings-field">
+          Tools
+          <label class="ai-tool-option">
+            <input type="checkbox" id="ai-tool-web-search" />
+            Web search
+          </label>
+          <label class="ai-tool-option">
+            <input type="checkbox" id="ai-tool-image" />
+            Image generation
+          </label>
+          <label class="ai-tool-option">
+            <input type="checkbox" id="ai-tool-code" />
+            Code interpreter
+          </label>
+          <label class="ai-tool-option">
+            <input type="checkbox" id="ai-reasoning" />
+            Thinking summary
+          </label>
+        </div>
+        <label class="ai-settings-field">
+          Request context
+          <select id="ai-context">
+            <option value="12">Last 12 turns</option>
+            <option value="50">Last 50 turns</option>
+            <option value="0">Full history</option>
+          </select>
+        </label>
+        <div class="ai-settings-actions">
+          <button type="button" id="ai-test-key">Test key</button>
+          <button type="button" id="ai-clear-history">Clear history</button>
+        </div>
+        <p class="ai-settings-note">
+          Everything stays in this browser: the key in localStorage, the
+          OpenAI conversation in IndexedDB. The key is sent only to
+          api.openai.com, straight from this page. Not every model supports
+          every tool — unsupported combinations fail with an inline error.
+        </p>
+      </dialog>
       <div class="statusbar">
         <div>
           <span id="window-status"></span>
           <span id="virtual-list-status"></span>
-        </div>
-        <div class="ai-settings" id="ai-settings">
-          <button
-            type="button"
-            class="ai-settings-btn"
-            id="ai-settings-btn"
-            title="AI provider settings"
-            aria-label="AI provider settings"
-            aria-expanded="false"
-            aria-controls="ai-settings-panel"
-          >
-            AI
-          </button>
-          <div class="ai-settings-panel" id="ai-settings-panel" hidden>
-            <label class="ai-settings-field">
-              Provider
-              <select id="ai-provider">
-                <option value="simulated">Simulated</option>
-                <option value="openai">OpenAI</option>
-              </select>
-            </label>
-            <label class="ai-settings-field">
-              OpenAI API key
-              <input
-                type="password"
-                id="ai-api-key"
-                placeholder="sk-…"
-                autocomplete="new-password"
-                spellcheck="false"
-              />
-            </label>
-            <p class="ai-settings-note" id="ai-key-status"></p>
-            <label class="ai-settings-field">
-              Model
-              <input
-                type="text"
-                id="ai-model"
-                placeholder="gpt-5-mini"
-                autocomplete="off"
-                spellcheck="false"
-              />
-            </label>
-            <div class="ai-settings-field">
-              Tools
-              <label class="ai-tool-option">
-                <input type="checkbox" id="ai-tool-web-search" />
-                Web search
-              </label>
-              <label class="ai-tool-option">
-                <input type="checkbox" id="ai-tool-image" />
-                Image generation
-              </label>
-              <label class="ai-tool-option">
-                <input type="checkbox" id="ai-tool-code" />
-                Code interpreter
-              </label>
-            </div>
-            <div class="ai-settings-field">
-              Reasoning
-              <label class="ai-tool-option">
-                <input type="checkbox" id="ai-reasoning" />
-                Show thinking summary
-              </label>
-            </div>
-            <label class="ai-settings-field">
-              Request context
-              <select id="ai-context">
-                <option value="12">Last 12 turns</option>
-                <option value="50">Last 50 turns</option>
-                <option value="0">Full history</option>
-              </select>
-            </label>
-            <div class="ai-settings-actions">
-              <button type="button" id="ai-test-key">Test key</button>
-              <button type="button" id="ai-clear-history">Clear history</button>
-            </div>
-            <p class="ai-settings-note">
-              The key and the OpenAI conversation are kept in this browser's
-              localStorage; the key is sent only to api.openai.com, straight
-              from this page. Not every model supports every tool —
-              unsupported combinations fail with an inline error.
-            </p>
-          </div>
         </div>
       </div>
     </div>
