@@ -484,6 +484,75 @@ describe("v2 runtime — retained nodes", () => {
     await expect(queued).resolves.toBe(false);
   });
 
+  it("completes the commit before surfacing a teardown failure — state stays consistent", () => {
+    const h = mount(range(0, 20), {
+      onDestroy: (element) => {
+        if (element.dataset.id === "5") throw new Error("teardown 5");
+      },
+    });
+    expect(() => h.list.setItems(range(10, 20))).toThrow("teardown 5");
+    // The error surfaced AFTER the commit reached its terminal state:
+    // public state, geometry, canvas, and the mounted window all agree.
+    expect(h.list.state.count).toBe(10);
+    expect(h.list.state.totalSize).toBe(10 * ROW_H);
+    expect(h.canvas().style.height).toBe(`${10 * ROW_H}px`);
+    expect(h.rowElement("msg 10")).toBeDefined();
+    expect(h.destroyed.sort((a, b) => a - b)).toEqual(
+      range(0, 10).map((m) => m.id),
+    );
+    expect(h.list.state.held).toBe(false);
+  });
+
+  it("hands off the new snapshot before surfacing a supersession teardown failure", () => {
+    const h = mount(range(0, 30), {
+      onDestroy: (element) => {
+        if (element.dataset.id === "40") throw new Error("teardown 40");
+      },
+    });
+    h.userScroll(1505);
+    h.list.setItems([...range(0, 30), message(40, "held")]); // Held: m40 built.
+
+    // B supersedes A: destroying m40 throws — but B (with its locally
+    // built m41) must still be handed off as the pending snapshot.
+    expect(() =>
+      h.list.setItems([...range(0, 30), message(41, "local")]),
+    ).toThrow("teardown 40");
+    expect(h.list.state.held).toBe(true);
+
+    h.settle();
+    expect(h.list.state.count).toBe(31); // B committed, m41 alive.
+    expect(h.destroyed.filter((id) => id === 40)).toHaveLength(1);
+    expect(h.destroyed).not.toContain(41);
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+  });
+
+  it("finishes rollback before combining teardown failures with the original error", () => {
+    const h = mount(range(0, 20), {
+      throwOn: "boom",
+      onDestroy: (element) => {
+        if (element.textContent === "built") throw new Error("teardown built");
+      },
+    });
+    let caught: unknown;
+    try {
+      h.list.setItems([
+        ...range(0, 20),
+        message(42, "built"),
+        message(43, "boom"),
+      ]);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(AggregateError);
+    const messages = (caught as AggregateError).errors.map(
+      (error) => (error as Error).message,
+    );
+    expect(messages).toEqual(["render failed: boom", "teardown built"]);
+    // Local cleanup finished despite the throwing teardown; state intact.
+    expect(h.destroyed).toEqual([42]);
+    expect(h.list.state.count).toBe(20);
+  });
+
   it("attempts every destruction even when a host teardown throws", () => {
     const h = mount(range(0, 20), {
       onDestroy: (element) => {

@@ -298,10 +298,12 @@ export function createVirtualList<T>(
 
   /**
    * Destroy every row, attempting all of them even when a host teardown
-   * throws; the failures surface together afterwards (like the measurer's
-   * teardown aggregation), never at the expense of the remaining rows.
+   * throws. Failures are RETURNED, never thrown here: the enclosing
+   * operation first reaches its consistent terminal state (the commit
+   * completes, the snapshot is handed off, the rollback finishes) and
+   * only then surfaces them via throwTeardown.
    */
-  function destroyAll(rowsToDestroy: Iterable<Row<T>>): void {
+  function destroyAll(rowsToDestroy: Iterable<Row<T>>): unknown[] {
     const failures: unknown[] = [];
     for (const row of rowsToDestroy) {
       try {
@@ -310,10 +312,18 @@ export function createVirtualList<T>(
         failures.push(error);
       }
     }
+    return failures;
+  }
+
+  function throwTeardown(failures: readonly unknown[]): void {
+    if (failures.length === 0) return;
     if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) {
-      throw new AggregateError(failures, "row teardown failed");
-    }
+    throw new AggregateError([...failures], "row teardown failed");
+  }
+
+  /** Flatten a caught error into its constituent failures. */
+  function failuresOf(error: unknown): unknown[] {
+    return error instanceof AggregateError ? [...error.errors] : [error];
   }
 
   /** A retained, unmounted row is measured detached with the width synced. */
@@ -418,7 +428,10 @@ export function createVirtualList<T>(
   viewportObserver.observe(viewport);
 
   // --- Preparation (off-scroller, failure-atomic) ---------------------------
-  function prepare(next: readonly T[], anchor: AnchorPolicy): Prepared<T> {
+  function prepare(
+    next: readonly T[],
+    anchor: AnchorPolicy,
+  ): { prepared: Prepared<T>; teardownFailures: unknown[] } {
     const keys = next.map(keyOf);
     const itemByKey = new Map<string, T>();
     for (let index = 0; index < next.length; index++) {
@@ -445,8 +458,8 @@ export function createVirtualList<T>(
     // on any bail-out) from the moment it exists.
     const touched: { row: Row<T>; item: T }[] = [];
 
-    const rollBack = (): void => {
-      destroyAll(built);
+    const rollBack = (): unknown[] => {
+      const failures = destroyAll(built);
       for (const { row } of touched) {
         if (row.destroyed) continue;
         try {
@@ -457,14 +470,19 @@ export function createVirtualList<T>(
           } else {
             // The host handed back a fresh element we will never adopt;
             // the old element's state is whatever the failed render left.
-            options.onDestroy?.(back, row.item);
             row.renderUnknown = true;
+            try {
+              options.onDestroy?.(back, row.item);
+            } catch (teardownError) {
+              failures.push(teardownError);
+            }
           }
         } catch {
           row.renderUnknown = true; // Re-rendered next time, whatever the item.
         }
         markDirty(row); // The DOM may have changed either way; re-measure.
       }
+      return failures;
     };
 
     /** Render then measure, taking ownership of a fresh element first. */
@@ -539,11 +557,20 @@ export function createVirtualList<T>(
         if (disposed) throw new DisposedDuringPreparation();
       }
     } catch (error) {
-      rollBack();
+      // DOM restoration and local cleanup complete first; teardown
+      // failures then surface together with the original error.
+      const failures = rollBack();
       if (error instanceof DisposedDuringPreparation) {
-        return { keys, itemByKey, newRows: new Map(), anchor };
+        return {
+          prepared: { keys, itemByKey, newRows: new Map(), anchor },
+          teardownFailures: failures,
+        };
       }
-      throw error;
+      if (failures.length === 0) throw error;
+      throw new AggregateError(
+        [error, ...failures],
+        "preparation failed and row teardown failed",
+      );
     }
 
     // Phase 2 — apply. The only host calls are destructions of what the
@@ -554,18 +581,21 @@ export function createVirtualList<T>(
       entry.row.item = entry.item;
       markDirty(entry.row);
     }
+    const teardownFailures: unknown[] = [];
     if (previous) {
       const superseded = [...previous.newRows]
         .filter(([key]) => !adopted.has(key))
         .map(([, row]) => row);
-      try {
-        destroyAll(superseded);
-      } finally {
-        if (disposed) destroyAll(built);
+      teardownFailures.push(...destroyAll(superseded));
+      if (disposed) {
+        teardownFailures.push(...destroyAll(built));
+        return {
+          prepared: { keys, itemByKey, newRows: new Map(), anchor },
+          teardownFailures,
+        };
       }
-      if (disposed) return { keys, itemByKey, newRows: new Map(), anchor };
     }
-    return { keys, itemByKey, newRows, anchor };
+    return { prepared: { keys, itemByKey, newRows, anchor }, teardownFailures };
   }
 
   // --- The atomic commit ----------------------------------------------------
@@ -593,7 +623,10 @@ export function createVirtualList<T>(
     applying: Prepared<T> | null,
     policyOverride: AnchorPolicy | undefined,
   ): void {
-    {
+    // Teardown failures are collected here and surfaced only after the
+    // commit has reached its consistent terminal state.
+    const teardownFailures: unknown[] = [];
+    try {
       const policy = policyOverride ?? applying?.anchor ?? "auto";
       const capture = geometry.capture(viewportState(), policy);
 
@@ -614,7 +647,7 @@ export function createVirtualList<T>(
           rows.set(key, row);
           if (old && old !== row) replaced.push(old);
         }
-        destroyAll([...removed, ...replaced]);
+        teardownFailures.push(...destroyAll([...removed, ...replaced]));
         if (disposed) return;
         for (const [key, item] of applying.itemByKey) {
           const row = rows.get(key);
@@ -651,6 +684,8 @@ export function createVirtualList<T>(
       reconcileWindow();
       if (disposed) return;
       publish();
+    } finally {
+      throwTeardown(teardownFailures);
     }
   }
 
@@ -864,14 +899,23 @@ export function createVirtualList<T>(
     // Always prepared now (off-scroller, inside the reentrancy guard since
     // render() is a host callback); committed now only when idle.
     guarded(() => {
-      const prepared = prepare(snapshot, anchor);
-      if (disposed) return;
-      if (idle()) {
-        flush(prepared);
-      } else {
-        pending = prepared;
-        publish();
+      const { prepared, teardownFailures } = prepare(snapshot, anchor);
+      const failures = [...teardownFailures];
+      if (!disposed) {
+        // Hand-off happens regardless of supersession teardown failures;
+        // they surface only once the snapshot is pending or committed.
+        if (idle()) {
+          try {
+            flush(prepared);
+          } catch (error) {
+            failures.push(...failuresOf(error));
+          }
+        } else {
+          pending = prepared;
+          publish();
+        }
       }
+      throwTeardown(failures);
     });
   }
 
@@ -994,7 +1038,7 @@ export function createVirtualList<T>(
   }
 
   // --- Boot -----------------------------------------------------------------
-  flush(prepare(options.items, "end"));
+  flush(prepare(options.items, "end").prepared);
 
   return {
     setItems,
@@ -1039,7 +1083,7 @@ export function createVirtualList<T>(
       committing = null;
       // One pass over everything: a throwing teardown never prevents the
       // remaining destructions; failures surface together afterwards.
-      destroyAll([...doomed, ...pendingRows, ...committingRows]);
+      throwTeardown(destroyAll([...doomed, ...pendingRows, ...committingRows]));
     },
   };
 }
