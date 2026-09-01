@@ -1,9 +1,6 @@
 import {
   createVirtualList,
-  measureVirtualListItem,
-  planVirtualListPixelWindowFromEnd,
-  type VirtualListBoundary,
-  type VirtualListBoundarySlot,
+  type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
 import { conversation } from "../shared/chat-data.js";
@@ -43,12 +40,22 @@ import {
 
 import "../shared/styles.css";
 
+// The demo is the runtime's API pressure test: the full streaming chat —
+// send flow with pin-to-top, end-follow through streams, scrollback loading,
+// version branches, live tool panels — hosted on the four-method surface
+// (setItems / scrollTo / state / dispose) with no escape hatch into the
+// runtime's internals.
+//
+// The message data is immutable-by-replacement: every change clones the
+// message object and pushes a fresh snapshot through setItems. The runtime's
+// keyed renderer re-renders exactly the changed rows (render(item, existing)),
+// and end-compatible snapshots keep end-follow engaged while streaming.
+
 interface Message {
   id: number;
   role: "user" | "assistant";
   markdown: string;
   status?: AssistantStatus;
-  itemHeight: number;
   toolCalls?: ChatToolCall[];
 }
 
@@ -72,49 +79,28 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-const BOTTOM_FOLLOW_DURATION_MS = 300;
-// The send scroll travels about one viewport, which the distance-based
-// duration policy clamps to its 320ms floor — a quick flick next to the
-// buttons' long 1400ms glides. An explicit duration gives the send its own
-// deliberate pace.
-const SEND_SCROLL_DURATION_MS = 650;
-const SCROLL_BUTTONS_DEBOUNCE_MS = 120;
-const MESSAGE_TOP_EPSILON_PX = 2;
-const DATA_WINDOW_FACTOR = 5;
-const DOM_OVERSCAN_FACTOR = 1;
-const BOUNDARY_SLOT_HEIGHT = 52;
-const LOAD_OLDER_DELAY_MS = 180;
-// Modeled row height before a message is measured; real heights replace it.
+// Estimated row height for rows the runtime has not measured yet.
 const ESTIMATED_ITEM_HEIGHT = 180;
 const INITIAL_TRANSCRIPT_COUNT = 100;
-
-type BoundarySlotKind = "none" | "idle" | "loading" | "no-more";
+// The loaded data window over the transcript: how much is handed to the
+// virtualizer, and how much each scrollback load prepends.
+const DATA_WINDOW_FACTOR = 5;
+const LOAD_OLDER_DELAY_MS = 180;
+// How long the "At the top" overlay lingers before fading.
+const EDGE_NO_MORE_HIDE_MS = 1400;
+// The send glide has no completion callback; the bottom button suppression
+// clears on landing (state.atEnd) with this timeout as the fallback for an
+// interrupted glide. Slightly above the glide's 1400ms duration ceiling.
+const SEND_GLIDE_FALLBACK_MS = 1600;
 
 const demoParams = new URLSearchParams(location.search);
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
   demoParams.has("fast-long") || demoParams.get("stream") === "fast-long";
-// Temporary diagnostics for the settle-time gap collapse: ?debug-settle logs
-// geometry around scroll end (last row modeled vs real height, canvas).
-const debugSettle = demoParams.has("debug-settle");
-function logSettle(phase: string): void {
-  if (!debugSettle) return;
-  const viewportEl = document.getElementById("viewport");
-  const lastIndex = messages.length - 1;
-  const lastMessage = messages[lastIndex];
-  const mounted = virtualList.getMountedElement(lastIndex);
-  console.log(
-    `[settle] ${performance.now().toFixed(0)}ms ${phase}`,
-    `scrollTop=${viewportEl?.scrollTop.toFixed(0)}`,
-    `scrollH=${viewportEl?.scrollHeight.toFixed(0)}`,
-    `contentBottom=${virtualList.getItemOffset(messages.length).toFixed(0)}`,
-    `lastModeled=${lastMessage?.itemHeight.toFixed(0)}`,
-    `lastReal=${mounted ? mounted.getBoundingClientRect().height.toFixed(0) : "-"}`,
-  );
-}
 
 const viewport = mustGet("viewport");
+const viewportWrap = viewport.parentElement as HTMLElement;
 const promptInput = mustGet("prompt", HTMLTextAreaElement);
 const sendBtn = mustGet("send-btn", HTMLButtonElement);
 const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
@@ -126,40 +112,33 @@ const composerMinHeight = Math.max(
   promptInput.getBoundingClientRect().height,
 );
 
-let measuredViewportWidth = viewport.clientWidth;
 let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
-let scrollTurnInProgress = false;
-let scrollButtonsTimer = 0;
 let nextResponse = 0;
-let bottomFollowArmed = false;
-let bottomFollowPending = false;
-let bottomFollowCleanup: (() => void) | null = null;
-let virtualListScrollActive = false;
 let loadedStart = 0;
 let loadingTop = false;
-const virtualListScrollEndWaiters = new Set<() => void>();
-
-const templateHeights = new Float64Array(conversation.length);
-templateHeights.fill(ESTIMATED_ITEM_HEIGHT);
+let sendGlideActive = false;
+let sendGlideTimer = 0;
 const htmlCache = new Map<string, string>();
-// Live markdown-viewer instances for streaming rows, keyed by their row element
-// (not message id) so the build → destroy handoff in `refreshIndex` — which
-// builds the next element before destroying the previous — never kills the row
-// it just created. The viewport's recycle pool is off, so every unmount destroys
-// the element and fires `destroyItem`, where we tear the viewer down.
+// Live markdown-viewer instances for streaming rows, keyed by row element so
+// remounts and replacements never collide; the unmount observer below tears
+// a viewer down when its row leaves the DOM.
 const streamingViewers = new WeakMap<HTMLElement, MarkdownViewerHandle>();
+// Mounted row elements by message id, for the send animations. Pruned by the
+// same unmount observer.
+const rowById = new Map<string, HTMLElement>();
 // The transcript is the *active path* through the message tree: the linear
-// list the virtualizer renders. `messages` is the loaded pixel window over it.
+// list the virtualizer renders. `messages` is the loaded window over its tail.
 const transcript: Message[] = [];
 let messages: Message[] = [];
+const transcriptIndexById = new Map<number, number>();
 
 // Branching messages. Each turn is a tree node; a node's `childrenIds` are the
 // versions that follow it (a regenerated response, an edited prompt) and
 // `selectedChildIndex` marks the active one. Walking `selectedChildIndex` from
 // the root sentinel yields the active path. Switching a version only rewrites
-// the path from that node down — everything above stays byte-identical, so the
-// virtualizer reuses the prefix DOM untouched (see `switchMessageVersion`).
+// the path from that node down — everything above keeps its keys, so the
+// runtime's keyed renderer reuses the prefix DOM untouched.
 interface TreeNode {
   message: Message | null; // null only for the root sentinel
   parentId: number;
@@ -180,18 +159,6 @@ const tree = new Map<number, TreeNode>([
     },
   ],
 ]);
-const boundarySlotStates: Record<
-  VirtualListBoundary,
-  { kind: BoundarySlotKind }
-> = {
-  top: { kind: "none" },
-  bottom: { kind: "none" },
-};
-
-interface LoadedAppendResult {
-  startIndex: number;
-  replacedWindow: boolean;
-}
 
 const BULK_RESPONSES = [
   `Sure — here's a quick rundown.
@@ -499,147 +466,130 @@ function versionInfo(
 }
 
 // New sends extend the active branch: each appended message becomes the
-// selected child of the current leaf, keeping the tree and `transcript` in sync
-// without a full rebuild.
-function linkAppendedMessages(nextMessages: readonly Message[]): void {
+// selected child of the current leaf, keeping the tree and `transcript` in
+// sync without a full rebuild.
+function appendToActiveBranch(nextMessages: readonly Message[]): void {
   for (const message of nextMessages) {
     addTreeChild(activeLeafId(), message, { select: true });
+    transcript.push(message);
   }
 }
 
-function findTranscriptMessageById(id: number): Message | undefined {
-  return transcript.find((message) => message.id === id);
-}
+// --- The loaded window and the virtualizer bridge ---------------------------
 
-function findLoadedMessageIndex(id: number): number {
-  return messages.findIndex((message) => message.id === id);
-}
-
-function mutateMessageById(
-  id: number,
-  mutate: (message: Message) => void,
-  options: { refreshUnmounted?: boolean } = {},
-): number {
-  const message = findTranscriptMessageById(id);
-  if (!message) return -1;
-  mutate(message);
-
-  const index = findLoadedMessageIndex(id);
-  if (index >= 0) refreshItem(index, options);
-  return index;
-}
-
-function dataWindowPx(): number {
-  return Math.max(1, viewport.clientHeight * DATA_WINDOW_FACTOR);
-}
-
-function domOverscanPx(): number {
-  return Math.max(1, viewport.clientHeight * DOM_OVERSCAN_FACTOR);
-}
-
-function formatCount(value: number): string {
-  return Math.round(value).toLocaleString();
-}
-
-function formatPx(value: number): string {
-  return `${formatCount(value)}px`;
-}
-
-function transcriptItemHeight(index: number): number {
-  return transcript[index]?.itemHeight ?? ESTIMATED_ITEM_HEIGHT;
-}
-
-function loadedEnd(): number {
-  return loadedStart + messages.length;
-}
-
-function loadedHeight(): number {
-  let height = 0;
-  for (const message of messages) height += message.itemHeight;
-  return height;
+function loadChunkCount(): number {
+  return Math.max(
+    20,
+    Math.ceil(
+      (viewport.clientHeight * DATA_WINDOW_FACTOR) / ESTIMATED_ITEM_HEIGHT,
+    ),
+  );
 }
 
 function canLoadOlderMessages(): boolean {
   return loadedStart > 0;
 }
 
-function measureMessageRange(start: number, end: number): void {
-  for (let index = start; index < end; index++) {
-    const message = messages[index];
-    if (!message) continue;
-    message.itemHeight = measureMessageHeight(index, message);
-  }
-}
-
-function measureStandaloneMessages(
-  nextMessages: readonly Message[],
-  startIndex = 0,
-): void {
-  for (let index = 0; index < nextMessages.length; index++) {
-    const message = nextMessages[index];
-    if (!message) continue;
-    message.itemHeight = measureMessageHeight(startIndex + index, message);
-  }
-}
-
-function setLoadedWindow(start: number, end: number): void {
-  loadedStart = Math.min(Math.max(0, Math.floor(start)), transcript.length);
-  const loadedWindowEnd = Math.min(
-    Math.max(loadedStart, Math.floor(end)),
-    transcript.length,
-  );
-  messages = transcript.slice(loadedStart, loadedWindowEnd);
-  measureExistingMessages();
-}
-
-function setNewestLoadedWindow(): void {
-  const plan = planVirtualListPixelWindowFromEnd({
-    count: transcript.length,
-    minimumPx: dataWindowPx(),
-    getItemHeight: transcriptItemHeight,
+// Recomputes `messages` (the window handed to the virtualizer — always the
+// transcript's tail from loadedStart) and the id → transcript index lookup.
+function refreshLoadedWindow(): void {
+  loadedStart = Math.min(Math.max(0, loadedStart), transcript.length);
+  messages = transcript.slice(loadedStart);
+  transcriptIndexById.clear();
+  transcript.forEach((message, index) => {
+    transcriptIndexById.set(message.id, index);
   });
-  setLoadedWindow(plan.start, plan.end);
 }
 
-function appendMessagesToLoadedBottom(
-  nextMessages: readonly Message[],
-): LoadedAppendResult {
-  linkAppendedMessages(nextMessages);
-  const previousTranscriptEnd = transcript.length;
-  const previousLoadedEnd = loadedEnd();
-  const shouldReplaceLoadedWindow =
-    messages.length > 0 && previousLoadedEnd !== previousTranscriptEnd;
-  transcript.push(...nextMessages);
+// Assigned at boot; callbacks that can fire during the boot transaction
+// (onReachStart on a short conversation) must tolerate it being unset.
+let virtualList: VirtualList<Message> | undefined;
 
-  if (messages.length === 0 || shouldReplaceLoadedWindow) {
-    setNewestLoadedWindow();
-    return {
-      startIndex: Math.max(0, messages.length - nextMessages.length),
-      replacedWindow: shouldReplaceLoadedWindow,
-    };
-  }
-
-  const localStart = messages.length;
-  messages.push(...nextMessages);
-  measureMessageRange(localStart, messages.length);
-  return { startIndex: localStart, replacedWindow: false };
+/** One snapshot to the runtime; all data changes flow through here. */
+function pushItems(anchor?: "auto" | "viewport" | "end" | "none"): void {
+  refreshLoadedWindow();
+  virtualList?.setItems(messages, anchor ? { anchor } : undefined);
 }
 
-function createTemplateMessages(count: number): Message[] {
-  const start = transcript.length;
-  const nextMessages: Message[] = [];
-  for (let offset = 0; offset < count; offset++) {
-    const templateId = (start + offset) % conversation.length;
-    const sample = at(conversation, templateId);
-    nextMessages.push(
-      createMessage({
-        ...sample,
-        itemHeight: at(templateHeights, templateId),
-      }),
+// The single mutation path: clones the message (the runtime re-renders rows
+// whose item identity changed), writes the clone back into the tree,
+// transcript, and window, and pushes the new snapshot.
+function updateMessage(id: number, mutate: (message: Message) => void): void {
+  const node = tree.get(id);
+  if (!node?.message) return;
+  const next = { ...node.message };
+  mutate(next);
+  node.message = next;
+  const index = transcriptIndexById.get(id);
+  if (index !== undefined) transcript[index] = next;
+  htmlCache.delete(String(id));
+  pushItems();
+}
+
+// --- Scrollback loading (I3: overlay, never geometry) -----------------------
+
+// Whether a top load has ever run for the current conversation — a fresh
+// conversation with nothing above must not flash "At the top".
+let topBoundaryLoadSeen = false;
+let edgeHideTimer = 0;
+
+const edgeOverlay = document.createElement("div");
+edgeOverlay.className = "edge-overlay";
+edgeOverlay.dataset.state = "hidden";
+const edgePill = document.createElement("div");
+edgePill.className = "edge-pill";
+edgePill.setAttribute("role", "status");
+const edgeSpinner = document.createElement("span");
+edgeSpinner.className = "boundary-spinner";
+edgeSpinner.setAttribute("aria-hidden", "true");
+const edgeLabel = document.createElement("span");
+edgePill.append(edgeSpinner, edgeLabel);
+edgeOverlay.appendChild(edgePill);
+viewportWrap.appendChild(edgeOverlay);
+
+function setEdgeState(state: "hidden" | "loading" | "no-more"): void {
+  window.clearTimeout(edgeHideTimer);
+  edgeHideTimer = 0;
+  edgeOverlay.dataset.state = state;
+  edgeLabel.textContent =
+    state === "loading"
+      ? "Loading older messages"
+      : state === "no-more"
+        ? "At the top"
+        : "";
+  if (state === "no-more") {
+    edgeHideTimer = window.setTimeout(
+      () => setEdgeState("hidden"),
+      EDGE_NO_MORE_HIDE_MS,
     );
   }
-  return nextMessages;
 }
+
+function loadOlderMessages(): void {
+  if (loadingTop) return;
+  if (!canLoadOlderMessages()) {
+    if (topBoundaryLoadSeen) setEdgeState("no-more");
+    return;
+  }
+
+  loadingTop = true;
+  topBoundaryLoadSeen = true;
+  setEdgeState("loading");
+  syncMetrics();
+
+  // Simulated fetch latency; a real host would await its data source here.
+  window.setTimeout(() => {
+    loadingTop = false;
+    loadedStart = Math.max(0, loadedStart - loadChunkCount());
+    // The prepend preserves the reading position (I1); the runtime re-arms
+    // the reach-start signal once the viewport is past the exit zone.
+    pushItems();
+    setEdgeState(canLoadOlderMessages() ? "hidden" : "no-more");
+    syncMetrics();
+  }, LOAD_OLDER_DELAY_MS);
+}
+
+// --- Conversations ----------------------------------------------------------
 
 // Synthetic branches seeded onto the tail so version switching is testable
 // without first having to edit or regenerate anything.
@@ -682,6 +632,17 @@ A chat log reads as one continuous thing, so virtual scrolling matches the menta
 I'd pick virtual scrolling for a chat log nearly every time; pagination only when row heights are unknowable or the dataset is enormous and rarely revisited.`,
 ];
 
+function createTemplateMessages(count: number): Message[] {
+  const start = transcript.length;
+  const nextMessages: Message[] = [];
+  for (let offset = 0; offset < count; offset++) {
+    const templateId = (start + offset) % conversation.length;
+    const sample = at(conversation, templateId);
+    nextMessages.push(createMessage({ ...sample }));
+  }
+  return nextMessages;
+}
+
 // Builds the linear spine from the conversation template, then grafts on the
 // synthetic version branches above. The active path becomes the transcript.
 function seedConversationTree(count: number): void {
@@ -690,63 +651,45 @@ function seedConversationTree(count: number): void {
   }
   seedSyntheticBranches();
   rebuildActiveTranscript();
-  setNewestLoadedWindow();
+  loadedStart = Math.max(0, transcript.length - loadChunkCount());
 }
 
 function seedSyntheticBranches(): void {
-  // A user prompt has to follow an assistant turn; bridge if the spine ended on
-  // a user message so the seeded turn always reads naturally.
+  // A user prompt has to follow an assistant turn; bridge if the spine ended
+  // on a user message so the seeded turn always reads naturally.
   let anchorId = activeLeafId();
   if (tree.get(anchorId)?.message?.role === "user") {
     anchorId = addTreeChild(
       anchorId,
-      createMessage({
-        role: "assistant",
-        markdown: BRANCH_BRIDGE_REPLY,
-        itemHeight: ESTIMATED_ITEM_HEIGHT,
-      }),
+      createMessage({ role: "assistant", markdown: BRANCH_BRIDGE_REPLY }),
       { select: true },
     );
   }
 
   // Edit scenario: one prompt, two versions, each with its own reply branch.
-  const userV1 = createMessage({
-    role: "user",
-    markdown: BRANCH_USER_V1,
-    itemHeight: ESTIMATED_ITEM_HEIGHT,
-  });
-  const userV2 = createMessage({
-    role: "user",
-    markdown: BRANCH_USER_V2,
-    itemHeight: ESTIMATED_ITEM_HEIGHT,
-  });
+  const userV1 = createMessage({ role: "user", markdown: BRANCH_USER_V1 });
+  const userV2 = createMessage({ role: "user", markdown: BRANCH_USER_V2 });
   addTreeChild(anchorId, userV1, { select: true });
   addTreeChild(anchorId, userV2, { select: false });
 
   // userV2 → a single reply.
   addTreeChild(
     userV2.id,
-    createMessage({
-      role: "assistant",
-      markdown: BRANCH_REPLY_V2,
-      itemHeight: ESTIMATED_ITEM_HEIGHT,
-    }),
+    createMessage({ role: "assistant", markdown: BRANCH_REPLY_V2 }),
     { select: true },
   );
 
   // userV1 → a reply with three regenerations (the regenerate scenario).
   BRANCH_REGEN_REPLIES.forEach((markdown, index) => {
-    addTreeChild(
-      userV1.id,
-      createMessage({ role: "assistant", markdown, itemHeight: 180 }),
-      { select: index === 0 },
-    );
+    addTreeChild(userV1.id, createMessage({ role: "assistant", markdown }), {
+      select: index === 0,
+    });
   });
 }
 
 // Each provider owns a fully separate conversation: the simulated side reseeds
 // the template spine + synthetic branches, the OpenAI side reloads the history
-// persisted in localStorage as a linear chain. Switching swaps all of it.
+// persisted in IndexedDB as a linear chain. Switching swaps all of it.
 // Bumped on every conversation swap so an in-flight send's finally block can
 // tell it is finishing against a conversation that no longer exists — its
 // persistence must not write the other provider's transcript into the history.
@@ -763,7 +706,6 @@ function resetConversationState(): void {
     selectedChildIndex: 0,
   });
   transcript.length = 0;
-  messages = [];
   loadedStart = 0;
   loadingTop = false;
   htmlCache.clear();
@@ -787,14 +729,14 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
   return [...languages];
 }
 
-// The seed-time snapshot of the persisted history. Seeding is synchronous
-// (it runs inside layout transactions), so the async IndexedDB read happens
-// up front — at boot and before a provider switch — into this cache.
+// The seed-time snapshot of the persisted history. Seeding is synchronous, so
+// the async IndexedDB read happens up front — at boot and before a provider
+// switch — into this cache.
 let openAIHistory: readonly StoredTurn[] = [];
 
-// Loads the history snapshot and the fence languages its static render
-// needs (loadLanguages ignores unknown names, so the raw info strings are
-// safe to feed through).
+// Loads the history snapshot and the fence languages its static render needs
+// (loadLanguages ignores unknown names, so the raw info strings are safe to
+// feed through).
 async function prepareOpenAIConversation(): Promise<void> {
   openAIHistory = await loadOpenAIHistory();
   const languages = historyFenceLanguages(openAIHistory);
@@ -808,7 +750,6 @@ function seedOpenAIConversation(): void {
       createMessage({
         role: turn.role,
         markdown: turn.markdown,
-        itemHeight: ESTIMATED_ITEM_HEIGHT,
         ...(turn.toolCalls
           ? { toolCalls: cloneToolCalls(turn.toolCalls) }
           : {}),
@@ -817,7 +758,7 @@ function seedOpenAIConversation(): void {
     );
   }
   rebuildActiveTranscript();
-  setNewestLoadedWindow();
+  loadedStart = Math.max(0, transcript.length - loadChunkCount());
 }
 
 function seedActiveConversation(): void {
@@ -827,40 +768,24 @@ function seedActiveConversation(): void {
   } else {
     seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
   }
+  refreshLoadedWindow();
 }
 
 // Swaps the rendered conversation after a provider change or a history clear:
-// cancel any live stream, rebuild the state inside a layout transaction, then
-// repaint every row and land at the bottom of the other conversation.
+// cancel any live stream, rebuild the state, and land at the bottom of the
+// other conversation with one explicitly end-anchored snapshot.
 function reloadConversation(): void {
   if (streamAbort) cancelStream(streamAbort);
-  virtualList.interruptScroll();
-  virtualList.setStickyIndex(null);
-  virtualList.syncLayout({
-    apply: () => {
-      seedActiveConversation();
-      setBoundarySlotIdleState("top");
-      return true;
-    },
-    after: () => {
-      virtualList.refreshFrom(0);
-      virtualList.invalidateMeasurements();
-      syncBoundarySlot("top");
-      syncDemoState();
-      void virtualList.scrollToBottom();
-    },
-  });
-}
-
-function refreshLoadedWindowIfReplaced(result: LoadedAppendResult): void {
-  if (!result.replacedWindow) return;
-  virtualList.invalidateMeasurements();
-  virtualList.refreshMounted();
+  seedActiveConversation();
+  setEdgeState("hidden");
+  pushItems("end");
+  syncMetrics();
 }
 
 // Switches the active version of a branched message: rewrites the active path
-// from that message down and repaints only that suffix, leaving the prefix
-// above it (DOM and scroll position) untouched.
+// from that message down. Prefix keys are unchanged, so the runtime reuses
+// the DOM above the branch point and its surviving-anchor rule preserves the
+// reading position through the swap.
 function switchMessageVersion(messageId: number, offset: number): void {
   // Mid-stream switches would fight the live update loop.
   if (streamAbort) return;
@@ -874,334 +799,20 @@ function switchMessageVersion(messageId: number, offset: number): void {
   );
   if (nextSelected === parent.selectedChildIndex) return;
 
-  // A version click owns the viewport: stop native momentum and finish any
-  // queued settle transaction before deriving loaded-window indexes. Clearing
-  // cooldown timers alone would leave geometry updates blocked, and a pending
-  // top prepend may change loadedStart while it is being drained here.
-  virtualList.interruptScroll();
-
-  // The branch point is this message's spot on the active path. Its navigator is
-  // mounted, so it sits inside the loaded window: localBranchIndex >= 0.
-  const branchIndex = transcript.findIndex(
-    (message) => message.id === messageId,
-  );
-  if (branchIndex < 0) return;
-  const localBranchIndex = branchIndex - loadedStart;
-  const nextNode = tree.get(parent.childrenIds[nextSelected] ?? -1);
-  if (!nextNode?.message) return;
-
-  // Regenerated replies at the transcript tail are leaf-for-leaf swaps: row
-  // count and every surrounding identity stay unchanged. Repaint that mounted
-  // row and its already-measured geometry immediately, even if the settle
-  // controller is only cooling down from a recent scroll. This explicit UI
-  // interaction does not need the structural deferral used by boundary loads.
-  const isLoadedLeafSwap =
-    node.childrenIds.length === 0 &&
-    nextNode.childrenIds.length === 0 &&
-    localBranchIndex >= 0 &&
-    localBranchIndex < messages.length &&
-    messages[localBranchIndex]?.id === messageId;
-  if (isLoadedLeafSwap) {
-    parent.selectedChildIndex = nextSelected;
-    nextNode.message.itemHeight = measureMessageHeight(
-      localBranchIndex,
-      nextNode.message,
-    );
-    transcript[branchIndex] = nextNode.message;
-    messages[localBranchIndex] = nextNode.message;
-    virtualList.refreshIndex(localBranchIndex);
-    // The replacement was measured above, so commit its geometry in the same
-    // interaction instead of leaving the surrounding UI behind until the
-    // ResizeObserver queue is allowed to flush.
-    virtualList.invalidateMeasurements();
-    syncDemoState();
-    return;
-  }
-
-  const previousTranscriptEnd = transcript.length;
-  const previousWindowLength = messages.length;
-  const bottomWasLoaded = loadedEnd() >= previousTranscriptEnd;
-
+  const branchIndex = transcriptIndexById.get(messageId) ?? -1;
   parent.selectedChildIndex = nextSelected;
-
-  virtualList.syncLayout({
-    apply: () => {
-      rebuildActiveTranscript();
-      const windowEnd = bottomWasLoaded
-        ? transcript.length
-        : Math.min(loadedStart + previousWindowLength, transcript.length);
-      messages = transcript.slice(loadedStart, windowEnd);
-      // Only the swapped tail needs (re)measuring; the prefix is identical.
-      if (localBranchIndex >= 0) {
-        measureMessageRange(localBranchIndex, messages.length);
-      } else {
-        measureExistingMessages();
-      }
-      return true;
-    },
-    topSlot: boundarySlotFor("top"),
-    after: () => {
-      // syncLayout may defer apply() until an active scroll gesture settles.
-      // Rebuild only after messages reflects the selected branch; otherwise
-      // the row keeps the previous version's id and later navigation no-ops.
-      virtualList.refreshFrom(Math.max(0, localBranchIndex));
-      virtualList.invalidateMeasurements();
-      updateRenderedBoundarySlots();
-      syncDemoState();
-    },
-  });
+  rebuildActiveTranscript();
+  // Keep the branch row inside the loaded window even if the new path is
+  // shorter than the old loadedStart.
+  if (branchIndex >= 0) loadedStart = Math.min(loadedStart, branchIndex);
+  pushItems();
+  syncMetrics();
 }
 
-// Whether a top boundary load has ever run for the current conversation. It
-// keeps the slot mounted for the "At the top" state after scrollback exhausts,
-// while conversations with nothing above (see shouldMountBoundarySlot) skip
-// the slot entirely.
-let topBoundaryLoadSeen = false;
-
-interface BoundarySlotContext {
-  loadedCount: number;
-  loadedStart: number;
-  loadingTop: boolean;
-}
-
-function currentBoundarySlotContext(): BoundarySlotContext {
-  return {
-    loadedCount: messages.length,
-    loadedStart,
-    loadingTop,
-  };
-}
-
-function visibleBoundarySlotKind(
-  boundary: VirtualListBoundary,
-): Exclude<BoundarySlotKind, "none"> {
-  const kind = boundarySlotStates[boundary].kind;
-  return kind === "none" ? "idle" : kind;
-}
-
-function boundarySlotLabel(
-  boundary: VirtualListBoundary,
-  kind: BoundarySlotKind,
-): string {
-  if (boundary !== "top") return "";
-  if (kind === "loading") return "Loading older messages";
-  if (kind === "no-more") return "At the top";
-  return "";
-}
-
-function buildBoundarySlot(boundary: VirtualListBoundary): HTMLElement {
-  const element = document.createElement("div");
-  element.className = "boundary-slot";
-  element.dataset.boundaryContent = boundary;
-  element.dataset.state = "idle";
-
-  const spinner = document.createElement("span");
-  spinner.className = "boundary-spinner";
-  spinner.setAttribute("aria-hidden", "true");
-
-  const label = document.createElement("span");
-
-  element.append(spinner, label);
-  updateBoundarySlotElement(element, boundary);
-  return element;
-}
-
-function updateBoundarySlotElement(
-  container: HTMLElement,
-  boundary: VirtualListBoundary,
-): void {
-  const element = container.matches(".boundary-slot")
-    ? container
-    : container.querySelector<HTMLElement>(".boundary-slot");
-  if (!element) return;
-
-  const kind = visibleBoundarySlotKind(boundary);
-  const label = element.querySelector<HTMLElement>("span:last-child");
-  if (element.dataset.state !== kind) {
-    element.dataset.state = kind;
-  }
-
-  if (kind === "idle") {
-    if (element.getAttribute("aria-hidden") !== "true") {
-      element.setAttribute("aria-hidden", "true");
-    }
-    if (element.hasAttribute("role")) element.removeAttribute("role");
-  } else {
-    if (element.hasAttribute("aria-hidden")) {
-      element.removeAttribute("aria-hidden");
-    }
-    if (element.getAttribute("role") !== "status") {
-      element.setAttribute("role", "status");
-    }
-  }
-
-  if (!label) return;
-  const nextLabel = boundarySlotLabel(boundary, kind);
-  if (label.textContent !== nextLabel) {
-    label.textContent = nextLabel;
-  }
-}
-
-function shouldMountBoundarySlot(
-  boundary: VirtualListBoundary,
-  context = currentBoundarySlotContext(),
-): boolean {
-  if (boundary === "bottom") return false;
-  if (context.loadedCount === 0) return false;
-  // The slot exists to serve scrollback loading. A conversation whose top is
-  // loaded from the start (a fresh OpenAI chat) must not mount it: its height
-  // would sit above item 0 and turn the first send's scroll-to-top into a
-  // visible hop right before the fly-in. Once a top load has run, the slot
-  // stays for its "At the top" state.
-  return context.loadedStart > 0 || context.loadingTop || topBoundaryLoadSeen;
-}
-
-function boundarySlotFor(
-  boundary: VirtualListBoundary,
-  context = currentBoundarySlotContext(),
-): VirtualListBoundarySlot | null {
-  if (!shouldMountBoundarySlot(boundary, context)) return null;
-
-  return {
-    key: `${boundary}:streaming-window-slot`,
-    height: BOUNDARY_SLOT_HEIGHT,
-    build: () => buildBoundarySlot(boundary),
-  };
-}
-
-function setBoundarySlotState(
-  boundary: VirtualListBoundary,
-  kind: BoundarySlotKind,
-): void {
-  boundarySlotStates[boundary] = { kind };
-}
-
-function idleBoundarySlotState(
-  boundary: VirtualListBoundary,
-  context = currentBoundarySlotContext(),
-): BoundarySlotKind {
-  if (boundary === "bottom" || context.loadedCount === 0) return "none";
-  return context.loadedStart <= 0 ? "no-more" : "none";
-}
-
-function setBoundarySlotIdleState(
-  boundary: VirtualListBoundary,
-  context = currentBoundarySlotContext(),
-): void {
-  setBoundarySlotState(boundary, idleBoundarySlotState(boundary, context));
-}
-
-function refreshBoundarySlot(boundary: VirtualListBoundary): void {
-  const element = virtualList.getBoundaryElement(boundary);
-  if (element) updateBoundarySlotElement(element, boundary);
-}
-
-function syncBoundarySlot(boundary: VirtualListBoundary): void {
-  virtualList.setBoundarySlot(boundary, boundarySlotFor(boundary));
-  refreshBoundarySlot(boundary);
-}
-
-function updateRenderedBoundarySlots(): void {
-  refreshBoundarySlot("top");
-}
-
-function syncVirtualizerLayout(options?: { addedBefore?: number }): void {
-  if (!loadingTop) setBoundarySlotIdleState("top");
-  virtualList.syncLayout({
-    ...options,
-    topSlot: boundarySlotFor("top"),
-    after: () => {
-      updateRenderedBoundarySlots();
-      syncDemoState();
-    },
-  });
-}
-
-function loadOlderMessages(): void {
-  if (loadingTop) return;
-
-  if (!canLoadOlderMessages()) {
-    setBoundarySlotState("top", "no-more");
-    refreshBoundarySlot("top");
-    syncDemoState();
-    return;
-  }
-
-  loadingTop = true;
-  topBoundaryLoadSeen = true;
-  setBoundarySlotState("top", "loading");
-  refreshBoundarySlot("top");
-  syncDemoState();
-
-  window.setTimeout(() => {
-    const plan = planVirtualListPixelWindowFromEnd({
-      count: transcript.length,
-      end: loadedStart,
-      minimumPx: dataWindowPx(),
-      getItemHeight: transcriptItemHeight,
-    });
-
-    if (plan.count === 0) {
-      loadingTop = false;
-      setBoundarySlotState("top", "no-more");
-      refreshBoundarySlot("top");
-      syncDemoState();
-      return;
-    }
-
-    const addedMessages = transcript.slice(plan.start, plan.end);
-    measureStandaloneMessages(addedMessages);
-    const nextContext: BoundarySlotContext = {
-      loadedCount: messages.length + addedMessages.length,
-      loadedStart: plan.start,
-      loadingTop: false,
-    };
-
-    virtualList.syncLayout({
-      addedBefore: addedMessages.length,
-      topSlot: boundarySlotFor("top", nextContext),
-      apply: () => {
-        loadedStart = plan.start;
-        messages = [...addedMessages, ...messages];
-        loadingTop = false;
-        setBoundarySlotIdleState("top", nextContext);
-        return true;
-      },
-      after: () => {
-        updateRenderedBoundarySlots();
-        syncDemoState();
-      },
-    });
-  }, LOAD_OLDER_DELAY_MS);
-}
-
-function syncDemoState(state = virtualList.state): void {
-  syncScrollButtons(state);
-  syncMetrics(state);
-}
-
-function syncMetrics(state: VirtualListState): void {
-  const loadedRange =
-    messages.length === 0
-      ? "loaded 0-0/0"
-      : `loaded ${formatCount(loadedStart + 1)}-${formatCount(loadedEnd())}/${formatCount(transcript.length)}`;
-  const topStatus = loadingTop
-    ? "loading top"
-    : canLoadOlderMessages()
-      ? "top"
-      : "none";
-  const mountedEnd = Math.max(state.range.start, state.range.end - 1);
-
-  windowStatus.textContent = `${loadedRange} · height ${formatPx(loadedHeight())}/${formatPx(dataWindowPx())} · load ${topStatus}`;
-  virtualListStatus.textContent = `dom ${formatCount(state.mountedCount)}/${formatCount(state.count)} · measured ${formatCount(state.measuredCount)} · mounted ${formatCount(state.range.start)}-${formatCount(mountedEnd)}`;
-}
-
-function cacheKey(message: Message): string {
-  return String(message.id);
-}
+// --- Rendering --------------------------------------------------------------
 
 function htmlForMessage(message: Message): string {
-  const key = cacheKey(message);
+  const key = String(message.id);
   let html = htmlCache.get(key);
   if (html === undefined) {
     html = renderMarkdown(message.markdown);
@@ -1210,70 +821,16 @@ function htmlForMessage(message: Message): string {
   return html;
 }
 
-function measureTemplateHeights(): void {
-  measuredViewportWidth = viewport.clientWidth;
-  for (let templateId = 0; templateId < conversation.length; templateId++) {
-    templateHeights[templateId] = measureVirtualListItem({
-      viewport,
-      canvasClassName: "chat-canvas",
-      index: templateId,
-      buildItem: buildTemplateItem,
-    });
-  }
+function transcriptIndexOf(message: Message): number {
+  return transcriptIndexById.get(message.id) ?? 0;
 }
 
-function remeasureForViewportWidth(): void {
-  if (Math.abs(viewport.clientWidth - measuredViewportWidth) <= 0.5) return;
-  measureTemplateHeights();
-  measureExistingMessages();
-  virtualList.invalidateMeasurements();
-  syncDemoState();
-}
-
-function buildTemplateItem(index: number): HTMLElement {
-  const sample = conversation[index];
-  if (!sample) throw new Error(`missing template ${index}`);
-  return buildChatItem(index, sample, renderMarkdown(sample.markdown));
-}
-
-function measureMessageHeight(index: number, message: Message): number {
-  return measureVirtualListItem({
-    viewport,
-    canvasClassName: "chat-canvas",
-    index,
-    // Mirror buildItem so the version navigator is part of the measured height.
-    buildItem: (itemIndex) => buildStaticItem(itemIndex, message),
-  });
-}
-
-function measureExistingMessages(): void {
-  for (let index = 0; index < messages.length; index++) {
-    const message = messages[index];
-    if (!message) continue;
-    message.itemHeight = measureMessageHeight(index, message);
-  }
-}
-
-function getItemHeight(index: number): number {
-  return messages[index]?.itemHeight ?? ESTIMATED_ITEM_HEIGHT;
-}
-
-function buildItem(index: number): HTMLElement {
-  const message = messages[index];
-  if (!message) throw new Error(`missing message ${index}`);
-  // A streaming row is a live markdown-viewer (cursor + healing + morph); every
-  // other row is a static HTML render. The status flips back to "done" on
-  // completion, so this same path rebuilds the row as static when it remounts.
-  if (message.status === "streaming") return buildStreamingItem(index, message);
-  return buildStaticItem(index, message);
-}
-
-// A finished row: the static markdown render plus, when the message has sibling
-// versions, the navigator that switches between them.
-function buildStaticItem(index: number, message: Message): HTMLElement {
-  const row = buildChatItem(index, message, htmlForMessage(message));
-  appendVersionNav(row, message);
-  return row;
+// Structural fingerprint of a row's tool panels: the panels are built at row
+// construction, so any change here needs a rebuild, not an in-place update.
+function toolSignature(message: Message): string {
+  return (message.toolCalls ?? [])
+    .map((toolCall) => `${toolCall.name}:${toolCall.status}`)
+    .join("|");
 }
 
 function versionNavButton(
@@ -1339,136 +896,156 @@ function streamingDisplayText(message: Message): string {
   return TRAILING_IMAGE_RE.test(trimmed) ? `${trimmed}\n\n` : trimmed;
 }
 
-function buildStreamingItem(index: number, message: Message): HTMLElement {
-  const { row, content } = buildChatRow(index, message);
-  // createMarkdownViewer takes over its host's children, so it gets a dedicated
-  // wrapper rather than `content` (which also holds the role label / tool calls).
+// A finished row: the static markdown render plus, when the message has
+// sibling versions, the navigator that switches between them.
+function buildStaticRow(message: Message): HTMLElement {
+  const row = buildChatItem(
+    transcriptIndexOf(message),
+    message,
+    htmlForMessage(message),
+  );
+  appendVersionNav(row, message);
+  return row;
+}
+
+function buildStreamingRow(message: Message): HTMLElement {
+  const { row, content } = buildChatRow(transcriptIndexOf(message), message);
+  // createMarkdownViewer takes over its host's children, so it gets a
+  // dedicated wrapper rather than `content` (which also holds the role label
+  // and tool calls).
   const host = document.createElement("div");
   host.className = "streaming-host";
-  // The live viewer binds its own copy / table-copy click handler to its root.
-  // The chat viewport also delegates those clicks (for static rows), so stop the
-  // bubble here to keep both from firing on this one row — otherwise a copy fires
-  // twice and a table menu toggles open then shut. The viewer's handler is bound
-  // deeper in the tree, so it has already run by the time the event reaches here.
+  // The live viewer binds its own copy / table-copy click handler to its
+  // root. The chat viewport also delegates those clicks (for static rows), so
+  // stop the bubble here to keep both from firing on this one row. The
+  // viewer's handler is bound deeper in the tree, so it has already run by
+  // the time the event reaches here.
   host.addEventListener("click", (event) => event.stopPropagation());
   content.appendChild(host);
   const handle = createMarkdownViewer(host, {
     text: streamingDisplayText(message),
     isStreaming: true,
-    // The viewer root rarely holds focus inside the list (the composer does), so
-    // keep a solid block cursor instead of dimming to a hollow frame.
+    // The viewer root rarely holds focus inside the list (the composer does),
+    // so keep a solid block cursor instead of dimming to a hollow frame.
     unfocusedCursorStyle: "block",
   });
   streamingViewers.set(row, handle);
   return row;
 }
 
-function syncRoleLabel(
-  element: HTMLElement,
-  message: Message,
-  index: number,
-): void {
+function buildRow(message: Message): HTMLElement {
+  const row =
+    message.status === "streaming"
+      ? buildStreamingRow(message)
+      : buildStaticRow(message);
+  row.dataset.key = String(message.id);
+  row.dataset.toolsig = toolSignature(message);
+  rowById.set(String(message.id), row);
+  return row;
+}
+
+function syncRoleLabel(element: HTMLElement, message: Message): void {
   const label = element.querySelector<HTMLElement>(".role-label");
   if (label && label.dataset.status !== message.status) {
-    setRoleLabel(label, message, index);
+    setRoleLabel(label, message, transcriptIndexOf(message));
   }
 }
 
-function refreshItem(
-  index: number,
-  options: { refreshUnmounted?: boolean } = {},
-): void {
-  const message = messages[index];
-  if (!message) return;
-
-  htmlCache.delete(cacheKey(message));
-  const element = virtualList.getMountedElement(index);
-
+// In-place update for a mounted row whose message changed; returns null when
+// the row must be rebuilt (structure changed, or no live viewer to feed).
+function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
+  if (element.dataset.toolsig !== toolSignature(message)) return null;
+  const handle = streamingViewers.get(element);
   if (message.status === "streaming") {
-    if (element) {
-      const handle = streamingViewers.get(element);
-      if (handle) {
-        syncRoleLabel(element, message, index);
-        handle.update({
-          text: streamingDisplayText(message),
-          isStreaming: true,
-        });
-        return;
-      }
-      // Mounted but not yet live (the row just transitioned from "thinking"):
-      // rebuild it as a live viewer.
-      virtualList.refreshIndex(index);
-      return;
-    }
-    // Offscreen rows are left alone — per-token updates skip them and the viewer
-    // is built fresh when they remount.
-    if (options.refreshUnmounted) virtualList.refreshIndex(index);
-    return;
+    // A row that was mounted as "thinking" has no live viewer yet: rebuild.
+    if (!handle) return null;
+    syncRoleLabel(element, message);
+    handle.update({ text: streamingDisplayText(message), isStreaming: true });
+    return element;
   }
-
-  if (!element) {
-    if (options.refreshUnmounted) virtualList.refreshIndex(index);
-    return;
-  }
-
   // Stream just ended on a still-live row: finalize the viewer in place
-  // (isStreaming:false morphs the DOM rather than replacing it) instead of
-  // swapping to a static row, so a text selection inside the message survives.
-  // The row stays a live viewer until it unmounts, then remounts static.
-  const liveHandle = streamingViewers.get(element);
-  if (liveHandle) {
-    syncRoleLabel(element, message, index);
-    // Stream end is height-neutral by CSS: the bare cursor scene and the
-    // assistant body's constant bottom padding trade places in the same
-    // style recalc (the padding-swap rules in shared/styles.css own the
-    // numbers).
-    liveHandle.update({ text: message.markdown, isStreaming: false });
-    return;
+  // (isStreaming:false morphs the DOM rather than replacing it), so a text
+  // selection inside the message survives. The row stays a live viewer until
+  // it unmounts, then remounts static.
+  if (handle) {
+    syncRoleLabel(element, message);
+    handle.update({ text: message.markdown, isStreaming: false });
+    return element;
   }
-
-  const label = element.querySelector<HTMLElement>(".role-label");
-  const markdown = element.querySelector<HTMLElement>(".md");
-  if (!label || !markdown) {
-    virtualList.refreshIndex(index);
-    return;
-  }
-
-  if (label.dataset.status !== message.status) {
-    setRoleLabel(label, message, index);
-  }
-  markdown.innerHTML = htmlForMessage(message);
+  return null;
 }
 
-function syncScrollButtons(state = virtualList.state): void {
-  if (scrollButtonsTimer) {
-    window.clearTimeout(scrollButtonsTimer);
-    scrollButtonsTimer = 0;
+// Live viewers must be torn down when their row leaves the DOM (unmount,
+// replacement, or dispose); the runtime has no unmount callback, so observe
+// removals. Also prunes the animation lookup.
+const unmountObserver = new MutationObserver((records) => {
+  for (const record of records) {
+    for (const node of record.removedNodes) {
+      if (!(node instanceof HTMLElement)) continue;
+      const handle = streamingViewers.get(node);
+      if (handle) {
+        handle.destroy();
+        streamingViewers.delete(node);
+      }
+      const key = node.dataset.key;
+      if (key && rowById.get(key) === node) rowById.delete(key);
+    }
   }
-  // state.atTop is the top of the loaded pixel window, not necessarily the
-  // transcript. Keep the jump visible while older rows still exist so it does
-  // not blink off at the local top and back on after the prepend is anchored.
-  scrollTopBtn.hidden = state.atTop && !canLoadOlderMessages();
-  scrollBottomBtn.hidden =
-    state.atBottom ||
-    scrollTurnInProgress ||
-    bottomFollowArmed ||
-    bottomFollowPending;
+});
+unmountObserver.observe(viewport, { childList: true, subtree: true });
+
+// --- Demo chrome ------------------------------------------------------------
+
+function formatCount(value: number): string {
+  return Math.round(value).toLocaleString();
 }
 
-function scheduleScrollButtons(): void {
-  if (scrollButtonsTimer) window.clearTimeout(scrollButtonsTimer);
-  scrollButtonsTimer = window.setTimeout(() => {
-    scrollButtonsTimer = 0;
-    syncDemoState();
-  }, SCROLL_BUTTONS_DEBOUNCE_MS);
+function syncScrollButtons(state: VirtualListState): void {
+  scrollTopBtn.hidden = state.atStart && !canLoadOlderMessages();
+  scrollBottomBtn.hidden = state.atEnd || sendGlideActive;
 }
+
+function syncMetrics(state = virtualList?.state): void {
+  if (!state) return;
+  const loadedRange =
+    messages.length === 0
+      ? "loaded 0-0/0"
+      : `loaded ${formatCount(loadedStart + 1)}-${formatCount(transcript.length)}/${formatCount(transcript.length)}`;
+  const topStatus = loadingTop
+    ? "loading top"
+    : canLoadOlderMessages()
+      ? "top"
+      : "none";
+  const mountedEnd = Math.max(state.start, state.end - 1);
+
+  windowStatus.textContent = `${loadedRange} · load ${topStatus}`;
+  virtualListStatus.textContent = `dom ${formatCount(state.end - state.start)}/${formatCount(state.count)} · mounted ${formatCount(state.start)}-${formatCount(mountedEnd)} · height ${formatCount(state.totalSize)}px`;
+}
+
+function beginSendGlide(): void {
+  sendGlideActive = true;
+  window.clearTimeout(sendGlideTimer);
+  sendGlideTimer = window.setTimeout(() => {
+    sendGlideActive = false;
+    if (virtualList) syncScrollButtons(virtualList.state);
+  }, SEND_GLIDE_FALLBACK_MS);
+}
+
+function endSendGlide(): void {
+  if (!sendGlideActive) return;
+  sendGlideActive = false;
+  window.clearTimeout(sendGlideTimer);
+  sendGlideTimer = 0;
+}
+
+// --- Simulated streaming ----------------------------------------------------
 
 // Advances the response rotation and returns the variant to stream.
 function advanceResponse(prompt = ""): ReplyVariant {
-  // The fast long-form variant is the last sample. Force it via the ?fast-long
-  // URL param, or by sending a message that starts with "f" — a shortcut for
-  // testing fast streaming on demand. Deliberately pinned outside the rotation:
-  // it returns without advancing nextResponse.
+  // The fast long-form variant is the last sample. Force it via the
+  // ?fast-long URL param, or by sending a message that starts with "f" — a
+  // shortcut for testing fast streaming on demand. Deliberately pinned
+  // outside the rotation: it returns without advancing nextResponse.
   if (forceFastLongReply || /^f/i.test(prompt)) {
     return at(SAMPLE_RESPONSES, SAMPLE_RESPONSES.length - 1);
   }
@@ -1506,20 +1083,16 @@ async function streamResponse(
 ): Promise<void> {
   if (instantReplies) {
     if (abort.cancelled) return;
-    mutateMessageById(
-      messageId,
-      (message) => {
-        message.markdown = reply.markdown;
-      },
-      { refreshUnmounted: true },
-    );
+    updateMessage(messageId, (message) => {
+      message.markdown = reply.markdown;
+    });
     return;
   }
 
   const delayRange = reply.tokenDelayMs;
   for (const token of tokenize(reply.markdown)) {
     if (abort.cancelled) return;
-    mutateMessageById(messageId, (message) => {
+    updateMessage(messageId, (message) => {
       message.markdown += token;
     });
     await wait(
@@ -1528,6 +1101,8 @@ async function streamResponse(
     );
   }
 }
+
+// --- OpenAI streaming -------------------------------------------------------
 
 // The active transcript, oldest → newest, as API turns — sliced per the
 // context setting (0 = full history). This reads `transcript`, the complete
@@ -1550,8 +1125,8 @@ function openAIContext(contextTurns: number): ChatTurn[] {
   return turns;
 }
 
-// Role, markdown, and settled tool calls persist; ids are reassigned and
-// heights remeasured on the next load.
+// Role, markdown, and settled tool calls persist; ids are reassigned on the
+// next load.
 function persistOpenAIConversation(): void {
   const turns: StoredTurn[] = [];
   for (const message of transcript) {
@@ -1593,11 +1168,7 @@ async function streamOpenAIResponse(
       abortLink.signal,
     )) {
       if (abort.cancelled) return;
-      // Tool chunks change row structure (the tool-call panels are built at
-      // row construction), so they need a rebuild, not just a text update.
-      const rebuildRow =
-        chunk.kind === "tool-start" || chunk.kind === "tool-end";
-      mutateMessageById(messageId, (message) => {
+      updateMessage(messageId, (message) => {
         // The row stays "thinking" until the first real activity arrives.
         if (!started) message.status = "streaming";
         switch (chunk.kind) {
@@ -1662,10 +1233,6 @@ async function streamOpenAIResponse(
           }
         }
       });
-      if (rebuildRow) {
-        const index = findLoadedMessageIndex(messageId);
-        if (index >= 0) virtualList.refreshIndex(index);
-      }
       started = true;
     }
   } catch (error) {
@@ -1684,37 +1251,29 @@ async function streamOpenAIResponse(
         : error instanceof Error
           ? error.message
           : String(error);
-    mutateMessageById(
-      messageId,
-      (message) => {
-        const alert = `> [!CAUTION]\n> **OpenAI request failed** — ${detail}`;
-        // A stream can die inside an open code fence; close it first or the
-        // alert is swallowed into the fence as raw monospace text. An odd
-        // fence count means the last one opened a block — close with its own
-        // marker (a ``` cannot close a ~~~ or a longer backtick run).
-        const fences = message.markdown.match(/^\s{0,3}(`{3,}|~{3,})/gm);
-        const fenceClose =
-          fences && fences.length % 2 === 1
-            ? `\n\n${fences[fences.length - 1]?.trim()}`
-            : "";
-        message.markdown = message.markdown
-          ? `${message.markdown}${fenceClose}\n\n${alert}`
-          : alert;
-        // Panels still mid-flight would pulse "running" forever; settle them.
-        if (liveToolCalls.size > 0 && message.toolCalls) {
-          message.toolCalls = message.toolCalls.map((toolCall) =>
-            toolCall.status === "running"
-              ? { ...toolCall, status: "error" as const }
-              : toolCall,
-          );
-        }
-      },
-      { refreshUnmounted: true },
-    );
-    if (liveToolCalls.size > 0) {
-      const index = findLoadedMessageIndex(messageId);
-      if (index >= 0) virtualList.refreshIndex(index);
-    }
+    updateMessage(messageId, (message) => {
+      const alert = `> [!CAUTION]\n> **OpenAI request failed** — ${detail}`;
+      // A stream can die inside an open code fence; close it first or the
+      // alert is swallowed into the fence as raw monospace text. An odd
+      // fence count means the last one opened a block — close with its own
+      // marker (a ``` cannot close a ~~~ or a longer backtick run).
+      const fences = message.markdown.match(/^\s{0,3}(`{3,}|~{3,})/gm);
+      const fenceClose =
+        fences && fences.length % 2 === 1
+          ? `\n\n${fences[fences.length - 1]?.trim()}`
+          : "";
+      message.markdown = message.markdown
+        ? `${message.markdown}${fenceClose}\n\n${alert}`
+        : alert;
+      // Panels still mid-flight would pulse "running" forever; settle them.
+      if (liveToolCalls.size > 0 && message.toolCalls) {
+        message.toolCalls = message.toolCalls.map((toolCall) =>
+          toolCall.status === "running"
+            ? { ...toolCall, status: "error" as const }
+            : toolCall,
+        );
+      }
+    });
   } finally {
     abortLink.cleanup();
   }
@@ -1726,6 +1285,24 @@ function cancelStream(abort: StreamAbort): void {
   for (const callback of abort.onCancel) callback();
   abort.onCancel.clear();
 }
+
+function linkedAbortSignal(abort: StreamAbort): {
+  signal: AbortSignal;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  const cancel = () => controller.abort();
+  const cleanup = () => {
+    abort.onCancel.delete(cancel);
+    controller.signal.removeEventListener("abort", cleanup);
+  };
+  abort.onCancel.add(cancel);
+  controller.signal.addEventListener("abort", cleanup, { once: true });
+  if (abort.cancelled) controller.abort();
+  return { signal: controller.signal, cleanup };
+}
+
+// --- Composer and send flow -------------------------------------------------
 
 function borderBlockSize(element: HTMLElement): number {
   const style = getComputedStyle(element);
@@ -1753,173 +1330,15 @@ function setStreamingUI(streaming: boolean): void {
   sendBtn.classList.toggle("stop-btn", streaming);
 }
 
-function linkedAbortSignal(abort: StreamAbort): {
-  signal: AbortSignal;
-  cleanup: () => void;
-} {
-  const controller = new AbortController();
-  const cancel = () => controller.abort();
-  const cleanup = () => {
-    abort.onCancel.delete(cancel);
-    controller.signal.removeEventListener("abort", cleanup);
-  };
-  abort.onCancel.add(cancel);
-  controller.signal.addEventListener("abort", cleanup, { once: true });
-  if (abort.cancelled) controller.abort();
-  return { signal: controller.signal, cleanup };
-}
-
-function nextAnimationFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
-}
-
-function waitForMountedMessageTop(
-  index: number,
-  abort: StreamAbort,
-): {
-  promise: Promise<void>;
-  cancel: () => void;
-} {
-  let frame = 0;
-  let done = false;
-  let resolvePromise: () => void = () => {};
-
-  const finish = () => {
-    if (done) return;
-    done = true;
-    if (frame) {
-      cancelAnimationFrame(frame);
-      frame = 0;
-    }
-    abort.onCancel.delete(finish);
-    resolvePromise();
-  };
-
-  const tick = () => {
-    frame = 0;
-    if (abort.cancelled) {
-      finish();
-      return;
-    }
-
-    const element = virtualList.getMountedElement(index);
-    if (element) {
-      const viewportTop = viewport.getBoundingClientRect().top;
-      const itemTop = element.getBoundingClientRect().top;
-      if (Math.abs(itemTop - viewportTop) <= MESSAGE_TOP_EPSILON_PX) {
-        finish();
-        return;
-      }
-    }
-
-    frame = requestAnimationFrame(tick);
-  };
-
-  const promise = new Promise<void>((resolve) => {
-    resolvePromise = resolve;
-    abort.onCancel.add(finish);
-    frame = requestAnimationFrame(tick);
-    if (abort.cancelled) finish();
-  });
-
-  return { promise, cancel: finish };
-}
-
-async function settleVirtualizerFrames(): Promise<void> {
-  await nextAnimationFrame();
-  await nextAnimationFrame();
-}
-
-function beginStreamingBottomFollow(abort: StreamAbort, force = false): void {
-  if (abort.cancelled) return;
-  // Auto-following on send only engages if the user is at the bottom when the
-  // response begins — if they've scrolled away, leave them there. An explicit
-  // jump-to-bottom passes force, since the user just asked to follow (and the
-  // stream may have grown past the bottom during the jump's smooth scroll).
-  if (!force && !virtualList.state.atBottom) {
-    dearmStreamingBottomFollow();
-    return;
-  }
-
-  bottomFollowCleanup?.();
-  const followAbort = linkedAbortSignal(abort);
-  bottomFollowPending = false;
-  bottomFollowArmed = true;
-  bottomFollowCleanup = followAbort.cleanup;
-  virtualList.followBottom({
-    behavior: "smooth",
-    duration: BOTTOM_FOLLOW_DURATION_MS,
-    signal: followAbort.signal,
-  });
-}
-
-function startStreamingBottomFollow(abort: StreamAbort, force = false): void {
-  if (abort.cancelled) return;
-  if (!virtualListScrollActive) {
-    beginStreamingBottomFollow(abort, force);
-    return;
-  }
-
-  bottomFollowPending = true;
-  void waitForVirtualizerScrollEnd(abort).then(() => {
-    if (bottomFollowPending && !abort.cancelled)
-      beginStreamingBottomFollow(abort, force);
-  });
-}
-
-function dearmStreamingBottomFollow(): void {
-  bottomFollowPending = false;
-  bottomFollowArmed = false;
-  bottomFollowCleanup?.();
-  bottomFollowCleanup = null;
-}
-
-function stopStreamingBottomFollow(): void {
-  virtualList.stopFollowBottom();
-  dearmStreamingBottomFollow();
-}
-
-async function handleScrollBottomClick(): Promise<void> {
-  const activeStream = streamAbort;
-  const scrollAbort = activeStream ? linkedAbortSignal(activeStream) : null;
-
-  try {
-    const completed = await virtualList.scrollToBottom({
-      behavior: "smooth",
-      signal: scrollAbort?.signal,
-    });
-    syncDemoState();
-
-    if (
-      completed &&
-      activeStream &&
-      streamAbort === activeStream &&
-      !activeStream.cancelled
-    ) {
-      startStreamingBottomFollow(activeStream, true);
-      syncDemoState();
-    }
-  } finally {
-    scrollAbort?.cleanup();
-  }
-}
-
-function getMountedMessageContent(index: number): HTMLElement | null {
-  const element = virtualList.getMountedElement(index);
-  if (!element) return null;
-  return element.querySelector<HTMLElement>(".message-content") ?? element;
-}
-
-function animateMountedItemsClass(
-  indices: readonly number[],
+function animateRowsClass(
+  ids: readonly number[],
   className: string,
   abort: StreamAbort,
 ): Promise<void> {
-  const targets = indices
-    .map(getMountedMessageContent)
-    .filter((element): element is HTMLElement => element !== null);
+  const targets = ids
+    .map((id) => rowById.get(String(id)))
+    .filter((row): row is HTMLElement => row !== undefined)
+    .map((row) => row.querySelector<HTMLElement>(".message-content") ?? row);
   if (targets.length === 0) return Promise.resolve();
 
   return Promise.all(
@@ -1950,94 +1369,16 @@ function animateMountedItemsClass(
   ).then(() => undefined);
 }
 
-function flyInMountedItems(
-  indices: readonly number[],
-  abort: StreamAbort,
-): Promise<void> {
+function flyInRows(ids: readonly number[], abort: StreamAbort): Promise<void> {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
     return Promise.resolve();
   }
-
-  return animateMountedItemsClass(indices, "fly", abort);
+  return animateRowsClass(ids, "fly", abort);
 }
 
-function fadeInMountedItems(
-  indices: readonly number[],
-  abort: StreamAbort,
-): void {
+function fadeInRows(ids: readonly number[], abort: StreamAbort): void {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  void animateMountedItemsClass(indices, "fade", abort);
-}
-
-function handleVirtualizerScrollStart(): void {
-  virtualListScrollActive = true;
-  if (!bottomFollowArmed && !bottomFollowPending) return;
-  dearmStreamingBottomFollow();
-}
-
-function finishVirtualizerScrollTracking(): void {
-  virtualListScrollActive = false;
-  for (const resolve of virtualListScrollEndWaiters) resolve();
-  virtualListScrollEndWaiters.clear();
-}
-
-function handleVirtualizerScrollEnd(): void {
-  logSettle("scroll-end");
-  finishVirtualizerScrollTracking();
-  syncDemoState();
-  if (debugSettle) {
-    let frame = 0;
-    const tick = () => {
-      logSettle(`scroll-end+${++frame}`);
-      if (frame < 5) requestAnimationFrame(tick);
-    };
-    requestAnimationFrame(tick);
-  }
-}
-
-function waitForVirtualizerScrollEnd(abort: StreamAbort): Promise<void> {
-  if (!virtualListScrollActive || abort.cancelled) return Promise.resolve();
-
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      virtualListScrollEndWaiters.delete(finish);
-      abort.onCancel.delete(finish);
-      resolve();
-    };
-
-    virtualListScrollEndWaiters.add(finish);
-    abort.onCancel.add(finish);
-    if (!virtualListScrollActive || abort.cancelled) finish();
-  });
-}
-
-async function scrollMessageToTop(
-  index: number,
-  abort: StreamAbort,
-  afterTargetMount?: () => void,
-): Promise<void> {
-  const abortLink = linkedAbortSignal(abort);
-  let targetAtTop: ReturnType<typeof waitForMountedMessageTop> | null = null;
-  scrollTurnInProgress = true;
-  scheduleScrollButtons();
-  try {
-    targetAtTop = waitForMountedMessageTop(index, abort);
-    const scroll = virtualList.scrollToIndex(index, "top", {
-      behavior: "smooth",
-      duration: SEND_SCROLL_DURATION_MS,
-      signal: abortLink.signal,
-    });
-    afterTargetMount?.();
-    await Promise.race([scroll.then(() => undefined), targetAtTop.promise]);
-  } finally {
-    targetAtTop?.cancel();
-    scrollTurnInProgress = false;
-    abortLink.cleanup();
-    scheduleScrollButtons();
-  }
+  void animateRowsClass(ids, "fade", abort);
 }
 
 async function handleSend(): Promise<void> {
@@ -2066,52 +1407,40 @@ async function handleSend(): Promise<void> {
   };
 
   try {
-    const userMessage = createMessage({
-      role: "user",
-      markdown: text,
-      itemHeight: ESTIMATED_ITEM_HEIGHT,
-    });
+    const userMessage = createMessage({ role: "user", markdown: text });
     const assistantMessage = createMessage({
       role: "assistant",
       markdown: "",
       status: "thinking",
-      itemHeight: ESTIMATED_ITEM_HEIGHT,
-      // Real replies have no tool phase; the simulated set stays a prop of the
-      // canned rotation only.
+      // Real replies have no tool phase; the simulated set stays a prop of
+      // the canned rotation only.
       ...(useOpenAI ? {} : { toolCalls: createSimulatedToolCalls() }),
     });
     assistantId = assistantMessage.id;
-    // Both rows land before the glide starts: every structural cost (row
-    // builds, clone measurement, layout sync) is paid up front, so no long
-    // task hits the animation's delicate ease-out tail. The buttons' scrolls
-    // carry no payload — this is what made the send scroll feel rougher than
-    // them despite sharing the same animator and easing.
-    const appendResult = appendMessagesToLoadedBottom([
-      userMessage,
-      assistantMessage,
-    ]);
+    appendToActiveBranch([userMessage, assistantMessage]);
     // Persist the user turn immediately so a reload mid-stream keeps it (the
     // still-empty assistant placeholder is filtered out).
     persistTurns();
-    syncVirtualizerLayout();
-    refreshLoadedWindowIfReplaced(appendResult);
-    const userIndex = appendResult.startIndex;
-    virtualList.setStickyIndex(userIndex);
-    await scrollMessageToTop(
-      userIndex,
-      abort,
-      shouldFlyIn
-        ? undefined
-        : () => fadeInMountedItems([userIndex, userIndex + 1], abort),
-    );
-    scheduleScrollButtons();
-    if (abort.cancelled) return;
+    // The append itself keeps the viewport put; the pinned glide below owns
+    // the motion.
+    pushItems("viewport");
+    if (!shouldFlyIn) {
+      fadeInRows([userMessage.id, assistantMessage.id], abort);
+    }
+    // Pin-to-top (I5): the reserve holds scrollable space below the prompt
+    // until the streamed reply consumes it, and the glide lands the prompt
+    // exactly at the viewport top. End-follow engages on landing, so the
+    // reply keeps the bottom pinned once it outgrows the reserve — and a
+    // user scroll during the stream disengages it (their intent wins).
+    beginSendGlide();
+    virtualList?.scrollTo(String(userMessage.id), {
+      align: "start",
+      behavior: "smooth",
+    });
     if (shouldFlyIn) {
-      await flyInMountedItems([userIndex], abort);
+      await flyInRows([userMessage.id], abort);
       if (abort.cancelled) return;
     }
-
-    startStreamingBottomFollow(abort);
 
     if (useOpenAI) {
       await streamOpenAIResponse(assistantId, abort);
@@ -2120,44 +1449,35 @@ async function handleSend(): Promise<void> {
       await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
       if (abort.cancelled) return;
 
-      mutateMessageById(assistantId, (message) => {
+      updateMessage(assistantId, (message) => {
         message.status = "streaming";
       });
       await streamResponse(reply, assistantId, abort);
     }
   } finally {
     if (assistantId !== null) {
-      mutateMessageById(
-        assistantId,
-        (message) => {
-          if (message.role === "assistant") {
-            message.status = abort.cancelled ? "cancelled" : "done";
-          }
-        },
-        { refreshUnmounted: true },
-      );
+      updateMessage(assistantId, (message) => {
+        if (message.role === "assistant") {
+          message.status = abort.cancelled ? "cancelled" : "done";
+        }
+      });
     }
     // The finished (or cancelled-partial) assistant turn joins the history;
     // empty turns are filtered out during serialization.
     persistTurns();
-    if (!abort.cancelled) {
-      await settleVirtualizerFrames();
-      if (bottomFollowArmed) {
-        // Normally a ≤1px no-op (the follow loop lands exactly at the
-        // bottom); covers any remainder with a glide, never a snap.
-        await virtualList.scrollToBottom({ behavior: "smooth" });
-      }
-    }
-    stopStreamingBottomFollow();
+    endSendGlide();
     streamAbort = null;
     setStreamingUI(false);
-    scheduleScrollButtons();
-    // Focusing the composer collapses any text selection, so skip it while the
-    // user is selecting text in a message — otherwise stream end clears it.
+    if (virtualList) syncScrollButtons(virtualList.state);
+    // Focusing the composer collapses any text selection, so skip it while
+    // the user is selecting text in a message — otherwise stream end clears
+    // it.
     const selection = window.getSelection();
     if (!selection || selection.isCollapsed) promptInput.focus();
   }
 }
+
+// --- Boot -------------------------------------------------------------------
 
 bindThemeButtons(refreshTheme);
 initAISettingsPanel({
@@ -2178,17 +1498,15 @@ initAISettingsPanel({
 });
 
 scrollTopBtn.addEventListener("click", () => {
-  // At the top of a partial loaded window the button stays visible while the
-  // boundary load runs; do not let a redundant click force deferred rows into
-  // a live native gesture through scrollToTop's programmatic flush path.
-  if (virtualList.state.atTop) return;
-  void virtualList.scrollToTop({ behavior: "smooth" }).then(() => {
-    syncDemoState();
-  });
+  // The glide's live target keeps aiming at the true top while scrollback
+  // chunks prepend along the way.
+  virtualList?.scrollTo("start", { behavior: "smooth" });
 });
 
 scrollBottomBtn.addEventListener("click", () => {
-  void handleScrollBottomClick();
+  // Landing at the end re-engages end-follow, so a click during a stream
+  // resumes following (the runtime's follow state, not demo bookkeeping).
+  virtualList?.scrollTo("end", { behavior: "smooth" });
 });
 
 promptInput.addEventListener("input", autosize);
@@ -2212,40 +1530,28 @@ await Promise.all([initMarkdown(), document.fonts.ready]);
 applyDocumentTheme();
 syncThemeButtons();
 autosize();
-measureTemplateHeights();
 if (getAISettings().provider === "openai") await prepareOpenAIConversation();
 seedActiveConversation();
 
-const virtualList = createVirtualList({
-  viewport,
-  canvasClassName: "chat-canvas",
-  getCount: () => messages.length,
-  getItemHeight,
-  buildItem,
-  destroyItem: (_index, element) => {
-    const handle = streamingViewers.get(element);
-    if (!handle) return;
-    handle.destroy();
-    streamingViewers.delete(element);
+virtualList = createVirtualList<Message>(viewport, {
+  items: messages,
+  key: (message) => String(message.id),
+  render: (message, existing) => {
+    if (existing) {
+      const updated = updateRow(existing, message);
+      if (updated) return updated;
+    }
+    return buildRow(message);
   },
-  overscanPx: domOverscanPx,
-  onRangeChange: syncDemoState,
-  onReachTop: loadOlderMessages,
-  onScrollStart: handleVirtualizerScrollStart,
-  onScrollEnd: handleVirtualizerScrollEnd,
-  // Keep the demo's height model in lockstep with what the virtualizer
-  // learns from the DOM — the clone-based model measurement cannot see
-  // undecoded images or late highlighting, and a drifted model resurfaces
-  // as mis-sized canvases on any path that re-reads it.
-  onItemMeasured: (index, height) => {
-    const message = messages[index];
-    if (message) message.itemHeight = height;
+  estimateSize: ESTIMATED_ITEM_HEIGHT,
+  onState: (state) => {
+    if (state.atEnd) endSendGlide();
+    syncScrollButtons(state);
+    syncMetrics(state);
   },
+  onReachStart: loadOlderMessages,
 });
-setBoundarySlotIdleState("top");
-syncBoundarySlot("top");
-const viewportResizeObserver = new ResizeObserver(remeasureForViewportWidth);
-viewportResizeObserver.observe(viewport);
+
 // One delegated listener powers copy buttons across every mounted row.
 attachInteractions(viewport);
 // A second delegated listener drives the per-message version navigators; it
@@ -2262,21 +1568,12 @@ viewport.addEventListener("click", (event) => {
   if (!Number.isFinite(messageId)) return;
   switchMessageVersion(messageId, button.dataset.dir === "prev" ? -1 : 1);
 });
-// Toggling a tool-call <details> changes the row's height inside the click's
-// own task, but ResizeObserver corrections flush a frame later — the toggle
-// would paint against stale canvas geometry and then get shifted (a visible
-// flash/jump). remeasureElement owns the timing: it commits the row's real
-// height in the same painted frame as the toggle.
-viewport.addEventListener("click", (event) => {
-  if (!(event.target instanceof Element)) return;
-  const row = event.target
-    .closest(".tool-call-summary")
-    ?.closest<HTMLElement>("article.message");
-  if (row) virtualList.remeasureElement(row);
-});
+// Toggling a tool-call <details> needs no demo-side measurement call: the
+// runtime commits ResizeObserver measurements synchronously in the observer
+// callback — after layout, before paint — so the toggle lands in the same
+// painted frame (I6).
 
-await virtualList.scrollToBottom();
-syncDemoState();
+syncMetrics();
 document.documentElement.classList.remove("booting");
 promptInput.focus();
 

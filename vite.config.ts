@@ -5,8 +5,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: new URL("index.html", import.meta.url).pathname,
-        // The streaming chat demo is the lean-core acceptance target; it
-        // returns to the build once the lean runtime can host it.
+        streaming: new URL("demos/streaming/index.html", import.meta.url)
+          .pathname,
       },
     },
   },

@@ -330,50 +330,48 @@ p.ai-settings-note {
 .viewport {
   height: 100%;
   width: 100%;
+  /* The runtime owns the geometry inside; the demo owns the scroll surface. */
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
-.chat-canvas {
-  width: 100%;
+/* Edge loading is an overlay, never scroll geometry (I3): a floating pill
+   over the viewport's top edge, shown while older messages load and briefly
+   when scrollback exhausts. */
+.edge-overlay {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
 }
 
-.boundary-slot {
+.edge-overlay[data-state="loading"],
+.edge-overlay[data-state="no-more"] {
+  opacity: 1;
+  transform: none;
+}
+
+.edge-pill {
   display: flex;
   align-items: center;
-  justify-content: center;
   gap: 8px;
-  width: min(100%, 860px);
-  height: 100%;
-  margin: 0 auto;
-  padding: 0 24px;
+  padding: 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-surface);
   color: var(--fg-dim);
   font-size: 12px;
   font-weight: 600;
-}
-
-.boundary-slot[data-state="error"] {
-  color: var(--alert-caution-border);
-}
-
-.boundary-slot[data-state="idle"] {
-  visibility: hidden;
-}
-
-.placeholder-slot {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: min(100%, 860px);
-  margin: 0 auto;
-  padding: 24px;
-  color: var(--fg-dim);
-  font-size: 13px;
-  font-weight: 600;
-  text-align: center;
-}
-
-.placeholder-slot.error {
-  color: var(--alert-caution-border);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.14);
 }
 
 .boundary-spinner {
@@ -386,8 +384,8 @@ p.ai-settings-note {
   animation: boundary-spin 0.8s linear infinite;
 }
 
-.boundary-slot[data-state]:not([data-state="loading"]) .boundary-spinner {
-  opacity: 0;
+.edge-overlay[data-state="no-more"] .boundary-spinner {
+  display: none;
 }
 
 @keyframes boundary-spin {
