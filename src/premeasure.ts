@@ -25,9 +25,17 @@ export interface ItemMeasurerConfig {
 export interface ItemMeasurer {
   /**
    * Build the element, measure its border-box height in the detached root,
-   * detach it, and hand it back with its height. `destroy` (optional)
-   * mirrors the build's lifecycle for transient per-element resources; it
-   * runs even when measurement throws, with errors aggregated.
+   * detach it, and hand it back LIVE with its height.
+   *
+   * Ownership rule (the retained-node contract):
+   * - Success: the caller owns the returned element — `destroy` is NOT
+   *   invoked; per-element resources (live viewers, observers) survive to
+   *   mount.
+   * - Measurement failure after a successful build: `destroy` runs so the
+   *   never-returned element's resources are torn down; a teardown failure
+   *   aggregates with the measurement failure.
+   * - Abort, supersession, disposal, or eventual unmount of a returned
+   *   element: the CALLER destroys it, exactly once.
    */
   measure(
     build: () => HTMLElement,
@@ -116,23 +124,25 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
       }
 
       measureRoot.replaceChildren();
-      if (element && destroy) {
-        try {
-          destroy(element);
-        } catch (teardownError) {
-          if (measurementFailed) {
+      if (measurementFailed) {
+        // The element will never be returned: tear its resources down here
+        // (build-throw leaves no element to destroy).
+        if (element && destroy) {
+          try {
+            destroy(element);
+          } catch (teardownError) {
             throw new AggregateError(
               [measurementError, teardownError],
               "item measurement and teardown failed",
             );
           }
-          throw teardownError;
         }
+        throw measurementError;
       }
-      if (measurementFailed) throw measurementError;
       if (!element) {
         throw new Error("item build returned no element");
       }
+      // Success: the caller owns the live element (see the ownership rule).
       return { element, height };
     },
     dispose() {

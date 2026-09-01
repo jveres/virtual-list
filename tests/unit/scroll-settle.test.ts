@@ -37,7 +37,12 @@ const live: Harness[] = [];
 
 function mount(
   strategy: VirtualListScrollSettleStrategy,
-  options: { canLoadTop?: boolean; canLoadBottom?: boolean } = {},
+  options: {
+    canLoadTop?: boolean;
+    canLoadBottom?: boolean;
+    /** Let scrollTop leave [0, max] — Safari rubber-band simulation. */
+    overscroll?: boolean;
+  } = {},
 ): Harness {
   const viewport = document.createElement("div");
   let scrollTop = 0;
@@ -50,8 +55,11 @@ function mount(
     scrollTop: {
       get: () => scrollTop,
       set: (next: number) => {
-        // Browsers clamp scrollTop writes to the scrollable range.
-        scrollTop = Math.max(0, Math.min(maxScrollTop, next));
+        // Browsers clamp scrollTop writes to the scrollable range; Safari
+        // rubber-band tests bypass the clamp to simulate overscroll.
+        scrollTop = options.overscroll
+          ? next
+          : Math.max(0, Math.min(maxScrollTop, next));
       },
     },
   });
@@ -287,6 +295,142 @@ describe("firefox edge sequences (trace replay)", () => {
     vi.advanceTimersByTime(10_000);
     expect(harness.settled()).toBe(0);
     expect(harness.controller.isUserScrollActive()).toBe(true);
+  });
+});
+
+describe("firefox delta-mode coverage", () => {
+  it("contests on a page-delta wheel regardless of magnitude", () => {
+    const harness = mount("firefox-wheel");
+    firefoxEdgeReleasePreamble(harness);
+
+    vi.advanceTimersByTime(8);
+    harness.wheel(-1, WheelEvent.DOM_DELTA_PAGE);
+
+    vi.advanceTimersByTime(600);
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(1300);
+    expect(harness.settled()).toBe(1);
+  });
+
+  it("resets the predecessor unit after a non-pixel wheel (pinned permissive)", () => {
+    // A line-mode wheel just before the scrollend resets the signed
+    // predecessor: a small same-band pixel wheel after the scrollend is
+    // neither a reversal (no comparable unit) nor energy growth, so it is
+    // classified as a trailing marker. Characterizes the deliberate
+    // permissive choice at the unit boundary.
+    const harness = mount("firefox-wheel");
+    harness.scrollTo(600);
+    harness.wheel(-50);
+    harness.scrollTo(300);
+    vi.advanceTimersByTime(16);
+    harness.wheel(-3, WheelEvent.DOM_DELTA_LINE); // Unit reset.
+    harness.scrollTo(0);
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd();
+
+    vi.advanceTimersByTime(8);
+    harness.wheel(2); // Small pixel delta, incomparable predecessor.
+
+    // Uncontested: settles on the short window from that wheel.
+    vi.advanceTimersByTime(300);
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(300);
+    expect(harness.settled()).toBe(1);
+  });
+});
+
+describe("chromium sequences (trace replay)", () => {
+  it("suppresses the early edge scrollend and settles on the edge-quiet fallback", () => {
+    const harness = mount("chromium-wheel", { canLoadTop: true });
+    harness.scrollTo(600);
+    harness.wheel(-100);
+    harness.scrollTo(300);
+    vi.advanceTimersByTime(16);
+    harness.wheel(-100);
+    harness.scrollTo(0);
+    vi.advanceTimersByTime(16);
+    harness.wheel(-50); // Outward at the loadable top: suppressed.
+    harness.scrollEnd(); // Chromium's single, EARLY scrollend at the edge.
+
+    // Wheel-idle (140) → edge settle fallback (450) → cooldown (140):
+    // settle lands ~730ms after the last wheel, not on the early scrollend.
+    vi.advanceTimersByTime(500);
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(320);
+    expect(harness.settled()).toBe(1);
+  });
+
+  it("settles mid-list from the final scrollend once wheel input idles", () => {
+    const harness = mount("chromium-wheel");
+    harness.scrollTo(600);
+    harness.wheel(-100);
+    harness.scrollTo(500);
+    vi.advanceTimersByTime(16);
+    harness.wheel(-80);
+    harness.scrollTo(420);
+    harness.scrollEnd(); // Consumed by the trailing wheel activity...
+
+    // ...so settling waits for wheel idle (140) + cooldown (140).
+    vi.advanceTimersByTime(200);
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(200);
+    expect(harness.settled()).toBe(1);
+  });
+
+  it("closes the wheel-idle dead-end via the stall fallback (no scrollend)", () => {
+    const harness = mount("chromium-wheel");
+    harness.scrollTo(600);
+    harness.wheel(-100);
+    harness.scrollTo(500);
+    vi.advanceTimersByTime(16);
+    harness.wheel(-80);
+    harness.scrollTo(420);
+    // No scrollend ever: chromium fires one per sequence and a trailing
+    // wheel consumed it. The stall fallback must still settle the gesture
+    // ("stuck loads" close): idle (140) + quiet (450) + cooldown (140).
+    vi.advanceTimersByTime(500);
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(400);
+    expect(harness.settled()).toBe(1);
+  });
+});
+
+describe("safari sequences (trace replay)", () => {
+  it("never settles while rubber-band overscrolled; settles after the bounce", () => {
+    const harness = mount("safari-wheel", { overscroll: true });
+    harness.scrollTo(600);
+    harness.wheel(-100);
+    harness.scrollTo(200);
+    vi.advanceTimersByTime(16);
+    harness.wheel(-80);
+    harness.scrollTo(-30); // Rubber-banded past the top.
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd();
+
+    vi.advanceTimersByTime(2000); // Held overscrolled: must not settle.
+    expect(harness.settled()).toBe(0);
+
+    harness.scrollTo(0); // The bounce returns into range...
+    vi.advanceTimersByTime(200); // ...but the edge needs 350ms of silence.
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(300);
+    expect(harness.settled()).toBe(1);
+  });
+
+  it("requires the post-motion quiet window at a pinned edge", () => {
+    const harness = mount("safari-wheel");
+    harness.scrollTo(600);
+    harness.wheel(-100);
+    harness.scrollTo(0); // Pinned at the top.
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd();
+
+    // The settle's writes would snap a live bounce: near an edge, 350ms of
+    // scroll-event silence is required beyond the cooldown.
+    vi.advanceTimersByTime(150);
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(300);
+    expect(harness.settled()).toBe(1);
   });
 });
 

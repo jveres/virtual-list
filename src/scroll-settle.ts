@@ -24,23 +24,26 @@
  *   (EDGE_SETTLE_QUIET_MS + the cooldown); applying a list update
  *   mid-overscroll after that delay is fine because Chromium repaints the
  *   anchored content without a visible flash.
- * - **Firefox**: at an overscrolled edge, settle only from a scrollend after
- *   an extended last-input stability window — never from a bare timer.
- *   Firefox emits a scrollend whenever scrolling pauses, so
- *   one can land inside a momentum-wheel gap mid-hold; wheels arriving
- *   inside the stability window postpone the settle (trailing momentum markers
- *   after a real release delay it briefly, a continuing gesture pushes it
- *   to its own release scrollend). Applying while the engine gesture is
- *   alive is unfixable, verified empirically: besides the visible flash,
- *   Firefox's async scroll machinery keeps the pre-apply scroll-limit
- *   snapshot for the remainder of the gesture — the next scroll bounces
- *   against that "ghost end" — and no main-thread reset clears it (an
- *   overflow toggle with forced reflow and a real-value scrollTop nudge
- *   were both tried). The generic 280ms fallback never arms near an edge
- *   either, and a scrollend-less hold never applies at all: the loading
- *   slot keeps spinning and the next gesture's settle recovers it. A
- *   mid-hold scrollend followed by a motionless hold longer than the window
- *   remains indistinguishable from a release and will apply then.
+ * - **Firefox** (v2 deviation from main's single-window code; see the
+ *   window constants): a scrollend at a protected edge is a *candidate*
+ *   release. Post-scrollend wheel input classifies it: energy growth past
+ *   the predecessor, a direction reversal, or any line/page-delta notch
+ *   CONTESTS it (the scrollend was a mid-momentum/mid-hold pause), while
+ *   a decaying pixel-mode tail is trailing momentum markers that merely
+ *   postpone. Uncontested candidates settle after the short confirmation
+ *   window; contested ones require the full stability window of wheel
+ *   silence. Applying while the engine gesture is alive is unfixable,
+ *   verified empirically: besides the visible flash, Firefox's async
+ *   scroll machinery keeps the pre-apply scroll-limit snapshot for the
+ *   remainder of the gesture — the next scroll bounces against that
+ *   "ghost end" — and no main-thread reset clears it (an overflow toggle
+ *   with forced reflow and a real-value scrollTop nudge were both tried).
+ *   The generic fallback never arms near a protected edge, and a
+ *   scrollend-less hold never applies at all: the loading slot keeps
+ *   spinning and the next gesture's settle recovers it. A hold that
+ *   pauses into an UNCONTESTED scrollend and stays still is observably
+ *   identical to a release and will apply after the short window — the
+ *   documented latency-versus-certainty trade-off.
  * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
  *   during native motion kills the momentum animation. The contract is:
  *   never settle while rubber-banded or while any motion — even sub-pixel —

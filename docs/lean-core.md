@@ -13,9 +13,13 @@ as preserved primitives, with the smaller API built around them.
 1. **Cross-browser scrollend detection** — the scroll-settle controller:
    per-engine heuristics (Chromium wheel-idle windows and single-scrollend
    sequences, Firefox edge stability windows against APZ ghost ends, Safari
-   rubber-band tails, a scrollend+cooldown default) that tell PRECISELY when
-   structural changes to the scroller are possible. Ported verbatim from
-   `main` (`src/scroll-settle.ts`); its behavior is empirically verified and
+   rubber-band tails, a scrollend+cooldown default) yielding the best
+   obtainable settle signal for when structural changes to the scroller
+   are safe — strong evidence, not proof, on wheel engines that expose no
+   fingers-down state (the accepted trade-off below). Ported from `main`
+   (`src/scroll-settle.ts`) and refined under lab traces: the unchanged
+   portions match `main`; the two Firefox deviations are flagged in-source
+   and documented here. Its engine knowledge is empirically verified and
    is not re-derived.
 2. **Chunk premeasurement** — items are built and measured OFF-scroller
    (a detached, width-synced measurement root) before they ever enter the
