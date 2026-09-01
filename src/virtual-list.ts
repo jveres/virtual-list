@@ -19,13 +19,17 @@ import {
 //    positions — runs during scrolling.
 // 2. Every change is PREPARED off-scroller: new and re-rendered rows are
 //    built and premeasured in the detached measurement root; the resulting
-//    node is retained and is what mounts.
+//    node is retained and is what mounts. Preparation is failure-atomic:
+//    a throwing render or measurement rolls back everything it built and
+//    leaves committed and pending state untouched.
 // 3. Only when the phase settles (or immediately while idle) does ONE
 //    atomic commit apply keys, heights, canvas geometry, the mounted window,
-//    and a single anchor-preserving scroll write.
+//    and a single anchor-preserving scroll write. Retained nodes are
+//    re-measured immediately before they commit (a detached image may have
+//    decoded since preparation), so the latest heights commit once.
 // 4. A mounted row lives inside a dimensionally stable SLOT (fixed height,
-//    overflow hidden). Same-key content changes — streaming text, toggles,
-//    late images, font swaps — may mutate the row any time: the slot clips
+//    clipped). Same-key content changes — streaming text, toggles, late
+//    images, font swaps — may mutate the row any time: the slot clips
 //    them, geometry stays put, and the row is marked dirty; its real height
 //    is read in place at the next commit. Idle: the commit is immediate,
 //    in the same frame as the ResizeObserver delivery.
@@ -38,6 +42,7 @@ export interface ReachContext {
   /**
    * Aborted when the runtime objectively knows the load is no longer
    * wanted: the user reached the OPPOSITE edge, or the list was disposed.
+   * Every reach at an edge gets its own signal; all of them abort together.
    * Wire fetches to it; ignore it to keep a scrollback fetch alive.
    */
   signal: AbortSignal;
@@ -60,8 +65,9 @@ export interface VirtualListOptions<T> {
   /**
    * The runtime is done with this element forever — its key was removed,
    * it was superseded by a replacement render, its prepared snapshot was
-   * superseded before committing, or the list was disposed. Tear down
-   * per-element resources here; called exactly once per element.
+   * superseded before committing, its measurement failed after build, or
+   * the list was disposed. Tear down per-element resources here; called
+   * exactly once per element.
    */
   onDestroy?: (element: HTMLElement, item: T) => void;
   /** Settle strategy override (labs and tests); auto-detected otherwise. */
@@ -82,9 +88,11 @@ export interface VirtualListState {
 export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
   /**
-   * Resolves true when the command landed on its target, false when it was
-   * interrupted (user gesture, newer command, dispose) or the target does
-   * not exist. Always settles, dispose() included.
+   * Resolves true when the command landed on its target AND the target is
+   * still under the viewport once the command's scroll phase has settled
+   * and held work has committed; false when interrupted (user gesture,
+   * newer command, dispose), when the target does not exist, or when the
+   * settle-time commit moved the viewport off it. Always settles.
    */
   scrollTo(
     target: string | "start" | "end",
@@ -104,22 +112,26 @@ interface Row<T> {
   key: string;
   item: T;
   element: HTMLElement;
-  /** Dimensionally stable container: fixed committed height, overflow hidden. */
+  /** Dimensionally stable container: fixed committed height, clipped. */
   slot: HTMLElement;
   height: number;
   mounted: boolean;
   /** Content changed (or the width did): re-measure at the next commit. */
   dirty: boolean;
+  /** The commit that last measured this row (freshness on remount). */
+  measuredEpoch: number;
+  destroyed: boolean;
 }
 
 interface Prepared<T> {
-  items: readonly T[];
   keys: readonly string[];
   itemByKey: Map<string, T>;
   /** Rows built and premeasured off-scroller for new or replaced keys. */
   newRows: Map<string, Row<T>>;
   anchor: AnchorPolicy;
 }
+
+type Edge = "start" | "end";
 
 export function createVirtualList<T>(
   viewport: HTMLElement,
@@ -133,10 +145,13 @@ export function createVirtualList<T>(
   // so the kernel's estimate is only a validation placeholder.
   const geometry = new Geometry(1);
   const rows = new Map<string, Row<T>>();
+  let commitEpoch = 0;
 
   // --- Pending work (waits for the scroll phase to settle) ------------------
   let pending: Prepared<T> | null = null;
   let anyDirty = false;
+  let idleFlushFrame = 0;
+  let inFlush = false;
 
   // --- DOM ------------------------------------------------------------------
   const canvas = document.createElement("div");
@@ -151,11 +166,19 @@ export function createVirtualList<T>(
   const afterCommit: { run: () => void; discard?: () => void }[] = [];
   let glide: Glide | null = null;
   let glideTarget: (() => number) | null = null;
+  // A landed glide resolves only once its phase settles and held work has
+  // committed, revalidated against the final geometry.
+  let awaitingSettle: {
+    done: (completed: boolean) => void;
+    landed: () => boolean;
+  } | null = null;
   let lastState: VirtualListState | null = null;
   let reachStartArmed = true;
   let reachEndArmed = true;
-  let reachStartAbort: AbortController | null = null;
-  let reachEndAbort: AbortController | null = null;
+  const reachAborts: Record<Edge, Set<AbortController>> = {
+    start: new Set(),
+    end: new Set(),
+  };
 
   function viewportState(): { scrollTop: number; height: number } {
     return { scrollTop: viewport.scrollTop, height: viewport.clientHeight };
@@ -196,48 +219,54 @@ export function createVirtualList<T>(
     slot.style.top = "0";
     slot.style.left = "0";
     slot.style.right = "0";
-    slot.style.overflow = "hidden";
+    // `clip` avoids making every row a scroll container; fall back where
+    // the engine does not accept it.
+    slot.style.overflow = "clip";
+    if (slot.style.overflow !== "clip") slot.style.overflow = "hidden";
     return slot;
   }
 
-  /** Build a fresh row off-scroller: render, premeasure, retain. */
-  function buildRow(key: string, item: T): Row<T> {
-    const { element, height } = measurer.measure(() => render(item));
-    const slot = createSlot();
-    slot.appendChild(element);
-    slot.style.height = `${height}px`;
-    return { key, item, element, slot, height, mounted: false, dirty: false };
-  }
-
-  /** Re-render an existing (retained or mounted) row for a changed item. */
-  function updateRow(row: Row<T>, item: T): Row<T> {
-    const next = render(item, row.element);
-    if (next === row.element) {
-      // In place: mounted rows mutate inside their fixed slot (clipped
-      // until commit); unmounted rows mutate off-scroller. Either way the
-      // real height is read at the next commit.
-      row.item = item;
-      row.dirty = true;
-      return row;
-    }
-    // Replacement element: premeasure it off-scroller into a new row; the
-    // old one is destroyed when the replacement commits.
-    const { element, height } = measurer.measure(() => next);
+  /** Wrap a freshly premeasured element into a retained row. */
+  function retain(
+    key: string,
+    item: T,
+    element: HTMLElement,
+    height: number,
+  ): Row<T> {
     const slot = createSlot();
     slot.appendChild(element);
     slot.style.height = `${height}px`;
     return {
-      key: row.key,
+      key,
       item,
       element,
       slot,
       height,
       mounted: false,
       dirty: false,
+      measuredEpoch: -1,
+      destroyed: false,
     };
   }
 
+  /**
+   * Premeasure a built element. A measurement failure after the build
+   * destroys the element through the host (it will never be returned);
+   * a build failure has nothing to destroy.
+   */
+  function premeasure(
+    item: T,
+    build: () => HTMLElement,
+  ): { element: HTMLElement; height: number } {
+    return measurer.measure(build, (element) =>
+      options.onDestroy?.(element, item),
+    );
+  }
+
+  /** Destroy exactly once; safe to call from any path, host included. */
   function destroyRow(row: Row<T>): void {
+    if (row.destroyed) return;
+    row.destroyed = true;
     if (row.mounted) unmountRow(row);
     row.slot.remove();
     options.onDestroy?.(row.element, row.item);
@@ -286,6 +315,21 @@ export function createVirtualList<T>(
     }
   }
 
+  function markDirty(row: Row<T>): void {
+    row.dirty = true;
+    anyDirty = true;
+  }
+
+  /** Idle dirty work commits at the next frame (never inside reconciliation). */
+  function scheduleIdleFlush(): void {
+    if (idleFlushFrame !== 0 || disposed) return;
+    idleFlushFrame = requestAnimationFrame(() => {
+      idleFlushFrame = 0;
+      if (disposed || !anyDirty || !idle()) return;
+      flush(null);
+    });
+  }
+
   const rowObserver = new ResizeObserver((entries) => {
     if (disposed) return;
     let changed = false;
@@ -297,11 +341,10 @@ export function createVirtualList<T>(
         entry.borderBoxSize?.[0]?.blockSize ??
         (entry.target as HTMLElement).getBoundingClientRect().height;
       if (Math.abs(height - row.height) <= MEASURE_EPSILON_PX) continue;
-      row.dirty = true;
+      markDirty(row);
       changed = true;
     }
     if (!changed) return;
-    anyDirty = true;
     // Idle: commit in the same frame as the delivery (after layout, before
     // paint — I6). Scrolling: the slot clips; the commit waits for settle.
     inMeasurementDelivery = true;
@@ -322,61 +365,90 @@ export function createVirtualList<T>(
     const widthChanged = Math.abs(width - lastViewportWidth) > 0.5;
     lastViewportWidth = width;
     if (widthChanged) {
-      for (const row of rows.values()) row.dirty = true;
-      if (pending) for (const row of pending.newRows.values()) row.dirty = true;
-      anyDirty = rows.size > 0 || pending !== null;
+      for (const row of rows.values()) markDirty(row);
+      if (pending) for (const row of pending.newRows.values()) markDirty(row);
     }
     if (idle()) flush(null, "viewport");
     else publish();
   });
   viewportObserver.observe(viewport);
 
-  // --- Preparation (off-scroller) -------------------------------------------
+  // --- Preparation (off-scroller, failure-atomic) ---------------------------
   function prepare(next: readonly T[], anchor: AnchorPolicy): Prepared<T> {
     const keys = next.map(keyOf);
-    const itemByKeyNext = new Map<string, T>();
+    const itemByKey = new Map<string, T>();
     for (let index = 0; index < next.length; index++) {
       const key = keys[index] as string;
-      if (itemByKeyNext.has(key)) {
-        throw new Error(`duplicate key "${key}"`);
-      }
-      itemByKeyNext.set(key, next[index] as T);
+      if (itemByKey.has(key)) throw new Error(`duplicate key "${key}"`);
+      itemByKey.set(key, next[index] as T);
     }
 
+    // Phase 1 — render and measure into local structures only. Nothing in
+    // `rows` or `pending` is mutated until every host call has succeeded;
+    // a throw rolls back the rows built so far (destroyed exactly once).
     const previous = pending;
     const newRows = new Map<string, Row<T>>();
-    for (const key of keys) {
-      const item = itemByKeyNext.get(key) as T;
-      // A row prepared by a superseded pending snapshot is adopted when its
-      // item is unchanged, re-rendered when it changed (a replacement
-      // destroys it, exactly once), and never left for the sweep below.
-      const preparedBefore = previous?.newRows.get(key);
-      if (preparedBefore) {
-        previous?.newRows.delete(key);
-        if (preparedBefore.item === item) {
-          newRows.set(key, preparedBefore);
-        } else {
-          const updated = updateRow(preparedBefore, item);
-          if (updated !== preparedBefore) destroyRow(preparedBefore);
-          newRows.set(key, updated);
+    const built: Row<T>[] = [];
+    const inPlace: { row: Row<T>; item: T }[] = [];
+    const adopted = new Set<string>();
+    try {
+      for (const key of keys) {
+        const item = itemByKey.get(key) as T;
+        const preparedBefore = previous?.newRows.get(key);
+        if (preparedBefore) {
+          adopted.add(key);
+          if (preparedBefore.item === item) {
+            newRows.set(key, preparedBefore);
+            continue;
+          }
+          const rendered = render(item, preparedBefore.element);
+          if (rendered === preparedBefore.element) {
+            inPlace.push({ row: preparedBefore, item });
+            newRows.set(key, preparedBefore);
+          } else {
+            const { element, height } = premeasure(item, () => rendered);
+            const row = retain(key, item, element, height);
+            built.push(row);
+            newRows.set(key, row); // preparedBefore is destroyed in phase 2.
+            adopted.delete(key);
+          }
+          continue;
         }
-        continue;
+        const committed = rows.get(key);
+        if (committed === undefined) {
+          const { element, height } = premeasure(item, () => render(item));
+          const row = retain(key, item, element, height);
+          built.push(row);
+          newRows.set(key, row);
+        } else if (committed.item !== item) {
+          const rendered = render(item, committed.element);
+          if (rendered === committed.element) {
+            inPlace.push({ row: committed, item });
+          } else {
+            const { element, height } = premeasure(item, () => rendered);
+            const row = retain(key, item, element, height);
+            built.push(row);
+            newRows.set(key, row); // The committed row is destroyed at commit.
+          }
+        }
       }
-      const committed = rows.get(key);
-      if (committed === undefined) {
-        newRows.set(key, buildRow(key, item));
-      } else if (committed.item !== item) {
-        // In place: the committed row is now dirty. Replacement: the new
-        // row commits over it, and the old one is destroyed at commit.
-        const updated = updateRow(committed, item);
-        if (updated !== committed) newRows.set(key, updated);
-      }
+    } catch (error) {
+      for (const row of built) destroyRow(row);
+      throw error;
     }
-    // Whatever the superseded snapshot prepared and this one did not adopt.
+
+    // Phase 2 — apply, no host calls except destruction of what the
+    // superseded pending snapshot prepared and this one did not adopt.
+    for (const entry of inPlace) {
+      entry.row.item = entry.item;
+      markDirty(entry.row);
+    }
     if (previous) {
-      for (const row of previous.newRows.values()) destroyRow(row);
+      for (const [key, row] of previous.newRows) {
+        if (!adopted.has(key)) destroyRow(row);
+      }
     }
-    return { items: next, keys, itemByKey: itemByKeyNext, newRows, anchor };
+    return { keys, itemByKey, newRows, anchor };
   }
 
   // --- The atomic commit ----------------------------------------------------
@@ -388,48 +460,63 @@ export function createVirtualList<T>(
     guarded(() => {
       const applying = snapshot ?? pending;
       pending = null;
+      commitEpoch += 1;
+      inFlush = true;
+      try {
+        flushBody(applying, policyOverride);
+      } finally {
+        inFlush = false;
+      }
+    });
+  }
+
+  function flushBody(
+    applying: Prepared<T> | null,
+    policyOverride: AnchorPolicy | undefined,
+  ): void {
+    {
       const policy = policyOverride ?? applying?.anchor ?? "auto";
-      const vp = viewportState();
-      const capture = geometry.capture(vp, policy);
+      const capture = geometry.capture(viewportState(), policy);
 
       if (applying) {
-        // Keys and rows: drop removed, swap replaced, adopt new.
+        // Keys and rows: drop removed, swap replaced, adopt new. A row is
+        // removed from the map BEFORE its destruction so a host disposing
+        // from onDestroy can never destroy it twice.
         const nextKeys = new Set(applying.keys);
-        for (const [key, row] of rows) {
-          if (!nextKeys.has(key)) {
-            rows.delete(key);
-            destroyRow(row);
-          }
+        for (const [key, row] of [...rows]) {
+          if (nextKeys.has(key)) continue;
+          rows.delete(key);
+          destroyRow(row);
+          if (disposed) return;
         }
         for (const [key, row] of applying.newRows) {
           const replaced = rows.get(key);
-          if (replaced && replaced !== row) destroyRow(replaced);
           rows.set(key, row);
+          if (replaced && replaced !== row) {
+            destroyRow(replaced);
+            if (disposed) return;
+          }
         }
         for (const [key, item] of applying.itemByKey) {
           const row = rows.get(key);
           if (row) row.item = item;
         }
         geometry.setKeys(applying.keys);
+        // Latest heights, exactly once: every retained node is measured
+        // again immediately before it commits — a detached image may have
+        // decoded since preparation — and replacements ALWAYS reach the
+        // kernel (the key was measured before, but with the old element).
         for (const row of applying.newRows.values()) {
-          if (!row.dirty && !geometry.isMeasured(row.key)) {
-            geometry.measure(row.key, row.height);
-          }
+          commitHeight(row, remeasureDetached(row));
         }
       }
 
-      // Latest heights, exactly once: dirty rows are re-read now.
       for (const row of rows.values()) {
-        if (!row.dirty && geometry.isMeasured(row.key)) continue;
-        const height = row.mounted
-          ? measureInPlace(row)
-          : row.dirty
-            ? remeasureDetached(row)
-            : row.height;
-        row.dirty = false;
-        row.height = height;
-        row.slot.style.height = `${height}px`;
-        geometry.measure(row.key, height);
+        if (!row.dirty) continue;
+        commitHeight(
+          row,
+          row.mounted ? measureInPlace(row) : remeasureDetached(row),
+        );
       }
       anyDirty = false;
 
@@ -445,11 +532,33 @@ export function createVirtualList<T>(
       reconcileWindow();
       if (disposed) return;
       publish();
-    });
+    }
+  }
+
+  function commitHeight(row: Row<T>, height: number): void {
+    row.dirty = false;
+    row.height = height;
+    row.measuredEpoch = commitEpoch;
+    row.slot.style.height = `${height}px`;
+    geometry.measure(row.key, height);
   }
 
   // --- Window reconciliation (allowed during scrolling) ---------------------
   function mountRow(row: Row<T>): void {
+    // A retained row may have changed while detached (an image decoded)
+    // with no observer to notice. Check its freshness before it remounts —
+    // unless this very commit just measured it: any difference is QUEUED,
+    // the slot mounts at the committed height, geometry stays put, and the
+    // new height commits at settle (or the next idle frame). Never inside
+    // an active scroll.
+    const justMeasured = inFlush && row.measuredEpoch === commitEpoch;
+    if (!justMeasured) {
+      const height = remeasureDetached(row);
+      if (Math.abs(height - row.height) > MEASURE_EPSILON_PX) {
+        markDirty(row);
+        if (idle()) scheduleIdleFlush();
+      }
+    }
     row.mounted = true;
     canvas.appendChild(row.slot);
     observeRow(row);
@@ -480,6 +589,26 @@ export function createVirtualList<T>(
   }
 
   // --- Events ---------------------------------------------------------------
+  function abortEdge(edge: Edge): void {
+    for (const abort of reachAborts[edge]) abort.abort();
+    reachAborts[edge].clear();
+  }
+
+  function fireReach(edge: Edge): void {
+    // Reaching one edge aborts EVERY started operation at the other — the
+    // user's intent moved on — whether or not this edge has a callback.
+    abortEdge(edge === "start" ? "end" : "start");
+    const callback =
+      edge === "start" ? options.onReachStart : options.onReachEnd;
+    if (!callback) return;
+    const abort = new AbortController();
+    reachAborts[edge].add(abort);
+    abort.signal.addEventListener("abort", () =>
+      reachAborts[edge].delete(abort),
+    );
+    callback({ signal: abort.signal });
+  }
+
   function publish(): void {
     if (disposed) return;
     const vp = viewportState();
@@ -503,30 +632,19 @@ export function createVirtualList<T>(
     if (changed) options.onState?.(state);
     if (disposed) return;
 
-    // Proximity signals with entry/exit hysteresis (I3). Reaching one edge
-    // aborts the other edge's outstanding load: the user's intent moved on.
+    // Proximity signals with entry/exit hysteresis (I3).
     const startDistance = vp.scrollTop;
     const endDistance = maxTop - vp.scrollTop;
     if (startDistance <= EDGE_ENTER_PX && reachStartArmed) {
       reachStartArmed = false;
-      if (options.onReachStart) {
-        reachEndAbort?.abort();
-        reachEndAbort = null;
-        reachStartAbort = new AbortController();
-        options.onReachStart({ signal: reachStartAbort.signal });
-      }
+      fireReach("start");
     } else if (startDistance > EDGE_EXIT_PX) {
       reachStartArmed = true;
     }
     if (disposed) return;
     if (endDistance <= EDGE_ENTER_PX && reachEndArmed) {
       reachEndArmed = false;
-      if (options.onReachEnd) {
-        reachStartAbort?.abort();
-        reachStartAbort = null;
-        reachEndAbort = new AbortController();
-        options.onReachEnd({ signal: reachEndAbort.signal });
-      }
+      fireReach("end");
     } else if (endDistance > EDGE_EXIT_PX) {
       reachEndArmed = true;
     }
@@ -551,9 +669,11 @@ export function createVirtualList<T>(
     onGestureActivity: () => {},
     onGestureStarted: () => {},
     onGestureSettled: () => {
-      // The phase reached idle: everything held commits, once.
+      // The phase reached idle: everything held commits, once — and only
+      // then does a landed command learn whether it is still on target.
       if (pending !== null || anyDirty) flush(null);
       else publish();
+      resolveAwaitingSettle();
     },
     onGestureReset: () => {},
     onScrollEventObserved: () => {
@@ -566,6 +686,13 @@ export function createVirtualList<T>(
     },
     onNativeScrollEndIdle: () => {},
   });
+
+  function resolveAwaitingSettle(): void {
+    const awaiting = awaitingSettle;
+    if (!awaiting) return;
+    awaitingSettle = null;
+    awaiting.done(!disposed && awaiting.landed());
+  }
 
   /**
    * An explicit command takes the viewport over: genuinely stop the
@@ -605,6 +732,7 @@ export function createVirtualList<T>(
     // render() is a host callback); committed now only when idle.
     guarded(() => {
       const prepared = prepare(snapshot, anchor);
+      if (disposed) return;
       if (idle()) {
         flush(prepared);
       } else {
@@ -639,6 +767,17 @@ export function createVirtualList<T>(
     });
   }
 
+  /** Whether the viewport is on the command's target under current geometry. */
+  function landedOn(target: string | "start" | "end"): boolean {
+    const top = viewport.scrollTop;
+    const maxTop = geometry.maxScrollTop(viewport.clientHeight);
+    if (target === "start") return top <= AT_EDGE_EPSILON_PX;
+    if (target === "end") return maxTop - top <= AT_EDGE_EPSILON_PX;
+    const offset = geometry.offsetOf(target);
+    if (offset < 0) return false;
+    return Math.abs(top - Math.min(offset, maxTop)) <= AT_EDGE_EPSILON_PX;
+  }
+
   function performScrollTo(
     target: string | "start" | "end",
     scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" },
@@ -646,9 +785,11 @@ export function createVirtualList<T>(
   ): void {
     const keyed = target !== "start" && target !== "end";
     // Explicit command > gesture: take the viewport over, settling held
-    // work first so the command sees committed geometry.
+    // work first so the command sees committed geometry. A prior landed
+    // command still awaiting its settle resolves against that geometry.
     interruptNativeScroll();
-    glide?.cancel(); // A prior command resolves interrupted.
+    resolveAwaitingSettle();
+    glide?.cancel(); // A prior in-flight command resolves interrupted.
     if (disposed) {
       done(false);
       return;
@@ -664,16 +805,12 @@ export function createVirtualList<T>(
       flush(null, "none");
     }
 
-    let targetLost = false;
     const destination = (): number => {
       const height = viewport.clientHeight;
       if (target === "start") return 0;
       if (target === "end") return geometry.maxScrollTop(height);
       const offset = geometry.offsetOf(target);
-      if (offset < 0) {
-        targetLost = true;
-        return viewport.scrollTop;
-      }
+      if (offset < 0) return viewport.scrollTop; // Lost: revalidation fails.
       return Math.min(offset, geometry.maxScrollTop(height));
     };
 
@@ -685,12 +822,13 @@ export function createVirtualList<T>(
       }
       reconcileWindow();
       publish();
-      done(!disposed);
+      done(!disposed && landedOn(target));
       return;
     }
 
     // A glide is a programmatic scroll phase: held work waits for its
-    // landing settle, exactly like a native gesture.
+    // landing settle, exactly like a native gesture — and so does the
+    // command's own result.
     controller.beginProgrammaticGesture();
     glideTarget = destination;
     glide = startGlide(
@@ -709,11 +847,12 @@ export function createVirtualList<T>(
         guarded(() => {
           glide = null;
           glideTarget = null;
-          if (completed) controller.markSettlePending();
-          const targetGone =
-            targetLost || (keyed && geometry.indexOf(target) < 0);
-          publish();
-          done(completed && !targetGone && !disposed);
+          if (!completed || disposed) {
+            done(false);
+            return;
+          }
+          awaitingSettle = { done, landed: () => landedOn(target) };
+          controller.markSettlePending();
         }),
     );
   }
@@ -743,24 +882,26 @@ export function createVirtualList<T>(
       for (const entry of afterCommit) entry.discard?.();
       afterCommit.length = 0;
       glide?.cancel();
-      reachStartAbort?.abort();
-      reachEndAbort?.abort();
+      awaitingSettle?.done(false);
+      awaitingSettle = null;
+      abortEdge("start");
+      abortEdge("end");
       controller.dispose();
       if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);
+      if (idleFlushFrame !== 0) cancelAnimationFrame(idleFlushFrame);
       rowObserver.disconnect();
       viewportObserver.disconnect();
       measurer.dispose();
       canvas.remove();
-      // Every retained node — committed or pending — is destroyed exactly once.
-      for (const row of rows.values())
-        options.onDestroy?.(row.element, row.item);
+      // Every retained node — committed or pending — is destroyed exactly
+      // once (destroyRow is idempotent, so a host disposing from onDestroy
+      // mid-commit cannot double-destroy).
+      const doomed = [...rows.values()];
       rows.clear();
-      if (pending) {
-        for (const row of pending.newRows.values()) {
-          options.onDestroy?.(row.element, row.item);
-        }
-        pending = null;
-      }
+      const pendingRows = pending ? [...pending.newRows.values()] : [];
+      pending = null;
+      for (const row of doomed) destroyRow(row);
+      for (const row of pendingRows) destroyRow(row);
     },
   };
 }

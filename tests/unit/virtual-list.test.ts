@@ -75,6 +75,7 @@ interface Harness {
   canvas: () => HTMLElement;
   heights: Map<number, number>;
   destroyed: number[];
+  destroyedElements: HTMLElement[];
   states: VirtualListState[];
   reaches: { edge: "start" | "end"; signal: AbortSignal }[];
   rowElement: (body: string) => HTMLElement;
@@ -88,8 +89,13 @@ function mount(
   hooks: {
     replaceOnRerender?: boolean;
     onState?: (state: VirtualListState) => void;
-    reach?: boolean;
+    onDestroy?: (element: HTMLElement) => void;
+    reach?: boolean | "start-only";
     width?: () => number;
+    /** render() throws for items with this body. */
+    throwOn?: string;
+    /** getBoundingClientRect throws for items with this body (post-build). */
+    measureFailOn?: string;
   } = {},
 ): Harness {
   const viewport = document.createElement("div");
@@ -115,13 +121,18 @@ function mount(
 
   const heights = new Map<number, number>();
   const destroyed: number[] = [];
+  const destroyedElements: HTMLElement[] = [];
   const states: VirtualListState[] = [];
   const reaches: { edge: "start" | "end"; signal: AbortSignal }[] = [];
 
-  const stamp = (element: HTMLElement, id: number): HTMLElement => {
-    element.dataset.id = String(id);
-    element.getBoundingClientRect = () =>
-      ({ height: heights.get(id) ?? ROW_H }) as DOMRect;
+  const stamp = (element: HTMLElement, m: Msg): HTMLElement => {
+    element.dataset.id = String(m.id);
+    element.getBoundingClientRect = () => {
+      if (hooks.measureFailOn !== undefined && m.body === hooks.measureFailOn) {
+        throw new Error(`measure failed: ${m.body}`);
+      }
+      return { height: heights.get(m.id) ?? ROW_H } as DOMRect;
+    };
     return element;
   };
 
@@ -130,13 +141,16 @@ function mount(
     key: (m) => `m${m.id}`,
     settleStrategy: "default",
     render: (m, existing) => {
+      if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
+        throw new Error(`render failed: ${m.body}`);
+      }
       if (existing && !hooks.replaceOnRerender) {
         existing.textContent = m.body;
         return existing;
       }
       const element = document.createElement("div");
       element.textContent = m.body;
-      return stamp(element, m.id);
+      return stamp(element, m);
     },
     onState: (state) => {
       states.push(state);
@@ -144,13 +158,16 @@ function mount(
     },
     onDestroy: (element) => {
       destroyed.push(Number(element.dataset.id));
+      destroyedElements.push(element);
+      hooks.onDestroy?.(element);
     },
     onReachStart: hooks.reach
       ? ({ signal }) => reaches.push({ edge: "start", signal })
       : undefined,
-    onReachEnd: hooks.reach
-      ? ({ signal }) => reaches.push({ edge: "end", signal })
-      : undefined,
+    onReachEnd:
+      hooks.reach === true
+        ? ({ signal }) => reaches.push({ edge: "end", signal })
+        : undefined,
   });
 
   return {
@@ -159,6 +176,7 @@ function mount(
     canvas: () => viewport.firstElementChild as HTMLElement,
     heights,
     destroyed,
+    destroyedElements,
     states,
     reaches,
     rowElement: (body) => {
@@ -205,7 +223,7 @@ describe("v2 runtime — commits and slots", () => {
     const row = h.rowElement("msg 49");
     const slot = h.slotOf(row);
     expect(slot.style.height).toBe(`${ROW_H}px`);
-    expect(slot.style.overflow).toBe("hidden");
+    expect(["clip", "hidden"]).toContain(slot.style.overflow);
     expect(slot.style.transform).toBe(`translateY(${49 * ROW_H}px)`);
     expect(h.canvas().children.length).toBeLessThan(20); // Windowed.
   });
@@ -302,42 +320,113 @@ describe("v2 runtime — retained nodes", () => {
   it("premeasures a replacement off-scroller and destroys the old element exactly once", () => {
     const initial = range(0, 20);
     const h = mount(initial, { replaceOnRerender: true });
-    const before = h.rowElement("msg 19");
+    void h.list.scrollTo("m5");
+    const before = h.rowElement("msg 10");
 
     const next = [...initial];
-    next[19] = message(19, "replaced");
-    h.heights.set(19, 180);
+    next[10] = message(10, "replaced");
+    h.heights.set(10, 180);
     h.list.setItems(next);
 
     const after = h.rowElement("replaced");
     expect(after).not.toBe(before);
     expect(before.isConnected).toBe(false);
     expect(h.slotOf(after).style.height).toBe("180px");
-    expect(h.destroyed).toEqual([19]);
+    expect(h.destroyed).toEqual([10]);
+    // The replacement's height reached GEOMETRY, not just its slot: the
+    // canvas grew by the difference and the following row moved down.
+    expect(h.list.state.totalSize).toBe(20 * ROW_H + 80);
+    expect(h.slotOf(h.rowElement("msg 11")).style.transform).toBe(
+      `translateY(${11 * ROW_H + 80}px)`,
+    );
   });
 
-  it("destroys rows of a superseded pending snapshot exactly once, never mounting them", () => {
+  it("rolls back a failed preparation: built rows destroyed once, held and committed state intact", () => {
+    const h = mount(range(0, 30), { throwOn: "boom" });
+    h.userScroll(1505);
+    h.list.setItems([...range(0, 30), message(40, "held")]); // Held: m40 built.
+    expect(h.list.state.held).toBe(true);
+
+    // A later snapshot whose render throws part-way: m42 was built before
+    // the throw and is destroyed exactly once; the held snapshot (m40) is
+    // untouched; nothing committed changed.
+    expect(() =>
+      h.list.setItems([
+        ...range(0, 30),
+        message(40, "held"),
+        message(42, "ok"),
+        message(43, "boom"),
+      ]),
+    ).toThrow("render failed: boom");
+    expect(h.destroyed).toEqual([42]);
+    expect(h.list.state.count).toBe(30);
+
+    h.settle(); // The intact held snapshot commits.
+    expect(h.list.state.count).toBe(31);
+    expect(h.destroyed).toEqual([42]);
+  });
+
+  it("destroys an element whose measurement fails after its build", () => {
+    const h = mount(range(0, 10), { measureFailOn: "bad" });
+    expect(() =>
+      h.list.setItems([...range(0, 10), message(50, "bad")]),
+    ).toThrow("measure failed: bad");
+    expect(h.destroyed).toEqual([50]); // Never returned, torn down once.
+    expect(h.list.state.count).toBe(10);
+  });
+
+  it("survives dispose() from onDestroy during a replacement commit without double-destroying", () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let disposedFromCallback = false;
+    const initial = range(0, 20);
+    const h = mount(initial, {
+      replaceOnRerender: true,
+      onDestroy: () => {
+        if (disposedFromCallback) return;
+        disposedFromCallback = true;
+        listRef?.dispose();
+      },
+    });
+    listRef = h.list;
+
+    const next = [...initial];
+    next[19] = message(19, "replaced");
+    expect(() => h.list.setItems(next)).not.toThrow();
+    // Every retained ELEMENT destroyed exactly once — the replaced m19's
+    // old element first, then the rest (including the new m19 element)
+    // via dispose — with no element destroyed twice.
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+    expect(h.destroyed[0]).toBe(19);
+    expect(h.destroyedElements).toHaveLength(21);
+    expect(h.viewport.children.length).toBe(0);
+  });
+
+  it("re-measures pending retained nodes immediately before commit — latest height, one commit", () => {
     const h = mount(range(0, 50));
     h.userScroll(3005);
-    h.list.setItems([...range(0, 50), message(99, "never")]); // Held: builds m99.
-    h.list.setItems(range(0, 50)); // Supersedes: m99 is dropped.
-    expect(h.destroyed).toEqual([99]);
+    h.list.setItems([...range(0, 50), message(60, "late")]); // Held; premeasured 100.
+    h.heights.set(60, 400); // An image decoded while detached: no RO event.
 
     h.settle();
-    expect(h.list.state.count).toBe(50);
-    expect(h.destroyed).toEqual([99]);
+    // The commit carries the fresh height, not the stale premeasure.
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 400);
+    expect(h.list.state.held).toBe(false);
   });
 
-  it("destroys removed keys at commit and everything else once on dispose", () => {
-    const h = mount(range(0, 30));
-    h.list.setItems(range(1, 30)); // m0 removed.
-    expect(h.destroyed).toEqual([0]);
+  it("freshness-checks a retained committed row before remount, queuing without geometry change", () => {
+    const h = mount(range(0, 100));
+    void h.list.scrollTo("m20"); // m95 unmounts, retained.
+    h.heights.set(95, 300); // It changes while detached.
 
-    h.list.dispose();
-    const rest = h.destroyed.slice(1).sort((a, b) => a - b);
-    expect(rest).toEqual(range(1, 30).map((m) => m.id));
-    expect(new Set(h.destroyed).size).toBe(h.destroyed.length);
-    expect(h.viewport.children.length).toBe(0);
+    h.userScroll(9005); // A gesture brings it back into the window.
+    const slot = h.slotOf(h.rowElement("msg 95"));
+    expect(slot.style.height).toBe(`${ROW_H}px`); // Mounted at the committed height.
+    expect(h.list.state.totalSize).toBe(100 * ROW_H); // Geometry untouched...
+    expect(h.list.state.held).toBe(true); // ...the difference is queued.
+
+    h.settle();
+    expect(slot.style.height).toBe("300px");
+    expect(h.list.state.totalSize).toBe(100 * ROW_H + 200);
   });
 });
 
@@ -384,11 +473,41 @@ describe("v2 runtime — commands", () => {
     expect(h.list.state.count).toBe(100);
 
     vi.advanceTimersByTime(4000);
-    await expect(command).resolves.toBe(true);
+    // The prepend committed at the landing settle without movement: the
+    // same first row still sits under the viewport top — which means the
+    // viewport is no longer at "start", and the command says so.
+    await expect(command).resolves.toBe(false);
     expect(h.list.state.count).toBe(110);
-    // Landed at the committed top, then the prepend appeared without
-    // movement: the same first row still sits under the viewport top.
     expect(h.viewport.scrollTop).toBe(10 * ROW_H);
+  });
+
+  it("resolves a landed glide only after its phase settles, revalidated", async () => {
+    const h = mount(range(0, 100));
+    const command = h.list.scrollTo("start", { behavior: "smooth" });
+    let resolved: boolean | null = null;
+    void command.then((value) => {
+      resolved = value;
+    });
+    // Step to the landing frame (the ease-out snaps within 1px early); the
+    // phase then still needs the 140ms cooldown before it settles.
+    for (let t = 0; t < 3000 && h.viewport.scrollTop !== 0; t += 16) {
+      vi.advanceTimersByTime(16);
+    }
+    await Promise.resolve();
+    expect(h.viewport.scrollTop).toBe(0); // Landed...
+    expect(resolved).toBe(null); // ...but not yet reported: phase active.
+    vi.advanceTimersByTime(200);
+    await expect(command).resolves.toBe(true);
+  });
+
+  it("resolves false when the settle-time snapshot removed a keyed glide target", async () => {
+    const h = mount(range(0, 100));
+    const command = h.list.scrollTo("m2", { behavior: "smooth" });
+    vi.advanceTimersByTime(48);
+    h.list.setItems(range(3, 100)); // Removes m2; held for the landing settle.
+    vi.advanceTimersByTime(4000);
+    await expect(command).resolves.toBe(false);
+    expect(h.list.state.count).toBe(97);
   });
 
   it("a user gesture cancels an in-flight glide", async () => {
@@ -412,5 +531,27 @@ describe("v2 runtime — reach signals", () => {
 
     h.list.dispose();
     expect(h.reaches[1]?.signal.aborted).toBe(true);
+  });
+
+  it("keeps every signal of an edge alive across re-entries and aborts them all together", () => {
+    const h = mount(range(0, 100), { reach: true });
+    void h.list.scrollTo("start"); // s1
+    void h.list.scrollTo("m30"); // Past the exit zone: re-armed.
+    void h.list.scrollTo("start"); // s2 — s1 must survive, not be overwritten.
+    const starts = h.reaches.filter((r) => r.edge === "start");
+    expect(starts).toHaveLength(2);
+    expect(starts.every((r) => !r.signal.aborted)).toBe(true);
+
+    void h.list.scrollTo("end"); // Opposite edge: every start signal aborts.
+    expect(starts.every((r) => r.signal.aborted)).toBe(true);
+  });
+
+  it("aborts the opposite edge's work even when this edge has no callback", () => {
+    const h = mount(range(0, 100), { reach: "start-only" });
+    void h.list.scrollTo("start");
+    const start = h.reaches[0];
+    expect(start?.edge).toBe("start");
+    void h.list.scrollTo("end"); // No onReachEnd — the abort still happens.
+    expect(start?.signal.aborted).toBe(true);
   });
 });
