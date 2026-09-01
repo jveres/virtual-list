@@ -109,17 +109,23 @@ type ROCallback = (
   observer: ResizeObserver,
 ) => void;
 
-function withControlledResizeObserver<R>(
-  run: (
-    fire: (instance: number, element: HTMLElement, height: number) => void,
-  ) => R,
-): R {
-  const callbacks: ROCallback[] = [];
+interface ControlledRO {
+  fire: (instance: number, element: HTMLElement, height: number) => void;
+  /** Elements passed to observe() on the given instance, in call order. */
+  observed: (instance: number) => HTMLElement[];
+}
+
+function withControlledResizeObserver<R>(run: (ro: ControlledRO) => R): R {
+  const instances: { callback: ROCallback; observed: HTMLElement[] }[] = [];
   class ControlledResizeObserver {
+    private readonly record: { callback: ROCallback; observed: HTMLElement[] };
     constructor(callback: ROCallback) {
-      callbacks.push(callback);
+      this.record = { callback, observed: [] };
+      instances.push(this.record);
     }
-    observe(): void {}
+    observe(element: Element): void {
+      this.record.observed.push(element as HTMLElement);
+    }
     unobserve(): void {}
     disconnect(): void {}
   }
@@ -127,12 +133,15 @@ function withControlledResizeObserver<R>(
   (globalThis as { ResizeObserver: unknown }).ResizeObserver =
     ControlledResizeObserver;
   try {
-    return run((instance, element, height) => {
-      const entry = {
-        target: element,
-        borderBoxSize: [{ blockSize: height, inlineSize: 0 }],
-      } as unknown as ResizeObserverEntry;
-      callbacks[instance]?.([entry], null as never);
+    return run({
+      fire: (instance, element, height) => {
+        const entry = {
+          target: element,
+          borderBoxSize: [{ blockSize: height, inlineSize: 0 }],
+        } as unknown as ResizeObserverEntry;
+        instances[instance]?.callback([entry], null as never);
+      },
+      observed: (instance) => instances[instance]?.observed ?? [],
     });
   } finally {
     (globalThis as { ResizeObserver: unknown }).ResizeObserver = original;
@@ -245,13 +254,13 @@ describe("virtual list runtime", () => {
   });
 
   it("restores exact end-follow at settle for bottom growth during a gesture (I2)", () => {
-    withControlledResizeObserver((fire) => {
+    withControlledResizeObserver((ro) => {
       const { viewport, list } = mount(range(0, 50));
       const lastRow = rowElement(viewport, "msg 49");
       userScroll(viewport, 4402);
 
       // The bottom row grows 100 → 300 mid-gesture (streamed image decode).
-      fire(0, lastRow, 300);
+      ro.fire(0, lastRow, 300);
       expect(list.state.totalSize).toBe(50 * ESTIMATE + 200);
       expect(viewport.scrollTop).toBe(4402); // Write suppressed.
 
@@ -539,13 +548,13 @@ describe("virtual list runtime", () => {
   });
 
   it("compensates above-viewport growth during a gesture — geometry current, position kept", () => {
-    withControlledResizeObserver((fire) => {
+    withControlledResizeObserver((ro) => {
       const { viewport, list } = mount(range(0, 50));
-      list.scrollTo("m30");
+      void list.scrollTo("m30");
       userScroll(viewport, 3002);
 
       // A mounted row wholly above the viewport grows 100 → 300 mid-gesture.
-      fire(0, rowElement(viewport, "msg 25"), 300);
+      ro.fire(0, rowElement(viewport, "msg 25"), 300);
 
       // The measurement committed immediately: total size and the positions
       // of the rows below are current (no overlapping boxes)...
@@ -630,6 +639,71 @@ describe("virtual list runtime", () => {
     list.dispose(); // Every still-mounted row is reported.
     expect(unmounted.length).toBeGreaterThan(0);
     expect(new Set(unmounted).size).toBe(unmounted.length);
+  });
+
+  it("resolves a command queued behind a disposing callback as interrupted", async () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let queued: Promise<boolean> | null = null;
+    let once = false;
+    const { list } = mount(range(0, 30), {
+      onState: (state) => {
+        if (!listRef || once || state.count !== 40) return;
+        once = true;
+        queued = listRef.scrollTo("start"); // Queued behind the open commit.
+        listRef.dispose(); // Drops the queue — the promise must still settle.
+      },
+    });
+    listRef = list;
+
+    list.setItems(range(0, 40));
+    await expect(queued).resolves.toBe(false);
+  });
+
+  it("resolves false for a missing target without moving or pinning", async () => {
+    const { viewport, list } = mount(range(0, 50));
+    const top = viewport.scrollTop;
+    const total = list.state.totalSize;
+
+    await expect(list.scrollTo("nope")).resolves.toBe(false);
+    expect(viewport.scrollTop).toBe(top);
+    expect(list.state.totalSize).toBe(total); // No pin, no reserve.
+  });
+
+  it("resolves false when the settle snapshot removed a deferred command's target", async () => {
+    const { viewport, list } = mount(range(0, 50));
+    userScroll(viewport, 4402);
+
+    const command = list.scrollTo("m49"); // Deferred: the user owns the viewport.
+    list.setItems(range(0, 49)); // Structural: removes m49, deferred to settle.
+
+    settleGesture(viewport);
+    await expect(command).resolves.toBe(false);
+  });
+
+  it("defers observing rows mounted by a measurement commit to the next frame", () => {
+    vi.useFakeTimers();
+    try {
+      withControlledResizeObserver((ro) => {
+        const { viewport, list } = mount(range(0, 50));
+        void list.scrollTo("m30");
+        userScroll(viewport, 3002);
+        const observedBefore = ro.observed(0).length;
+
+        // Shrinking a row above the anchor compensates the scroll upward,
+        // which mounts a new row above the old window — from inside the
+        // observer's delivery.
+        ro.fire(0, rowElement(viewport, "msg 25"), 20);
+
+        const newRow = rowElement(viewport, "msg 23"); // Mounted by the commit.
+        // Observing it synchronously would leave an undeliverable
+        // notification in this delivery loop; it registers next frame.
+        expect(ro.observed(0)).toHaveLength(observedBefore);
+        vi.advanceTimersByTime(32);
+        expect(ro.observed(0)).toContain(newRow);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("dispose removes the canvas and stops reacting", () => {

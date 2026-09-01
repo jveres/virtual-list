@@ -27,11 +27,11 @@ import { type Glide, glideDuration, startGlide } from "./glide";
 //
 // ResizeObserver measurements commit synchronously inside the observer
 // callback — after layout, before paint — so a discrete in-row height change
-// lands in the same painted frame (I6). During an active user gesture,
-// structural updates, explicitly anchored updates, and above-viewport
-// corrections defer and flush at settle (the explicit policy is honored
-// there); once a snapshot is deferred, every later one replaces it
-// (latest wins).
+// lands in the same painted frame (I6). Measurements always commit; during
+// a gesture they anchor to the visible item and apply as a compensation
+// write. Structural and explicitly anchored updates defer during a gesture
+// and flush at settle (the explicit policy is honored there); once a
+// snapshot is deferred, every later one replaces it (latest wins).
 //
 // Edge chrome does not exist here (I3): `onReachStart/End` are proximity
 // signals with entry/exit hysteresis; loaders are the host's overlays.
@@ -67,8 +67,8 @@ export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
   /**
    * Resolves true when the command landed on its target, false when it was
-   * interrupted (user gesture, newer command, dispose). A command queued
-   * behind a dispose() may never settle.
+   * interrupted (user gesture, newer command, dispose) or the target does
+   * not exist. Always settles, dispose() included.
    */
   scrollTo(
     target: string | "start" | "end",
@@ -129,7 +129,7 @@ export function createVirtualList<T>(
     options: { align?: "start"; behavior?: "auto" | "smooth" };
     done: (completed: boolean) => void;
   } | null = null;
-  const afterCommit: (() => void)[] = [];
+  const afterCommit: { run: () => void; discard?: () => void }[] = [];
 
   let inTransaction = false;
   let disposed = false;
@@ -153,10 +153,17 @@ export function createVirtualList<T>(
     return geometry.maxScrollTop(viewportHeight()) - top <= AT_EDGE_EPSILON_PX;
   }
 
-  /** I4: while a transaction is open, API calls queue as its successors. */
-  function enqueueDuringCommit(work: () => void): boolean {
+  /**
+   * I4: while a transaction is open, API calls queue as its successors.
+   * `discard` runs if the queued work is dropped by dispose(), so pending
+   * command promises always settle.
+   */
+  function enqueueDuringCommit(
+    work: () => void,
+    discard?: () => void,
+  ): boolean {
     if (!inTransaction) return false;
-    afterCommit.push(work);
+    afterCommit.push({ run: work, discard });
     return true;
   }
 
@@ -207,7 +214,7 @@ export function createVirtualList<T>(
     } finally {
       inTransaction = false;
     }
-    while (!disposed && afterCommit.length > 0) afterCommit.shift()?.();
+    while (!disposed && afterCommit.length > 0) afterCommit.shift()?.run();
   }
 
   function transaction(
@@ -277,7 +284,7 @@ export function createVirtualList<T>(
         if (disposed) return;
         element = adoptElement(key, created);
         canvas.appendChild(element);
-        itemResizeObserver.observe(element);
+        observeItem(element);
         renderedItem.set(key, item);
       } else if (renderedItem.get(key) !== item) {
         // Changed identity (streaming updates): re-render in place. A
@@ -293,7 +300,7 @@ export function createVirtualList<T>(
           element.replaceWith(next);
           const replaced = element;
           element = adoptElement(key, next);
-          itemResizeObserver.observe(element);
+          observeItem(element);
           if (previous !== undefined) {
             options.onUnmount?.(replaced, previous);
           }
@@ -315,6 +322,36 @@ export function createVirtualList<T>(
   }
 
   // --- Measurements (I6: same painted frame) --------------------------------
+  // Observing an element from inside the observer's own delivery schedules a
+  // notification that cannot be delivered in the same loop — the browser
+  // reports "ResizeObserver loop completed with undelivered notifications".
+  // Rows mounted by a measurement commit are therefore registered on the
+  // next frame; their heights stay estimates until then, which is the same
+  // one-delivery latency every fresh mount has.
+  let inMeasurementDelivery = false;
+  const pendingObserves: HTMLElement[] = [];
+  let observeFlushFrame = 0;
+
+  function observeItem(element: HTMLElement): void {
+    if (!inMeasurementDelivery) {
+      itemResizeObserver.observe(element);
+      return;
+    }
+    pendingObserves.push(element);
+    if (observeFlushFrame === 0) {
+      observeFlushFrame = requestAnimationFrame(() => {
+        observeFlushFrame = 0;
+        for (const pending of pendingObserves) {
+          const key = keyByElement.get(pending);
+          if (key !== undefined && mounted.get(key) === pending) {
+            itemResizeObserver.observe(pending);
+          }
+        }
+        pendingObserves.length = 0;
+      });
+    }
+  }
+
   const itemResizeObserver = new ResizeObserver((entries) => {
     if (disposed) return;
     const measures: [string, number][] = [];
@@ -336,13 +373,18 @@ export function createVirtualList<T>(
     // item and applies as a pure compensation write; end-follow catch-up
     // still happens at settle (I2).
     const gesture = sensor.active;
-    transaction(
-      gesture ? "viewport" : "auto",
-      () => {
-        for (const [key, height] of measures) geometry.measure(key, height);
-      },
-      gesture,
-    );
+    inMeasurementDelivery = true;
+    try {
+      transaction(
+        gesture ? "viewport" : "auto",
+        () => {
+          for (const [key, height] of measures) geometry.measure(key, height);
+        },
+        gesture,
+      );
+    } finally {
+      inMeasurementDelivery = false;
+    }
   });
 
   const viewportResizeObserver = new ResizeObserver(() => {
@@ -538,9 +580,13 @@ export function createVirtualList<T>(
     };
     return new Promise((resolve) => {
       if (
-        enqueueDuringCommit(() => {
-          void scrollTo(target, owned).then(resolve);
-        })
+        enqueueDuringCommit(
+          () => {
+            void scrollTo(target, owned).then(resolve);
+          },
+          // dispose() drops the queue; the command resolves interrupted.
+          () => resolve(false),
+        )
       ) {
         return;
       }
@@ -562,14 +608,20 @@ export function createVirtualList<T>(
     scrollOptions: { align?: "start"; behavior?: "auto" | "smooth" },
     done: (completed: boolean) => void,
   ): void {
+    // A keyed target can vanish mid-glide (a snapshot removed it); the
+    // glide then holds position and the command resolves interrupted —
+    // "true" means landed on the target, and the target no longer exists.
+    let targetLost = false;
     const destination = (): number => {
       const height = viewportHeight();
       if (target === "start") return 0;
       if (target === "end") return geometry.maxScrollTop(height);
       const offset = geometry.offsetOf(target);
-      return offset < 0
-        ? viewport.scrollTop
-        : Math.min(offset, geometry.maxScrollTop(height));
+      if (offset < 0) {
+        targetLost = true;
+        return viewport.scrollTop;
+      }
+      return Math.min(offset, geometry.maxScrollTop(height));
     };
 
     // The whole command — glide interruption, pin commit (a keyed target
@@ -578,6 +630,18 @@ export function createVirtualList<T>(
     // a callback inside it (including the cancelled glide's onDone
     // publication) drains only afterwards, so it executes last and wins.
     guarded(() => {
+      // A target that does not exist resolves interrupted without touching
+      // anything — no pin, no glide cancellation, no movement. This also
+      // covers a gesture-deferred command whose key the settle snapshot
+      // removed (the flush commit runs before the command).
+      if (
+        target !== "start" &&
+        target !== "end" &&
+        geometry.indexOf(target) < 0
+      ) {
+        done(false);
+        return;
+      }
       // Cancelling a prior glide resolves its command as interrupted.
       glide?.cancel();
       if (disposed) {
@@ -621,7 +685,7 @@ export function createVirtualList<T>(
             glide = null;
             following = atEndTop(viewport.scrollTop);
             if (!disposed) publish();
-            done(completed && !disposed);
+            done(completed && !targetLost && !disposed);
           }),
       );
     });
@@ -643,11 +707,15 @@ export function createVirtualList<T>(
       // `disposed` around every callback) and empties the pending queue.
       if (disposed) return;
       disposed = true;
+      // Dropped queued work still settles its promises (discard hooks).
+      for (const entry of afterCommit) entry.discard?.();
       afterCommit.length = 0;
       pendingCommand?.done(false);
       pendingCommand = null;
       glide?.cancel();
       sensor.dispose();
+      if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);
+      pendingObserves.length = 0;
       itemResizeObserver.disconnect();
       viewportResizeObserver.disconnect();
       viewport.removeEventListener("scroll", handleScroll);

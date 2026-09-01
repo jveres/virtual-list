@@ -122,11 +122,11 @@ let sendGlideActive = false;
 let topNavigationToken = 0;
 const htmlCache = new Map<string, string>();
 // Live markdown-viewer instances for streaming rows, keyed by row element so
-// remounts and replacements never collide; the unmount observer below tears
-// a viewer down when its row leaves the DOM.
+// remounts and replacements never collide; the runtime's onUnmount callback
+// tears a viewer down when its row leaves the DOM.
 const streamingViewers = new WeakMap<HTMLElement, MarkdownViewerHandle>();
 // Mounted row elements by message id, for the send animations. Pruned by the
-// same unmount observer.
+// same onUnmount callback.
 const rowById = new Map<string, HTMLElement>();
 // The transcript is the *active path* through the message tree: the linear
 // list the virtualizer renders. `messages` is the loaded window over its tail.
@@ -585,8 +585,15 @@ function loadOlderChunk(): Promise<void> {
   syncMetrics();
 
   // Simulated fetch latency; a real host would await its data source here.
+  // The epoch check discards a load that outlives its conversation (a
+  // provider switch or history clear mid-timeout).
+  const epoch = conversationEpoch;
   return new Promise((resolve) => {
     window.setTimeout(() => {
+      if (epoch !== conversationEpoch) {
+        resolve();
+        return;
+      }
       loadingTop = false;
       loadedStart = Math.max(0, loadedStart - loadChunkCount());
       pushItems();
@@ -811,9 +818,14 @@ function seedActiveConversation(): void {
 // other conversation with one explicitly end-anchored snapshot.
 function reloadConversation(): void {
   if (streamAbort) cancelStream(streamAbort);
+  // A conversation swap supersedes any in-flight top navigation, and the
+  // end command below cancels its active glide so it cannot keep scrolling
+  // into the new conversation.
+  topNavigationToken++;
   seedActiveConversation();
   setEdgeState("hidden");
   pushItems("end");
+  void virtualList?.scrollTo("end");
   syncMetrics();
 }
 

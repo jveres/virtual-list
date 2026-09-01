@@ -66,8 +66,8 @@ const list = createVirtualList(viewport, {
 list.setItems(next, { anchor?: "auto" | "viewport" | "end" | "none" });
 list.scrollTo(key | "start" | "end", { align?, behavior? });  // align:"start" ⇒ I5 reserve
   // → Promise<boolean>: true = landed on target, false = interrupted
-  //   (user gesture, newer command, dispose); a command queued behind a
-  //   dispose() may never settle.
+  //   (user gesture, newer command, dispose) or target missing/removed.
+  //   Always settles, dispose() included.
 list.state;                   // read-only snapshot
 list.dispose();
 ```

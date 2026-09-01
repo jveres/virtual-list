@@ -384,7 +384,9 @@ p.ai-settings-note {
   animation: boundary-spin 0.8s linear infinite;
 }
 
-.edge-overlay[data-state="no-more"] .boundary-spinner {
+/* Only the loading state shows the spinner — including during the fade-out
+   after the state attribute has already left "loading". */
+.edge-overlay:not([data-state="loading"]) .boundary-spinner {
   display: none;
 }
 
