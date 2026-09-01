@@ -311,6 +311,42 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.state.held).toBe(false);
   });
 
+  it("an omitted anchor inherits the pending snapshot's explicit policy", () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    // At the very end, scrolling: a bottom page load asks to preserve the
+    // viewport (a page is not a live message). The gesture starts off the
+    // boot position (which the boot commit recorded as its own write).
+    h.userScroll(3005);
+    h.userScroll(50 * ROW_H - VIEWPORT_H);
+    const atEnd = h.viewport.scrollTop;
+    const withPage = [...initial, ...range(50, 62)];
+    h.list.setItems(withPage, { anchor: "viewport" });
+    expect(h.list.state.held).toBe(true);
+
+    // Before settle, an unrelated same-key update (a decoded image) is
+    // handed over with no anchor option — it must not become "auto".
+    const withImage = [...withPage];
+    withImage[10] = message(10, "image decoded");
+    h.list.setItems(withImage);
+
+    h.settle();
+    expect(h.list.state.count).toBe(62);
+    expect(h.viewport.scrollTop).toBe(atEnd); // Preserved, not end-followed.
+    expect(h.list.state.atEnd).toBe(false);
+  });
+
+  it("an explicit anchor replaces the pending policy", () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    h.userScroll(3005);
+    h.userScroll(50 * ROW_H - VIEWPORT_H);
+    h.list.setItems([...initial, ...range(50, 62)], { anchor: "viewport" });
+    h.list.setItems([...initial, ...range(50, 62)], { anchor: "end" });
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(62 * ROW_H - VIEWPORT_H);
+  });
+
   it("freezes committed rows outside the window too: a mid-phase remount shows committed content", () => {
     const initial = range(0, 50);
     const h = mount(initial);

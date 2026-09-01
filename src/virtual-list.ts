@@ -491,8 +491,13 @@ export function createVirtualList<T>(
   // --- Preparation (off-scroller, failure-atomic) ---------------------------
   function prepare(
     next: readonly T[],
-    anchor: AnchorPolicy,
+    explicitAnchor: AnchorPolicy | undefined,
   ): { prepared: Prepared<T>; teardownFailures: unknown[] } {
+    // An omitted anchor INHERITS the pending snapshot's policy: a held page
+    // load that asked for "viewport" must not be turned into "auto" (and
+    // an end-follow) by an unrelated same-key update landing before
+    // settle. Only an explicit anchor replaces it.
+    const anchor: AnchorPolicy = explicitAnchor ?? pending?.anchor ?? "auto";
     const keys = next.map(keyOf);
     const itemByKey = new Map<string, T>();
     for (let index = 0; index < next.length; index++) {
@@ -961,12 +966,15 @@ export function createVirtualList<T>(
   ): void {
     if (disposed) return;
     const snapshot = [...next];
-    const anchor = setOptions.anchor ?? "auto";
+    const anchor = setOptions.anchor;
     if (enqueueDuringCommit(() => applyItems(snapshot, anchor))) return;
     applyItems(snapshot, anchor);
   }
 
-  function applyItems(snapshot: readonly T[], anchor: AnchorPolicy): void {
+  function applyItems(
+    snapshot: readonly T[],
+    anchor: AnchorPolicy | undefined,
+  ): void {
     if (disposed) return;
     // Always prepared now (off-scroller, inside the reentrancy guard since
     // render() is a host callback); committed now only when idle.

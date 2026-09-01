@@ -67,6 +67,8 @@ const INPUT_WINDOW_MS = 120;
 const EXPECTED_WRITE_TTL_MS = 400;
 const QUIET_FRAMES = 3;
 const PX_EPSILON = 1;
+/** Anchor drift: browser rounding is ~0.1–0.25px; a 1px step is visible. */
+const ANCHOR_EPSILON = 0.5;
 const LOG_RING_MAX = 4000;
 const LOG_DOM_MAX = 350;
 
@@ -1025,7 +1027,16 @@ function checkAnchor(
   }
   const slot = slotOf(record.key);
   if (!slot) {
-    if (verbose()) log(`anchor #${record.key} unmounted/removed across commit`);
+    // The row under the viewport top survived the commit but is no longer
+    // mounted: the viewport jumped far enough to leave the window.
+    if (itemById.has(Number(record.key))) {
+      violation(
+        "A",
+        `anchor #${record.key} survived the commit but left the window (viewport jumped to ${Math.round(viewport.scrollTop)})`,
+      );
+    } else if (verbose()) {
+      log(`anchor #${record.key} removed across commit`);
+    }
     return;
   }
   // The anchor row itself shrank above the viewport's offset into it: the
@@ -1038,10 +1049,10 @@ function checkAnchor(
   }
   const top =
     slot.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
-  if (Math.abs(top - record.top) > PX_EPSILON) {
+  if (Math.abs(top - record.top) > ANCHOR_EPSILON) {
     violation(
       "A",
-      `anchor #${record.key} moved ${record.top.toFixed(1)}→${top.toFixed(1)}px across a commit`,
+      `anchor #${record.key} moved ${record.top.toFixed(2)}→${top.toFixed(2)}px across a commit`,
     );
   }
 }
