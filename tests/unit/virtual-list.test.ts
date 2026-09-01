@@ -286,16 +286,35 @@ describe("virtual list runtime", () => {
     expect(texts).not.toContain("msg -1"); // A's snapshot never applied.
   });
 
-  it("defers scrollTo during a gesture and executes it at settle", () => {
+  it("an explicit command supersedes an active gesture immediately", async () => {
     const { viewport, list } = mount(range(0, 100));
     userScroll(viewport, 9402);
 
-    list.scrollTo("start");
-    expect(viewport.scrollTop).toBe(9402); // The user owns the viewport.
-
-    settleGesture(viewport);
-    expect(viewport.scrollTop).toBe(0); // Command outranks the settle anchors.
+    const command = list.scrollTo("start");
+    // No settle wait: the command took the viewport over at once.
+    expect(viewport.scrollTop).toBe(0);
+    await expect(command).resolves.toBe(true);
     expect(list.state.atStart).toBe(true);
+  });
+
+  it("absorbs trailing momentum events after a takeover — the glide survives", async () => {
+    vi.useFakeTimers();
+    try {
+      const { viewport, list } = mount(range(0, 100));
+      userScroll(viewport, 9402);
+
+      const command = list.scrollTo("start", { behavior: "smooth" });
+      // Trailing momentum of the interrupted gesture, near its old
+      // trajectory: inside the grace window it must not register as a new
+      // gesture and cancel the command.
+      userScroll(viewport, 9390);
+
+      vi.advanceTimersByTime(4000);
+      await expect(command).resolves.toBe(true);
+      expect(viewport.scrollTop).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("rejects an invalid snapshot atomically, leaving the runtime unchanged", () => {
@@ -461,25 +480,26 @@ describe("virtual list runtime", () => {
     expect(viewport.children.length).toBe(0);
   });
 
-  it("runs a settle-flush-queued command after the gesture-deferred one, so it wins", () => {
+  it("runs a takeover-flush-queued command after the takeover's own, so it wins", () => {
     let listRef: VirtualList<Msg> | null = null;
     let once = false;
     const { viewport, list } = mount(range(0, 100), {
       onState: (state) => {
         if (!listRef || once || state.count !== 105) return;
         once = true;
-        // Queued during the settle flush's publication: must execute after
-        // the older gesture-deferred scrollTo("start"), not before it.
-        listRef.scrollTo("m20");
+        // Queued during the takeover flush's publication: must execute
+        // after the takeover's own scrollTo("start"), not before it.
+        void listRef.scrollTo("m20");
       },
     });
     listRef = list;
 
     userScroll(viewport, 9402);
-    list.scrollTo("start"); // Deferred: the user owns the viewport.
-    list.setItems(range(-5, 100)); // Structural: deferred to settle.
-
-    settleGesture(viewport);
+    list.setItems(range(-5, 100)); // Structural: deferred during the gesture.
+    // The command takes over: flushes the deferred snapshot (whose
+    // publication queues the newer command), then runs — the newer command
+    // drains afterwards and wins.
+    void list.scrollTo("start");
     // m20 sits at index 25 in the new list — the newer command's target.
     expect(viewport.scrollTop).toBe(25 * ESTIMATE);
   });
@@ -547,7 +567,7 @@ describe("virtual list runtime", () => {
     }
   });
 
-  it("compensates above-viewport growth during a gesture — geometry current, position kept", () => {
+  it("absorbs above-viewport growth during a gesture with zero scroll writes", () => {
     withControlledResizeObserver((ro) => {
       const { viewport, list } = mount(range(0, 50));
       void list.scrollTo("m30");
@@ -562,13 +582,17 @@ describe("virtual list runtime", () => {
       expect(rowElement(viewport, "msg 30").style.transform).toBe(
         `translateY(${30 * ESTIMATE + 200}px)`,
       );
-      // ...and the compensating write kept the viewport still: scrollTop
-      // shifted by exactly the growth.
-      expect(viewport.scrollTop).toBe(3002 + 200);
+      // ...with NO scrollTop write — the anchor delta became a canvas
+      // translation of the opposite sign (the gesture shift).
+      expect(viewport.scrollTop).toBe(3002);
+      const canvas = viewport.firstElementChild as HTMLElement;
+      expect(canvas.style.transform).toBe("translateY(-200px)");
 
       settleGesture(viewport);
-      // The settle flush preserves the compensated position — no jump.
+      // Settle exchanges the shift for one scrollTop write in the same
+      // frame — visually a no-op — and the flush preserves the position.
       expect(viewport.scrollTop).toBe(3002 + 200);
+      expect(canvas.style.transform).toBe("");
     });
   });
 
@@ -603,17 +627,22 @@ describe("virtual list runtime", () => {
     }
   });
 
-  it("resolves gesture-deferred commands: superseded false, executed true", async () => {
-    const { viewport, list } = mount(range(0, 100));
-    userScroll(viewport, 9402);
+  it("a newer command supersedes a takeover glide: false, then true", async () => {
+    vi.useFakeTimers();
+    try {
+      const { viewport, list } = mount(range(0, 100));
+      userScroll(viewport, 9402);
 
-    const first = list.scrollTo("start"); // Deferred, then superseded.
-    const second = list.scrollTo("m20"); // Deferred, executes at settle.
-    await expect(first).resolves.toBe(false);
+      const first = list.scrollTo("start", { behavior: "smooth" }); // Takeover.
+      vi.advanceTimersByTime(48);
+      const second = list.scrollTo("m20"); // Newer command wins.
 
-    settleGesture(viewport);
-    await expect(second).resolves.toBe(true);
-    expect(viewport.scrollTop).toBe(20 * ESTIMATE);
+      await expect(first).resolves.toBe(false);
+      await expect(second).resolves.toBe(true);
+      expect(viewport.scrollTop).toBe(20 * ESTIMATE);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reports unmounts with the element and its item — scroll-out, replacement, dispose", () => {
@@ -669,15 +698,16 @@ describe("virtual list runtime", () => {
     expect(list.state.totalSize).toBe(total); // No pin, no reserve.
   });
 
-  it("resolves false when the settle snapshot removed a deferred command's target", async () => {
+  it("resolves false when the takeover-flushed snapshot removed the target", async () => {
     const { viewport, list } = mount(range(0, 50));
     userScroll(viewport, 4402);
 
-    const command = list.scrollTo("m49"); // Deferred: the user owns the viewport.
-    list.setItems(range(0, 49)); // Structural: removes m49, deferred to settle.
+    list.setItems(range(0, 49)); // Structural: removes m49, deferred.
+    // The takeover flushes the snapshot first; the command's target is gone.
+    const command = list.scrollTo("m49");
 
-    settleGesture(viewport);
     await expect(command).resolves.toBe(false);
+    expect(list.state.count).toBe(49); // The flush did apply.
   });
 
   it("defers observing rows mounted by a measurement commit to the next frame", () => {

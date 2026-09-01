@@ -15,9 +15,12 @@ import { type Glide, glideDuration, startGlide } from "./glide";
 // return, as the next transactions' input.
 //
 // The arbiter is the only scrollTop writer, with the documented precedence:
-// an active user gesture refuses all writes; explicit commands issued during
-// a gesture defer to settle (where they outrank the anchors); end-anchor and
-// position-anchor targets come from the kernel's resolve.
+// explicit command > user gesture > end-anchor > position-anchor. A command
+// issued during an active gesture takes the viewport over immediately —
+// the sensor is interrupted (trailing momentum absorbed in its grace
+// window), the gesture shift is exchanged, deferred geometry flushes, and
+// the command starts, all in one guarded operation. Anchor-driven writes
+// still yield to an active gesture until settle.
 //
 // End-follow is explicit state: engaged when a commit lands at the end,
 // disengaged when the user scrolls upward, re-engaged when they return to
@@ -28,10 +31,12 @@ import { type Glide, glideDuration, startGlide } from "./glide";
 // ResizeObserver measurements commit synchronously inside the observer
 // callback — after layout, before paint — so a discrete in-row height change
 // lands in the same painted frame (I6). Measurements always commit; during
-// a gesture they anchor to the visible item and apply as a compensation
-// write. Structural and explicitly anchored updates defer during a gesture
-// and flush at settle (the explicit policy is honored there); once a
-// snapshot is deferred, every later one replaces it (latest wins).
+// a gesture the runtime writes NO scrollTop — the anchor-preserving delta
+// is applied as a temporary canvas translation (the gesture shift) and
+// exchanged for one scrollTop write at settle, in the same frame.
+// Structural and explicitly anchored updates defer during a gesture and
+// flush at settle (the explicit policy is honored there); once a snapshot
+// is deferred, every later one replaces it (latest wins).
 //
 // Edge chrome does not exist here (I3): `onReachStart/End` are proximity
 // signals with entry/exit hysteresis; loaders are the host's overlays.
@@ -124,11 +129,6 @@ export function createVirtualList<T>(
     items: readonly T[];
     anchor: AnchorPolicy;
   } | null = null;
-  let pendingCommand: {
-    target: string;
-    options: { align?: "start"; behavior?: "auto" | "smooth" };
-    done: (completed: boolean) => void;
-  } | null = null;
   const afterCommit: { run: () => void; discard?: () => void }[] = [];
 
   let inTransaction = false;
@@ -137,6 +137,9 @@ export function createVirtualList<T>(
   let following = false;
   let lastScrollTop = 0;
   let gestureHighWaterTop = 0;
+  // Content-coordinate offset accumulated during a gesture (see the gesture
+  // shift below): content scrollTop = viewport.scrollTop + gestureShiftPx.
+  let gestureShiftPx = 0;
   let reachStartArmed = true;
   let reachEndArmed = true;
   let lastState: VirtualListState | null = null;
@@ -146,7 +149,10 @@ export function createVirtualList<T>(
   }
 
   function currentViewport(): { scrollTop: number; height: number } {
-    return { scrollTop: viewport.scrollTop, height: viewportHeight() };
+    return {
+      scrollTop: viewport.scrollTop + gestureShiftPx,
+      height: viewportHeight(),
+    };
   }
 
   function atEndTop(top: number): boolean {
@@ -180,20 +186,32 @@ export function createVirtualList<T>(
   }
 
   /**
-   * Position-preserving correction while the user owns the viewport: shifts
-   * scrollTop by exactly the delta the content above the anchor changed, so
-   * the page stays still under the user's finger (I1 during gestures). This
-   * is not a fight for the viewport — moving writes (end-anchor, commands)
-   * remain refused until settle. The follow high-water mark shifts with it
-   * so compensation is never mistaken for user movement.
+   * The gesture shift: while the user owns the viewport, the runtime writes
+   * NO scrollTop at all. An anchor-preserving correction (content above the
+   * anchor changed size) is applied as a temporary canvas translation of the
+   * opposite delta, so the page stays still under the user's finger (I1
+   * during gestures) with zero scroll writes. Content coordinates diverge
+   * from raw scrollTop by the accumulated shift; currentViewport() bridges
+   * the two. At settle the translation is exchanged for one scrollTop write
+   * in the same frame — visually a no-op.
    */
-  function compensationWrite(top: number): void {
-    const delta = top - viewport.scrollTop;
+  function applyGestureShift(delta: number): void {
     if (Math.abs(delta) <= SCROLL_WRITE_EPSILON_PX) return;
-    sensor.expectWrite(top);
-    viewport.scrollTop = top;
-    gestureHighWaterTop += delta;
-    lastScrollTop = top;
+    gestureShiftPx += delta;
+    canvas.style.transform = `translateY(${-gestureShiftPx}px)`;
+  }
+
+  function reconcileGestureShift(): void {
+    if (gestureShiftPx === 0) return;
+    const target = Math.min(
+      Math.max(0, viewport.scrollTop + gestureShiftPx),
+      geometry.maxScrollTop(viewportHeight()),
+    );
+    gestureShiftPx = 0;
+    canvas.style.transform = "";
+    sensor.expectWrite(target);
+    viewport.scrollTop = target;
+    lastScrollTop = target;
   }
 
   // --- The commit pipeline --------------------------------------------------
@@ -234,7 +252,8 @@ export function createVirtualList<T>(
     mutate: () => void,
     compensate = false,
   ): void {
-    const capture = geometry.capture(currentViewport(), policy);
+    const vp = currentViewport();
+    const capture = geometry.capture(vp, policy);
     mutate();
     const commit = geometry.resolve(capture);
 
@@ -242,7 +261,9 @@ export function createVirtualList<T>(
     if (arbitratedWrite(commit.scrollTop)) {
       following = atEndTop(commit.scrollTop);
     } else if (compensate) {
-      compensationWrite(commit.scrollTop);
+      // Zero scrollTop writes during a gesture: the anchor delta becomes a
+      // canvas translation instead, reconciled at settle.
+      applyGestureShift(commit.scrollTop - vp.scrollTop);
     }
     // A gesture-refused moving write keeps its intent: `following` is
     // untouched and the settle flush lands on the end exactly (I2).
@@ -389,7 +410,9 @@ export function createVirtualList<T>(
 
   const viewportResizeObserver = new ResizeObserver(() => {
     if (disposed) return;
-    transaction("viewport", () => {});
+    // Compensated: a mid-gesture viewport resize (mobile URL bar) must not
+    // shift the anchor either.
+    transaction("viewport", () => {}, sensor.active);
   });
   viewportResizeObserver.observe(viewport);
 
@@ -404,36 +427,22 @@ export function createVirtualList<T>(
     },
     onSettle: () => {
       if (disposed) return;
+      // Exchange the gesture shift for its one scrollTop write (visually a
+      // no-op) before anything reads raw positions.
+      reconcileGestureShift();
       // Returning to the end by hand re-engages following.
       if (atEndTop(viewport.scrollTop)) following = true;
       const pendingItems = deferredItems;
       deferredItems = null;
-      const command = pendingCommand;
-      pendingCommand = null;
-      // The whole settle — flush transaction AND the gesture-deferred
-      // command — is ONE guarded boundary: a newer command queued by the
-      // flush's publication drains only afterward, so it executes after
-      // the older deferred one and wins.
-      guarded(() => {
-        // One flush commit: the deferred structural update, reserve
-        // re-evaluation (released reserve drains once out of view) — and
-        // the suppressed end-follow catch-up (I2).
-        commitOnce(
-          pendingItems?.anchor ?? (following ? "end" : "viewport"),
-          () => {
-            if (pendingItems) adoptItems(pendingItems.items);
-          },
-        );
-        if (disposed) {
-          command?.done(false);
-          return;
-        }
-        // The deferred command executes inside the boundary, outranking
-        // the anchor policies it settled with.
-        if (command) {
-          performScrollTo(command.target, command.options, command.done);
-        }
-      });
+      // One flush transaction: the deferred structural update, reserve
+      // re-evaluation (released reserve drains once out of view) — and
+      // the suppressed end-follow catch-up (I2).
+      transaction(
+        pendingItems?.anchor ?? (following ? "end" : "viewport"),
+        () => {
+          if (pendingItems) adoptItems(pendingItems.items);
+        },
+      );
     },
   });
 
@@ -590,15 +599,29 @@ export function createVirtualList<T>(
       ) {
         return;
       }
-      if (sensor.active) {
-        // The user owns the viewport (documented precedence); the command
-        // defers to settle, latest wins — a superseded command resolves
-        // interrupted.
-        pendingCommand?.done(false);
-        pendingCommand = { target, options: owned, done: resolve };
-        return;
-      }
-      performScrollTo(target, owned, resolve);
+      guarded(() => {
+        if (sensor.active) {
+          // Explicit command > gesture (documented precedence): take the
+          // viewport over NOW — end the gesture without settling (the
+          // sensor absorbs trailing momentum in its grace window),
+          // exchange the gesture shift, flush the deferred snapshot, and
+          // start the command; one guarded operation.
+          sensor.interrupt();
+          reconcileGestureShift();
+          const pendingItems = deferredItems;
+          deferredItems = null;
+          if (pendingItems) {
+            commitOnce(pendingItems.anchor, () =>
+              adoptItems(pendingItems.items),
+            );
+            if (disposed) {
+              resolve(false);
+              return;
+            }
+          }
+        }
+        performScrollTo(target, owned, resolve);
+      });
     });
   }
 
@@ -679,7 +702,9 @@ export function createVirtualList<T>(
             }),
           target: destination,
         },
-        glideDuration(destination() - viewport.scrollTop, viewportHeight()),
+        // A policy function: a rebase (prepend moved the position, snapshot
+        // moved the target) re-derives the pace for the remaining distance.
+        (distancePx) => glideDuration(distancePx, viewportHeight()),
         (completed) =>
           guarded(() => {
             glide = null;
@@ -710,10 +735,9 @@ export function createVirtualList<T>(
       // Dropped queued work still settles its promises (discard hooks).
       for (const entry of afterCommit) entry.discard?.();
       afterCommit.length = 0;
-      pendingCommand?.done(false);
-      pendingCommand = null;
       glide?.cancel();
       sensor.dispose();
+      gestureShiftPx = 0;
       if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);
       pendingObserves.length = 0;
       itemResizeObserver.disconnect();

@@ -102,23 +102,37 @@ gesture sensor (browser-adaptive) gates when commits may apply
 ```
 
 One scroll arbiter owns every scrollTop write, one policy per frame:
-user gesture > explicit command > end-anchor > position-anchor.
-An explicit command issued while a gesture is active is deferred (latest
-wins) and executes at settle, where it outranks the anchor policies; it is
-never dropped and never fights the user's finger.
+explicit command > user gesture > end-anchor > position-anchor.
+An explicit command issued while a gesture is active supersedes it
+immediately: in one guarded operation the runtime interrupts the gesture
+(the sensor absorbs trailing momentum events in a short grace window, so
+they cannot masquerade as a new gesture and cancel the command), exchanges
+the gesture shift, flushes the deferred snapshot, and starts the command.
 
 Measurements always commit, gesture or not — deferring them would leave
-mounted rows positioned by stale geometry and visually overlapping. During
-a gesture the measurement commit anchors to the visible item and applies
-as a pure *compensation* write: scrollTop shifts by exactly the delta the
-content above the anchor changed, keeping the page still under the user's
-finger (I1 during gestures). Compensation is not a fight for the viewport
-and never disengages follow; moving writes (end-anchor, commands) remain
-refused until settle. The same holds for data:
-during a gesture only `anchor: "auto"` end-compatible updates commit
-immediately (their resolved target is where the user already is); updates
-with an explicit anchor policy defer and are flushed at settle under that
-stated policy, never one re-derived from follow state.
+mounted rows positioned by stale geometry and visually overlapping. While
+a gesture is active the runtime writes NO scrollTop at all: the
+anchor-preserving delta is applied as a temporary canvas translation of
+the opposite sign (the *gesture shift*), keeping the page still under the
+user's finger (I1 during gestures) with zero scroll writes. Content
+coordinates diverge from raw scrollTop by the accumulated shift for the
+duration of the gesture; at settle the translation is exchanged for one
+scrollTop write in the same frame — visually a no-op — before the flush
+transaction runs. Anchor-driven moving writes (the end-follow catch-up)
+remain refused until settle; an explicit command instead interrupts the
+gesture, as above.
+
+Data updates still yield to the gesture: only `anchor: "auto"`
+end-compatible updates commit immediately during one (their resolved
+target is where the user already is); updates with an explicit anchor
+policy defer and are flushed at settle under that stated policy, never
+one re-derived from follow state.
+
+The glide rebases (never snaps) when either of its endpoints moves
+externally: an anchor-preserving prepend shifting the position, or a
+snapshot moving the live target, restarts the curve from the current
+position — re-deriving its pace for the remaining distance. No frame ever
+jumps the full distance.
 
 `dispose()` is terminal and immediate — callable from any host callback, it
 halts publication mid-flight and drops all queued work.

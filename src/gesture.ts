@@ -1,6 +1,9 @@
 // Gesture sensor: classifies viewport scrolling as user-driven or
 // self-inflicted. The arbiter never writes scrollTop while the user owns the
 // viewport; structural work deferred during a gesture flushes on settle.
+// An explicit command may take ownership back at once via interrupt(): the
+// gesture ends without settling, and trailing momentum events inside a short
+// grace window are absorbed so they cannot masquerade as a new gesture.
 //
 // v1 strategy: programmatic-write matching (a scroll event landing on a
 // recorded target is ours; anything else is the user) plus `scrollend` with
@@ -14,12 +17,18 @@ export interface GestureSensor {
   expectWrite(scrollTop: number): void;
   /** Feed a scroll event; returns true when it was user-driven. */
   handleScroll(scrollTop: number): boolean;
+  /**
+   * Explicit-command takeover: end the gesture NOW without settling, and
+   * absorb unmatched (trailing-momentum) events for a short grace window.
+   */
+  interrupt(): void;
   dispose(): void;
 }
 
 const WRITE_TOLERANCE_PX = 1;
 const IDLE_SETTLE_MS = 140;
 const MAX_PENDING_WRITES = 8;
+const TAKEOVER_GRACE_MS = 120;
 
 export function createGestureSensor(
   viewport: HTMLElement,
@@ -29,6 +38,7 @@ export function createGestureSensor(
   let active = false;
   let idleTimer = 0;
   let disposed = false;
+  let suppressUntil = 0;
 
   // A scroll landing on (or past, in order) a recorded target is ours.
   // An unmatched value means the user took over; stale targets are dropped
@@ -55,6 +65,9 @@ export function createGestureSensor(
 
   function handleScroll(scrollTop: number): boolean {
     if (disposed || consume(scrollTop)) return false;
+    // Inside the takeover grace: trailing momentum of an interrupted
+    // gesture, not a new gesture — absorb it.
+    if (performance.now() < suppressUntil) return false;
     if (!active) {
       active = true;
       hooks.onStart?.();
@@ -80,6 +93,13 @@ export function createGestureSensor(
       if (expected.length > MAX_PENDING_WRITES) expected.shift();
     },
     handleScroll,
+    interrupt(): void {
+      window.clearTimeout(idleTimer);
+      idleTimer = 0;
+      active = false;
+      expected.length = 0;
+      suppressUntil = performance.now() + TAKEOVER_GRACE_MS;
+    },
     dispose(): void {
       disposed = true;
       window.clearTimeout(idleTimer);

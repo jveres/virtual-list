@@ -574,11 +574,16 @@ function scheduleEdgeHide(): void {
   );
 }
 
+// The in-flight scrollback load, so concurrent requesters (a reach-start
+// signal, the top-navigation chain) share one load instead of racing.
+let activeLoad: Promise<void> | null = null;
+
 // Loads one older chunk; resolves after the prepend has been committed. The
 // prepend preserves the reading position (I1); the runtime re-arms the
 // reach-start signal once the viewport is past the exit zone.
 function loadOlderChunk(): Promise<void> {
-  if (loadingTop || !canLoadOlderMessages()) return Promise.resolve();
+  if (activeLoad) return activeLoad;
+  if (!canLoadOlderMessages()) return Promise.resolve();
   loadingTop = true;
   topBoundaryLoadSeen = true;
   setEdgeState("loading");
@@ -588,8 +593,9 @@ function loadOlderChunk(): Promise<void> {
   // The epoch check discards a load that outlives its conversation (a
   // provider switch or history clear mid-timeout).
   const epoch = conversationEpoch;
-  return new Promise((resolve) => {
+  activeLoad = new Promise((resolve) => {
     window.setTimeout(() => {
+      activeLoad = null;
       if (epoch !== conversationEpoch) {
         resolve();
         return;
@@ -603,10 +609,14 @@ function loadOlderChunk(): Promise<void> {
       resolve();
     }, LOAD_OLDER_DELAY_MS);
   });
+  return activeLoad;
 }
 
 function loadOlderMessages(): void {
-  if (loadingTop) return;
+  // One owner at a time: while a top navigation runs, it drives the loads
+  // itself between glides — a reach-start prepend mid-glide would yank the
+  // scroll position out from under the animation.
+  if (topNavigationActive || activeLoad) return;
   if (!canLoadOlderMessages()) {
     if (topBoundaryLoadSeen) setEdgeState("no-more");
     return;
@@ -614,20 +624,43 @@ function loadOlderMessages(): void {
   void loadOlderChunk();
 }
 
-// The scroll-top command, chained across scrollback loads: each completed
-// glide that lands on the top of a *partial* window loads the next chunk and
-// re-issues the command, until the true top is reached or the user (or a
-// newer navigation) takes over — scrollTo's completion result is the signal.
+// The scroll-top command: ONE continuous journey. While the glide runs, a
+// prefetch loop keeps loading older chunks; each prepend preserves the
+// reading position (I1), which the glide absorbs by rebasing — so the trip
+// reads as a single motion, not glide → load → glide steps. The command
+// completion loop is the safety net for a glide that lands on a partial
+// window's top between chunks: it re-issues the command until the true top,
+// a user interruption, or a newer navigation (token). While the navigation
+// runs it is the only scrollback loader (see above).
+let topNavigationActive = false;
+
 async function navigateToTop(): Promise<void> {
+  if (topNavigationActive) return; // Already heading there.
   const token = ++topNavigationToken;
-  while (virtualList) {
-    const completed = await virtualList.scrollTo("start", {
-      behavior: "smooth",
-    });
-    if (!completed || token !== topNavigationToken) return;
-    if (!canLoadOlderMessages()) return; // The true top.
-    await loadOlderChunk();
-    if (token !== topNavigationToken) return;
+  topNavigationActive = true;
+  let navigating = true;
+  try {
+    void (async () => {
+      while (
+        navigating &&
+        token === topNavigationToken &&
+        canLoadOlderMessages()
+      ) {
+        await loadOlderChunk();
+      }
+    })();
+    while (virtualList) {
+      const completed = await virtualList.scrollTo("start", {
+        behavior: "smooth",
+      });
+      if (!completed || token !== topNavigationToken) return;
+      if (!canLoadOlderMessages()) return; // The true top.
+      await loadOlderChunk();
+      if (token !== topNavigationToken) return;
+    }
+  } finally {
+    navigating = false;
+    topNavigationActive = false;
   }
 }
 
@@ -1466,16 +1499,21 @@ async function handleSend(): Promise<void> {
     // user scroll during the stream disengages it (their intent wins).
     // The bottom button stays hidden until the glide settles either way.
     sendGlideActive = true;
-    void virtualList
-      ?.scrollTo(String(userMessage.id), {
+    const pinCommand =
+      virtualList?.scrollTo(String(userMessage.id), {
         align: "start",
         behavior: "smooth",
-      })
-      .then(endSendGlide);
+      }) ?? Promise.resolve(false);
+    void pinCommand.then(endSendGlide);
     if (shouldFlyIn) {
       await flyInRows([userMessage.id], abort);
       if (abort.cancelled) return;
     }
+    // Streaming begins only after the pin command resolves. An interrupted
+    // command (the user took ownership mid-glide) still resolves — the
+    // stream then proceeds without follow, which is exactly their intent.
+    await pinCommand;
+    if (abort.cancelled) return;
 
     if (useOpenAI) {
       await streamOpenAIResponse(assistantId, abort);

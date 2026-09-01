@@ -70,6 +70,68 @@ describe("glide", () => {
     expect(top).toBe(900);
   });
 
+  it("rebases when the position moves externally — no full-distance snap", () => {
+    // The top-navigation scenario: mid-glide toward 0, an anchor-preserving
+    // prepend jumps the position far down. The old curve would snap back in
+    // one frame; the rebased curve continues smoothly from the new position.
+    let top = 84;
+    const steps: number[] = [];
+    const host = {
+      read: () => top,
+      write: (value: number) => {
+        steps.push(value - top);
+        top = value;
+      },
+      target: () => 0,
+    };
+    startGlide(
+      host,
+      (distance) => glideDuration(distance, 600),
+      () => {},
+    );
+    vi.advanceTimersByTime(48);
+
+    top += 3760; // External anchor-preserving jump (prepend).
+    steps.length = 0;
+    vi.advanceTimersByTime(4000);
+
+    expect(top).toBe(0); // Still lands exactly.
+    // Every post-jump frame moves toward the target...
+    expect(steps.every((step) => step <= 0)).toBe(true);
+    // ...and no single frame snaps a dominant share of the distance.
+    const largest = Math.max(...steps.map((step) => Math.abs(step)));
+    expect(largest).toBeLessThan(0.5 * 3844);
+  });
+
+  it("rebases when the live target jumps — no full-distance snap", () => {
+    let top = 0;
+    let target = 400;
+    const steps: number[] = [];
+    const host = {
+      read: () => top,
+      write: (value: number) => {
+        steps.push(value - top);
+        top = value;
+      },
+      target: () => target,
+    };
+    startGlide(
+      host,
+      (distance) => glideDuration(distance, 600),
+      () => {},
+    );
+    vi.advanceTimersByTime(150);
+
+    target = 4000; // A snapshot moved the end far away.
+    steps.length = 0;
+    vi.advanceTimersByTime(4000);
+
+    expect(top).toBe(4000);
+    expect(steps.every((step) => step >= 0)).toBe(true);
+    const largest = Math.max(...steps.map((step) => Math.abs(step)));
+    expect(largest).toBeLessThan(0.5 * 4000);
+  });
+
   it("cancel stops without landing", () => {
     const host = harness(0, 500, false);
     let doneArg: boolean | null = null;
