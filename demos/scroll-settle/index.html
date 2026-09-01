@@ -127,6 +127,10 @@
       #pill.visible {
         opacity: 1;
       }
+      #pill.bottom {
+        top: auto;
+        bottom: 10px;
+      }
       #pill span {
         padding: 5px 14px;
         border: 1px solid var(--border);
@@ -275,10 +279,10 @@
         <div class="controls">
           <label
             ><input type="checkbox" id="auto-load" checked />auto-load at
-            top</label
+            edges</label
           >
-          <button id="queue-now" type="button">queue prepend</button>
-          <button id="append-now" type="button">append</button>
+          <button id="queue-now" type="button">load top</button>
+          <button id="append-now" type="button">load bottom</button>
           <button id="reset" type="button">reset</button>
           <select id="strategy" title="Force a settle strategy"></select>
           <button id="copy" type="button">copy trace</button>

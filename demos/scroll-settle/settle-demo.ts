@@ -29,7 +29,7 @@ const INITIAL_ROWS = 120;
 const CHUNK_ROWS = 60;
 const MAX_CHUNKS = 30;
 const LOAD_LATENCY_MS = 180;
-const REACH_TOP_PX = 400;
+const REACH_EDGE_PX = 400;
 const PREMATURE_WINDOW_MS = 400;
 const LOG_RING_MAX = 4000;
 const LOG_DOM_MAX = 350;
@@ -112,12 +112,22 @@ function log(message: string, cls?: "mark" | "good" | "warn"): void {
 
 // --- Demo state -------------------------------------------------------------
 
+type Boundary = "top" | "bottom";
+
 let controller: ScrollSettleController;
 let firstIndex = 0;
-let chunksRemaining = MAX_CHUNKS;
+let nextBottomIndex = INITIAL_ROWS;
+const chunksRemaining: Record<Boundary, number> = {
+  top: MAX_CHUNKS,
+  bottom: MAX_CHUNKS,
+};
 let chunksApplied = 0;
 let loading = false;
-let queuedChunk: { fragment: DocumentFragment; count: number } | null = null;
+let queuedChunk: {
+  fragment: DocumentFragment;
+  count: number;
+  boundary: Boundary;
+} | null = null;
 let gestures = 0;
 let settles = 0;
 let prematureCount = 0;
@@ -127,11 +137,12 @@ let lastSettleAt = Number.NEGATIVE_INFINITY;
 let prematureFlagged = false;
 let statusFrame = 0;
 
-function setPill(text: string | null): void {
+function setPill(text: string | null, boundary: Boundary = "top"): void {
   if (text === null) {
     pill.classList.remove("visible");
     return;
   }
+  pill.classList.toggle("bottom", boundary === "bottom");
   pillLabel.textContent = text;
   pill.classList.add("visible");
 }
@@ -149,7 +160,7 @@ function scheduleStatus(): void {
     )}`;
     stat.gestures.textContent = String(gestures);
     stat.settles.textContent = String(settles);
-    stat.chunks.textContent = `${chunksApplied} (${chunksRemaining} left)`;
+    stat.chunks.textContent = `${chunksApplied} (T:${chunksRemaining.top} B:${chunksRemaining.bottom} left)`;
     stat.queuedDot.className = `dot${queuedChunk ? " pending" : ""}`;
     stat.queuedText.textContent = queuedChunk
       ? "waiting for settle"
@@ -168,48 +179,83 @@ function applyQueuedChunk(reason: string): void {
   queuedChunk = null;
   const beforeTop = viewport.scrollTop;
   const beforeHeight = viewport.scrollHeight;
-  rows.insertBefore(pending.fragment, rows.firstChild);
-  const delta = viewport.scrollHeight - beforeHeight;
-  const target = beforeTop + delta;
-  // One anchor-preserving write, pre-announced so the controller never
-  // mistakes it for a user scroll.
-  controller.recordProgrammaticScrollTop(target);
-  viewport.scrollTop = target;
+  if (pending.boundary === "top") {
+    rows.insertBefore(pending.fragment, rows.firstChild);
+    const delta = viewport.scrollHeight - beforeHeight;
+    const target = beforeTop + delta;
+    // One anchor-preserving write, pre-announced so the controller never
+    // mistakes it for a user scroll.
+    controller.recordProgrammaticScrollTop(target);
+    viewport.scrollTop = target;
+    log(
+      `COMMIT top ${reason}: +${pending.count} rows +${delta}px, top ${Math.round(
+        beforeTop,
+      )} → ${Math.round(target)}`,
+      "good",
+    );
+  } else {
+    // Content below the anchor: the position is preserved with no write.
+    rows.appendChild(pending.fragment);
+    log(
+      `COMMIT bottom ${reason}: +${pending.count} rows +${
+        viewport.scrollHeight - beforeHeight
+      }px, no write`,
+      "good",
+    );
+  }
   chunksApplied += 1;
-  log(
-    `COMMIT ${reason}: +${pending.count} rows +${delta}px, top ${Math.round(
-      beforeTop,
-    )} → ${Math.round(target)}`,
-    "good",
-  );
-  setPill(chunksRemaining > 0 ? null : "at the top");
-  if (chunksRemaining === 0) {
+  if (chunksRemaining[pending.boundary] > 0) {
+    setPill(null);
+  } else {
+    setPill(
+      pending.boundary === "top" ? "at the top" : "at the bottom",
+      pending.boundary,
+    );
     window.setTimeout(() => setPill(null), 1200);
   }
   scheduleStatus();
 }
 
-function startLoad(reason: string): void {
-  if (loading || queuedChunk !== null || chunksRemaining <= 0) return;
-  loading = true;
-  setPill("loading older…");
-  log(`load start (${reason})`);
-  window.setTimeout(() => {
-    loading = false;
-    chunksRemaining -= 1;
-    const fragment = document.createDocumentFragment();
+function buildChunk(boundary: Boundary): DocumentFragment {
+  const fragment = document.createDocumentFragment();
+  if (boundary === "top") {
     for (let offset = CHUNK_ROWS; offset >= 1; offset--) {
       const element = buildRow(firstIndex - offset);
       element.classList.add("fresh");
       fragment.appendChild(element);
     }
     firstIndex -= CHUNK_ROWS;
-    queuedChunk = { fragment, count: CHUNK_ROWS };
-    log(`load ready (${CHUNK_ROWS} rows)`);
+  } else {
+    for (let offset = 0; offset < CHUNK_ROWS; offset++) {
+      const element = buildRow(nextBottomIndex + offset);
+      element.classList.add("fresh");
+      fragment.appendChild(element);
+    }
+    nextBottomIndex += CHUNK_ROWS;
+  }
+  return fragment;
+}
+
+function startLoad(reason: string, boundary: Boundary): void {
+  if (loading || queuedChunk !== null || chunksRemaining[boundary] <= 0) {
+    return;
+  }
+  loading = true;
+  setPill(boundary === "top" ? "loading older…" : "loading newer…", boundary);
+  log(`load start (${reason}, ${boundary})`);
+  window.setTimeout(() => {
+    loading = false;
+    chunksRemaining[boundary] -= 1;
+    queuedChunk = {
+      fragment: buildChunk(boundary),
+      count: CHUNK_ROWS,
+      boundary,
+    };
+    log(`load ready (${CHUNK_ROWS} rows, ${boundary})`);
     if (controller.isUserScrollActive()) {
       // The scroll surface is structurally immutable while the user
       // scrolls: hold the chunk for the settle signal.
-      setPill("waiting for settle…");
+      setPill("waiting for settle…", boundary);
       log("HELD: gesture active, committing at settle", "mark");
       scheduleStatus();
     } else {
@@ -236,7 +282,12 @@ function buildController(): ScrollSettleController {
     strategy,
     measureEpsilon: 0.5,
     isDisposed: () => false,
-    canLoadAtBoundary: (boundary) => boundary === "top" && chunksRemaining > 0,
+    // BOTH edges are loadable: the engine strategies arm their edge
+    // protection (Firefox stability windows etc.) only for loadable
+    // boundaries — an undeclared edge settles on the generic cooldown and
+    // mid-hold structural commits become possible there (the "held works
+    // on top but not bottom in FF" lab finding).
+    canLoadAtBoundary: (boundary) => chunksRemaining[boundary] > 0,
     cancelActiveSmoothScroll: () => {},
     smoothScrollReachedTarget: () => true,
     onGestureActivity: () => {},
@@ -272,11 +323,13 @@ function buildController(): ScrollSettleController {
         prematureCount += 1;
         log("POST-SETTLE MOTION — premature settle?", "warn");
       }
-      if (
-        viewport.scrollTop < REACH_TOP_PX &&
-        mustGet<HTMLInputElement>("auto-load").checked
-      ) {
-        startLoad("reach-top");
+      if (mustGet<HTMLInputElement>("auto-load").checked) {
+        const maxTop = viewport.scrollHeight - viewport.clientHeight;
+        if (viewport.scrollTop < REACH_EDGE_PX) {
+          startLoad("reach-top", "top");
+        } else if (maxTop - viewport.scrollTop < REACH_EDGE_PX) {
+          startLoad("reach-bottom", "bottom");
+        }
       }
       scheduleStatus();
     },
@@ -322,7 +375,9 @@ function traceEvents(): void {
 function rebuildList(): void {
   rows.replaceChildren();
   firstIndex = 0;
-  chunksRemaining = MAX_CHUNKS;
+  nextBottomIndex = INITIAL_ROWS;
+  chunksRemaining.top = MAX_CHUNKS;
+  chunksRemaining.bottom = MAX_CHUNKS;
   chunksApplied = 0;
   loading = false;
   queuedChunk = null;
@@ -354,23 +409,12 @@ strategySelect.addEventListener("change", () => {
   controller.dispose();
   controller = buildController();
 });
-mustGet("queue-now").addEventListener("click", () => startLoad("manual"));
-mustGet("append-now").addEventListener("click", () => {
-  // Bottom-edge structural change, for symmetry checks: appends do not move
-  // the anchor, so they commit without a scroll write — but still only when
-  // idle, per the contract.
-  const commit = () => {
-    const element = buildRow(INITIAL_ROWS + chunksApplied * CHUNK_ROWS);
-    element.classList.add("fresh");
-    rows.appendChild(element);
-    log("COMMIT append: +1 row", "good");
-  };
-  if (controller.isUserScrollActive()) {
-    log("append requested mid-gesture — try again after settle", "warn");
-  } else {
-    commit();
-  }
-});
+mustGet("queue-now").addEventListener("click", () =>
+  startLoad("manual", "top"),
+);
+mustGet("append-now").addEventListener("click", () =>
+  startLoad("manual", "bottom"),
+);
 mustGet("reset").addEventListener("click", () => {
   rebuildList();
   log("reset", "mark");
