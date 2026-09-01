@@ -432,6 +432,81 @@ describe("v2 runtime — retained nodes", () => {
     expect(new Set(h.destroyedElements).size).toBe(21);
   });
 
+  it("re-renders a row whose rollback render failed, whatever its item identity", () => {
+    // m19's re-render returns a replacement whose measurement fails; the
+    // rollback render of the OLD element then mutates it and throws. Item
+    // identity now says "unchanged" — only an explicit unknown-state flag
+    // can make the next preparation repair the DOM.
+    let rollbackFailed = false;
+    const initial = range(0, 20);
+    const h = mount(initial, {
+      replaceOnRerender: true,
+      measureFailOn: "fresh-fail",
+      onRender: (m, existing) => {
+        if (m.body === "msg 19" && existing && !rollbackFailed) {
+          rollbackFailed = true;
+          existing.textContent = "corrupt";
+          throw new Error("rollback render failed");
+        }
+      },
+    });
+    const next = [...initial.slice(0, 19), message(19, "fresh-fail")];
+    expect(() => h.list.setItems(next)).toThrow("measure failed: fresh-fail");
+    expect(rollbackFailed).toBe(true);
+
+    // Re-sending the committed snapshot — the IDENTICAL item objects, so
+    // identity alone would say "unchanged" — must repair m19, not skip it.
+    h.list.setItems(initial);
+    expect(h.rowElement("msg 19").textContent).toBe("msg 19");
+    const canvas = h.canvas();
+    expect(
+      [...canvas.querySelectorAll("div")].some(
+        (el) => el.textContent === "corrupt",
+      ),
+    ).toBe(false);
+  });
+
+  it("settles a command queued by a callback whose transaction then throws", async () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let queued: Promise<boolean> | null = null;
+    const h = mount(range(0, 20), {
+      throwOn: "boom",
+      onRender: (m) => {
+        if (m.body === "boom") queued = listRef?.scrollTo("start") ?? null;
+      },
+    });
+    listRef = h.list;
+    expect(() =>
+      h.list.setItems([...range(0, 20), message(30, "boom")]),
+    ).toThrow("render failed: boom");
+    // The failed transaction discards what it queued — settling the
+    // promise (false) instead of leaving it pending forever.
+    await expect(queued).resolves.toBe(false);
+  });
+
+  it("attempts every destruction even when a host teardown throws", () => {
+    const h = mount(range(0, 20), {
+      onDestroy: (element) => {
+        if (element.dataset.id === "5") throw new Error("teardown 5");
+      },
+    });
+    // Removal at commit: the throw surfaces, the other removals still ran.
+    expect(() => h.list.setItems(range(10, 20))).toThrow("teardown 5");
+    expect(h.destroyed.sort((a, b) => a - b)).toEqual(
+      range(0, 10).map((m) => m.id),
+    );
+
+    // Dispose: every remaining element is destroyed, exactly once.
+    const h2 = mount(range(0, 20), {
+      onDestroy: (element) => {
+        if (element.dataset.id === "5") throw new Error("teardown 5");
+      },
+    });
+    expect(() => h2.list.dispose()).toThrow("teardown 5");
+    expect(h2.destroyedElements).toHaveLength(20);
+    expect(new Set(h2.destroyedElements).size).toBe(20);
+  });
+
   it("destroys locally built rows when a supersession-time onDestroy disposes the list", () => {
     let listRef: VirtualList<Msg> | null = null;
     let disposedOnce = false;

@@ -112,13 +112,15 @@ interface Row<T> {
   key: string;
   /** The committed (or, for a pending row, prepared) item. */
   item: T;
-  /**
-   * The item the element's DOM currently reflects. Diverges from `item`
-   * when an in-place render was rolled back unsuccessfully after a failed
-   * preparation; the next preparation re-renders such a row even if its
-   * item is unchanged.
-   */
+  /** The item the element's DOM currently reflects (when known). */
   renderedItem: T;
+  /**
+   * A render on this element threw — the host may have mutated it before
+   * failing — and no successful render has happened since. Item identity
+   * cannot represent this state: the next preparation re-renders the row
+   * regardless of what its item is.
+   */
+  renderUnknown: boolean;
   element: HTMLElement;
   /** Dimensionally stable container: fixed committed height, clipped. */
   slot: HTMLElement;
@@ -219,9 +221,16 @@ export function createVirtualList<T>(
     inCommit = true;
     try {
       work();
-    } finally {
+    } catch (error) {
       inCommit = false;
+      // The transaction failed: what its callbacks queued would run against
+      // a state that was never reached. Discard it — settling every queued
+      // command's promise (false) so nothing hangs.
+      for (const entry of afterCommit) entry.discard?.();
+      afterCommit.length = 0;
+      throw error;
     }
+    inCommit = false;
     while (!disposed && afterCommit.length > 0) afterCommit.shift()?.run();
   }
 
@@ -253,6 +262,7 @@ export function createVirtualList<T>(
       key,
       item,
       renderedItem: item,
+      renderUnknown: false,
       element,
       slot,
       height,
@@ -284,6 +294,26 @@ export function createVirtualList<T>(
     if (row.mounted) unmountRow(row);
     row.slot.remove();
     options.onDestroy?.(row.element, row.item);
+  }
+
+  /**
+   * Destroy every row, attempting all of them even when a host teardown
+   * throws; the failures surface together afterwards (like the measurer's
+   * teardown aggregation), never at the expense of the remaining rows.
+   */
+  function destroyAll(rowsToDestroy: Iterable<Row<T>>): void {
+    const failures: unknown[] = [];
+    for (const row of rowsToDestroy) {
+      try {
+        destroyRow(row);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "row teardown failed");
+    }
   }
 
   /** A retained, unmounted row is measured detached with the width synced. */
@@ -416,19 +446,22 @@ export function createVirtualList<T>(
     const touched: { row: Row<T>; item: T }[] = [];
 
     const rollBack = (): void => {
-      for (const row of built) destroyRow(row);
+      destroyAll(built);
       for (const { row } of touched) {
         if (row.destroyed) continue;
         try {
           const back = render(row.item, row.element);
           if (back === row.element) {
             row.renderedItem = row.item;
+            row.renderUnknown = false;
           } else {
-            // The host handed back a fresh element we will never adopt.
+            // The host handed back a fresh element we will never adopt;
+            // the old element's state is whatever the failed render left.
             options.onDestroy?.(back, row.item);
+            row.renderUnknown = true;
           }
         } catch {
-          // Left marked (renderedItem ≠ item): re-rendered next time.
+          row.renderUnknown = true; // Re-rendered next time, whatever the item.
         }
         markDirty(row); // The DOM may have changed either way; re-measure.
       }
@@ -454,8 +487,15 @@ export function createVirtualList<T>(
       touched.push({ row, item });
       const previouslyRendered = row.renderedItem;
       row.renderedItem = item; // Provisional: rollback restores on failure.
-      const rendered = render(item, row.element);
+      let rendered: HTMLElement;
+      try {
+        rendered = render(item, row.element);
+      } catch (error) {
+        row.renderUnknown = true; // Mutated-then-thrown is indistinguishable.
+        throw error;
+      }
       if (rendered === row.element) {
+        row.renderUnknown = false;
         inPlace.push({ row, item });
         return null;
       }
@@ -470,7 +510,10 @@ export function createVirtualList<T>(
         const preparedBefore = previous?.newRows.get(key);
         if (preparedBefore) {
           adopted.add(key);
-          if (preparedBefore.renderedItem === item) {
+          if (
+            preparedBefore.renderedItem === item &&
+            !preparedBefore.renderUnknown
+          ) {
             newRows.set(key, preparedBefore);
           } else {
             const replacement = renderInPlaceOrReplace(preparedBefore, item);
@@ -485,7 +528,10 @@ export function createVirtualList<T>(
           const committed = rows.get(key);
           if (committed === undefined) {
             newRows.set(key, measureFresh(key, item, render(item)));
-          } else if (committed.renderedItem !== item) {
+          } else if (
+            committed.renderUnknown ||
+            committed.renderedItem !== item
+          ) {
             const replacement = renderInPlaceOrReplace(committed, item);
             if (replacement !== null) newRows.set(key, replacement);
           }
@@ -509,14 +555,15 @@ export function createVirtualList<T>(
       markDirty(entry.row);
     }
     if (previous) {
-      for (const [key, row] of previous.newRows) {
-        if (adopted.has(key)) continue;
-        destroyRow(row);
-        if (disposed) {
-          for (const builtRow of built) destroyRow(builtRow);
-          return { keys, itemByKey, newRows: new Map(), anchor };
-        }
+      const superseded = [...previous.newRows]
+        .filter(([key]) => !adopted.has(key))
+        .map(([, row]) => row);
+      try {
+        destroyAll(superseded);
+      } finally {
+        if (disposed) destroyAll(built);
       }
+      if (disposed) return { keys, itemByKey, newRows: new Map(), anchor };
     }
     return { keys, itemByKey, newRows, anchor };
   }
@@ -555,20 +602,20 @@ export function createVirtualList<T>(
         // removed from the map BEFORE its destruction so a host disposing
         // from onDestroy can never destroy it twice.
         const nextKeys = new Set(applying.keys);
+        const removed: Row<T>[] = [];
         for (const [key, row] of [...rows]) {
           if (nextKeys.has(key)) continue;
           rows.delete(key);
-          destroyRow(row);
-          if (disposed) return;
+          removed.push(row);
         }
+        const replaced: Row<T>[] = [];
         for (const [key, row] of applying.newRows) {
-          const replaced = rows.get(key);
+          const old = rows.get(key);
           rows.set(key, row);
-          if (replaced && replaced !== row) {
-            destroyRow(replaced);
-            if (disposed) return;
-          }
+          if (old && old !== row) replaced.push(old);
         }
+        destroyAll([...removed, ...replaced]);
+        if (disposed) return;
         for (const [key, item] of applying.itemByKey) {
           const row = rows.get(key);
           if (row) row.item = item;
@@ -990,9 +1037,9 @@ export function createVirtualList<T>(
       pending = null;
       const committingRows = committing ? [...committing.newRows.values()] : [];
       committing = null;
-      for (const row of doomed) destroyRow(row);
-      for (const row of pendingRows) destroyRow(row);
-      for (const row of committingRows) destroyRow(row);
+      // One pass over everything: a throwing teardown never prevents the
+      // remaining destructions; failures surface together afterwards.
+      destroyAll([...doomed, ...pendingRows, ...committingRows]);
     },
   };
 }
