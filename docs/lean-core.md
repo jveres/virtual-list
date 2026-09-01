@@ -25,8 +25,13 @@ as preserved primitives, with the smaller API built around them.
 
 ## The core contract (normative)
 
-1. During an active native scroll, the scroll surface is **structurally
-   immutable**.
+1. During an active native scroll, the scroll surface's **geometry is
+   immutable**: key order, measured extents, offsets, canvas size, and the
+   scroll range do not change. Window reconciliation — mounting and
+   unmounting already-known, premeasured rows at their fixed positions —
+   continues freely throughout the scroll; without it a long momentum
+   scroll would run into blank gaps. Positioning within fixed geometry is
+   not a structural change.
 2. New chunks may be fetched, rendered, and measured **off-scroller**.
 3. Only after the proven cross-browser settle signal may the runtime
    **atomically commit**, in one frame:
@@ -35,11 +40,26 @@ as preserved primitives, with the smaller API built around them.
    - canvas geometry,
    - the mounted window,
    - one anchor-preserving scroll position.
+4. Same-key, size-changing updates — streaming text, disclosure toggles,
+   image decode, font swaps — are geometry changes and follow the same
+   rule: premeasured off-scroller and settle-gated, or rendered into
+   **dimensionally stable placeholders** (a fixed-extent row box the
+   content fills without changing the box) until they can commit. No
+   exception path re-admits mid-scroll geometry drift; while the surface
+   is idle, such updates commit immediately (premeasured, same pipeline).
 
 Corollaries: no ResizeObserver-driven mid-gesture geometry correction, no
 gesture-time canvas translation, no "safe update" exceptions. What v1
 handled with compensation machinery simply cannot occur: heights are known
-before mount, and structure changes only at settle.
+before mount, and geometry changes only at settle.
+
+Known engine bound (accepted, from `main`): wheel/trackpad engines do not
+expose fingers-down state, so a motionless hold — no wheel deltas, no
+scroll motion — is indistinguishable from a release. Firefox/Chromium
+settle (and commit) after their quiet windows even under resting fingers;
+at a loadable edge Firefox's stability window bounds this. A settle during
+actual motion is a defect; a settle during a long motionless hold is the
+documented limit of the platform.
 
 ## Preserved from v1 (signed off there, carried forward)
 

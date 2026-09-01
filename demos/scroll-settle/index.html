@@ -78,6 +78,9 @@
         height: 100%;
         overflow-y: auto;
         overscroll-behavior-y: contain;
+        /* The lab tests the controller's single anchor-preserving write;
+           native CSS scroll anchoring would add its own correction first. */
+        overflow-anchor: none;
       }
       #rows {
         max-width: 720px;
@@ -274,7 +277,10 @@
             <b>queued</b>
             <span><i class="dot" id="s-queued"></i><span class="val" id="s-queued-t">no</span></span>
           </div>
-          <div class="cell"><b>post-settle motion</b><span class="val" id="s-premature">0</span></div>
+          <div
+            class="cell"
+            title="Advisory on desktop wheel engines: momentum wheel events cannot be distinguished from fresh input"
+          ><b>post-settle motion</b><span class="val" id="s-premature">0</span></div>
         </div>
         <div class="controls">
           <label

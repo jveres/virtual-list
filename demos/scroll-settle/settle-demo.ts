@@ -19,15 +19,28 @@ import {
 //   appears only after the gesture truly ends, and the list neither jumps
 //   nor bounces against a ghost end afterwards;
 // - "post-settle motion" stays at 0: scroll events arriving after a settle
-//   with no new input mean the strategy declared idle too early;
+//   with no new input mean the strategy declared idle too early. ADVISORY
+//   on desktop wheel engines — momentum wheel events are indistinguishable
+//   from fresh input, so treat spikes as a prompt to read the trace, not
+//   as proof. The lab's own commit write is excluded (expected targets);
 // - "settle lag" shows how long after the last scroll event the strategy
 //   takes to settle;
 // - the strategy dropdown forces another engine's heuristics to compare.
 // "copy trace" exports the full event/decision sequence for review.
+//
+// KNOWN ENGINE BOUND (not a lab bug): wheel/trackpad engines do not expose
+// fingers-down state. A motionless hold — no wheel deltas, no scroll
+// motion — is indistinguishable from a release, so Firefox/Chromium settle
+// (and commit) after their quiet windows even if fingers still rest on the
+// pad. At a loadable edge, Firefox's 1600ms stability window bounds this;
+// away from the ~2px edge proximity the generic cooldown applies. A settle
+// during actual MOTION is a real finding — copy the trace.
 
-const INITIAL_ROWS = 120;
-const CHUNK_ROWS = 60;
-const MAX_CHUNKS = 30;
+// Small enough that either edge is one or two flicks away — the lab is
+// about edge behavior, not endurance scrolling.
+const INITIAL_ROWS = 24;
+const CHUNK_ROWS = 12;
+const MAX_CHUNKS = 60;
 const LOAD_LATENCY_MS = 180;
 const REACH_EDGE_PX = 400;
 const PREMATURE_WINDOW_MS = 400;
@@ -130,12 +143,16 @@ const chunksRemaining: Record<Boundary, number> = {
   bottom: MAX_CHUNKS,
 };
 let chunksApplied = 0;
-let loading = false;
+let loading: Boundary | null = null;
 let queuedChunk: {
   fragment: DocumentFragment;
   count: number;
   boundary: Boundary;
 } | null = null;
+// scrollTop targets the LAB itself is about to write (the commit's
+// anchor-preserving write); their scroll events must not feed the
+// premature-settle heuristic.
+const labExpectedTops: number[] = [];
 let gestures = 0;
 let settles = 0;
 let prematureCount = 0;
@@ -144,15 +161,29 @@ let lastInputAt = 0;
 let lastSettleAt = Number.NEGATIVE_INFINITY;
 let prematureFlagged = false;
 let statusFrame = 0;
+let pillTimer = 0;
+let pillSticky = false;
 
-function setPill(text: string | null, boundary: Boundary = "top"): void {
-  if (text === null) {
-    pill.classList.remove("visible");
-    return;
-  }
+function showPill(text: string, boundary: Boundary, sticky = false): void {
+  window.clearTimeout(pillTimer);
+  pillSticky = sticky;
   pill.classList.toggle("bottom", boundary === "bottom");
   pillLabel.textContent = text;
   pill.classList.add("visible");
+  if (sticky) {
+    pillTimer = window.setTimeout(() => {
+      pillSticky = false;
+      pill.classList.remove("visible");
+    }, 1400);
+  }
+}
+
+/** Hides the pill; a sticky pill ("at the top/bottom") survives unless forced. */
+function hidePill(force = false): void {
+  if (pillSticky && !force) return;
+  window.clearTimeout(pillTimer);
+  pillSticky = false;
+  pill.classList.remove("visible");
 }
 
 function scheduleStatus(): void {
@@ -172,7 +203,7 @@ function scheduleStatus(): void {
     stat.queuedDot.className = `dot${queuedChunk ? " pending" : ""}`;
     stat.queuedText.textContent = queuedChunk
       ? "waiting for settle"
-      : loading
+      : loading !== null
         ? "loading"
         : "no";
     stat.premature.textContent = String(prematureCount);
@@ -191,9 +222,12 @@ function applyQueuedChunk(reason: string): void {
     rows.insertBefore(pending.fragment, rows.firstChild);
     const delta = viewport.scrollHeight - beforeHeight;
     const target = beforeTop + delta;
-    // One anchor-preserving write, pre-announced so the controller never
-    // mistakes it for a user scroll.
+    // One anchor-preserving write, pre-announced so neither the controller
+    // nor the lab's own premature-settle heuristic mistakes it for a user
+    // scroll.
     controller.recordProgrammaticScrollTop(target);
+    labExpectedTops.push(target);
+    if (labExpectedTops.length > 4) labExpectedTops.shift();
     viewport.scrollTop = target;
     log(
       `COMMIT top ${reason}: +${pending.count} rows +${delta}px, top ${Math.round(
@@ -213,13 +247,13 @@ function applyQueuedChunk(reason: string): void {
   }
   chunksApplied += 1;
   if (chunksRemaining[pending.boundary] > 0) {
-    setPill(null);
+    hidePill(true);
   } else {
-    setPill(
+    showPill(
       pending.boundary === "top" ? "at the top" : "at the bottom",
       pending.boundary,
+      true,
     );
-    window.setTimeout(() => setPill(null), 1200);
   }
   scheduleStatus();
 }
@@ -245,14 +279,18 @@ function buildChunk(boundary: Boundary): DocumentFragment {
 }
 
 function startLoad(reason: string, boundary: Boundary): void {
-  if (loading || queuedChunk !== null || chunksRemaining[boundary] <= 0) {
+  if (
+    loading !== null ||
+    queuedChunk !== null ||
+    chunksRemaining[boundary] <= 0
+  ) {
     return;
   }
-  loading = true;
-  setPill(boundary === "top" ? "loading older…" : "loading newer…", boundary);
+  loading = boundary;
+  showPill(boundary === "top" ? "loading older…" : "loading newer…", boundary);
   log(`load start (${reason}, ${boundary})`);
   window.setTimeout(() => {
-    loading = false;
+    loading = null;
     chunksRemaining[boundary] -= 1;
     queuedChunk = {
       fragment: buildChunk(boundary),
@@ -263,7 +301,7 @@ function startLoad(reason: string, boundary: Boundary): void {
     if (controller.isUserScrollActive()) {
       // The scroll surface is structurally immutable while the user
       // scrolls: hold the chunk for the settle signal.
-      setPill("waiting for settle…", boundary);
+      showPill("waiting for settle…", boundary);
       log("HELD: gesture active, committing at settle", "mark");
       scheduleStatus();
     } else {
@@ -295,13 +333,17 @@ function buildController(): ScrollSettleController {
     // boundaries — an undeclared edge settles on the generic cooldown and
     // mid-hold structural commits become possible there (the "held works
     // on top but not bottom in FF" lab finding).
-    canLoadAtBoundary: (boundary) => chunksRemaining[boundary] > 0,
+    canLoadAtBoundary: (boundary) =>
+      chunksRemaining[boundary] > 0 ||
+      loading === boundary ||
+      queuedChunk?.boundary === boundary,
     cancelActiveSmoothScroll: () => {},
     smoothScrollReachedTarget: () => true,
     onGestureActivity: () => {},
     onGestureStarted: () => {
       gestures += 1;
       prematureFlagged = false;
+      labExpectedTops.length = 0;
       log("GESTURE START", "mark");
       scheduleStatus();
     },
@@ -313,16 +355,25 @@ function buildController(): ScrollSettleController {
       stat.lag.textContent = `${lag.toFixed(0)}ms`;
       log(`SETTLE (lag ${lag.toFixed(0)}ms after last scroll)`, "mark");
       applyQueuedChunk("settle");
-      if (queuedChunk === null && !loading) setPill(null);
+      if (queuedChunk === null && loading === null) hidePill();
       scheduleStatus();
     },
     onGestureReset: () => scheduleStatus(),
     onScrollEventObserved: () => {
       const now = performance.now();
       lastScrollEventAt = now;
-      // A scroll event after a settle with no fresh input in between means
-      // the strategy declared idle while the engine was still moving.
-      if (
+      const top = viewport.scrollTop;
+      // The lab's own commit write produces a scroll event too — consume
+      // its expected target instead of counting it as post-settle motion.
+      const expectedIndex = labExpectedTops.findIndex(
+        (target) => Math.abs(target - top) <= 1,
+      );
+      if (expectedIndex >= 0) {
+        labExpectedTops.splice(0, expectedIndex + 1);
+      } else if (
+        // A scroll event after a settle with no fresh input in between
+        // means the strategy declared idle while the engine was still
+        // moving (advisory on wheel engines — see the header).
         now - lastSettleAt < PREMATURE_WINDOW_MS &&
         lastInputAt < lastSettleAt &&
         !prematureFlagged
@@ -387,8 +438,9 @@ function rebuildList(): void {
   chunksRemaining.top = MAX_CHUNKS;
   chunksRemaining.bottom = MAX_CHUNKS;
   chunksApplied = 0;
-  loading = false;
+  loading = null;
   queuedChunk = null;
+  labExpectedTops.length = 0;
   gestures = 0;
   settles = 0;
   prematureCount = 0;
@@ -396,7 +448,7 @@ function rebuildList(): void {
     rows.appendChild(buildRow(index));
   }
   viewport.scrollTop = viewport.scrollHeight;
-  setPill(null);
+  hidePill(true);
   scheduleStatus();
 }
 
