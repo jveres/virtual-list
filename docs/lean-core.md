@@ -85,6 +85,15 @@ rises.
   `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior? })
   → Promise<boolean>`, `state`, `dispose()` — details re-reviewed when the
   runtime is built on the new foundation.
+- v2 addition (lab-prototyped): the reach callbacks receive a context with
+  an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
+  runtime aborts only on conditions it knows objectively: the user reached
+  the OPPOSITE edge (their intent moved on; every started operation for
+  this edge — the fetch, the premeasure, the queued uncommitted chunk —
+  dies with it), or `dispose()`. Hosts wire real fetches to it
+  (`fetch(url, { signal })`); a host that wants a scrollback fetch to
+  outlive the scroll-away simply ignores the signal. A re-approach refires
+  the reach (hysteresis) and refetches.
 - Invariants I1–I6 stand as the definition of correct; their *mechanisms*
   change (I6's "same painted frame" is satisfied by premeasured commits,
   not RO-synchronous corrections).

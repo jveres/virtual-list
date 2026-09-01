@@ -161,6 +161,37 @@ const queuedChunks: Record<
   Boundary,
   { fragment: DocumentFragment; count: number } | null
 > = { top: null, bottom: null };
+// The abort prototype for the v2 reach API: each boundary load carries an
+// AbortController; reaching the OPPOSITE edge aborts every started
+// operation for this one — the in-flight (simulated) fetch and the queued,
+// not-yet-committed chunk — exactly what a host would wire a real fetch to.
+const loadAborts: Record<Boundary, AbortController | null> = {
+  top: null,
+  bottom: null,
+};
+
+function abortBoundary(boundary: Boundary, reason: string): void {
+  let aborted = false;
+  const abortController = loadAborts[boundary];
+  if (abortController) {
+    abortController.abort();
+    loadAborts[boundary] = null;
+    loadingBoundary[boundary] = false;
+    aborted = true;
+  }
+  if (queuedChunks[boundary]) {
+    // Withdraw the premeasured-but-uncommitted chunk; it returns to the
+    // source and a re-approach refetches it.
+    queuedChunks[boundary] = null;
+    chunksRemaining[boundary] += 1;
+    aborted = true;
+  }
+  if (aborted) {
+    log(`ABORT ${boundary} (${reason})`, "warn");
+    hidePill();
+    scheduleStatus();
+  }
+}
 
 function anythingLoading(): boolean {
   return loadingBoundary.top || loadingBoundary.bottom;
@@ -320,9 +351,13 @@ function startLoad(reason: string, boundary: Boundary): void {
     return;
   }
   loadingBoundary[boundary] = true;
+  const abortController = new AbortController();
+  loadAborts[boundary] = abortController;
   showPill(boundary === "top" ? "loading older…" : "loading newer…", boundary);
   log(`load start (${reason}, ${boundary})`);
-  window.setTimeout(() => {
+  const timer = window.setTimeout(() => {
+    if (abortController.signal.aborted) return;
+    loadAborts[boundary] = null;
     loadingBoundary[boundary] = false;
     chunksRemaining[boundary] -= 1;
     queuedChunks[boundary] = {
@@ -340,6 +375,11 @@ function startLoad(reason: string, boundary: Boundary): void {
       applyQueuedChunk(boundary, "idle");
     }
   }, LOAD_LATENCY_MS);
+  // What a real host does with fetch(url, { signal }): the simulated
+  // latency timer dies with the signal.
+  abortController.signal.addEventListener("abort", () =>
+    window.clearTimeout(timer),
+  );
 }
 
 // --- Controller wiring ------------------------------------------------------
@@ -422,8 +462,12 @@ function buildController(): ScrollSettleController {
       if (mustGet<HTMLInputElement>("auto-load").checked) {
         const maxTop = viewport.scrollHeight - viewport.clientHeight;
         if (viewport.scrollTop < REACH_EDGE_PX) {
+          // Reaching one edge aborts every started operation at the other:
+          // the user's intent moved on (the v2 reach-signal semantics).
+          abortBoundary("bottom", "opposite edge reached");
           startLoad("reach-top", "top");
         } else if (maxTop - viewport.scrollTop < REACH_EDGE_PX) {
+          abortBoundary("top", "opposite edge reached");
           startLoad("reach-bottom", "bottom");
         }
       }
@@ -513,6 +557,10 @@ function rebuildList(): void {
   chunksRemaining.top = MAX_CHUNKS;
   chunksRemaining.bottom = MAX_CHUNKS;
   chunksApplied = 0;
+  loadAborts.top?.abort();
+  loadAborts.bottom?.abort();
+  loadAborts.top = null;
+  loadAborts.bottom = null;
   loadingBoundary.top = false;
   loadingBoundary.bottom = false;
   queuedChunks.top = null;
