@@ -1,3 +1,4 @@
+import { type Glide, glideDuration, startGlide } from "../../src/glide.js";
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,
@@ -28,13 +29,19 @@ import {
 // - the strategy dropdown forces another engine's heuristics to compare.
 // "copy trace" exports the full event/decision sequence for review.
 //
-// KNOWN ENGINE BOUND (not a lab bug): wheel/trackpad engines do not expose
-// fingers-down state. A motionless hold — no wheel deltas, no scroll
-// motion — is indistinguishable from a release, so Firefox/Chromium settle
-// (and commit) after their quiet windows even if fingers still rest on the
-// pad. At a loadable edge, Firefox's 1600ms stability window bounds this;
-// away from the ~2px edge proximity the generic cooldown applies. A settle
-// during actual MOTION is a real finding — copy the trace.
+// FIREFOX EDGE SEMANTICS (v2 deviation, see src/scroll-settle.ts): a
+// pending edge release is CONTESTED when wheel input follows its
+// scrollend (it was a pause, not the release). Uncontested releases
+// settle after a short 450ms confirmation window (~0.3s after the
+// scrollend; main took ~1.5s). Contested ones need the full 1600ms of
+// wheel silence — active motion keeps pushing it, a decaying momentum
+// tail at a pinned edge still recovers (no hang), and only ≥1.6s of
+// TOTAL stillness (observably identical to a release) can commit under
+// resting fingers. Lab focus for FF: (a) active hold or motion → never
+// settles; (b) clean flick release → chunk lands quickly; (c) fast
+// re-grab right after an edge commit → watch for a ghost-edge bounce
+// (the 450ms race buffer must rise if seen).
+// A settle during actual MOTION is always a real finding — copy the trace.
 
 // Small enough that either edge is one or two flicks away — the lab is
 // about edge behavior, not endurance scrolling.
@@ -163,6 +170,8 @@ let prematureFlagged = false;
 let statusFrame = 0;
 let pillTimer = 0;
 let pillSticky = false;
+let glide: Glide | null = null;
+let glideTargetFn: (() => number) | null = null;
 
 function showPill(text: string, boundary: Boundary, sticky = false): void {
   window.clearTimeout(pillTimer);
@@ -337,8 +346,13 @@ function buildController(): ScrollSettleController {
       chunksRemaining[boundary] > 0 ||
       loading === boundary ||
       queuedChunk?.boundary === boundary,
-    cancelActiveSmoothScroll: () => {},
-    smoothScrollReachedTarget: () => true,
+    // A genuine user scroll interrupts the button glide.
+    cancelActiveSmoothScroll: () => glide?.cancel(),
+    // Scrollends emitted mid-glide are not the user's release.
+    smoothScrollReachedTarget: () => {
+      if (glide === null || glideTargetFn === null) return true;
+      return Math.abs(viewport.scrollTop - glideTargetFn()) <= 2;
+    },
     onGestureActivity: () => {},
     onGestureStarted: () => {
       gestures += 1;
@@ -396,6 +410,44 @@ function buildController(): ScrollSettleController {
   });
 }
 
+// --- Programmatic glides (the controller's programmatic-gesture path) -------
+
+function glideTo(boundary: Boundary): void {
+  glide?.cancel();
+  const target = () =>
+    boundary === "top"
+      ? 0
+      : Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+  // A glide is a scroll phase too: reach-zone loads queue during it and
+  // commit at the settle that follows its landing.
+  controller.beginProgrammaticGesture();
+  log(`glide ${boundary}`, "mark");
+  glideTargetFn = target;
+  glide = startGlide(
+    {
+      read: () => viewport.scrollTop,
+      write: (top) => {
+        controller.recordProgrammaticScrollTop(top);
+        viewport.scrollTop = top;
+      },
+      target,
+    },
+    (distancePx) => glideDuration(distancePx, viewport.clientHeight),
+    (completed) => {
+      glide = null;
+      glideTargetFn = null;
+      log(
+        `glide ${completed ? "landed" : "cancelled"}`,
+        completed ? "good" : "warn",
+      );
+      // A landed glide settles through the controller's normal cooldown;
+      // a cancelled one belongs to the user gesture that took over.
+      if (completed) controller.markSettlePending();
+      scheduleStatus();
+    },
+  );
+}
+
 // --- Raw event trace (what the engine actually emits) -----------------------
 
 function traceEvents(): void {
@@ -447,7 +499,14 @@ function rebuildList(): void {
   for (let index = 0; index < INITIAL_ROWS; index++) {
     rows.appendChild(buildRow(index));
   }
-  viewport.scrollTop = viewport.scrollHeight;
+  // Start mid-list: both edge zones then require a deliberate scroll — a
+  // boot at an edge would auto-load instantly with no user intent.
+  const middle = Math.max(
+    0,
+    (viewport.scrollHeight - viewport.clientHeight) / 2,
+  );
+  controller?.recordProgrammaticScrollTop(middle);
+  viewport.scrollTop = middle;
   hidePill(true);
   scheduleStatus();
 }
@@ -466,9 +525,12 @@ for (const option of [
 }
 
 strategySelect.addEventListener("change", () => {
+  glide?.cancel();
   controller.dispose();
   controller = buildController();
 });
+mustGet("glide-top").addEventListener("click", () => glideTo("top"));
+mustGet("glide-bottom").addEventListener("click", () => glideTo("bottom"));
 mustGet("queue-now").addEventListener("click", () =>
   startLoad("manual", "top"),
 );
@@ -476,6 +538,7 @@ mustGet("append-now").addEventListener("click", () =>
   startLoad("manual", "bottom"),
 );
 mustGet("reset").addEventListener("click", () => {
+  glide?.cancel();
   rebuildList();
   log("reset", "mark");
 });

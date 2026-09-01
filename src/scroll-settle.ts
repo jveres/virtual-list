@@ -68,8 +68,23 @@ const EDGE_SETTLE_QUIET_MS = 450;
 // Firefox publishes range growth to APZ asynchronously after the main-thread
 // commit. A rapid re-grab can otherwise join the pre-growth overscroll state
 // and bounce at a ghost edge. There is no content-visible APZ acknowledgement,
-// so keep a conservative, empirically verified quiet window from the latest
-// DOM wheel signal. This is a race buffer, not an engine transaction constant.
+// so keep a quiet window from the latest DOM wheel signal. This is a race
+// buffer, not an engine transaction constant.
+//
+// V2 DEVIATION (two windows instead of main's one; lab-verified traces):
+// a pending Firefox edge release is CONTESTED when wheel input arrives
+// after its scrollend — that scrollend was a mid-momentum/mid-hold pause,
+// not the release (main honored it on this single 1600ms timer, which
+// committed under held fingers). An UNCONTESTED scrollend (no wheels after
+// it) is a clean release signature and settles after the short
+// confirmation window (~0.3s after the scrollend; main's 1600ms made
+// every normal edge load wait ~1.5s). A contested one falls back to the
+// full stability window from the last wheel: active motion keeps pushing
+// it, a decaying momentum tail at a pinned edge (which emits no second
+// scrollend) still recovers instead of hanging, and only ≥1600ms of TOTAL
+// stillness — observably identical to a release, the platform's genuine
+// ambiguity — can commit under resting fingers.
+const FIREFOX_EDGE_RELEASE_CONFIRM_MS = 450;
 const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
@@ -181,6 +196,9 @@ export function createScrollSettleController(
   let wheelPendingNativeScrollEndTop: number | null = null;
   let pendingNativeScrollEndDelayMs = SCROLL_SETTLE_COOLDOWN_MS;
   let pendingFirefoxEdgeRelease = false;
+  // Wheel input arrived after the pending edge scrollend: it was a pause,
+  // not the release. Contested releases use the full stability window.
+  let firefoxEdgeReleaseContested = false;
   let lastFirefoxWheelInputAt = Number.NEGATIVE_INFINITY;
   let firefoxProtectedEdge: ScrollBoundary | null = null;
   let settleFrame = 0;
@@ -570,6 +588,7 @@ export function createScrollSettleController(
       options.delayMs ?? SCROLL_SETTLE_COOLDOWN_MS;
     wheelPendingNativeScrollEndTop = options.scrollTop ?? null;
     pendingFirefoxEdgeRelease = options.firefoxEdge === true;
+    firefoxEdgeReleaseContested = false;
   }
 
   function clearPendingNativeScrollEnd(): void {
@@ -578,6 +597,7 @@ export function createScrollSettleController(
     pendingNativeScrollEndDelayMs = SCROLL_SETTLE_COOLDOWN_MS;
     wheelPendingNativeScrollEndTop = null;
     pendingFirefoxEdgeRelease = false;
+    firefoxEdgeReleaseContested = false;
   }
 
   // Preserve the policy chosen when the native scrollend was observed. In
@@ -585,11 +605,13 @@ export function createScrollSettleController(
   // Firefox edge stability wait into the generic short cooldown.
   function schedulePendingNativeScrollEnd(): void {
     if (host.isDisposed() || !nativeScrollEndPending) return;
+    const firefoxEdgeWindowMs = firefoxEdgeReleaseContested
+      ? FIREFOX_EDGE_STABILITY_QUIET_MS
+      : FIREFOX_EDGE_RELEASE_CONFIRM_MS;
     const delayMs = hasPendingFirefoxEdgeRelease()
       ? Math.max(
           0,
-          FIREFOX_EDGE_STABILITY_QUIET_MS -
-            (performance.now() - lastFirefoxWheelInputAt),
+          firefoxEdgeWindowMs - (performance.now() - lastFirefoxWheelInputAt),
         )
       : pendingNativeScrollEndDelayMs;
     scheduleSettleCooldown(
@@ -866,6 +888,16 @@ export function createScrollSettleController(
         firefoxProtectedEdge ??= outwardBoundary;
       }
       if (event.deltaY !== 0) cancelFirefoxEdgeCommitForInput();
+      // V2 DEVIATION (see the window constants): wheel input after an edge
+      // scrollend proves the gesture continued past it — that scrollend
+      // was a mid-momentum/mid-hold pause, not the release. Mark the
+      // pending release CONTESTED: it may only settle after the full
+      // stability window of wheel silence, never the short release-confirm
+      // window. (Dropping it entirely was tried and hangs: a decaying
+      // momentum tail at a pinned edge emits no second scrollend.)
+      if (event.deltaY !== 0 && hasPendingFirefoxEdgeRelease()) {
+        firefoxEdgeReleaseContested = true;
+      }
       if (!handleUserScrollStart()) return;
       if (outwardBoundary) userScrollMoved = true;
       handleWheelInputSettle(

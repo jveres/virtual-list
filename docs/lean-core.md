@@ -53,13 +53,23 @@ gesture-time canvas translation, no "safe update" exceptions. What v1
 handled with compensation machinery simply cannot occur: heights are known
 before mount, and geometry changes only at settle.
 
-Known engine bound (accepted, from `main`): wheel/trackpad engines do not
-expose fingers-down state, so a motionless hold — no wheel deltas, no
-scroll motion — is indistinguishable from a release. Firefox/Chromium
-settle (and commit) after their quiet windows even under resting fingers;
-at a loadable edge Firefox's stability window bounds this. A settle during
-actual motion is a defect; a settle during a long motionless hold is the
-documented limit of the platform.
+Mid-hold settles are defects. The first deliberate v2 deviation from
+`main` (in the preserved controller, flagged in-source) closes the
+reported Firefox case with a two-window design: a pending edge release
+is CONTESTED when wheel input follows its scrollend — that scrollend was
+a mid-momentum/mid-hold pause, not the release (`main` honored it on a
+single 1600ms timer and committed under held fingers). An uncontested
+scrollend is a clean release signature and settles after a short 450ms
+confirmation window (main's 1600ms made every normal edge load wait
+~1.5s — the second half of the deviation). A contested release requires
+the full 1600ms of wheel silence: active motion keeps pushing it, a
+decaying momentum tail at a pinned edge (which emits no second
+scrollend) still recovers instead of hanging, and the only path to a
+commit under resting fingers is ≥1.6s of TOTAL stillness — a state
+wheel engines make observably identical to a release. That narrow
+residual, and the APZ re-grab race after fast commits, are standing lab
+watch items; a ghost-edge bounce on fast re-grab means the 450ms buffer
+rises.
 
 ## Preserved from v1 (signed off there, carried forward)
 
