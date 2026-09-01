@@ -53,23 +53,31 @@ gesture-time canvas translation, no "safe update" exceptions. What v1
 handled with compensation machinery simply cannot occur: heights are known
 before mount, and geometry changes only at settle.
 
-Mid-hold settles are defects. The first deliberate v2 deviation from
-`main` (in the preserved controller, flagged in-source) closes the
-reported Firefox case with a two-window design: a pending edge release
-is CONTESTED when wheel input follows its scrollend — that scrollend was
-a mid-momentum/mid-hold pause, not the release (`main` honored it on a
-single 1600ms timer and committed under held fingers). An uncontested
-scrollend is a clean release signature and settles after a short 450ms
-confirmation window (main's 1600ms made every normal edge load wait
-~1.5s — the second half of the deviation). A contested release requires
-the full 1600ms of wheel silence: active motion keeps pushing it, a
-decaying momentum tail at a pinned edge (which emits no second
-scrollend) still recovers instead of hanging, and the only path to a
-commit under resting fingers is ≥1.6s of TOTAL stillness — a state
-wheel engines make observably identical to a release. That narrow
-residual, and the APZ re-grab race after fast commits, are standing lab
-watch items; a ghost-edge bounce on fast re-grab means the 450ms buffer
-rises.
+Settles during active input or motion are defects, always. The v2
+Firefox deviation (in the preserved controller, flagged in-source) is a
+two-window design: a pending edge release is CONTESTED when a
+post-scrollend wheel adds energy (grows past its predecessor beyond the
+2px jitter band), reverses direction (new intent), or arrives from a
+line/page-delta device (discrete notches are deliberate input; momentum
+tails exist only on pixel-delta devices) — such a scrollend was a
+mid-momentum/mid-hold pause, not the release (`main` honored it on a
+single 1600ms timer and committed under actively-held fingers). A
+decaying pixel-mode tail merely postpones the short window. Uncontested
+releases settle after a 450ms confirmation window (main's 1600ms made
+every normal edge load wait ~1.5s); contested ones require the full
+1600ms of wheel silence, so nothing hangs and nothing settles while
+input continues.
+
+THE ACCEPTED TRADE-OFF (latency versus certainty, chosen deliberately):
+wheel engines expose no fingers-down state, so an uncontested scrollend
+is strong evidence of release, not proof — a hold that pauses into a
+quiet scrollend and stays still is observably identical to a release
+and can commit under resting fingers after ~450ms (contested: 1600ms).
+Retaining the long window universally would restore main's ~1.5s edge
+latency on every normal flick; the fast path was chosen. Standing lab
+watch items: the APZ re-grab race after fast commits (a ghost-edge
+bounce on fast re-grab means the 450ms buffer rises), and still-hold
+commit frequency in practice.
 
 ## Preserved from v1 (signed off there, carried forward)
 

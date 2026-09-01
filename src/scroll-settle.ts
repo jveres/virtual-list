@@ -86,13 +86,16 @@ const EDGE_SETTLE_QUIET_MS = 450;
 // ambiguity — can commit under resting fingers.
 const FIREFOX_EDGE_RELEASE_CONFIRM_MS = 450;
 const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
-// Post-scrollend wheels at or below this magnitude, and not growing past
-// their predecessor, are trailing momentum-end markers (a release whose
-// scrollend landed inside the decaying tail), not a continuing gesture —
-// they postpone the short confirm window but do not contest the release.
-// A momentum tail decays (…6,5,5,4,3,2,1); a continuing gesture adds
-// energy (3 → 4 → 7 in the mid-hold lab trace). Growth beyond the small
-// jitter allowance, or any large delta, contests.
+// Post-scrollend PIXEL-mode wheels at or below this magnitude, and not
+// growing past their predecessor, are trailing momentum-end markers (a
+// release whose scrollend landed inside the decaying tail), not a
+// continuing gesture — they postpone the short confirm window but do not
+// contest the release. A momentum tail decays (…6,5,5,4,3,2,1); a
+// continuing gesture adds energy (3 → 4 → 7 in the mid-hold lab trace).
+// Growth beyond the small jitter allowance, any large delta, a DIRECTION
+// REVERSAL (new intent), or any non-pixel delta (line/page wheel notches
+// are discrete deliberate input — such devices have no momentum tails)
+// contests.
 const FIREFOX_TRAILING_MARKER_MAX_DELTA = 2;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
@@ -207,7 +210,9 @@ export function createScrollSettleController(
   // Wheel input arrived after the pending edge scrollend: it was a pause,
   // not the release. Contested releases use the full stability window.
   let firefoxEdgeReleaseContested = false;
-  let lastFirefoxWheelMagnitude = 0;
+  // Signed pixel-mode delta of the previous wheel, for the decay/reversal
+  // classification; non-pixel wheels reset it (units are incompatible).
+  let lastFirefoxWheelDelta = 0;
   let lastFirefoxWheelInputAt = Number.NEGATIVE_INFINITY;
   let firefoxProtectedEdge: ScrollBoundary | null = null;
   let settleFrame = 0;
@@ -908,18 +913,23 @@ export function createScrollSettleController(
       // releases entirely was tried and hangs: a decaying tail at a pinned
       // edge emits no second scrollend.)
       if (event.deltaY !== 0) {
-        const magnitude = Math.abs(event.deltaY);
-        if (
-          hasPendingFirefoxEdgeRelease() &&
-          magnitude >
+        const pixelMode = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL;
+        if (hasPendingFirefoxEdgeRelease()) {
+          const magnitude = Math.abs(event.deltaY);
+          const reversed =
+            lastFirefoxWheelDelta !== 0 &&
+            Math.sign(event.deltaY) !== Math.sign(lastFirefoxWheelDelta);
+          const addsEnergy =
+            magnitude >
             Math.max(
               FIREFOX_TRAILING_MARKER_MAX_DELTA,
-              lastFirefoxWheelMagnitude + 1,
-            )
-        ) {
-          firefoxEdgeReleaseContested = true;
+              Math.abs(lastFirefoxWheelDelta) + 1,
+            );
+          if (!pixelMode || reversed || addsEnergy) {
+            firefoxEdgeReleaseContested = true;
+          }
         }
-        lastFirefoxWheelMagnitude = magnitude;
+        lastFirefoxWheelDelta = pixelMode ? event.deltaY : 0;
       }
       if (!handleUserScrollStart()) return;
       if (outwardBoundary) userScrollMoved = true;

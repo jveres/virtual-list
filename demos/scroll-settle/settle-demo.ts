@@ -30,18 +30,17 @@ import {
 // "copy trace" exports the full event/decision sequence for review.
 //
 // FIREFOX EDGE SEMANTICS (v2 deviation, see src/scroll-settle.ts): a
-// pending edge release is CONTESTED when wheel input follows its
-// scrollend (it was a pause, not the release). Uncontested releases
-// settle after a short 450ms confirmation window (~0.3s after the
-// scrollend; main took ~1.5s). Contested ones need the full 1600ms of
-// wheel silence — active motion keeps pushing it, a decaying momentum
-// tail at a pinned edge still recovers (no hang), and only ≥1.6s of
-// TOTAL stillness (observably identical to a release) can commit under
-// resting fingers. Lab focus for FF: (a) active hold or motion → never
-// settles; (b) clean flick release → chunk lands quickly; (c) fast
-// re-grab right after an edge commit → watch for a ghost-edge bounce
-// (the 450ms race buffer must rise if seen).
-// A settle during actual MOTION is always a real finding — copy the trace.
+// pending edge release is CONTESTED when post-scrollend wheel input adds
+// energy, reverses direction, or comes from a line/page device (a pause,
+// not the release); a decaying pixel-mode tail merely postpones the short
+// window. Uncontested releases settle ~450ms after the last wheel (main
+// took ~1.5s); contested ones need the full 1600ms of silence. THE
+// TRADE-OFF, accepted and documented: wheel engines expose no
+// fingers-down state, so a hold that pauses into an uncontested
+// scrollend and stays still can commit under resting fingers after
+// ~450ms — latency for the common flick was chosen over certainty for
+// the still hold. A settle during actual INPUT OR MOTION is always a
+// defect — copy the trace.
 
 // Small enough that either edge is one or two flicks away — the lab is
 // about edge behavior, not endurance scrolling.
@@ -277,6 +276,7 @@ function applyQueuedChunk(boundary: Boundary, reason: string): void {
   const beforeTop = viewport.scrollTop;
   const beforeHeight = viewport.scrollHeight;
   if (boundary === "top") {
+    firstIndex -= pending.count;
     rows.insertBefore(pending.fragment, rows.firstChild);
     const delta = viewport.scrollHeight - beforeHeight;
     const target = beforeTop + delta;
@@ -295,6 +295,7 @@ function applyQueuedChunk(boundary: Boundary, reason: string): void {
     );
   } else {
     // Content below the anchor: the position is preserved with no write.
+    nextBottomIndex += pending.count;
     rows.appendChild(pending.fragment);
     log(
       `COMMIT bottom ${reason}: +${pending.count} rows +${
@@ -322,6 +323,9 @@ function applyAllQueuedChunks(reason: string): void {
   applyQueuedChunk("bottom", reason);
 }
 
+// Builds from the current cursor WITHOUT advancing it: cursors move only
+// when a chunk actually commits, so an aborted chunk's rows are refetched
+// on re-approach instead of being skipped.
 function buildChunk(boundary: Boundary): DocumentFragment {
   const fragment = document.createDocumentFragment();
   if (boundary === "top") {
@@ -330,14 +334,12 @@ function buildChunk(boundary: Boundary): DocumentFragment {
       element.classList.add("fresh");
       fragment.appendChild(element);
     }
-    firstIndex -= CHUNK_ROWS;
   } else {
     for (let offset = 0; offset < CHUNK_ROWS; offset++) {
       const element = buildRow(nextBottomIndex + offset);
       element.classList.add("fresh");
       fragment.appendChild(element);
     }
-    nextBottomIndex += CHUNK_ROWS;
   }
   return fragment;
 }
