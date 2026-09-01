@@ -520,7 +520,16 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.list.state.held).toBe(true);
 
     h.settle();
-    expect(h.list.state.count).toBe(31); // B committed, m41 alive.
+    expect(h.list.state.count).toBe(31);
+    // It is B that committed — its locally built m41 is the live tail row,
+    // and A's destroyed m40 is nowhere in the DOM.
+    void h.list.scrollTo("end");
+    expect(h.rowElement("local")).toBeDefined();
+    expect(
+      [...h.canvas().querySelectorAll("div")].some(
+        (el) => el.textContent === "held",
+      ),
+    ).toBe(false);
     expect(h.destroyed.filter((id) => id === 40)).toHaveLength(1);
     expect(h.destroyed).not.toContain(41);
     expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
