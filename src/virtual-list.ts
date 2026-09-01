@@ -182,7 +182,12 @@ export function createVirtualList<T>(
   // scope: what its callbacks queue drains after it commits, each entry as
   // its own transaction with its own scope — so a failing queued entry
   // discards only the work it created, never its siblings.
-  let afterCommit: { run: () => void; discard?: () => void }[] = [];
+  type Scope = { run: () => void; discard?: () => void }[];
+  let afterCommit: Scope = [];
+  // Every scope with undrained entries, outermost first: a parent scope
+  // mid-drain still holds its remaining siblings while a child transaction
+  // runs, so disposal from that child must be able to discard them all.
+  const liveScopes: Scope[] = [];
   let glide: Glide | null = null;
   let glideTarget: (() => number) | null = null;
   // A landed glide resolves only once its phase settles and held work has
@@ -232,42 +237,54 @@ export function createVirtualList<T>(
     return deferredTeardown.splice(0);
   }
 
+  function discardScope(scope: Scope): void {
+    for (const entry of scope) entry.discard?.();
+    scope.length = 0;
+  }
+
   function guarded(work: () => void): void {
     if (inCommit) {
       work();
       return;
     }
-    const scope: { run: () => void; discard?: () => void }[] = [];
+    const scope: Scope = [];
+    const outer = afterCommit;
     afterCommit = scope;
+    liveScopes.push(scope);
     inCommit = true;
     try {
-      work();
-    } catch (error) {
-      inCommit = false;
-      // A genuine failure: what THIS transaction's callbacks queued would
-      // run against a state that was never reached. Discard exactly that
-      // scope — settling every queued command's promise (false) so nothing
-      // hangs — and nothing outside it.
-      for (const entry of scope) entry.discard?.();
-      scope.length = 0;
-      const deferred = takeDeferredTeardown();
-      if (deferred.length === 0) throw error;
-      throw new AggregateError([error, ...deferred], "transaction failed");
-    }
-    inCommit = false;
-    const failures = takeDeferredTeardown();
-    // Drain this scope; each entry runs as its own top-level transaction
-    // (with its own scope), and any failure it surfaces joins the report
-    // instead of stranding the entries behind it.
-    while (!disposed && scope.length > 0) {
-      const entry = scope.shift();
       try {
-        entry?.run();
+        work();
       } catch (error) {
-        failures.push(...failuresOf(error));
+        inCommit = false;
+        // A genuine failure: what THIS transaction's callbacks queued would
+        // run against a state that was never reached. Discard exactly that
+        // scope — settling every queued command's promise (false) so nothing
+        // hangs — and nothing outside it.
+        discardScope(scope);
+        const deferred = takeDeferredTeardown();
+        if (deferred.length === 0) throw error;
+        throw new AggregateError([error, ...deferred], "transaction failed");
       }
+      inCommit = false;
+      const failures = takeDeferredTeardown();
+      // Drain this scope; each entry runs as its own top-level transaction
+      // (with its own scope), and any failure it surfaces joins the report
+      // instead of stranding the entries behind it. Disposal from a child
+      // empties this scope in place (see dispose), which ends the drain.
+      while (!disposed && scope.length > 0) {
+        const entry = scope.shift();
+        try {
+          entry?.run();
+        } catch (error) {
+          failures.push(...failuresOf(error));
+        }
+      }
+      throwTeardown(failures);
+    } finally {
+      liveScopes.pop();
+      afterCommit = outer;
     }
-    throwTeardown(failures);
   }
 
   // --- Rows: build, measure, retain, destroy --------------------------------
@@ -1090,8 +1107,11 @@ export function createVirtualList<T>(
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      for (const entry of afterCommit) entry.discard?.();
-      afterCommit.length = 0;
+      // Every queued command in EVERY live scope settles (false): the open
+      // transaction's, and each parent scope still holding undrained
+      // siblings behind the child that is disposing.
+      for (const scope of liveScopes) discardScope(scope);
+      discardScope(afterCommit);
       glide?.cancel();
       cancelParkedCommand();
       abortEdge("start");

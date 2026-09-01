@@ -552,6 +552,32 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.list.state.count).toBe(99);
   });
 
+  it("disposal from a queued child transaction settles the parent's remaining siblings (I4)", async () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let queuedCommand: Promise<boolean> | null = null;
+    let armed = false;
+    const h = mount(range(0, 100), {
+      onRender: (m) => {
+        // The first queued sibling disposes the list mid-render, while the
+        // parent scope still holds the command behind it.
+        if (m.body === "dispose-me") listRef?.dispose();
+      },
+      onState: (state) => {
+        if (state.count !== 99 || armed || !listRef) return;
+        armed = true;
+        listRef.setItems([...range(1, 100), message(200, "dispose-me")]);
+        queuedCommand = listRef.scrollTo("start");
+      },
+    });
+    listRef = h.list;
+
+    h.list.setItems(range(1, 100));
+    // The stranded sibling must settle — false, the list is gone — instead
+    // of remaining pending forever.
+    await expect(queuedCommand).resolves.toBe(false);
+    expect(h.viewport.firstElementChild).toBeNull(); // Disposed for real.
+  });
+
   it("hands off the new snapshot before surfacing a supersession teardown failure", () => {
     const h = mount(range(0, 30), {
       onDestroy: (element) => {
