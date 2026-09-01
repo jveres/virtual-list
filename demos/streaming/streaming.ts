@@ -99,6 +99,10 @@ const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
   demoParams.has("fast-long") || demoParams.get("stream") === "fast-long";
+// Temporary diagnostics for the ghost-top bounce: ?debug-ghost logs raw
+// scroll state, the canvas gesture-shift transform, commit timing, and
+// input events around the top edge. Reproduce, paste, then strip.
+const debugGhost = demoParams.has("debug-ghost");
 
 const viewport = mustGet("viewport");
 const viewportWrap = viewport.parentElement as HTMLElement;
@@ -113,6 +117,50 @@ const composerMinHeight = Math.max(
   promptInput.getBoundingClientRect().height,
 );
 
+// ?debug-ghost: one compact line per event. `shift` is the runtime's
+// gesture-shift canvas transform (visible in the DOM), `top`/`sh` the raw
+// scroll state, `count` the committed row count — together they separate a
+// shift-induced unreachable region from a deferred prepend and from a
+// premature settle.
+function ghostLog(tag: string, extra: Record<string, unknown> = {}): void {
+  if (!debugGhost) return;
+  const canvas = viewport.firstElementChild as HTMLElement | null;
+  console.log(
+    `[ghost] ${performance.now().toFixed(0)}ms ${tag}`,
+    JSON.stringify({
+      top: Math.round(viewport.scrollTop * 10) / 10,
+      sh: viewport.scrollHeight,
+      shift: canvas?.style.transform || "0",
+      count: virtualList?.state.count ?? -1,
+      atStart: virtualList?.state.atStart ?? false,
+      loadedStart,
+      loading: loadingTop,
+      ...extra,
+    }),
+  );
+}
+if (debugGhost) {
+  console.log(`[ghost] ua=${navigator.userAgent}`);
+  viewport.addEventListener("scroll", () => ghostLog("scroll"), {
+    passive: true,
+  });
+  viewport.addEventListener("scrollend", () => ghostLog("scrollend"), {
+    passive: true,
+  });
+  viewport.addEventListener(
+    "wheel",
+    (event) => ghostLog("wheel", { dy: Math.round(event.deltaY) }),
+    { passive: true },
+  );
+  viewport.addEventListener("touchstart", () => ghostLog("touchstart"), {
+    passive: true,
+  });
+  viewport.addEventListener("touchend", () => ghostLog("touchend"), {
+    passive: true,
+  });
+}
+
+let lastLoggedCount = -1;
 let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
 let nextResponse = 0;
@@ -622,8 +670,10 @@ function loadOlderChunk(): Promise<void> {
       if (virtualList && virtualList.state.count < messages.length) {
         // Deferred by the runtime: stay in the loading state until the
         // commit is confirmed through onState.
+        ghostLog("load-deferred", { handedOff: messages.length });
         pendingPrepend = { count: messages.length, finish };
       } else {
+        ghostLog("load-committed", { handedOff: messages.length });
         finish();
       }
     }, LOAD_OLDER_DELAY_MS);
@@ -1596,6 +1646,10 @@ virtualList = createVirtualList<Message>(viewport, {
   },
   estimateSize: ESTIMATED_ITEM_HEIGHT,
   onState: (state) => {
+    if (debugGhost && state.count !== lastLoggedCount) {
+      ghostLog("count-commit", { from: lastLoggedCount, to: state.count });
+      lastLoggedCount = state.count;
+    }
     // A deferred prepend committed: close out the load it belongs to.
     if (pendingPrepend && state.count >= pendingPrepend.count) {
       pendingPrepend.finish();
