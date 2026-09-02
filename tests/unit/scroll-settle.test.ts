@@ -351,6 +351,17 @@ describe("firefox edge sequences (trace replay)", () => {
     protectedEdge.wheel(-50); // Outward at a loadable edge: held.
     vi.advanceTimersByTime(2000);
     expect(protectedEdge.settled()).toBe(0);
+
+    // The wheel-set protection sticks for the gesture: leaving the edge
+    // afterwards (an inward wheel that moves) still waits for the release
+    // scrollend rather than the wheel fallback.
+    protectedEdge.wheel(50);
+    protectedEdge.scrollTo(200);
+    vi.advanceTimersByTime(1000);
+    expect(protectedEdge.settled()).toBe(0);
+    protectedEdge.scrollEnd();
+    vi.advanceTimersByTime(600);
+    expect(protectedEdge.settled()).toBe(1);
   });
 
   it("cancels a pending wheel release when touch re-grabs the edge", () => {

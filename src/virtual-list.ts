@@ -1830,31 +1830,29 @@ export function createVirtualList<T>(
     remeasureFrame = 0;
     if (disposed) return;
     guarded(() => {
-      let valid = false;
-      let requestedPolicy: AnchorPolicy | undefined;
+      // The last valid request's anchor wins.
+      let requestedPolicy: AnchorPolicy | null = null;
       for (const [key, anchor] of remeasureRequests) {
         const row = rows.get(key);
         if (!row?.mounted || row.edge) continue;
         markDirty(row);
         requestedPolicy = anchor;
-        valid = true;
       }
       remeasureRequests.clear();
 
-      if (!valid) {
+      if (requestedPolicy === null) {
         remeasurePolicy = undefined;
         publish();
         return;
       }
-      remeasurePolicy = requestedPolicy ?? remeasurePolicy;
+      remeasurePolicy = requestedPolicy;
       if (!idle()) {
         publish();
         return;
       }
 
-      const policy = remeasurePolicy ?? "viewport";
       remeasurePolicy = undefined;
-      commit(null, policy);
+      commit(null, requestedPolicy);
     });
   }
 

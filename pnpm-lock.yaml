@@ -420,7 +420,6 @@ packages:
     cpu: [x64]
     os: [win32]
 
-
   '@vitest/expect@4.1.11':
     resolution: {integrity: sha512-VX2x5vNJXET47KAFzwERI+KRMtTTCSWTfSMKsW7JsUsXV4psq++e3DvZpuTDOpHcxytiDs6p2nhVb2tVDiiUYw==}
 
@@ -1124,7 +1123,6 @@ snapshots:
 
   '@typescript/typescript-win32-x64@7.0.2':
     optional: true
-
 
   '@vitest/expect@4.1.11':
     dependencies:

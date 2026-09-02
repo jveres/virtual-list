@@ -7,7 +7,7 @@
  * Engines disagree on when (and whether) `scrollend` fires relative to wheel
  * momentum, so each strategy encodes one engine's observed sequencing:
  * chromium's wheel-idle window and boundary-scrollend suppression, firefox's
- * early scrollend during a glide, safari's similar wheel behavior, and a
+ * two-window edge release, safari's rubber-band quiet windows, and a
  * plain scrollend+cooldown "default" (explicit opt-in only; an unknown
  * engine falls to the Firefox contract). The controller owns the viewport's
  * scroll/scrollend/wheel/pointer/touch listeners and all gesture state; the
@@ -51,9 +51,8 @@
  *   continues; settle from the release scrollend or true quiet. Near an
  *   edge, settling additionally requires SAFARI_EDGE_SETTLE_QUIET_MS of
  *   scroll-event silence: the bounce tail decays through event gaps longer
- *   than the cooldown, and the settle's anchor-preserving writes (a bottom
- *   load trims the retained top, which writes scrollTop) snap the bounce if
- *   they land inside it.
+ *   than the cooldown, and the settle commit's anchor-preserving scrollTop
+ *   write (a prepend) snaps the bounce if it lands inside it.
  *
  * Two tolerances make this robust: EDGE_PROXIMITY_EPSILON_PX accepts the
  * fractional gap (up to ~1px, more under zoom) engines leave between a pinned
@@ -105,8 +104,8 @@ const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
 const FIREFOX_TRAILING_MARKER_MAX_DELTA = 2;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
-// cooldown, and a settle inside the tail performs anchor-preserving
-// scrollTop writes (window trims, prepends) that snap the animation.
+// cooldown, and a settle commit inside the tail performs the
+// anchor-preserving scrollTop write (a prepend) that snaps the animation.
 const SAFARI_EDGE_SETTLE_QUIET_MS = 350;
 // Engines pin an overscrolled position up to ~1px (more under zoom/DPI
 // scaling) shy of the exact scroll limit, so edge proximity must be judged

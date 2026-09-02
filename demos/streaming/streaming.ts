@@ -835,7 +835,7 @@ let pendingPrepend: { count: number; finish: () => void } | null = null;
 // exit zone.
 // Called by loadOlderMessages alone, which has already checked that no load
 // is active and that older messages remain.
-function loadOlderChunk(signal?: AbortSignal): Promise<void> {
+function loadOlderChunk(signal: AbortSignal): Promise<void> {
   loadingTop = true;
   topBoundaryLoadSeen = true;
   setEdgeState("loading");
@@ -877,7 +877,7 @@ function loadOlderChunk(signal?: AbortSignal): Promise<void> {
     // The runtime aborts a reach's signal when the user reaches the other
     // edge (or on dispose): the simulated fetch dies with it, exactly as a
     // real fetch(url, { signal }) would, and the loader state clears.
-    signal?.addEventListener("abort", () => {
+    signal.addEventListener("abort", () => {
       if (activeLoad === null) return;
       window.clearTimeout(timer);
       finish();
@@ -890,7 +890,7 @@ function loadOlderChunk(signal?: AbortSignal): Promise<void> {
 // setItems, which the runtime defers while a scroll phase (gesture or
 // glide) is active and commits — anchored, without movement — when the
 // phase truly settles. The demo never orchestrates scroll phases.
-function loadOlderMessages(signal?: AbortSignal): void {
+function loadOlderMessages(signal: AbortSignal): void {
   if (activeLoad) return;
   if (!canLoadOlderMessages()) {
     if (topBoundaryLoadSeen) setEdgeState("no-more");

@@ -128,11 +128,7 @@ function mount(
     clientHeight: { get: () => hooks.height?.() ?? VIEWPORT_H },
     clientWidth: { get: () => hooks.width?.() ?? 300 },
     offsetWidth: { get: () => 315 },
-    // Engines report scrollHeight as a whole pixel while scrollTop may be
-    // fractional — the mismatch a takeover must not clamp against.
-    scrollHeight: {
-      get: () => Math.round(Math.max(VIEWPORT_H, canvasHeight())),
-    },
+    scrollHeight: { get: () => Math.max(VIEWPORT_H, canvasHeight()) },
     // A shrinking range clamps the position for good, as layout does in an
     // engine: growing the range back later does not restore it.
     scrollTop: {

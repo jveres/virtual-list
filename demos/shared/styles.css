@@ -165,9 +165,10 @@ button.active {
 }
 
 /* The dialog hides the unselected provider's fields with the hidden
-   attribute; the fields' own display would otherwise override it. */
+   attribute; the fields' own single-class display rules would beat the
+   user agent's [hidden] style, so this two-part selector outranks them. */
 .ai-settings-dialog [hidden] {
-  display: none !important;
+  display: none;
 }
 
 .ai-settings-field {
