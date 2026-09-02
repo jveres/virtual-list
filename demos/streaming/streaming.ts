@@ -81,6 +81,9 @@ interface Message {
   markdown: string;
   status?: AssistantStatus;
   toolCalls?: ChatToolCall[];
+  /** When the message was sent (epoch ms). Real turns only; the canned
+   * transcript is undated and falls into synthetic days. */
+  sentAt?: number;
 }
 
 /** A day separator row, interleaved into the runtime's items. */
@@ -573,9 +576,38 @@ let stickyHeaders: StickyHeaders | undefined;
 // --- Day separators --------------------------------------------------------
 
 const dayHeaders = new Map<number, DayHeader>();
-let labeledLastDay = -1;
+let labeledFor = "";
+
+// Two kinds of day share one number space, ordered along the transcript:
+// - a dated message (a real OpenAI turn) belongs to its calendar day, keyed
+//   by that day's local midnight in epoch ms;
+// - an undated message belongs to a synthetic bucket of MESSAGES_PER_DAY
+//   consecutive messages (the canned transcript), or — in a real
+//   conversation whose older turns were stored before dates existed — to
+//   one "Earlier" day that precedes every dated one.
+const DAY_MS = 86_400_000;
+const UNDATED_DAY = -1;
+
+function localMidnight(at: number): number {
+  const date = new Date(at);
+  return new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+  ).getTime();
+}
+
+function isDatedDay(day: number): boolean {
+  return day >= DAY_MS;
+}
+
+function conversationIsDated(): boolean {
+  return getAISettings().provider === "openai";
+}
 
 function dayOf(message: Message): number {
+  if (message.sentAt !== undefined) return localMidnight(message.sentAt);
+  if (conversationIsDated()) return UNDATED_DAY;
   return Math.floor(transcriptIndexOf(message) / MESSAGES_PER_DAY);
 }
 
@@ -583,12 +615,9 @@ function lastDay(): number {
   return Math.max(0, Math.floor((transcript.length - 1) / MESSAGES_PER_DAY));
 }
 
-function dayLabel(day: number): string {
-  const back = lastDay() - day;
+function relativeDayLabel(back: number, date: Date): string {
   if (back === 0) return "Today";
   if (back === 1) return "Yesterday";
-  const date = new Date();
-  date.setDate(date.getDate() - back);
   return date.toLocaleDateString(undefined, {
     weekday: "long",
     month: "short",
@@ -596,12 +625,26 @@ function dayLabel(day: number): string {
   });
 }
 
+function dayLabel(day: number): string {
+  if (day === UNDATED_DAY) return "Earlier";
+  if (isDatedDay(day)) {
+    const back = Math.round((localMidnight(Date.now()) - day) / DAY_MS);
+    return relativeDayLabel(back, new Date(day));
+  }
+  const back = lastDay() - day;
+  const date = new Date();
+  date.setDate(date.getDate() - back);
+  return relativeDayLabel(back, date);
+}
+
 /** Header objects are cached per day so their identity is stable across
- * snapshots; labels are relative to the last day, so a new day re-labels. */
+ * snapshots; labels are relative to the last synthetic day and to today, so
+ * a new day re-labels. */
 function dayHeader(day: number): DayHeader {
-  if (labeledLastDay !== lastDay()) {
+  const labelBasis = `${lastDay()}:${localMidnight(Date.now())}`;
+  if (labeledFor !== labelBasis) {
     dayHeaders.clear();
-    labeledLastDay = lastDay();
+    labeledFor = labelBasis;
   }
   let header = dayHeaders.get(day);
   if (!header) {
@@ -614,7 +657,7 @@ function dayHeader(day: number): DayHeader {
 /** The loaded window with a day separator before each day's first message. */
 function rowsForRuntime(): ChatRow[] {
   const rows: ChatRow[] = [];
-  let current = -1;
+  let current: number | undefined;
   for (const message of messages) {
     const day = dayOf(message);
     if (day !== current) {
@@ -1022,6 +1065,7 @@ function seedOpenAIConversation(): void {
         ...(turn.toolCalls
           ? { toolCalls: cloneToolCalls(turn.toolCalls) }
           : {}),
+        ...(turn.sentAt !== undefined ? { sentAt: turn.sentAt } : {}),
       }),
       { select: true },
     );
@@ -1397,6 +1441,7 @@ function persistOpenAIConversation(): void {
       role: message.role,
       markdown: message.markdown,
       ...(toolCalls?.length ? { toolCalls } : {}),
+      ...(message.sentAt !== undefined ? { sentAt: message.sentAt } : {}),
     });
   }
   saveOpenAIHistory(turns);
@@ -1663,7 +1708,14 @@ async function handleSend(): Promise<void> {
   };
 
   try {
-    const userMessage = createMessage({ role: "user", markdown: text });
+    // Real turns are dated (the day separators show their calendar day);
+    // the canned rotation stays undated in its synthetic days.
+    const sentAt = useOpenAI ? { sentAt: Date.now() } : {};
+    const userMessage = createMessage({
+      role: "user",
+      markdown: text,
+      ...sentAt,
+    });
     const assistantMessage = createMessage({
       role: "assistant",
       markdown: "",
@@ -1671,6 +1723,7 @@ async function handleSend(): Promise<void> {
       // Real replies have no tool phase; the simulated set stays a prop of
       // the canned rotation only.
       ...(useOpenAI ? {} : { toolCalls: createSimulatedToolCalls() }),
+      ...sentAt,
     });
     assistantId = assistantMessage.id;
     appendToActiveBranch([userMessage, assistantMessage]);
@@ -1863,12 +1916,20 @@ stickyHeaders = createStickyHeaders({
 // reply that never finished its status.
 function transcriptMarkdown(): string {
   const lines: string[] = ["# streaming-chat transcript", ""];
-  let currentDay = -1;
+  let currentDay: number | undefined;
   for (const message of transcript) {
     const day = dayOf(message);
     if (day !== currentDay) {
       currentDay = day;
-      lines.push(`## ${dayLabel(day)}`, "");
+      // A file is read later: a dated day gets its full date, not "Today".
+      const label = isDatedDay(day)
+        ? new Date(day).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })
+        : dayLabel(day);
+      lines.push(`## ${label}`, "");
     }
     lines.push(`**${message.role === "user" ? "User" : "Assistant"}**`, "");
     for (const call of message.toolCalls ?? []) {

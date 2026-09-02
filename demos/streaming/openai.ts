@@ -31,6 +31,8 @@ export interface StoredTurn {
   role: "user" | "assistant";
   markdown: string;
   toolCalls?: ChatToolCall[];
+  /** When the turn was sent (epoch ms); absent on turns stored before dates. */
+  sentAt?: number;
 }
 
 export const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
@@ -176,10 +178,15 @@ function validateTurns(value: unknown): StoredTurn[] {
     if (entry.role !== "user" && entry.role !== "assistant") continue;
     if (typeof entry.markdown !== "string" || entry.markdown === "") continue;
     const toolCalls = storedToolCalls(entry.toolCalls);
+    const sentAt =
+      typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)
+        ? entry.sentAt
+        : undefined;
     turns.push({
       role: entry.role,
       markdown: entry.markdown,
       ...(toolCalls ? { toolCalls } : {}),
+      ...(sentAt !== undefined ? { sentAt } : {}),
     });
   }
   return turns;
