@@ -51,7 +51,7 @@ import "../shared/styles.css";
 // send flow with pin-to-top, end-follow through streams, scrollback loading,
 // version branches, live tool panels — hosted on the runtime's public
 // surface (setItems / scrollTo / remeasure / setEdgeSlot / positionOf /
-// elementOf / state / dispose) with no escape hatch into its internals.
+// elementOf / state) with no escape hatch into its internals.
 //
 // The message data is immutable-by-replacement: every change clones the
 // message object and pushes a fresh snapshot through setItems. The runtime's
@@ -730,7 +730,7 @@ function edgeLabelFor(state: EdgeState): string {
 // --- The in-flow scrollback slot (edge loader "slot" mode) -------------------
 
 let edgeSlotElement: HTMLElement | null = null;
-let edgeSlotMounted = false;
+let edgeSlotRequested = false;
 
 function applyEdgeSlotState(element: HTMLElement, state: EdgeState): void {
   // In the flow, "hidden" is an invisible strip (main's idle slot); "At the
@@ -771,8 +771,8 @@ function shouldMountEdgeSlot(): boolean {
 /** Mount or unmount the slot when its need changes (a structural change). */
 function syncEdgeSlot(): void {
   const wanted = shouldMountEdgeSlot();
-  if (wanted === edgeSlotMounted) return;
-  edgeSlotMounted = wanted;
+  if (wanted === edgeSlotRequested) return;
+  edgeSlotRequested = wanted;
   if (!wanted) edgeSlotElement = null;
   virtualList?.setEdgeSlot("start", wanted ? edgeSlotSpec : null);
 }
@@ -1848,7 +1848,7 @@ autosize();
 if (getAISettings().provider === "openai") await prepareOpenAIConversation();
 seedActiveConversation();
 
-edgeSlotMounted = shouldMountEdgeSlot();
+edgeSlotRequested = shouldMountEdgeSlot();
 virtualList = createVirtualList<ChatRow>(viewport, {
   items: rowsForRuntime(),
   key: rowKey,
@@ -1872,7 +1872,7 @@ virtualList = createVirtualList<ChatRow>(viewport, {
     }
     return buildRow(row);
   },
-  edgeSlots: { start: edgeSlotMounted ? edgeSlotSpec : null },
+  edgeSlots: { start: edgeSlotRequested ? edgeSlotSpec : null },
   // The product choice for a chat: the streaming reply keeps rendering under
   // a scroll (see the header). Structural changes above the anchor stay
   // settle-gated; one below it (a version switch) applies at once.

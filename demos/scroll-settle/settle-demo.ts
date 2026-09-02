@@ -191,7 +191,7 @@ function scheduleStatus(): void {
   if (statusFrame) return;
   statusFrame = requestAnimationFrame(() => {
     statusFrame = 0;
-    const active = controller.isUserScrollActive();
+    const active = controller.isScrollPhaseActive();
     stat.activeDot.className = `dot${active ? " on" : ""}`;
     stat.activeText.textContent = active ? "active" : "idle";
     stat.top.textContent = `${Math.round(viewport.scrollTop)} / ${Math.max(
@@ -315,7 +315,7 @@ function startLoad(reason: string, boundary: Boundary): void {
       count: CHUNK_ROWS,
     };
     log(`load ready (${CHUNK_ROWS} rows, ${boundary})`);
-    if (controller.isUserScrollActive()) {
+    if (controller.isScrollPhaseActive()) {
       // The scroll surface is structurally immutable while the user
       // scrolls: hold the chunk for the settle signal.
       showPill("waiting for settle…", boundary);

@@ -124,6 +124,7 @@ pnpm run test:browser -- --chaos=300 --seed=7 --headed
 The unit suite drives the real settle controller and the real runtime
 against a controllable jsdom harness (a scripted `ResizeObserver`, fake
 timers, an engine-like scroll clamp), plus oracle and property tests for the
-geometry kernel and the glide. The browser matrix runs the labs in the three
-real engines and fails on any contract violation the lab reports; device
-runs (iPad, iPhone) are done by hand with the trace channel above.
+geometry kernel and characterization tests for the glide. The browser matrix
+runs the dynamic-height lab in the three real engines and fails on any
+contract violation the lab reports; device runs (iPad, iPhone) are done by
+hand with the trace channel above.

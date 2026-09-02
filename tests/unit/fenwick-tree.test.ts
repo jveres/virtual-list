@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FenwickTree } from "../../src/fenwick";
+import { mulberry32 } from "./prng";
 
 // The Fenwick tree is the offset engine: prefix() gives the content-space top of
 // an index, total() the full height, and indexAt() maps a pixel offset back to
@@ -11,15 +12,6 @@ const tree = (values: readonly number[]): FenwickTree =>
 
 // Deterministic PRNG (mulberry32) + naive oracle so the property test is
 // reproducible run-to-run — no fast-check dependency, no wall-clock seed.
-function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 const oraclePrefix = (values: readonly number[], count: number): number => {
   const safe = Math.max(0, Math.min(values.length, count));

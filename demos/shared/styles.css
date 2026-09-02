@@ -147,8 +147,9 @@ button.active {
   background: rgb(0 0 0 / 0.35);
 }
 
-/* The dialog itself takes initial focus (autofocus) so opening doesn't
-   focus-activate the first select; no ring needed on the surface. */
+/* The dialog itself takes initial focus (tabindex="-1" and a focus() call on
+   open) so opening doesn't focus-activate the first select; no ring needed
+   on the surface. */
 .ai-settings-dialog:focus {
   outline: none;
 }
@@ -688,16 +689,6 @@ p.ai-settings-note {
   color: var(--fg-dim);
   font-size: 11px;
   white-space: nowrap;
-}
-
-.statusbar span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.statusbar span + span {
-  flex: 0 0 auto;
 }
 
 .composer {

@@ -30,25 +30,6 @@ export interface ItemMeasurerConfig {
 
 export interface ItemMeasurer {
   /**
-   * Build the element, measure its border-box height in the detached root,
-   * detach it, and hand it back LIVE with its height.
-   *
-   * Ownership rule (the retained-node contract):
-   * - Success: the caller owns the returned element — `destroy` is NOT
-   *   invoked; per-element resources (live viewers, observers) survive to
-   *   mount.
-   * - Measurement failure after a successful build: `destroy` runs so the
-   *   never-returned element's resources are torn down; a teardown failure
-   *   aggregates with the measurement failure.
-   * - Abort, supersession, disposal, or removal of a returned element:
-   *   the CALLER destroys it, exactly once (leaving the DOM is not the end
-   *   of a retained element's life).
-   */
-  measure(
-    build: () => HTMLElement,
-    destroy?: (element: HTMLElement) => void,
-  ): { element: HTMLElement; height: number };
-  /**
    * Measure already-built, retained elements together: all are appended
    * to the root (each is absolutely positioned at its top, so they overlay
    * independently), one layout serves every read, all are detached again.
@@ -126,37 +107,6 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
   let disposed = false;
 
   return {
-    measure(build, destroy) {
-      if (disposed) {
-        throw new Error("cannot measure with a disposed item measurer");
-      }
-
-      syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
-      let element: HTMLElement | null = null;
-      try {
-        element = prepareMeasuredItem(build());
-        measureRoot.appendChild(element);
-        const height = positiveSize(element.getBoundingClientRect().height);
-        measureRoot.replaceChildren();
-        // Success: the caller owns the live element (see the ownership rule).
-        return { element, height };
-      } catch (measurementError) {
-        measureRoot.replaceChildren();
-        // The element will never be returned: tear its resources down here
-        // (a build throw leaves no element to destroy).
-        if (element && destroy) {
-          try {
-            destroy(element);
-          } catch (teardownError) {
-            throw new AggregateError(
-              [measurementError, teardownError],
-              "item measurement and teardown failed",
-            );
-          }
-        }
-        throw measurementError;
-      }
-    },
     measureMany(elements) {
       if (disposed) {
         throw new Error("cannot measure with a disposed item measurer");

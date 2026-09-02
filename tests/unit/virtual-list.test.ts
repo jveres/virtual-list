@@ -1650,10 +1650,15 @@ describe("v2 runtime — edge slots", () => {
     const slot = loader();
     const h = mount(range(0, 20), { edgeSlots: { start: slot } });
     void h.list.scrollTo("start");
+    const total = h.list.state.totalSize;
     const element = slot.built[0] as HTMLElement;
     element.textContent = "At the top";
-    fireResize(0, element, 52);
+    // Its content grew far past the declared height: not observed, not held,
+    // and the geometry keeps the declared height.
+    fireResize(0, element, 300);
     expect(h.list.state.held).toBe(false);
+    expect(h.list.state.totalSize).toBe(total);
+    expect(h.slotOf(element).style.height).toBe("52px");
   });
 
   it("rejects invalid slot heights and host keys in the reserved namespace", () => {

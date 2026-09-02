@@ -327,7 +327,7 @@ describe("firefox edge sequences (trace replay)", () => {
 
     vi.advanceTimersByTime(10_000);
     expect(harness.settled()).toBe(0);
-    expect(harness.controller.isUserScrollActive()).toBe(true);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
   });
 
   it("cancels a pending wheel release when touch re-grabs the edge", () => {
@@ -455,19 +455,19 @@ describe("safari sequences (trace replay)", () => {
     // A command's write: pre-announced, its scroll event is consumed.
     harness.controller.recordProgrammaticScrollTop(1000);
     harness.scrollTo(1000);
-    expect(harness.controller.isUserScrollActive()).toBe(false);
+    expect(harness.controller.isScrollPhaseActive()).toBe(false);
     // Momentum keeps delivering: a wheel tick starts a fresh gesture...
     harness.wheel(-120);
-    expect(harness.controller.isUserScrollActive()).toBe(true);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
     // ...and the write's scrollend arrives before the tick's own scroll
     // event. Cancelling here opened an idle gap under live wheel input.
     harness.scrollEnd();
-    expect(harness.controller.isUserScrollActive()).toBe(true);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
     // The tick's scroll event lands; the gesture settles normally later.
     harness.scrollTo(880);
     harness.scrollEnd();
     vi.advanceTimersByTime(2_000);
-    expect(harness.controller.isUserScrollActive()).toBe(false);
+    expect(harness.controller.isScrollPhaseActive()).toBe(false);
     expect(harness.settled()).toBe(1);
   });
 
@@ -476,11 +476,11 @@ describe("safari sequences (trace replay)", () => {
     harness.controller.recordProgrammaticScrollTop(1000); // Mid-list, no edge.
     harness.scrollTo(1000);
     harness.wheel(-120);
-    expect(harness.controller.isUserScrollActive()).toBe(true);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
     harness.scrollEnd(); // Withheld: wheel input is live.
-    expect(harness.controller.isUserScrollActive()).toBe(true);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
     vi.advanceTimersByTime(300); // The wheel-idle window closes.
-    expect(harness.controller.isUserScrollActive()).toBe(false);
+    expect(harness.controller.isScrollPhaseActive()).toBe(false);
     // The host is notified even though scrollTop did not move: boundary
     // work may have become held while this real wheel phase was active.
     expect(harness.settled()).toBe(1);
@@ -610,7 +610,7 @@ describe("programmatic gestures", () => {
 
     harness.wheel(-40); // Real input mid-glide.
     expect(harness.cancelledSmooth()).toBe(1);
-    expect(harness.controller.isUserScrollActive()).toBe(true);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
   });
 
   it("ignores scrollends while the glide is still short of its target", () => {

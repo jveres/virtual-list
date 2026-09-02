@@ -121,8 +121,9 @@ export interface VirtualListOptions<T> {
    * What happens to a same-key update that arrives during a scroll phase
    * (structural changes are settle-gated in every mode):
    * - "same-height": rendered fresh and premeasured off-scroller; if its
-   *   height equals the committed height it is swapped into the committed
-   *   slot at once (no geometry change), otherwise held until settle —
+   *   height equals the committed height, and the committed row has no
+   *   measurement of its own waiting, it is swapped into the committed slot
+   *   at once (no geometry change), otherwise held until settle —
    *   streaming keeps flowing until a wrap changes the height;
    * - "freeze": every such update is held until settle;
    * - "live" (default): rendered in place on the committed element right
@@ -383,6 +384,9 @@ export function createVirtualList<T>(
    * racing ahead with the default end-follow policy.
    */
   const remeasureRequests = new Map<string, AnchorPolicy>();
+  /** A host remeasure has claimed the next measurement commit's anchor. */
+  const remeasureOwnsNextCommit = (): boolean =>
+    remeasureRequests.size > 0 || remeasurePolicy !== undefined;
   let remeasureFrame = 0;
   let remeasurePolicy: AnchorPolicy | undefined;
   let booting = true;
@@ -408,7 +412,7 @@ export function createVirtualList<T>(
   }
 
   function idle(): boolean {
-    return !controller.isUserScrollActive();
+    return !controller.isScrollPhaseActive();
   }
 
   function writeScrollTop(top: number): void {
@@ -685,7 +689,7 @@ export function createVirtualList<T>(
       // A discrete host interaction registered its anchor before changing
       // the DOM. Its rAF (or settle) owns this measurement, so an earlier RO
       // delivery must not accidentally resolve it with the default policy.
-      if (remeasureRequests.size > 0 || remeasurePolicy !== undefined) {
+      if (remeasureOwnsNextCommit()) {
         publish();
       } else if (idle()) commit(null);
       else if (!liveCommit()) publish();
@@ -1115,8 +1119,7 @@ export function createVirtualList<T>(
       !liveUpdates ||
       disposed ||
       dirtyRows.size === 0 ||
-      remeasureRequests.size > 0 ||
-      remeasurePolicy !== undefined
+      remeasureOwnsNextCommit()
     ) {
       return false;
     }
@@ -1142,14 +1145,7 @@ export function createVirtualList<T>(
       const after = viewportState();
       const range = reconcileWindow(after);
       publish(after, range);
-      if (
-        smoothFollowArmed &&
-        Math.abs(
-          geometry.maxScrollTop(viewport.clientHeight) - viewport.scrollTop,
-        ) > SCROLL_WRITE_EPSILON_PX
-      ) {
-        startFollowGlide();
-      }
+      if (smoothFollowArmed) followIfBehindEnd();
       published = true;
     });
     return published;
@@ -1489,11 +1485,7 @@ export function createVirtualList<T>(
       settleParked((landed) => !disposed && landed());
       // A scheduled interaction owns the next frame/settle. Do not infer a
       // fresh end-follow intent in the gap after cancelling its old glide.
-      if (
-        options.followBehavior === "smooth" &&
-        remeasureRequests.size === 0 &&
-        remeasurePolicy === undefined
-      ) {
+      if (options.followBehavior === "smooth" && !remeasureOwnsNextCommit()) {
         const following =
           !takingOver &&
           (lastState.atEnd || endCommand || glideKind === "follow");
@@ -1502,14 +1494,7 @@ export function createVirtualList<T>(
           publish();
         }
         // Following but not there: the end moved during the phase.
-        if (
-          following &&
-          Math.abs(
-            geometry.maxScrollTop(viewport.clientHeight) - viewport.scrollTop,
-          ) > SCROLL_WRITE_EPSILON_PX
-        ) {
-          startFollowGlide();
-        }
+        if (following) followIfBehindEnd();
       }
     },
     onGestureReset: () => {},
@@ -1545,7 +1530,7 @@ export function createVirtualList<T>(
    * then settle the phase so held work commits before the command.
    */
   function interruptNativeScroll(): void {
-    if (!controller.isUserScrollActive()) return;
+    if (!controller.isScrollPhaseActive()) return;
     // Write the CURRENT position back untouched: clamping it against a
     // rounded scrollHeight moved the viewport by a pixel (scrollTop may be
     // fractional where scrollHeight is not); the engine clamps writes.
@@ -1806,6 +1791,15 @@ export function createVirtualList<T>(
     };
   }
 
+  /** Start a follow glide when the viewport is not already at the end. */
+  function followIfBehindEnd(): void {
+    const behind =
+      Math.abs(
+        geometry.maxScrollTop(viewport.clientHeight) - viewport.scrollTop,
+      ) > SCROLL_WRITE_EPSILON_PX;
+    if (behind) startFollowGlide();
+  }
+
   /** Automatic end-follow: one glide whose destination tracks live growth. */
   function startFollowGlide(): void {
     if (disposed || glide !== null) return;
@@ -1869,7 +1863,7 @@ export function createVirtualList<T>(
 
     if (anchor === "viewport") {
       const automaticPhase =
-        controller.isUserScrollActive() &&
+        controller.isScrollPhaseActive() &&
         (glideKind === "follow" || smoothFollowArmed);
       smoothFollowArmed = false;
       if (glideKind === "follow") glide?.cancel();

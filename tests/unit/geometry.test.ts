@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Geometry, type GeometryViewport } from "../../src/geometry";
+import { mulberry32 } from "./prng";
 
 // The geometry kernel is judged by the lean-core invariants (docs/lean-core.md):
 // I1 — the resolved scroll target keeps the visible anchor's viewport
@@ -36,16 +37,6 @@ function transact(
 
 function seed(geometry: Geometry, keys: string[]): void {
   transact(geometry, viewport(0), "none", () => geometry.setKeys(keys));
-}
-
-function mulberry32(seedValue: number): () => number {
-  let state = seedValue >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
 }
 
 /** Naive mirror: ordered keys + a height map, summed by hand. */

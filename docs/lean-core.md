@@ -59,7 +59,8 @@ as preserved primitives, with the smaller API built around them.
    `"same-height"` the committed elements are **frozen along with
    geometry**: the update is rendered fresh (`render(item)` without
    `existing`) and premeasured off-scroller; if its whole-pixel height
-   equals the committed height it is **promoted** — swapped into the
+   equals the committed height (and the committed row has no measurement
+   of its own waiting for the settle) it is **promoted** — swapped into the
    committed slot immediately, same height, same offset, no geometry
    change — and otherwise retained until the settle commit swaps content,
    height, offsets, canvas, and anchor together, so nothing mounted ever
