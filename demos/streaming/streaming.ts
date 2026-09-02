@@ -823,9 +823,9 @@ function scheduleEdgeHide(): void {
 let activeLoad: Promise<void> | null = null;
 // A prepend handed to the runtime but not yet committed (the runtime
 // defers structural updates while a scroll phase is active). The loader —
-// pill included — stays up until onState confirms the committed count, or
-// the user reaches the old top with no loader in sight and rubber-bands
-// against a ghost end.
+// pill included — stays up until onState confirms the committed count;
+// hiding it earlier would let the user reach the old top with no loader in
+// sight and rubber-band against a ghost end.
 let pendingPrepend: { count: number; finish: () => void } | null = null;
 
 // Loads one older chunk; resolves once the prepend has actually been

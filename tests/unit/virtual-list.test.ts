@@ -65,6 +65,13 @@ class ControlledResizeObserver {
 }
 
 /** Instance 0 observes rows, instance 1 the viewport (construction order). */
+/** Advance 16ms frames until `done()` holds, or the frame budget runs out. */
+function advanceFramesUntil(done: () => boolean, maxFrames = 200): void {
+  for (let frame = 0; frame < maxFrames && !done(); frame += 1) {
+    vi.advanceTimersByTime(16);
+  }
+}
+
 function fireResize(instance: number, target: Element, height: number): void {
   const entry = {
     target,
@@ -806,13 +813,7 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.state.held).toBe(false);
 
     void h.list.scrollTo("end", { behavior: "smooth" });
-    for (
-      let frame = 0;
-      frame < 60 && 4400 - h.viewport.scrollTop > 2;
-      frame++
-    ) {
-      vi.advanceTimersByTime(16);
-    }
+    advanceFramesUntil(() => 4400 - h.viewport.scrollTop <= 2, 60);
     expect(h.viewport.scrollTop).toBeLessThan(4400); // Still gliding, within 2px.
     h.viewport.dispatchEvent(new Event("scrollend")); // Safari: after a write.
 
@@ -1929,13 +1930,7 @@ describe("v2 runtime — commands", () => {
     h.list.setItems(next); // Still above the moving viewport: dirty and held.
     expect(h.list.state.totalSize).toBe(100 * ROW_H);
 
-    for (
-      let frame = 0;
-      frame < 200 && h.viewport.scrollTop > 5005;
-      frame += 1
-    ) {
-      vi.advanceTimersByTime(16);
-    }
+    advanceFramesUntil(() => h.viewport.scrollTop <= 5005);
     // The harness emits no automatic scroll event for a programmatic write.
     // This can only be committed by the glide frame's pre-paint onScrolled().
     expect(h.list.state.totalSize).toBe(100 * ROW_H + 200);
@@ -1954,9 +1949,7 @@ describe("v2 runtime — commands", () => {
     });
     // Step to the landing frame (the ease-out snaps within 1px early); the
     // phase then still needs the 140ms cooldown before it settles.
-    for (let t = 0; t < 3000 && h.viewport.scrollTop !== 0; t += 16) {
-      vi.advanceTimersByTime(16);
-    }
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
     await Promise.resolve();
     expect(h.viewport.scrollTop).toBe(0); // Landed...
     expect(resolved).toBe(null); // ...but not yet reported: phase active.
@@ -1967,9 +1960,7 @@ describe("v2 runtime — commands", () => {
   it("resolves a parked landed command false on genuine user input before its settle", async () => {
     const h = mount(range(0, 100));
     const command = h.list.scrollTo("start", { behavior: "smooth" });
-    for (let t = 0; t < 3000 && h.viewport.scrollTop !== 0; t += 16) {
-      vi.advanceTimersByTime(16);
-    }
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
     expect(h.viewport.scrollTop).toBe(0); // Landed, result parked for settle.
 
     // An outward wheel at the target: the user owns the viewport now.
@@ -1982,9 +1973,7 @@ describe("v2 runtime — commands", () => {
   it("a newer command resolves a parked landed command false, never true", async () => {
     const h = mount(range(0, 100));
     const first = h.list.scrollTo("start", { behavior: "smooth" });
-    for (let t = 0; t < 3000 && h.viewport.scrollTop !== 0; t += 16) {
-      vi.advanceTimersByTime(16);
-    }
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
     expect(h.viewport.scrollTop).toBe(0); // Landed, parked for its settle.
 
     const second = h.list.scrollTo("m20"); // Supersedes before the settle.

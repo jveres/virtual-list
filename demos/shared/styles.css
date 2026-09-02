@@ -758,10 +758,6 @@ p.ai-settings-note {
   pointer-events: auto;
 }
 
-.scroll-jump[hidden] {
-  display: none;
-}
-
 .scroll-jump-top {
   top: 14px;
 }

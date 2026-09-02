@@ -648,7 +648,15 @@ export function createScrollSettleController(
   // sit unapplied until the user scrolls again ("stuck" loads). Settling after
   // the same quiet delay as the edge fallback matches the accepted chromium
   // contract (see the module header).
-  function scheduleChromiumStallFallback(): void {
+  /**
+   * After the Chromium quiet delay, arm the release — if the phase is still
+   * open, no wheel is live, the viewport is in range, and `still` says the
+   * situation this timer was armed for still holds.
+   */
+  function scheduleChromiumQuietSettle(
+    still: () => boolean,
+    beforeArming?: () => void,
+  ): void {
     cancelChromiumQuietSettleTimer();
     chromiumQuietSettleTimer = window.setTimeout(() => {
       chromiumQuietSettleTimer = 0;
@@ -656,34 +664,29 @@ export function createScrollSettleController(
         host.isDisposed() ||
         !scrollPhaseActive ||
         wheelInputActive ||
-        nativeScrollEndPending ||
-        isRubberBandOverscrolled()
+        isRubberBandOverscrolled() ||
+        !still()
       ) {
         return;
       }
+      beforeArming?.();
       armPendingNativeScrollEnd();
     }, CHROMIUM_QUIET_SETTLE_MS);
   }
 
+  function scheduleChromiumStallFallback(): void {
+    scheduleChromiumQuietSettle(() => !nativeScrollEndPending);
+  }
+
   function scheduleChromiumEdgeSettleFallback(boundary: ScrollBoundary): void {
-    cancelChromiumQuietSettleTimer();
-    chromiumQuietSettleTimer = window.setTimeout(() => {
-      chromiumQuietSettleTimer = 0;
-      if (
-        host.isDisposed() ||
-        !scrollPhaseActive ||
-        wheelInputActive ||
-        !chromiumEdgeWheelSuppressed ||
-        chromiumEdgeWheelActive !== boundary ||
-        isRubberBandOverscrolled()
-      ) {
-        return;
-      }
-      chromiumWheelAwaitingFinalScrollEnd = false;
-      chromiumEdgeWheelSuppressed = false;
-      chromiumEdgeWheelActive = null;
-      armPendingNativeScrollEnd();
-    }, CHROMIUM_QUIET_SETTLE_MS);
+    scheduleChromiumQuietSettle(
+      () => chromiumEdgeWheelSuppressed && chromiumEdgeWheelActive === boundary,
+      () => {
+        chromiumWheelAwaitingFinalScrollEnd = false;
+        chromiumEdgeWheelSuppressed = false;
+        chromiumEdgeWheelActive = null;
+      },
+    );
   }
 
   function handleScrollEnd(): void {
