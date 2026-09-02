@@ -15,8 +15,8 @@
         flex: 1;
         min-width: 0;
         /* Without this, the stacked (mobile) layout sizes the stage to its
-        content: the viewport then has no internal overflow and nothing
-        scrolls at all on iOS. */
+           content: the viewport then has no internal overflow and nothing
+           scrolls at all on iOS. */
         min-height: 0;
         display: flex;
         justify-content: center;
@@ -29,7 +29,7 @@
         overflow-y: auto;
         overscroll-behavior-y: contain;
         /* The runtime performs the single anchor-preserving write; native
-        scroll anchoring would add its own correction first. */
+           scroll anchoring would add its own correction first. */
         overflow-anchor: none;
       }
 
@@ -38,7 +38,7 @@
       }
 
       /* Rows are absolutely positioned by the runtime inside fixed-height,
-      clipped slots; their own height is content-driven. */
+         clipped slots; their own height is content-driven. */
       .row {
         display: flex;
         flex-direction: column;
@@ -91,7 +91,7 @@
       }
 
       /* Reserved at zero height until the item learns the size at load;
-      then CSS-sized through aspect-ratio, independent of decode. */
+         then CSS-sized through aspect-ratio, independent of decode. */
       .row .pic {
         display: block;
         width: 100%;
@@ -143,7 +143,7 @@
       }
 
       .controls button,
-      .controls select {
+            .controls select {
         font: inherit;
         font-size: 12px;
         padding: 4px 9px;
@@ -167,15 +167,12 @@
       }
 
       @media (max-width: 760px) {
-        main {
-        flex-direction: column;
-      }
         aside {
-        width: 100%;
-        height: 48%;
-        border-left: none;
-        border-top: 1px solid var(--border);
-      }
+          width: 100%;
+          height: 48%;
+          border-left: none;
+          border-top: 1px solid var(--border);
+        }
       }
     </style>
   </head>

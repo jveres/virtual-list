@@ -157,7 +157,7 @@ function abortBoundary(boundary: Boundary, reason: string): void {
   }
   if (aborted) {
     log(`ABORT ${boundary} (${reason})`, "warn");
-    hidePill();
+    edgePill.hide();
     scheduleStatus();
   }
 }
@@ -187,10 +187,6 @@ let glide: Glide | null = null;
 
 function showPill(text: string, boundary: Boundary, sticky = false): void {
   edgePill.show(text, boundary === "bottom", sticky);
-}
-
-function hidePill(force = false): void {
-  edgePill.hide(force);
 }
 
 function scheduleStatus(): void {
@@ -379,7 +375,7 @@ function buildController(): ScrollSettleController {
       stat.lag.textContent = `${lag.toFixed(0)}ms`;
       log(`SETTLE (lag ${lag.toFixed(0)}ms after last scroll)`, "mark");
       applyAllQueuedChunks("settle");
-      if (!anythingQueued() && !anythingLoading()) hidePill();
+      if (!anythingQueued() && !anythingLoading()) edgePill.hide();
       scheduleStatus();
     },
     onGestureReset: () => scheduleStatus(),
@@ -525,7 +521,7 @@ function rebuildList(): void {
   // The first rebuild runs before the controller exists (boot order).
   controller?.recordProgrammaticScrollTop(middle);
   viewport.scrollTop = middle;
-  hidePill(true);
+  edgePill.hide(true);
   scheduleStatus();
 }
 

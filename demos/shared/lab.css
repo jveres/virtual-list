@@ -201,3 +201,9 @@ main {
   color: var(--warn);
   font-weight: 700;
 }
+
+@media (max-width: 760px) {
+  main {
+    flex-direction: column;
+  }
+}

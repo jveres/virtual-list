@@ -692,10 +692,6 @@ function showPill(text: string, edge: "start" | "end", sticky = false): void {
   edgePill.show(text, edge === "end", sticky);
 }
 
-function hidePill(force = false): void {
-  edgePill.hide(force);
-}
-
 function chunkCommitted(edge: "start" | "end"): void {
   waitingChunk[edge] = false;
   settleEdgePill(edgePill, edge === "end", chunksLeft[edge]);
@@ -738,7 +734,7 @@ function startLoad(edge: "start" | "end", context: ReachContext): void {
     loading[edge] = false;
     loadsAborted += 1;
     log(`ABORT load ${edge} (signal)`, "warn");
-    hidePill();
+    edgePill.hide();
     scheduleStatus();
   });
 }
@@ -1769,7 +1765,7 @@ function boot(): void {
   waitingChunk.start = false;
   waitingChunk.end = false;
   freshIds.clear();
-  hidePill(true);
+  edgePill.hide(true);
   committedSerial.clear();
   staleFrames.clear();
   staleReported.clear();

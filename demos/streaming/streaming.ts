@@ -10,9 +10,9 @@ import {
   buildChatItem,
   buildChatRow,
   buildSectionHeader,
-  syncToolCalls,
   type ChatToolCall,
   setRoleLabel,
+  syncToolCalls,
 } from "../shared/chat-ui.js";
 import {
   attachInteractions,
@@ -833,9 +833,9 @@ let pendingPrepend: { count: number; finish: () => void } | null = null;
 // phase settles. The prepend preserves the reading position (I1), and the
 // runtime re-arms the reach-start signal once the viewport is past the
 // exit zone.
+// Called by loadOlderMessages alone, which has already checked that no load
+// is active and that older messages remain.
 function loadOlderChunk(signal?: AbortSignal): Promise<void> {
-  if (activeLoad) return activeLoad;
-  if (!canLoadOlderMessages()) return Promise.resolve();
   loadingTop = true;
   topBoundaryLoadSeen = true;
   setEdgeState("loading");

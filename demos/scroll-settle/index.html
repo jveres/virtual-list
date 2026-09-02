@@ -14,8 +14,8 @@
         flex: 1;
         min-width: 0;
         /* Without this, the stacked (mobile) layout sizes the stage to its
-        content: the viewport then has no internal overflow and nothing
-        scrolls at all on iOS. */
+           content: the viewport then has no internal overflow and nothing
+           scrolls at all on iOS. */
         min-height: 0;
       }
 
@@ -24,7 +24,7 @@
         overflow-y: auto;
         overscroll-behavior-y: contain;
         /* The lab tests the controller's single anchor-preserving write;
-        native CSS scroll anchoring would add its own correction first. */
+           native CSS scroll anchoring would add its own correction first. */
         overflow-anchor: none;
       }
 
@@ -83,7 +83,7 @@
       }
 
       .controls button,
-      .controls select {
+            .controls select {
         font: inherit;
         font-size: 12px;
         padding: 5px 10px;
@@ -102,15 +102,12 @@
       }
 
       @media (max-width: 760px) {
-        main {
-        flex-direction: column;
-      }
         aside {
-        width: 100%;
-        height: 46%;
-        border-left: none;
-        border-top: 1px solid var(--border);
-      }
+          width: 100%;
+          height: 46%;
+          border-left: none;
+          border-top: 1px solid var(--border);
+        }
       }
     </style>
   </head>

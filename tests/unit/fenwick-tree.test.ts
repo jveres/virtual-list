@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { FenwickTree } from "../../src/fenwick";
 import { mulberry32 } from "../../demos/shared/lab";
+import { FenwickTree } from "../../src/fenwick";
 
 // The Fenwick tree is the offset engine: prefix() gives the content-space top of
 // an index, total() the full height, indexAt() maps a pixel offset back to the
@@ -171,7 +171,7 @@ describe("FenwickTree edge cases", () => {
   });
 });
 describe("FenwickTree property: matches a naive oracle", () => {
-  it("property: prefix, total, and indexAt agree with the oracle across random trees and updates", () => {
+  it("property: prefix, total, indexAt, and lowerBound agree with the oracle across random trees and updates", () => {
     const rng = mulberry32(0x1234_abcd);
     const randInt = (bound: number): number => Math.floor(rng() * bound);
 

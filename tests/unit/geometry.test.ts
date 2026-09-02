@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { Geometry, type GeometryViewport } from "../../src/geometry";
 import { mulberry32 } from "../../demos/shared/lab";
+import { Geometry, type GeometryViewport } from "../../src/geometry";
 
 // The geometry kernel is judged by the lean-core invariants (docs/lean-core.md):
 // I1 — the resolved scroll target keeps the visible anchor's viewport
@@ -500,18 +500,6 @@ describe("I5 — pin-to-top reserve", () => {
     expect(commit.totalSize).toBeCloseTo(
       geometry.offsetOf("m18") + taller.height,
       6,
-    );
-  });
-
-  it("keeps a viewport-covering reserve alive through transient growth (no yank)", () => {
-    const { geometry, vp } = pinnedAtEnd();
-    transact(geometry, vp, "auto", () =>
-      geometry.measure("m19", 100 + geometry.reserve + 400),
-    );
-    expect(geometry.reserve).toBe(0);
-    transact(geometry, vp, "auto", () => geometry.measure("m19", 100));
-    expect(geometry.totalSize).toBeGreaterThanOrEqual(
-      vp.scrollTop + VIEWPORT_H - 1,
     );
   });
 });

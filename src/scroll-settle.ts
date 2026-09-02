@@ -389,13 +389,14 @@ export function createScrollSettleController(
     return strategy === "chromium-wheel" && chromiumEdgeWheelActive !== null;
   }
 
-  function boundaryForOutwardWheel(event: WheelEvent): ScrollBoundary | null {
+  /**
+   * The native edge the viewport sits within the proximity epsilon of, if
+   * any. The bottom counts only on a scroller with a real range: a
+   * non-scrollable viewport is "at the top", never "at the bottom".
+   */
+  function boundaryAtNativeEdge(): ScrollBoundary | null {
     const scrollTop = viewport.scrollTop;
-    if (event.deltaY < 0 && scrollTop <= EDGE_PROXIMITY_EPSILON_PX) {
-      return "top";
-    }
-    if (event.deltaY <= 0) return null;
-
+    if (scrollTop <= EDGE_PROXIMITY_EPSILON_PX) return "top";
     const maxScrollTop = nativeMaxScrollTop();
     if (
       maxScrollTop > EDGE_PROXIMITY_EPSILON_PX &&
@@ -403,35 +404,24 @@ export function createScrollSettleController(
     ) {
       return "bottom";
     }
+    return null;
+  }
+
+  /** The edge a wheel tick pushes outward against, if the viewport is on it. */
+  function boundaryForOutwardWheel(event: WheelEvent): ScrollBoundary | null {
+    const edge = boundaryAtNativeEdge();
+    if (edge === "top" && event.deltaY < 0) return "top";
+    if (edge === "bottom" && event.deltaY > 0) return "bottom";
     return null;
   }
 
   function isNearScrollEdge(): boolean {
-    const scrollTop = viewport.scrollTop;
-    const maxScrollTop = nativeMaxScrollTop();
-    return (
-      scrollTop <= EDGE_PROXIMITY_EPSILON_PX ||
-      maxScrollTop - scrollTop <= EDGE_PROXIMITY_EPSILON_PX
-    );
+    return boundaryAtNativeEdge() !== null;
   }
 
   function loadableBoundaryAtNativeEdge(): ScrollBoundary | null {
-    const scrollTop = viewport.scrollTop;
-    if (
-      host.canLoadAtBoundary("top") &&
-      scrollTop <= EDGE_PROXIMITY_EPSILON_PX
-    ) {
-      return "top";
-    }
-    const maxScrollTop = nativeMaxScrollTop();
-    if (
-      host.canLoadAtBoundary("bottom") &&
-      maxScrollTop > EDGE_PROXIMITY_EPSILON_PX &&
-      maxScrollTop - scrollTop <= EDGE_PROXIMITY_EPSILON_PX
-    ) {
-      return "bottom";
-    }
-    return null;
+    const edge = boundaryAtNativeEdge();
+    return edge !== null && host.canLoadAtBoundary(edge) ? edge : null;
   }
 
   function isNearProtectedFirefoxEdge(): boolean {

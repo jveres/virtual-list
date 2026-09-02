@@ -1575,7 +1575,8 @@ export function createVirtualList<T>(
     if (disposed) return;
     lastItems = snapshot;
     // Always prepared now (off-scroller, inside the reentrancy guard since
-    // render() is a host callback); committed now only when idle.
+    // render() is a host callback); committed now when idle, or mid-phase
+    // when the change needs no scroll write ("live"), else at the settle.
     guarded(() => {
       const { prepared, teardownFailures } = prepare(snapshot, anchor);
       // Hand-off happens regardless of supersession teardown failures;
