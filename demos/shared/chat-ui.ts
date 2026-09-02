@@ -110,6 +110,24 @@ function buildToolCalls(message: ChatMessage): HTMLElement | null {
   return tools;
 }
 
+// Refreshes a row's tool-call panel in place (a call started, finished, or
+// failed mid-stream), keeping the row — and the live viewer, with its cursor —
+// intact.
+export function syncToolCalls(row: HTMLElement, message: ChatMessage): void {
+  const content = row.querySelector<HTMLElement>(".message-content") ?? row;
+  const previous = content.querySelector<HTMLElement>(":scope > .tool-calls");
+  const next = buildToolCalls(message);
+  if (previous) {
+    if (next) previous.replaceWith(next);
+    else previous.remove();
+    return;
+  }
+  if (!next) return;
+  const label = content.querySelector<HTMLElement>(":scope > .role-label");
+  if (label) label.after(next);
+  else content.prepend(next);
+}
+
 // Builds the row chrome shared by static and live rows — `article.message` →
 // `.message-content` → role label + tool calls — and returns the content host
 // the caller fills with markdown (a static `.markdown-viewer` for finished rows,

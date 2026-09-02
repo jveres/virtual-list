@@ -10,6 +10,7 @@ import {
   buildChatItem,
   buildChatRow,
   buildSectionHeader,
+  syncToolCalls,
   type ChatToolCall,
   setRoleLabel,
 } from "../shared/chat-ui.js";
@@ -1270,8 +1271,16 @@ function syncRoleLabel(element: HTMLElement, message: Message): void {
 // In-place update for a mounted row whose message changed; returns null when
 // the row must be rebuilt (structure changed, or no live viewer to feed).
 function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
-  if (element.dataset.toolsig !== toolSignature(message)) return null;
   const handle = streamingViewers.get(element);
+  const signature = toolSignature(message);
+  if (element.dataset.toolsig !== signature) {
+    // A tool call changed on a live row: refresh its panel in place — a
+    // rebuild would replace the viewer and its streaming cursor. Without a
+    // live viewer (a "thinking" row, a static one) rebuilding is cheap.
+    if (!handle) return null;
+    syncToolCalls(element, message);
+    element.dataset.toolsig = signature;
+  }
   if (message.status === "streaming") {
     // A row that was mounted as "thinking" has no live viewer yet: rebuild.
     if (!handle) return null;
