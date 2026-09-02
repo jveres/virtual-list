@@ -1538,9 +1538,9 @@ export function createVirtualList<T>(
    */
   function interruptNativeScroll(): void {
     if (!controller.isScrollPhaseActive()) return;
-    // Write the CURRENT position back untouched: clamping it against a
-    // rounded scrollHeight moved the viewport by a pixel (scrollTop may be
-    // fractional where scrollHeight is not); the engine clamps writes.
+    // Write the CURRENT position back untouched and unrounded: a fractional
+    // native position must survive the takeover exactly; the engine clamps
+    // its own writes.
     const currentTop = viewport.scrollTop;
     writeScrollTop(currentTop);
     const previousOverflowY = viewport.style.overflowY;

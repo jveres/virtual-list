@@ -331,6 +331,28 @@ describe("firefox edge sequences (trace replay)", () => {
     expect(harness.controller.isScrollPhaseActive()).toBe(true);
   });
 
+  it("only an outward wheel at a loadable edge protects it from the wheel fallback", () => {
+    // A scroll landing at a loadable edge protects it by position; a wheel
+    // that arrives at the edge with no scroll event protects it only when it
+    // pushes outward against an edge the host can load. Held, a no-motion
+    // wheel gesture never settles without the release scrollend; otherwise
+    // the wheel-idle path settles it.
+    const inward = mount("firefox-wheel", { canLoadTop: true });
+    inward.wheel(50); // Inward at the top edge (the viewport starts there).
+    vi.advanceTimersByTime(600);
+    expect(inward.settled()).toBe(1);
+
+    const unloadable = mount("firefox-wheel", { canLoadTop: false });
+    unloadable.wheel(-50); // Outward, but nothing loads there.
+    vi.advanceTimersByTime(600);
+    expect(unloadable.settled()).toBe(1);
+
+    const protectedEdge = mount("firefox-wheel", { canLoadTop: true });
+    protectedEdge.wheel(-50); // Outward at a loadable edge: held.
+    vi.advanceTimersByTime(2000);
+    expect(protectedEdge.settled()).toBe(0);
+  });
+
   it("cancels a pending wheel release when touch re-grabs the edge", () => {
     const harness = mount("firefox-wheel", { canLoadTop: true });
     harness.scrollTo(600);

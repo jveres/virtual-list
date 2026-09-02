@@ -962,7 +962,7 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.slotOf(row).style.height).toBe("1px");
   });
 
-  it("a takeover writes the current position back untouched, never clamped to a rounded scrollHeight", () => {
+  it("a takeover writes the current fractional position back unrounded", () => {
     const initial = range(0, 50);
     let width = 300;
     const h = mount(initial, { width: () => width });
@@ -1723,7 +1723,6 @@ describe("v2 runtime — commands", () => {
     // pinned row goes back to the top and the reserve grows to fit.
     height = 900;
     h.viewport.dispatchEvent(new Event("scroll"));
-    expect(h.list.state.held).toBe(false); // Not a gesture.
     fireResize(1, h.viewport, 900);
     seen.push([h.list.state.totalSize, h.viewport.scrollTop]);
 

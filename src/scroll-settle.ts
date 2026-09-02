@@ -391,17 +391,13 @@ export function createScrollSettleController(
 
   /**
    * The native edge the viewport sits within the proximity epsilon of, if
-   * any. The bottom counts only on a scroller with a real range: a
-   * non-scrollable viewport is "at the top", never "at the bottom".
+   * any; the top is checked first, so a non-scrollable viewport reads as
+   * the top.
    */
   function boundaryAtNativeEdge(): ScrollBoundary | null {
     const scrollTop = viewport.scrollTop;
     if (scrollTop <= EDGE_PROXIMITY_EPSILON_PX) return "top";
-    const maxScrollTop = nativeMaxScrollTop();
-    if (
-      maxScrollTop > EDGE_PROXIMITY_EPSILON_PX &&
-      maxScrollTop - scrollTop <= EDGE_PROXIMITY_EPSILON_PX
-    ) {
+    if (nativeMaxScrollTop() - scrollTop <= EDGE_PROXIMITY_EPSILON_PX) {
       return "bottom";
     }
     return null;
