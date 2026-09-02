@@ -26,6 +26,12 @@ import { FenwickTree } from "./fenwick";
 //       by shrinkage, and never collapses out from under the viewport.
 
 export type AnchorPolicy = "auto" | "viewport" | "end" | "none";
+/**
+ * The runtime's own resolution intents on top of the host policies: "pin"
+ * puts the pinned key back at the viewport top (a viewport height change
+ * under a pin the viewport stands on).
+ */
+export type CapturePolicy = AnchorPolicy | "pin";
 
 export interface GeometryViewport {
   scrollTop: number;
@@ -44,7 +50,7 @@ export interface Commit {
 /** Opaque transaction token from `capture`; spend it once in `resolve`. */
 export interface Capture {
   readonly viewport: GeometryViewport;
-  readonly policy: AnchorPolicy;
+  readonly policy: CapturePolicy;
   readonly atEnd: boolean;
   readonly oldKeys: readonly string[];
   readonly anchor: { key: string; offset: number; oldIndex: number } | null;
@@ -135,6 +141,12 @@ export class Geometry {
     return this.pinnedKey;
   }
 
+  /** The scroll position that puts the pinned key at the viewport top (below its inset); null when unpinned. */
+  get pinTop(): number | null {
+    if (this.pinnedKey === null) return null;
+    return Math.max(0, this.offsetOf(this.pinnedKey) - this.pinnedInsetPx);
+  }
+
   maxScrollTop(viewportHeight: number): number {
     return Math.max(0, this.totalSize - viewportHeight);
   }
@@ -195,7 +207,7 @@ export class Geometry {
   }
 
   /** Open a transaction: resolve anchor intent on the current geometry. */
-  capture(viewport: GeometryViewport, policy: AnchorPolicy = "auto"): Capture {
+  capture(viewport: GeometryViewport, policy: CapturePolicy = "auto"): Capture {
     const anchor = this.anchorAt(viewport);
     return {
       viewport: { ...viewport },
@@ -285,6 +297,8 @@ export class Geometry {
    *   the in-row offset — the content was replaced, the reading position
    *   was not), else to the predecessor end-aligned.
    * - none: the captured scrollTop, clamped.
+   * - pin: the pinned key's top (the captured scrollTop when unpinned); the
+   *   reserve then equals the pin's shortfall exactly.
    */
   resolve(capture: Capture): Commit {
     const { viewport } = capture;
@@ -302,6 +316,8 @@ export class Geometry {
     let target = viewport.scrollTop;
     if (mode === "anchor") {
       target = this.anchorTarget(capture) ?? viewport.scrollTop;
+    } else if (capture.policy === "pin") {
+      target = this.pinTop ?? viewport.scrollTop;
     }
     this.recomputeReserve(viewport.height, target);
     return {
@@ -316,7 +332,7 @@ export class Geometry {
 
   private resolveMode(capture: Capture): "end" | "anchor" | "none" {
     if (capture.policy === "end") return "end";
-    if (capture.policy === "none") return "none";
+    if (capture.policy === "none" || capture.policy === "pin") return "none";
     if (capture.policy === "viewport") return "anchor";
     // auto: follow the end only for end-compatible updates — the old keys
     // are an unchanged prefix of the new (pure appends, or the identical

@@ -105,6 +105,9 @@ function mount(
     onMeasure?: (m: Msg, batchSize: number) => void;
     reach?: boolean | "start-only";
     width?: () => number;
+    height?: () => number;
+    /** Observes every scrollTop write — where an engine forces layout. */
+    onScrollWrite?: () => void;
     /** render() throws for items with this body. */
     throwOn?: string;
     /** getBoundingClientRect throws for items with this body (post-build). */
@@ -117,9 +120,10 @@ function mount(
     const canvas = viewport.firstElementChild as HTMLElement | null;
     return canvas ? Number.parseFloat(canvas.style.height) || 0 : 0;
   };
-  const maxScrollTop = (): number => Math.max(0, canvasHeight() - VIEWPORT_H);
+  const maxScrollTop = (): number =>
+    Math.max(0, canvasHeight() - (hooks.height?.() ?? VIEWPORT_H));
   Object.defineProperties(viewport, {
-    clientHeight: { get: () => VIEWPORT_H },
+    clientHeight: { get: () => hooks.height?.() ?? VIEWPORT_H },
     clientWidth: { get: () => hooks.width?.() ?? 300 },
     offsetWidth: { get: () => 315 },
     // Engines report scrollHeight as a whole pixel while scrollTop may be
@@ -127,9 +131,15 @@ function mount(
     scrollHeight: {
       get: () => Math.round(Math.max(VIEWPORT_H, canvasHeight())),
     },
+    // A shrinking range clamps the position for good, as layout does in an
+    // engine: growing the range back later does not restore it.
     scrollTop: {
-      get: () => Math.max(0, Math.min(maxScrollTop(), scrollTop)),
+      get: () => {
+        scrollTop = Math.max(0, Math.min(maxScrollTop(), scrollTop));
+        return scrollTop;
+      },
       set: (next: number) => {
+        hooks.onScrollWrite?.();
         scrollTop = Math.max(0, Math.min(maxScrollTop(), next));
       },
     },
@@ -1471,6 +1481,69 @@ describe("v2 runtime — commands", () => {
     expect(h.viewport.scrollTop).toBe(0);
     await expect(h.list.scrollTo("nope")).resolves.toBe(false);
     expect(h.viewport.scrollTop).toBe(0);
+  });
+
+  it("recomputes a pin's reserve when the viewport height changes", () => {
+    let height = VIEWPORT_H;
+    const h = mount(range(0, 20), { height: () => height });
+    void h.list.scrollTo("m18", { align: "start" });
+    const seen: number[][] = [[h.list.state.totalSize, h.viewport.scrollTop]];
+
+    // Taller viewport (a rotation, a window resize): the engine clamps the
+    // position to the shrunken range and dispatches that scroll BEFORE the
+    // resize observer runs. Layout moved the viewport, not the user: the
+    // pinned row goes back to the top and the reserve grows to fit.
+    height = 900;
+    h.viewport.dispatchEvent(new Event("scroll"));
+    expect(h.list.state.held).toBe(false); // Not a gesture.
+    fireResize(1, h.viewport, 900);
+    seen.push([h.list.state.totalSize, h.viewport.scrollTop]);
+
+    // Shorter: the reserve shrinks back.
+    height = 500;
+    fireResize(1, h.viewport, 500);
+    seen.push([h.list.state.totalSize, h.viewport.scrollTop]);
+    expect(seen).toEqual([
+      [18 * ROW_H + VIEWPORT_H, 18 * ROW_H],
+      [18 * ROW_H + 900, 18 * ROW_H],
+      [18 * ROW_H + 500, 18 * ROW_H],
+    ]);
+  });
+
+  it("moves mounted slots to their new offsets before the commit's scroll write", () => {
+    // WebKit lays out at a scroll write: every mounted slot must already
+    // sit at its committed offset, or the scroll range freezes stale.
+    const stale: string[] = [];
+    let writes = 0;
+    let h: Harness | null = null;
+    const list = () => h;
+    h = mount(range(0, 40), {
+      onScrollWrite: () => {
+        const current = list();
+        if (!current) return;
+        writes += 1;
+        for (const slot of current.viewport.firstElementChild?.children ?? []) {
+          const id = (slot.firstElementChild as HTMLElement).dataset.id;
+          const top = current.list.positionOf(`m${id}`)?.top;
+          const transform = (slot as HTMLElement).style.transform;
+          if (transform !== `translateY(${top}px)`)
+            stale.push(`m${id}: ${transform} vs ${top}`);
+        }
+      },
+    });
+    h.userScroll(2000);
+    h.settle();
+    writes = 0;
+    stale.length = 0;
+
+    // A mounted row above the viewport (overscan) grows: everything below
+    // it moves down 100px and the anchor-preserving write follows.
+    const row = h.rowElement("msg 18");
+    h.heights.set(18, 200);
+    fireResize(0, row, 200);
+    expect(h.viewport.scrollTop).toBe(2100);
+    expect(writes).toBeGreaterThan(0);
+    expect(stale).toEqual([]);
   });
 
   it("pins with a reserve for align:start (I5) and absorbs growth beneath it", () => {

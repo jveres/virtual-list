@@ -136,10 +136,21 @@ The definition of correct, referenced by number throughout the code:
   observed; a failed transaction discards only what it queued.
 - **I5** — a pinned key can always be scrolled to the viewport top: the
   reserve makes up the shortfall, is consumed by growth, regrown by
-  shrinkage, and never collapses out from under the viewport.
+  shrinkage, and never collapses out from under the viewport. A viewport
+  height change while the viewport stands on the pin (a window resize, a
+  device rotation) re-resolves to the pin: the row stays at the top and the
+  reserve is sized to the new height. The engine clamps the position and
+  dispatches that scroll before the resize is observed; the controller
+  reads a scroll landing on the new maximum right after a client-height
+  change as layout, never as input.
 - **I6** — an idle size change commits in the same painted frame as its
   observation (after layout, before paint); a phase-time change commits at
   the settle, or, under `"live"`, at once when no scroll write is needed.
+  Within a commit, every mounted slot moves to its committed offset before
+  any layout-forcing access: WebKit computes a scroller's range at layout
+  and does not recompute it for a transform-only move, so a scroll write
+  between the canvas write and the slot moves froze a stale range (a blank
+  gap below the last row after an iPad rotation).
 
 ## Preserved from v1 (signed off there, carried forward)
 

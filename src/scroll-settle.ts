@@ -188,6 +188,7 @@ export function createScrollSettleController(
   let userScrollMoved = false;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
+  let lastScrollSampleHeight = viewport.clientHeight;
   // Targets written by programmatic scrolls (commands, glide frames, the
   // settle commit's anchor write) that haven't been matched to a scroll
   // event yet. A single frame can write more than once and the browser may
@@ -261,10 +262,21 @@ export function createScrollSettleController(
     const nextScrollTop = viewport.scrollTop;
     const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
     const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
-    if (strategy === "firefox-wheel" && moved && !programmaticScroll) {
+    // A viewport that grew (a window resize, a device rotation) shrinks the
+    // scroll range, and the engine clamps the position to the new maximum
+    // — dispatching that scroll BEFORE any resize observer runs. Layout
+    // moved the viewport, not the user.
+    const clientHeight = viewport.clientHeight;
+    const layoutClamp =
+      Math.abs(clientHeight - lastScrollSampleHeight) > measureEpsilon &&
+      Math.abs(nextScrollTop - nativeMaxScrollTop()) <=
+        Math.max(1, measureEpsilon);
+    lastScrollSampleHeight = clientHeight;
+    const input = moved && !programmaticScroll && !layoutClamp;
+    if (strategy === "firefox-wheel" && input) {
       firefoxProtectedEdge ??= loadableBoundaryAtNativeEdge();
     }
-    if (!userScrollActive && moved && !programmaticScroll) {
+    if (!userScrollActive && input) {
       if (!handleUserScrollStart()) return;
     }
     resetScrollSample(nextScrollTop);

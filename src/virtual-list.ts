@@ -1,4 +1,9 @@
-import { type AnchorPolicy, Geometry, type GeometryViewport } from "./geometry";
+import {
+  type AnchorPolicy,
+  type CapturePolicy,
+  Geometry,
+  type GeometryViewport,
+} from "./geometry";
 import { type Glide, glideDuration, startGlide } from "./glide";
 import { createItemMeasurer, type ItemMeasurer } from "./premeasure";
 import {
@@ -326,6 +331,10 @@ export function createVirtualList<T>(
   canvas.style.overflowAnchor = "none";
   viewport.appendChild(canvas);
   let lastViewportWidth = viewport.clientWidth;
+  let lastViewportHeight = viewport.clientHeight;
+  // The position last observed through a scroll event or a commit: what the
+  // viewport stood on BEFORE a resize the engine may already have clamped.
+  let lastObservedTop = viewport.scrollTop;
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
   const measurer: ItemMeasurer = createItemMeasurer({
@@ -651,18 +660,32 @@ export function createVirtualList<T>(
 
   // A width change invalidates every held measurement: mounted rows are
   // re-read in place, retained rows re-premeasured, all at the next commit.
+  // A height change while the viewport stands on a pin keeps the pinned row
+  // at the top and sizes the reserve to the new height (I5): a taller
+  // viewport shrinks the scroll range, and the engine clamps the position
+  // before this delivery — the pre-resize position decides, so a viewport
+  // that had left the pin keeps its anchor instead.
   const viewportObserver = new ResizeObserver(() => {
     if (disposed) return;
     const width = viewport.clientWidth;
     const widthChanged =
       Math.abs(width - lastViewportWidth) > MEASURE_EPSILON_PX;
     lastViewportWidth = width;
+    const height = viewport.clientHeight;
+    const heightChanged =
+      Math.abs(height - lastViewportHeight) > MEASURE_EPSILON_PX;
+    lastViewportHeight = height;
     if (widthChanged) {
       // Pending rows need no marking: a retained row that waits for a
       // settle is dirty by construction and re-measured at its commit.
       for (const row of rows.values()) markDirty(row);
     }
-    if (idle()) commit(null, "viewport");
+    const pinTop = geometry.pinTop;
+    const stoodOnPin =
+      heightChanged &&
+      pinTop !== null &&
+      Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX;
+    if (idle()) commit(null, stoodOnPin ? "pin" : "viewport");
     else publish();
   });
   viewportObserver.observe(viewport);
@@ -1076,6 +1099,7 @@ export function createVirtualList<T>(
       geometryEpoch += 1;
       const result = geometry.resolve(capture);
       canvas.style.height = `${result.totalSize}px`;
+      repositionMounted();
       // There is no explicit scroll write, but shrinking the scroll range
       // can make the browser clamp scrollTop. Re-read after the canvas write
       // and reconcile that real position before this frame paints.
@@ -1097,7 +1121,7 @@ export function createVirtualList<T>(
 
   function commit(
     snapshot: Prepared<T> | null,
-    policyOverride?: AnchorPolicy,
+    policyOverride?: CapturePolicy,
   ): void {
     if (disposed) return;
     guarded(() => {
@@ -1114,7 +1138,7 @@ export function createVirtualList<T>(
 
   function commitBody(
     applying: Prepared<T> | null,
-    policyOverride: AnchorPolicy | undefined,
+    policyOverride: CapturePolicy | undefined,
   ): void {
     // Teardown failures are collected here and surfaced only after the
     // commit has reached its consistent terminal state.
@@ -1172,6 +1196,7 @@ export function createVirtualList<T>(
 
       const result = geometry.resolve(capture);
       canvas.style.height = `${result.totalSize}px`;
+      repositionMounted();
       // Engines quantize scroll positions differently: Chromium rounds a
       // fractional write, WebKit floors it (the anchor then lands up to a
       // full pixel short). Writing a whole pixel bounds the anchor's
@@ -1203,6 +1228,24 @@ export function createVirtualList<T>(
   }
 
   // --- Window reconciliation (allowed during scrolling) ---------------------
+  /**
+   * Move every mounted slot to its committed offset — BEFORE any read or
+   * write that forces layout. WebKit computes a scroller's range at layout
+   * and does not recompute it for a transform-only move: a scrollTop write
+   * (or read) between the canvas write and the slot moves froze the range
+   * with a row at its old offset in its new height, and a touch scroll then
+   * reached that stale end — a blank gap below the last row after an iPad
+   * rotation, gone at the next layout.
+   */
+  function repositionMounted(): void {
+    for (const row of mountedRows) {
+      const offset = geometry.offsetOf(row.key);
+      if (offset < 0 || row.offset === offset) continue;
+      row.offset = offset;
+      row.slot.style.transform = `translateY(${offset}px)`;
+    }
+  }
+
   function mountRow(row: Row<T>): void {
     row.mounted = true;
     mountedRows.add(row);
@@ -1290,6 +1333,11 @@ export function createVirtualList<T>(
     reconciledRange?: { start: number; end: number },
   ): void {
     if (disposed) return;
+    // A resize is observed only after the engine's own scroll event for the
+    // clamp it caused; that position is not where the viewport stood.
+    if (Math.abs(vp.height - lastViewportHeight) <= MEASURE_EPSILON_PX) {
+      lastObservedTop = vp.scrollTop;
+    }
     const range = reconciledRange ?? geometry.window(vp, overscanPx);
     const maxTop = geometry.maxScrollTop(vp.height);
     // Host-facing indexes count items only; edge slots are the runtime's.
