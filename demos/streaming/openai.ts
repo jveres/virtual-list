@@ -741,18 +741,6 @@ export function initAISettingsPanel(
     toggle.classList.toggle("active", getAISettings().provider === "openai");
   };
 
-  // Only the selected provider's fields show: the simulated provider has no
-  // key, model, tools, or stored conversation, and an OpenAI-only "clear"
-  // button under it read as clearing the simulated chat.
-  const providerFields = panel.querySelectorAll<HTMLElement>("[data-provider]");
-  const syncProviderFields = () => {
-    const provider = providerSelect.value === "openai" ? "openai" : "simulated";
-    for (const field of providerFields) {
-      field.hidden = field.dataset.provider !== provider;
-    }
-  };
-  syncProviderFields();
-
   const persist = () => {
     const previousProvider = getAISettings().provider;
     const contextTurns = Number(contextSelect.value);
@@ -776,7 +764,6 @@ export function initAISettingsPanel(
     };
     saveAISettings(next);
     syncToggle();
-    syncProviderFields();
     keyStatus.textContent = keyHint(next.apiKey);
     if (next.provider !== previousProvider) {
       options.onProviderChange?.(next.provider);
