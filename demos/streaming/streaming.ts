@@ -1857,6 +1857,55 @@ stickyHeaders = createStickyHeaders({
     slot.replaceChildren(buildSectionHeader(dayHeader(day).label));
   },
 });
+// --- Export ------------------------------------------------------------------
+// The whole active branch (not just the loaded window) as one Markdown
+// document: day separators become headings, a tool call a one-line note, a
+// reply that never finished its status.
+function transcriptMarkdown(): string {
+  const lines: string[] = ["# streaming-chat transcript", ""];
+  let currentDay = -1;
+  for (const message of transcript) {
+    const day = dayOf(message);
+    if (day !== currentDay) {
+      currentDay = day;
+      lines.push(`## ${dayLabel(day)}`, "");
+    }
+    lines.push(`**${message.role === "user" ? "User" : "Assistant"}**`, "");
+    for (const call of message.toolCalls ?? []) {
+      lines.push(
+        `> Tool call \`${call.name}\` (${call.status}, ${Math.round(call.durationMs)}ms)`,
+        "",
+      );
+    }
+    const body = message.markdown.trim();
+    if (body) lines.push(body, "");
+    else if (message.status && message.status !== "done") {
+      lines.push(`_(${message.status})_`, "");
+    }
+  }
+  return lines.join("\n");
+}
+
+function downloadTranscript(): void {
+  const blob = new Blob([transcriptMarkdown()], {
+    type: "text/markdown;charset=utf-8",
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `chat-${new Date().toISOString().slice(0, 10)}.md`;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  // Safari needs the object URL alive past the click it is still handling.
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+mustGet("download-btn", HTMLButtonElement).addEventListener(
+  "click",
+  downloadTranscript,
+);
+
 const stickyToggle = mustGet("sticky-toggle", HTMLButtonElement);
 function syncSticky(): void {
   stickyHeaders?.setEnabled(stickyEnabled);
