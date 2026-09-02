@@ -217,8 +217,8 @@ The definition of correct, referenced by number throughout the code:
 The repository includes an opt-in Playwright runner for the dynamic-height
 lab. It starts a private Vite server, exercises every scrolling policy in
 Chromium, Firefox, and WebKit with real wheel input, and fails on a lab
-violation, clipped paint, teardown leak, page error, console error, or wrong
-settle strategy.
+violation, clipped paint, teardown leak, page error, console error or
+unexpected console warning, or wrong settle strategy.
 
 Install the Playwright engines once, then run the complete matrix:
 
@@ -231,6 +231,14 @@ Use a focused run while developing a browser-specific fix:
 
 ```sh
 pnpm run test:browser -- --quick --engine=webkit --mode=live
+```
+
+Chaos mode drives the lab's randomized adversary under random wheel input
+for a duration and stops at the first violation; `--seed` makes the input
+reproducible and `--headed` shows the browser:
+
+```sh
+pnpm run test:browser -- --chaos=300 --engine=webkit --seed=4242
 ```
 
 Failure traces are written to `browser-artifacts/` (override with

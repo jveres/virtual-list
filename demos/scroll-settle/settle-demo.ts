@@ -167,7 +167,7 @@ function anythingQueued(): boolean {
 // anchor-preserving write); their scroll events must not feed the
 // premature-settle heuristic.
 const labExpectedTops: number[] = [];
-/** Mirrors the controller's bounded target buffer (a few frames' worth). */
+/** A few frames' worth of expected commit writes (the lab makes one per commit). */
 const LAB_EXPECTED_TOPS_MAX = 4;
 let gestures = 0;
 let settles = 0;

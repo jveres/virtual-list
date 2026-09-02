@@ -444,7 +444,8 @@ export function createVirtualList<T>(
    * throws. Failures are RETURNED, never thrown here: the enclosing
    * operation first reaches its consistent terminal state (the commit
    * completes, the snapshot is handed off, the rollback finishes) and
-   * only then surfaces them via throwTeardown.
+   * only then surfaces them — a commit or preparation defers them to the
+   * outermost transaction's report, dispose throws them directly.
    */
   function destroyAll(rowsToDestroy: Iterable<Row<T>>): unknown[] {
     const failures: unknown[] = [];
@@ -1093,11 +1094,9 @@ export function createVirtualList<T>(
     const callback =
       edge === "start" ? options.onReachStart : options.onReachEnd;
     if (!callback) return;
+    // Only abortEdge aborts these, and it clears the whole set as it does.
     const abort = new AbortController();
     reachAborts[edge].add(abort);
-    abort.signal.addEventListener("abort", () =>
-      reachAborts[edge].delete(abort),
-    );
     callback({ signal: abort.signal });
   }
 

@@ -127,11 +127,15 @@ async function wheel(page, deltaY, steps, gapMs = 16) {
   }
 }
 
+// Scenario delimiters go into the trace ring (what artifacts and results
+// are read from) as well as the on-screen log.
 async function mark(page, message) {
   await page.evaluate((text) => {
+    const line = `=== ${text}`;
+    window.labTrace?.push(line);
     const span = document.createElement("span");
     span.className = "mark";
-    span.textContent = `=== ${text}\n`;
+    span.textContent = `${line}\n`;
     document.getElementById("log")?.appendChild(span);
   }, message);
 }
