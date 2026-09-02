@@ -573,8 +573,9 @@ export function createVirtualList<T>(
       Math.abs(width - lastViewportWidth) > MEASURE_EPSILON_PX;
     lastViewportWidth = width;
     if (widthChanged) {
+      // Pending rows need no marking: a retained row that waits for a
+      // settle is dirty by construction and re-measured at its commit.
       for (const row of rows.values()) markDirty(row);
-      if (pending) for (const row of pending.newRows.values()) markDirty(row);
     }
     if (idle()) commit(null, "viewport");
     else publish();

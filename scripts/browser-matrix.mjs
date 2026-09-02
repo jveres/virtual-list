@@ -294,7 +294,6 @@ async function readResult(page) {
       strategy: cell("s-strategy"),
       // From the full ring, not the trimmed DOM log.
       bad: window.labTrace.filter((line) => line.includes("VIOLATION")),
-      log: window.labTrace.join("\n"),
     };
   });
 }

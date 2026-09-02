@@ -1038,13 +1038,12 @@ function classifyBatch(records: MutationRecord[]): void {
   }
 
   commits += 1;
-  // The commit that cleared a held phase is the settle commit: the one
-  // permitted commit at the end of a programmatic phase (a landed glide's
-  // promise resolves only after it, so smoothPending is still up).
   const heldJustCleared = heldCleared;
   heldCleared = false;
-  // The settle commit is the one that cleared a held phase while quiet; a
-  // "live" drain under activity clears `held` too and is not one.
+  // The settle commit is the one that cleared a held phase while quiet (a
+  // "live" drain under activity clears `held` too and is not one). It is
+  // the one permitted commit at the end of a programmatic phase: a landed
+  // glide's promise resolves only after it, so smoothPending is still up.
   const settleCommit = heldJustCleared && !heldClearedUnderActivity;
   // A command's takeover commit: the runtime stopped the native scroll and
   // committed held work by contract (explicit command > gesture).
