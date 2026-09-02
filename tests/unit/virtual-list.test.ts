@@ -64,7 +64,6 @@ class ControlledResizeObserver {
   }
 }
 
-/** Instance 0 observes rows, instance 1 the viewport (construction order). */
 /** Advance 16ms frames until `done()` holds, or the frame budget runs out. */
 function advanceFramesUntil(done: () => boolean, maxFrames = 200): void {
   for (let frame = 0; frame < maxFrames && !done(); frame += 1) {
@@ -72,6 +71,7 @@ function advanceFramesUntil(done: () => boolean, maxFrames = 200): void {
   }
 }
 
+/** Instance 0 observes rows, instance 1 the viewport (construction order). */
 function fireResize(instance: number, target: Element, height: number): void {
   const entry = {
     target,

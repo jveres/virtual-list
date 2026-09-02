@@ -296,7 +296,7 @@ export function createScrollSettleController(
     }
     resetScrollSample(nextScrollTop);
     if (
-      (strategy === "firefox-wheel" || strategy === "safari-wheel") &&
+      usesWheelScrollEndFallback() &&
       nativeScrollEndPending &&
       wheelPendingNativeScrollEndTop !== null &&
       !programmaticScroll &&
@@ -515,8 +515,8 @@ export function createScrollSettleController(
     }
     if (!canSettleScrollPhase()) {
       if (
-        ((strategy === "firefox-wheel" || strategy === "safari-wheel") &&
-          wheelInputActive) ||
+        (usesWheelScrollEndFallback() &&
+          hasActiveWheelInput()) ||
         hasActiveChromiumEdgeWheel() ||
         (strategy === "chromium-wheel" &&
           (chromiumWheelAwaitingFinalScrollEnd || chromiumEdgeWheelSuppressed))
@@ -640,18 +640,12 @@ export function createScrollSettleController(
     }, SCROLL_SETTLE_COOLDOWN_MS);
   }
 
-  // Close the wheel-idle dead-end: when the last wheel of a gesture is judged
-  // neither outward (no edge fallback) nor preceded by an unconsumed scrollend
-  // (no cooldown), nothing else would ever settle the gesture — chromium fires
-  // only one scrollend per scroll sequence, and a trailing wheel consumed it.
-  // Without this, the gesture stays active forever and deferred boundary loads
-  // sit unapplied until the user scrolls again ("stuck" loads). Settling after
-  // the same quiet delay as the edge fallback matches the accepted chromium
-  // contract (see the module header).
   /**
    * After the Chromium quiet delay, arm the release — if the phase is still
-   * open, no wheel is live, the viewport is in range, and `still` says the
-   * situation this timer was armed for still holds.
+   * open, the viewport is in range, and `still` says the situation this
+   * timer was armed for still holds (a scrollend that arrived meanwhile
+   * settles on its own cooldown; re-arming would only postpone it). Wheel
+   * input cancels this timer outright, so it never fires under a live wheel.
    */
   function scheduleChromiumQuietSettle(
     still: () => boolean,
@@ -663,7 +657,6 @@ export function createScrollSettleController(
       if (
         host.isDisposed() ||
         !scrollPhaseActive ||
-        wheelInputActive ||
         isRubberBandOverscrolled() ||
         !still()
       ) {
@@ -674,6 +667,14 @@ export function createScrollSettleController(
     }, CHROMIUM_QUIET_SETTLE_MS);
   }
 
+  // Close the wheel-idle dead-end: when the last wheel of a gesture is judged
+  // neither outward (no edge fallback) nor preceded by an unconsumed scrollend
+  // (no cooldown), nothing else would ever settle the gesture — chromium fires
+  // only one scrollend per scroll sequence, and a trailing wheel consumed it.
+  // Without this, the gesture stays active forever and deferred boundary loads
+  // sit unapplied until the user scrolls again ("stuck" loads). Settling after
+  // the same quiet delay as the edge fallback matches the accepted chromium
+  // contract (see the module header).
   function scheduleChromiumStallFallback(): void {
     scheduleChromiumQuietSettle(() => !nativeScrollEndPending);
   }
@@ -692,7 +693,7 @@ export function createScrollSettleController(
   function handleScrollEnd(): void {
     if (host.isDisposed() || !host.noSmoothScrollInFlight()) return;
 
-    if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
+    if usesWheelScrollEndFallback() {
       if (!scrollPhaseActive) return;
       if (!scrollPhaseMoved) {
         // A scrollend from a programmatic write (a command's takeover, the
@@ -725,7 +726,7 @@ export function createScrollSettleController(
     setPendingNativeScrollEnd();
     if (strategy === "chromium-wheel" && scrollPhaseActive) {
       chromiumWheelSawNativeScrollEnd = true;
-      if (!wheelInputActive && chromiumWheelAwaitingFinalScrollEnd) {
+      if (!hasActiveWheelInput() && chromiumWheelAwaitingFinalScrollEnd) {
         chromiumWheelAwaitingFinalScrollEnd = false;
         chromiumEdgeWheelActive = null;
       }
@@ -804,7 +805,7 @@ export function createScrollSettleController(
   function handleWheelInputSettle(
     protectedEdge: ScrollBoundary | null = null,
   ): void {
-    if (strategy !== "firefox-wheel" && strategy !== "safari-wheel") {
+    if (!usesWheelScrollEndFallback()) {
       return;
     }
     wheelInputActive = true;
@@ -856,7 +857,7 @@ export function createScrollSettleController(
 
   function handleWheel(event: WheelEvent): void {
     if (host.isDisposed()) return;
-    if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
+    if usesWheelScrollEndFallback() {
       if (strategy === "firefox-wheel") {
         lastFirefoxWheelInputAt = performance.now();
       }

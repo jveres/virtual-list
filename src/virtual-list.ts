@@ -222,7 +222,11 @@ export interface VirtualList<T> {
    */
   remeasure(key: string, options?: RemeasureOptions): void;
   readonly state: VirtualListState;
-  /** Set or clear an edge slot: a structural change, settle-gated. */
+  /**
+   * Set or clear an edge slot: a structural change that commits like any
+   * snapshot — at the settle during a scroll, except under "live" when it
+   * lies below the anchor (an end slot), which commits at once.
+   */
   setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void;
   /** Committed content-space top and height of an item key (offsets include edge slots); null if unknown. */
   positionOf(key: string): { top: number; height: number } | null;

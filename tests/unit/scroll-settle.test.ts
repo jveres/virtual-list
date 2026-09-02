@@ -483,6 +483,25 @@ describe("chromium sequences (trace replay)", () => {
   });
 });
 
+describe("chromium quiet-settle timer", () => {
+  it("a scrollend arriving inside the quiet window settles on its own cooldown, not the timer's", () => {
+    const harness = mount("chromium-wheel");
+    harness.scrollTo(600);
+    harness.wheel(-100);
+    harness.scrollTo(500);
+    vi.advanceTimersByTime(16);
+    harness.wheel(-80);
+    harness.scrollTo(420);
+    // Wheel idle at ~156ms arms the stall timer for ~606ms. A scrollend at
+    // 520ms is the release: its cooldown settles at ~660ms. The timer, firing
+    // after it, must not re-arm the release and push the settle to ~746ms.
+    vi.advanceTimersByTime(504);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(180);
+    expect(harness.settled()).toBe(1);
+  });
+});
+
 describe("safari sequences (trace replay)", () => {
   it("a scrollend from a programmatic write does not cancel the gesture a wheel tick just started", () => {
     const harness = mount("safari-wheel");
