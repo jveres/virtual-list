@@ -461,6 +461,8 @@ let writeSerial = 0;
 const runtimeWriteTimes: number[] = [];
 let commandIssuing = false;
 let smoothPending = 0;
+/** A command was just issued; its takeover commit may follow in this task. */
+let takeoverPending = false;
 /** The last few raw input/scroll events — dumped with every G/W violation. */
 const recentInput: string[] = [];
 
@@ -1069,6 +1071,10 @@ function classifyBatch(records: MutationRecord[]): void {
   // promise resolves only after it, so smoothPending is still up).
   const settleCommit = heldCleared;
   heldCleared = false;
+  // A command's takeover commit: the runtime stopped the native scroll and
+  // committed held work by contract (explicit command > gesture).
+  const takeover = takeoverPending && settleCommit;
+  takeoverPending = false;
   // Idle streaming commits every few frames; log only settle commits
   // unless verbose.
   if (verbose() || settleCommit) {
@@ -1110,7 +1116,9 @@ function classifyBatch(records: MutationRecord[]): void {
   };
 
   // G: geometry is immutable under a live scroll phase.
-  if (
+  if (takeover) {
+    if (verbose()) log("takeover commit (command ended the phase)");
+  } else if (
     !commandIssuing &&
     (nativeActive(now) || glideMoving(now)) &&
     liveCommitOk()
@@ -1153,7 +1161,7 @@ function classifyBatch(records: MutationRecord[]): void {
 
   // A: the row under the viewport top stays where it was — unless this
   // commit legitimately kept an end-pinned viewport at the end.
-  if (!commandIssuing && !nativeActive(now) && !glideMoving(now)) {
+  if (!commandIssuing && !takeover && !nativeActive(now) && !glideMoving(now)) {
     checkAnchor(canvasChange, heightChanges, wroteScrollTop);
   }
   expectAnchoredCommit = false;
@@ -1718,6 +1726,15 @@ function stopChaos(): void {
 
 function issue<T>(work: () => T): T {
   commandIssuing = true;
+  // An explicit command takes the viewport over: it ends the active phase
+  // and commits held work. That commit's mutation batch is delivered after
+  // this call returns — still under fresh input evidence — and must not
+  // read as a mid-scroll commit. The flag is cleared by the batch, or by
+  // this microtask (queued after the batch's) when there was none.
+  takeoverPending = true;
+  queueMicrotask(() => {
+    takeoverPending = false;
+  });
   try {
     return work();
   } finally {
