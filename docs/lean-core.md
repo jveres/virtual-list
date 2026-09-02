@@ -242,7 +242,11 @@ not replace the physical desktop Safari and iOS Safari acceptance pass.
    resource changes, and aborted or superseded retained nodes destroyed
    exactly once. All dynamic-height behavior lives in the runtime; the lab
    only generates content and reports violations. **Pass in Chromium,
-   Firefox, desktop Safari, and iOS Safari.**
+   Firefox, desktop Safari, and iOS Safari.** (Done; signed off at
+   `d7ec716`: the standard matrix and 5-minute chaos runs clean in
+   WebKit, Chromium and Firefox; chaos with manual scrolling clean in
+   desktop Safari; iPadOS and iPhone runs reported through the device
+   channel and their findings fixed.)
 5. Only then: host the streaming chat demo; gauntlet against `main`.
 
 ## Lessons carried as law
