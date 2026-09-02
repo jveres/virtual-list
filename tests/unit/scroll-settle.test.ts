@@ -14,8 +14,9 @@ import {
 // Firefox lab traces among them — replayed with fake timers. jsdom performs
 // no real scrolling; the harness mocks viewport geometry and replays the
 // event order each engine actually emits. These pin the externally
-// observable contract, including the two v2 Firefox deviations (contested
-// releases and the two-window design).
+// observable contract, including the two v2 Firefox deviations (the
+// two-window edge release with contested candidates, and Firefox alone
+// retaining a pending release across fresh input).
 
 const VIEWPORT_HEIGHT = 300;
 const CONTENT_HEIGHT = 5000;

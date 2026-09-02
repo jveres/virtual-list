@@ -7,8 +7,8 @@ import { createItemMeasurer } from "../../src/premeasure";
 // Lifecycle characterization only: jsdom has no layout engine, so measured
 // heights here are the positiveSize fallback (1) — real premeasurement
 // accuracy is validated in real browsers. What jsdom CAN pin: root
-// creation/teardown, width syncing, detach-before-return, the destroy
-// lifecycle, and error aggregation.
+// creation/teardown, width syncing, batch measurement, and detach-before-
+// return.
 
 function makeViewport(width = 640): HTMLElement {
   const viewport = document.createElement("div");

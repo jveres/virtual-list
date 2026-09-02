@@ -516,7 +516,7 @@ export function createVirtualList<T>(
     return slot;
   }
 
-  /** Wrap a freshly premeasured element into a retained row. */
+  /** Wrap an element into a retained row; fresh rows carry a provisional height until the batch measurement. */
   function retain(
     key: string,
     item: T,

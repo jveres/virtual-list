@@ -119,7 +119,7 @@ section header over the viewport using only `positionOf`/`elementOf`.
 ```sh
 pnpm run check   # Biome + TypeScript
 pnpm test        # vitest, jsdom, deterministic
-pnpm run test:browser              # Chrome, Firefox, WebKit via Playwright
+pnpm run test:browser              # Chromium, Firefox, WebKit via Playwright
 pnpm run test:browser -- --chaos=300 --seed=7 --headed
 ```
 

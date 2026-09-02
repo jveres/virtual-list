@@ -304,17 +304,10 @@ async function runCase(engine, mode) {
     launchOptions.channel = process.env.BROWSER_MATRIX_CHROMIUM_CHANNEL;
   }
   const browser = await browserType(engine).launch(launchOptions);
+  // Headless Chromium's own user agent routes to chromium-wheel (the
+  // detector matches HeadlessChrome/), so no override is needed.
   const page = await browser.newPage({
     viewport: { width: 1200, height: 820 },
-    ...(engine === "chromium"
-      ? {
-          // HeadlessChrome does not match the production Chrome detector.
-          userAgent:
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-            "AppleWebKit/537.36 (KHTML, like Gecko) " +
-            "Chrome/151.0.0.0 Safari/537.36",
-        }
-      : {}),
   });
   const errors = [];
   page.on("pageerror", (error) => errors.push(`PAGEERROR ${error.message}`));
