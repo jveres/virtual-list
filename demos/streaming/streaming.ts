@@ -124,10 +124,10 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-// The send scroll travels about one viewport, which the distance-based
-// duration policy clamps to its 320ms floor — a quick flick next to the
-// buttons' long glides. An explicit duration gives the send its own
-// deliberate pace (tuned on main).
+// The send's pace: a one-viewport hop (a send from the bottom) lands in this
+// time, and a send from anywhere else — across the whole list — decelerates
+// through that very same landing after an approach of at most this long.
+// The buttons' glides use the runtime's quicker default landing.
 const SEND_SCROLL_DURATION_MS = 650;
 // Synthetic days over the transcript: one separator per this many messages.
 const MESSAGES_PER_DAY = 12;

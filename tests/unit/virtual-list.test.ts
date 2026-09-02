@@ -336,9 +336,12 @@ describe("v2 runtime — commits and slots", () => {
     h.settle();
     expect(h.list.state.following).toBe(false);
 
-    const command = h.list.scrollTo("end", { behavior: "smooth" });
-    // The glide (320ms floor) lands on the end as it was; its settle
-    // cooldown is still running.
+    const command = h.list.scrollTo("end", {
+      behavior: "smooth",
+      duration: 320,
+    });
+    // The glide lands on the end as it was; its settle cooldown is still
+    // running.
     vi.advanceTimersByTime(330);
     expect(h.viewport.scrollTop).toBe(4400);
     // Fast streaming: the tail grows between the glide's landing and its

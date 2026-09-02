@@ -4,7 +4,7 @@ import {
   Geometry,
   type GeometryViewport,
 } from "./geometry";
-import { type Glide, glideDuration, startGlide } from "./glide";
+import { type Glide, glidePace, startGlide } from "./glide";
 import { createItemMeasurer, type ItemMeasurer } from "./premeasure";
 import {
   createScrollSettleController,
@@ -245,6 +245,7 @@ function quantizeHeight(height: number): number {
 const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
+const FOLLOW_LANDING_MS = 320;
 /** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
 const MIN_OVERSCAN_PX = 300;
 
@@ -1785,10 +1786,7 @@ export function createVirtualList<T>(
           }),
         target: destination,
       },
-      (distancePx) =>
-        scrollOptions.duration !== undefined && scrollOptions.duration > 0
-          ? scrollOptions.duration
-          : glideDuration(distancePx, viewport.clientHeight),
+      glidePace(viewport.clientHeight, scrollOptions.duration),
       (completed) =>
         guarded(() => {
           glide = null;
@@ -1822,7 +1820,9 @@ export function createVirtualList<T>(
           }),
         target: () => geometry.maxScrollTop(viewport.clientHeight),
       },
-      (distancePx) => glideDuration(distancePx, viewport.clientHeight),
+      // Follow legs are short and frequent: a quicker landing than a
+      // command's, so the end keeps up with the stream.
+      glidePace(viewport.clientHeight, FOLLOW_LANDING_MS),
       () =>
         guarded(() => {
           glide = null;

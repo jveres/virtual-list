@@ -171,7 +171,15 @@ The definition of correct, referenced by number throughout the code:
   reserve I5) with its oracle/property tests. Its role narrows: heights fed
   to it are premeasured, not estimated-then-corrected.
 - `src/glide.ts`: the programmatic glide (exact landing, ≥1px/frame on
-  floored engines, endpoint rebase).
+  floored engines, endpoint rebase). Two legs: the LANDING — the last
+  viewport of travel, or the whole trip when shorter — always takes the
+  same time on the same ease-out, so a one-viewport hop and a jump across
+  the list arrive identically; the APPROACH covers the rest as a burst
+  decaying into the landing's entry speed, its duration derived from the
+  distance and capped. A `scrollTo` `duration` is the landing time and the
+  approach cap (a trip from the far end takes at most twice it); the
+  default lands in 600ms and bounds a trip by 1400ms; follow legs land in
+  320ms.
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
   `createVirtualList(viewport, { items, key, render, overscanPx?,
   onState?, onReachStart/End?, onDestroy?, settleStrategy?,

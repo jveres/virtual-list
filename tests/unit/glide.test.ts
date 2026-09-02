@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { glideDuration, startGlide } from "../../src/glide";
+import { glidePace, startGlide } from "../../src/glide";
 
 // The glide's contractual behaviors (I2): exact landing, and at least one
 // whole pixel of progress per frame — WebKit floors scrollTop writes, and a
@@ -84,11 +84,7 @@ describe("glide", () => {
       },
       target: () => 0,
     };
-    startGlide(
-      host,
-      (distance) => glideDuration(distance, 600),
-      () => {},
-    );
+    startGlide(host, glidePace(600), () => {});
     vi.advanceTimersByTime(48);
 
     top += 3760; // External anchor-preserving jump (prepend).
@@ -115,11 +111,7 @@ describe("glide", () => {
       },
       target: () => target,
     };
-    startGlide(
-      host,
-      (distance) => glideDuration(distance, 600),
-      () => {},
-    );
+    startGlide(host, glidePace(600), () => {});
     vi.advanceTimersByTime(150);
 
     target = 4000; // A snapshot moved the end far away.
@@ -147,11 +139,80 @@ describe("glide", () => {
     expect(glide.active).toBe(false);
   });
 
-  it("derives bounded durations from distance", () => {
-    expect(glideDuration(10, 600)).toBe(320);
-    expect(glideDuration(1_000_000, 600)).toBe(1400);
-    const mid = glideDuration(3_000, 600);
-    expect(mid).toBeGreaterThan(320);
-    expect(mid).toBeLessThan(1400);
+  it("lands the same way from one viewport away and from across the list", () => {
+    // The landing leg — the last viewport of travel — is the same
+    // position-over-time whatever the trip: sample both trips relative to
+    // their targets over the final landing window.
+    // 640ms: the long trip's approach is capped at exactly forty 16ms frames,
+    // so both landings start on a frame and their samples align.
+    const pace = glidePace(600, 640);
+    const run = (distance: number): Map<number, number> => {
+      let top = 0;
+      const samples = new Map<number, number>();
+      let doneAt = -1;
+      startGlide(
+        {
+          read: () => top,
+          write: (next) => {
+            top = next;
+          },
+          target: () => distance,
+        },
+        pace,
+        () => {
+          doneAt = performance.now();
+        },
+      );
+      const t0 = performance.now();
+      while (doneAt < 0 && performance.now() - t0 < 5000) {
+        vi.advanceTimersByTime(16);
+        samples.set(performance.now() - t0, distance - top);
+      }
+      // Re-key by time before landing so the two trips align at the end.
+      const byTimeToEnd = new Map<number, number>();
+      for (const [at, remaining] of samples) {
+        byTimeToEnd.set(Math.round(doneAt - t0 - at), remaining);
+      }
+      return byTimeToEnd;
+    };
+    const short = run(600);
+    const long = run(12_000);
+    let compared = 0;
+    for (const [timeToEnd, remaining] of short) {
+      // Inside the landing window. The ease-out reaches the target within
+      // a pixel before its nominal end, so the window is shorter than the
+      // landing's 650ms; the last 450ms are comfortably inside it.
+      if (timeToEnd > 450) continue;
+      const other = long.get(timeToEnd);
+      if (other === undefined) continue;
+      expect(Math.abs(other - remaining)).toBeLessThanOrEqual(2);
+      compared += 1;
+    }
+    expect(compared).toBeGreaterThan(15);
+  });
+
+  it("bounds a long trip by the approach cap plus the landing", () => {
+    let top = 0;
+    let doneAt = -1;
+    startGlide(
+      {
+        read: () => top,
+        write: (next) => {
+          top = next;
+        },
+        target: () => 100_000,
+      },
+      glidePace(600),
+      () => {
+        doneAt = performance.now();
+      },
+    );
+    const t0 = performance.now();
+    vi.advanceTimersByTime(2000);
+    expect(top).toBe(100_000);
+    // Nominal: 1080ms approach cap + 320ms landing; the landing snaps to
+    // the target within a pixel a little before its nominal end.
+    expect(doneAt - t0).toBeLessThanOrEqual(1400 + 32);
+    expect(doneAt - t0).toBeGreaterThanOrEqual(1200);
   });
 });

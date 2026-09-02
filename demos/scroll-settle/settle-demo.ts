@@ -1,4 +1,4 @@
-import { type Glide, glideDuration, startGlide } from "../../src/glide.js";
+import { type Glide, glidePace, startGlide } from "../../src/glide.js";
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,
@@ -446,7 +446,7 @@ function glideTo(boundary: Boundary): void {
       },
       target,
     },
-    (distancePx) => glideDuration(distancePx, viewport.clientHeight),
+    glidePace(viewport.clientHeight),
     (completed) => {
       glide = null;
       log(
