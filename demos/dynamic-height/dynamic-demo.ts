@@ -745,7 +745,9 @@ function onState(state: VirtualListState): void {
   const previous = lastState;
   lastState = state;
   stateHeld = state.held;
-  if (previous === null || previous.held !== state.held) {
+  if (previous === null) {
+    if (verbose()) log(`state: ${state.count} rows`);
+  } else if (previous.held !== state.held) {
     if (!state.held) {
       heldCleared = true;
       // A "live" drain of the dirty set also clears `held` — under activity.

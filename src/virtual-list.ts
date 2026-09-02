@@ -589,7 +589,7 @@ export function createVirtualList<T>(
   // command resolves false (interrupted), like any other interruption.
   const onVisibilityChange = (): void => {
     if (document.visibilityState === "hidden" && glide !== null) {
-      guarded(() => glide?.cancel());
+      glide?.cancel(); // Its completion callback guards itself.
     }
   };
   document.addEventListener("visibilitychange", onVisibilityChange);

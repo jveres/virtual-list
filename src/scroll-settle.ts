@@ -882,7 +882,9 @@ export function createScrollSettleController(
             firefoxEdgeReleaseContested = true;
           }
         }
-        lastFirefoxWheelDelta = pixelMode ? event.deltaY : 0;
+        if (strategy === "firefox-wheel") {
+          lastFirefoxWheelDelta = pixelMode ? event.deltaY : 0;
+        }
       }
       if (!handleUserScrollStart()) return;
       if (outwardBoundary) userScrollMoved = true;
