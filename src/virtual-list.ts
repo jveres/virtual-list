@@ -1161,6 +1161,7 @@ export function createVirtualList<T>(
   function commit(
     snapshot: Prepared<T> | null,
     policyOverride?: CapturePolicy,
+    scrollWrite: "allowed" | "never" = "allowed",
   ): void {
     if (disposed) return;
     guarded(() => {
@@ -1168,7 +1169,7 @@ export function createVirtualList<T>(
       pending = null;
       committing = applying;
       try {
-        commitBody(applying, policyOverride);
+        commitBody(applying, policyOverride, scrollWrite);
       } finally {
         committing = null;
       }
@@ -1178,6 +1179,7 @@ export function createVirtualList<T>(
   function commitBody(
     applying: Prepared<T> | null,
     policyOverride: CapturePolicy | undefined,
+    scrollWrite: "allowed" | "never",
   ): void {
     // Teardown failures are collected here and surfaced only after the
     // commit has reached its consistent terminal state.
@@ -1249,8 +1251,12 @@ export function createVirtualList<T>(
       if (!booting && options.followBehavior === "smooth") {
         smoothFollowArmed = result.mode === "end";
       }
+      // A mid-phase commit never writes: its target equals the position by
+      // construction, except where the engine holds the viewport outside
+      // the range (an iOS rubber-band bounce) and the clamp would fight it.
       if (
         !smoothFollow &&
+        scrollWrite === "allowed" &&
         Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX
       ) {
         writeScrollTop(target);
@@ -1615,7 +1621,7 @@ export function createVirtualList<T>(
         // coordinate by construction) — commit it now, mid-phase: a
         // version switch, an appended message. Holding it for a settle
         // that momentum can postpone by seconds reads as a dead click.
-        commit(prepared, "viewport");
+        commit(prepared, "viewport", "never");
         return;
       } else {
         // These rows will wait: their heights are re-read at the settle

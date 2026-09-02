@@ -74,8 +74,10 @@ as preserved primitives, with the smaller API built around them.
    changes nothing above the anchor — the keys up to it an unchanged,
    unreplaced prefix, every dirty row at or below it, the anchor row itself
    unreplaced or (with the viewport exactly on its top) replaced along with
-   the whole tail — needs no scroll write and commits at once, mid-gesture:
-   a message version switch, an appended message. A prepend, a reorder, or
+   the whole tail — needs no scroll write and commits at once, mid-gesture,
+   without one (an iOS rubber-band bounce holds the viewport outside the
+   range, and the clamp would fight it): a message version switch, an
+   appended message. A prepend, a reorder, or
    an `"end"`-anchored snapshot still waits for the settle. The streaming
    chat uses `"live"`.
    While the surface is idle, the update renders in place and commits

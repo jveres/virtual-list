@@ -108,6 +108,8 @@ function mount(
     height?: () => number;
     /** Observes every scrollTop write — where an engine forces layout. */
     onScrollWrite?: () => void;
+    /** Lets the position leave the range, as an iOS rubber-band bounce does. */
+    overscroll?: boolean;
     /** render() throws for items with this body. */
     throwOn?: string;
     /** getBoundingClientRect throws for items with this body (post-build). */
@@ -135,11 +137,16 @@ function mount(
     // engine: growing the range back later does not restore it.
     scrollTop: {
       get: () => {
+        if (hooks.overscroll) return scrollTop;
         scrollTop = Math.max(0, Math.min(maxScrollTop(), scrollTop));
         return scrollTop;
       },
       set: (next: number) => {
         hooks.onScrollWrite?.();
+        if (hooks.overscroll) {
+          scrollTop = next;
+          return;
+        }
         scrollTop = Math.max(0, Math.min(maxScrollTop(), next));
       },
     },
@@ -1754,6 +1761,33 @@ describe("v2 runtime — commands", () => {
     h.settle();
     expect(h.list.state.held).toBe(false);
     expect(h.viewport.scrollTop).toBe(before + 5 * ROW_H);
+    h.list.dispose();
+  });
+
+  it("live: a structural commit during a rubber-band bounce never writes scrollTop", () => {
+    const initial = range(0, 50);
+    const writes: number[] = [];
+    const h = mount(initial, {
+      scrollingUpdates: "live",
+      overscroll: true,
+      onScrollWrite: () => writes.push(1),
+    });
+    h.userScroll(4000);
+    h.userScroll(4440); // Bounced 40px past the end; the gesture is live.
+    writes.length = 0;
+    // A version switch of the tail (below the anchor) commits at once —
+    // the total stays 5000, so the bounce position is outside the range...
+    h.list.setItems([...initial.slice(0, 45), ...range(100, 105)]);
+    expect(h.list.state.held).toBe(false);
+    expect(h.rowElement("msg 100")).toBeDefined;
+    // ...and leaves the bounce alone: no clamp write to the range.
+    expect(writes).toEqual([]);
+    expect(h.viewport.scrollTop).toBe(4440);
+    // A second switch during the same bounce works the same way.
+    h.list.setItems([...initial.slice(0, 45), ...range(200, 205)]);
+    expect(h.list.state.held).toBe(false);
+    expect(writes).toEqual([]);
+    expect(h.viewport.scrollTop).toBe(4440);
     h.list.dispose();
   });
 
