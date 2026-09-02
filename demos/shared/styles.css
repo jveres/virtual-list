@@ -487,7 +487,11 @@ p.ai-settings-note {
   width: min(100%, 860px);
   margin: 0 auto;
   padding: 12px 24px;
-  contain: layout style paint;
+  /* No paint containment: a paint-contained row inside a transformed,
+     clipped slot intermittently went unpainted on iPad Safari after load
+     (blank rows above the last two until any layout read), and the slot
+     already clips. */
+  contain: layout style;
 }
 
 @keyframes fly-in {
