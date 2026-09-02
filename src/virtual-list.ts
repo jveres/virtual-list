@@ -35,10 +35,10 @@ import {
 //    otherwise retained until the settle commit swaps content, height,
 //    offsets, canvas, and anchor together — nothing mounted ever shows
 //    content that disagrees with its slot. "freeze" holds every such
-//    update; "live" (the default) renders it in place and commits its height at once
-//    whenever no anchor-preserving scroll write is needed for it (rows at
-//    or below the anchor row). Idle, every mode renders in place and
-//    commits at once.
+//    update; "live" (the default) renders it in place and commits its
+//    height at once whenever no anchor-preserving scroll write is needed
+//    for it (rows at or below the anchor row). Idle, every mode renders in
+//    place and commits at once.
 //    A mounted row lives inside a dimensionally stable SLOT (fixed
 //    height, clipped) as the safety net for changes made outside setItems
 //    (direct DOM mutation, late resources): the ResizeObserver marks the
@@ -99,9 +99,9 @@ export interface VirtualListOptions<T> {
    *   slot at once (no geometry change), otherwise held until settle —
    *   streaming keeps flowing until a wrap changes the height;
    * - "freeze": every such update is held until settle;
-   * - "live" (default): rendered in place on the committed element right away, and
-   *   its height commits right away too when nothing on screen has to
-   *   move for it — the row is at or below the viewport's anchor row, so
+   * - "live" (default): rendered in place on the committed element right
+   *   away, and its height commits right away too when nothing on screen
+   *   has to move for it — the row is at or below the viewport's anchor row, so
    *   only it and what lies below it change, with no scroll write. The
    *   complete updated content is always visible: never a cut or blank
    *   line. A dirty row strictly above the anchor is entirely off-screen
@@ -365,7 +365,10 @@ export function createVirtualList<T>(
           failures.push(...failuresOf(error));
         }
       }
-      throwTeardown(failures);
+      throwFailures(
+        failures,
+        "committed with failures in teardown or queued work",
+      );
     } finally {
       liveScopes.pop();
       afterCommit = outer;
@@ -455,10 +458,14 @@ export function createVirtualList<T>(
     return failures;
   }
 
-  function throwTeardown(failures: readonly unknown[]): void {
+  function throwFailures(failures: readonly unknown[], message: string): void {
     if (failures.length === 0) return;
     if (failures.length === 1) throw failures[0];
-    throw new AggregateError([...failures], "row teardown failed");
+    throw new AggregateError([...failures], message);
+  }
+
+  function throwTeardown(failures: readonly unknown[]): void {
+    throwFailures(failures, "row teardown failed");
   }
 
   /** Flatten a caught error into its constituent failures. */

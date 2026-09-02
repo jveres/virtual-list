@@ -28,9 +28,9 @@ import { mustGet } from "../shared/utils.js";
 // Every change reaches the runtime through setItems (a new item object for
 // the key): rendered in place while idle or under "live", rendered fresh
 // off-scroller during a scroll phase under "same-height"/"freeze", or a
-// replacing re-render with the "replace" box. Late images learn their size at load and re-enter
-// through setItems the same way — the lab never mutates a mounted row's
-// size directly.
+// replacing re-render with the "replace" box. Late images learn their size
+// at load and re-enter through setItems the same way — the lab never
+// mutates a mounted row's size directly.
 //
 // Telemetry, purely observational:
 // - an instance-level scrollTop accessor on the viewport records every
@@ -42,7 +42,9 @@ import { mustGet } from "../shared/utils.js";
 //   or unattributed scroll events within the last 120ms.
 // Violations reported:
 //   G  geometry (slot height/offset, canvas height) changed while native
-//      scrolling — or while a glide was still moving;
+//      scrolling — or while a glide was still moving — other than a
+//      "live" commit that wrote no scrollTop and touched only rows at or
+//      below the anchor;
 //   W  scrollTop written by the runtime while native scrolling;
 //   O  mounted slots overlap, or a slot does not clip;
 //   A  the row under the viewport top moved across a commit (unless the
@@ -141,13 +143,17 @@ function violation(code: string, message: string): void {
 // "upload trace" button. Silently a no-op without the dev server.
 
 let reportTimer = 0;
+/** Enough of the ring to read a violation's lead-up; the vite sink appends. */
+const REPORT_TAIL_LINES = 700;
+/** Violations arrive in clusters; one upload per cluster. */
+const REPORT_DEBOUNCE_MS = 1200;
 
 function scheduleReport(why: string): void {
   if (reportTimer !== 0) return;
   reportTimer = window.setTimeout(() => {
     reportTimer = 0;
     void sendReport(why);
-  }, 1200);
+  }, REPORT_DEBOUNCE_MS);
 }
 
 async function sendReport(why: string): Promise<void> {
@@ -158,7 +164,7 @@ async function sendReport(why: string): Promise<void> {
     mode: scrollingMode(),
     violations,
     viewport: { width: innerWidth, height: innerHeight },
-    trace: trace.ring.slice(-700),
+    trace: trace.ring.slice(-REPORT_TAIL_LINES),
   });
   try {
     const response = await fetch("/__lab/report", {
@@ -428,17 +434,20 @@ const expectedWrites: number[] = [];
 let lastScrollEventTop = Number.NaN;
 /** Advances on every runtime scrollTop write. */
 let writeSerial = 0;
+/** Recent runtime writes; glideMoving() needs the one BEFORE the latest. */
+const RUNTIME_WRITE_HISTORY = 4;
 const runtimeWriteTimes: number[] = [];
 let commandIssuing = false;
 let smoothPending = 0;
 /** A command was just issued; its takeover commit may follow in this task. */
 let takeoverPending = false;
 /** The last few raw input/scroll events — dumped with every G/W violation. */
+const RECENT_INPUT_MAX = 16;
 const recentInput: string[] = [];
 
 function noteInput(text: string): void {
   recentInput.push(`+${(performance.now() - startedAt).toFixed(0)}ms ${text}`);
-  if (recentInput.length > 16) recentInput.shift();
+  if (recentInput.length > RECENT_INPUT_MAX) recentInput.shift();
   if (verbose()) log(text);
 }
 
@@ -497,7 +506,9 @@ function installWriteHook(): void {
         anchorRecord = captureAnchor();
       });
       runtimeWriteTimes.push(now);
-      if (runtimeWriteTimes.length > 4) runtimeWriteTimes.shift();
+      if (runtimeWriteTimes.length > RUNTIME_WRITE_HISTORY) {
+        runtimeWriteTimes.shift();
+      }
       if (verbose()) log(`write scrollTop=${Math.round(actual)}`);
       // Glide frames race a user grab by at most one frame before the
       // controller cancels the glide; those writes are not a violation.
@@ -660,6 +671,7 @@ let loadsAborted = 0;
 let expectAnchoredCommit = false;
 /** A held phase just committed: the next geometry batch is worth logging. */
 let heldCleared = false;
+let heldClearedUnderActivity = false;
 
 // --- The edge pill (same presentation as the settle lab) --------------------
 
@@ -734,7 +746,12 @@ function onState(state: VirtualListState): void {
   lastState = state;
   stateHeld = state.held;
   if (previous === null || previous.held !== state.held) {
-    if (!state.held) heldCleared = true;
+    if (!state.held) {
+      heldCleared = true;
+      // A "live" drain of the dirty set also clears `held` — under activity.
+      // Only a quiet clearing is the settle commit.
+      heldClearedUnderActivity = nativeActive() || glideMoving();
+    }
     log(
       state.held ? "HELD" : "committed (held cleared)",
       state.held ? "warn" : "good",
@@ -1027,11 +1044,14 @@ function classifyBatch(records: MutationRecord[]): void {
   // The commit that cleared a held phase is the settle commit: the one
   // permitted commit at the end of a programmatic phase (a landed glide's
   // promise resolves only after it, so smoothPending is still up).
-  const settleCommit = heldCleared;
+  const heldJustCleared = heldCleared;
   heldCleared = false;
+  // The settle commit is the one that cleared a held phase while quiet; a
+  // "live" drain under activity clears `held` too and is not one.
+  const settleCommit = heldJustCleared && !heldClearedUnderActivity;
   // A command's takeover commit: the runtime stopped the native scroll and
   // committed held work by contract (explicit command > gesture).
-  const takeover = takeoverPending && settleCommit;
+  const takeover = takeoverPending && heldJustCleared;
   takeoverPending = false;
   // Idle streaming commits every few frames; log only settle commits
   // unless verbose.

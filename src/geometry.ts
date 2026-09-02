@@ -33,7 +33,7 @@ export interface GeometryViewport {
 }
 
 export interface Commit {
-  /** Absolute scroll target — the arbiter performs exactly one write. */
+  /** Absolute scroll target — the runtime performs exactly one write. */
   scrollTop: number;
   /** Content size plus reserve — the scroll surface height. */
   totalSize: number;

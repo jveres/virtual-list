@@ -167,6 +167,8 @@ function anythingQueued(): boolean {
 // anchor-preserving write); their scroll events must not feed the
 // premature-settle heuristic.
 const labExpectedTops: number[] = [];
+/** Mirrors the controller's bounded target buffer (a few frames' worth). */
+const LAB_EXPECTED_TOPS_MAX = 4;
 let gestures = 0;
 let settles = 0;
 let prematureCount = 0;
@@ -232,7 +234,7 @@ function applyQueuedChunk(boundary: Boundary, reason: string): void {
     // scroll.
     controller.recordProgrammaticScrollTop(target);
     labExpectedTops.push(target);
-    if (labExpectedTops.length > 4) labExpectedTops.shift();
+    if (labExpectedTops.length > LAB_EXPECTED_TOPS_MAX) labExpectedTops.shift();
     viewport.scrollTop = target;
     log(
       `COMMIT top ${reason}: +${pending.count} rows +${delta}px, top ${Math.round(
@@ -523,6 +525,7 @@ function rebuildList(): void {
     0,
     (viewport.scrollHeight - viewport.clientHeight) / 2,
   );
+  // The first rebuild runs before the controller exists (boot order).
   controller?.recordProgrammaticScrollTop(middle);
   viewport.scrollTop = middle;
   hidePill(true);

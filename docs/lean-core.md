@@ -20,8 +20,8 @@ as preserved primitives, with the smaller API built around them.
    (`src/scroll-settle.ts`) and refined under lab traces: the unchanged
    portions match `main`; the Firefox deviations (the two-window edge
    release, and Firefox alone retaining a pending release across fresh
-   input) are flagged in-source and documented here. Its engine knowledge is empirically verified and
-   is not re-derived.
+   input) are flagged in-source and documented here. Its engine knowledge
+   is empirically verified and is not re-derived.
 2. **Chunk premeasurement** — items are built and measured OFF-scroller
    (a detached, width-synced measurement root) before they ever enter the
    scroll surface, so no DOM mutation of the scroller happens during
@@ -31,8 +31,9 @@ as preserved primitives, with the smaller API built around them.
 ## The core contract (normative)
 
 1. During an active scroll phase (a native gesture or a programmatic
-   glide), the scroll surface's **geometry is immutable**: key order, measured extents, offsets, canvas size, and the
-   scroll range do not change. Window reconciliation — mounting and
+   glide), the scroll surface's **geometry is immutable**: key order,
+   measured extents, offsets, canvas size, and the scroll range do not
+   change. Window reconciliation — mounting and
    unmounting already-known, premeasured rows at their fixed positions —
    continues freely throughout the scroll; without it a long momentum
    scroll would run into blank gaps. Positioning within fixed geometry is
