@@ -32,12 +32,14 @@ pnpm run dev
   `--seed`).
 - `/demos/streaming/index.html` — the streaming chat, the acceptance target:
   send flow with pin-to-top, smooth end-follow through streams, scrollback
-  loading in an in-flow edge slot, message versions, live tool panels, day
-  separators with a sticky header, a Markdown export, and an optional real
-  OpenAI provider (key stored in this browser only). `?instant` removes the
-  simulated token delays, `?stream=fast-long` streams a long reply quickly,
-  `?edge=pill` uses a floating loader pill instead of the in-flow slot, and
-  `?sticky=off` starts with the sticky day header off.
+  loading in an in-flow edge slot, message versions, day separators with a
+  sticky header, tool panels, a Markdown export, and an optional real OpenAI
+  provider (key stored in this browser only; tool panels are live there and
+  canned under the simulated provider). `?stream=instant` (or `?instant`)
+  removes the simulated token delays, `?stream=fast-long` (or `?fast-long`)
+  streams a long reply quickly, `?edge=pill` uses a floating loader pill
+  instead of the in-flow slot, and `?sticky=off` starts with the sticky day
+  header off.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server

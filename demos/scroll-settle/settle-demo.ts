@@ -545,10 +545,8 @@ strategySelect.addEventListener("change", () => {
 });
 mustGet("glide-top").addEventListener("click", () => glideTo("top"));
 mustGet("glide-bottom").addEventListener("click", () => glideTo("bottom"));
-mustGet("queue-now").addEventListener("click", () =>
-  startLoad("manual", "top"),
-);
-mustGet("append-now").addEventListener("click", () =>
+mustGet("load-top").addEventListener("click", () => startLoad("manual", "top"));
+mustGet("load-bottom").addEventListener("click", () =>
   startLoad("manual", "bottom"),
 );
 mustGet("reset").addEventListener("click", () => {

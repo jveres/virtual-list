@@ -36,6 +36,7 @@ import {
 } from "../shared/utils.js";
 import {
   type ChatTurn,
+  GENERATED_IMAGE_PATTERN,
   getAISettings,
   initAISettingsPanel,
   loadOpenAIHistory,
@@ -54,7 +55,9 @@ import "../shared/styles.css";
 // elementOf / state) with no escape hatch into its internals.
 //
 // The message data is immutable-by-replacement: every change clones the
-// message object and pushes a fresh snapshot through setItems. The runtime's
+// message object and pushes a fresh snapshot through setItems. The one
+// in-place exception is a tool panel's open state, which the runtime never
+// needs to know about (it is excluded from the panel signature). The runtime's
 // keyed renderer re-renders exactly the changed rows (render(item, existing)),
 // and end-compatible snapshots keep end-follow engaged while streaming.
 //
@@ -144,7 +147,7 @@ const DATA_WINDOW_FACTOR = 5;
 const LOAD_OLDER_DELAY_MS = 180;
 // How long the "At the top" overlay lingers before fading.
 const EDGE_NO_MORE_HIDE_MS = 1400;
-// After a chunk loads with more history remaining, the loading pill lingers
+// After a chunk loads with more history remaining, the loader (slot or pill) lingers
 // briefly instead of hiding — a user still scrolling back re-enters the
 // edge zone within this window, and hiding between chunks reads as a
 // flashing loader.
@@ -586,8 +589,8 @@ let labeledFor = "";
 const DAY_MS = 86_400_000;
 const UNDATED_DAY = -1;
 
-function localMidnight(at: number): number {
-  const date = new Date(at);
+function localMidnight(when: number): number {
+  const date = new Date(when);
   return new Date(
     date.getFullYear(),
     date.getMonth(),
@@ -1185,7 +1188,7 @@ function appendVersionNav(row: HTMLElement, message: Message): void {
 }
 
 // Matches when the (trimmed) stream currently ends with an embedded image.
-const TRAILING_IMAGE_RE = /!\[[^\]]*\]\(data:image\/[a-z.+-]+;base64,[^)]*\)$/;
+const TRAILING_IMAGE_RE = new RegExp(`${GENERATED_IMAGE_PATTERN}$`);
 
 // What the live viewer renders mid-stream. Trailing newlines (OpenAI replies
 // end with one; embedded image blocks append two) would otherwise parse into
@@ -1335,8 +1338,16 @@ function endSendGlide(): void {
 
 // --- Simulated streaming ----------------------------------------------------
 
-// Advances the response rotation and returns the variant to stream.
-function advanceResponse(prompt = ""): ReplyVariant {
+/** A call still "running" when its stream ended never finished: errored. */
+function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
+  return toolCall.status === "running"
+    ? { ...toolCall, status: "error" }
+    : toolCall;
+}
+
+// The reply to stream for a prompt: the next of the rotation, or the pinned
+// fast long-form variant.
+function replyFor(prompt = ""): ReplyVariant {
   // The fast long-form variant is the last sample. Force it via the
   // ?fast-long URL param, or by sending a message that starts with "f" — a
   // shortcut for testing fast streaming on demand. Deliberately pinned
@@ -1427,11 +1438,7 @@ function persistOpenAIConversation(): void {
   for (const message of transcript) {
     if (message.markdown === "") continue;
     // A cancel can leave a call mid-flight; store it as errored.
-    const toolCalls = message.toolCalls?.map((toolCall) => ({
-      ...toolCall,
-      status:
-        toolCall.status === "running" ? ("error" as const) : toolCall.status,
-    }));
+    const toolCalls = message.toolCalls?.map(settledToolCall);
     turns.push({
       role: message.role,
       markdown: message.markdown,
@@ -1563,11 +1570,7 @@ async function streamOpenAIResponse(
         : alert;
       // Panels still mid-flight would pulse "running" forever; settle them.
       if (liveToolCalls.size > 0 && message.toolCalls) {
-        message.toolCalls = message.toolCalls.map((toolCall) =>
-          toolCall.status === "running"
-            ? { ...toolCall, status: "error" as const }
-            : toolCall,
-        );
+        message.toolCalls = message.toolCalls.map(settledToolCall);
       }
     });
   } finally {
@@ -1760,7 +1763,7 @@ async function handleSend(): Promise<void> {
     if (useOpenAI) {
       await streamOpenAIResponse(assistantId, abort);
     } else {
-      const reply = advanceResponse(text);
+      const reply = replyFor(text);
       await wait(instantReplies ? 0 : reply.thinkingDelayMs, abort);
       if (abort.cancelled) return;
 

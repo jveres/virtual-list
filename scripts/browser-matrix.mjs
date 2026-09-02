@@ -229,7 +229,8 @@ function mulberry32(seedValue) {
  * Chaos: the lab's in-page adversary runs (bursts, throwing renders,
  * inserts, reorders, deletions, commands, mode switches) while this loop
  * feeds random wheel input — flicks, slow drags, reversals, pauses — and
- * stops at the first violation so its trace is fresh.
+ * stops at the first violation its periodic check sees (within a few
+ * seconds) so the trace around it stays short.
  */
 async function runChaosScenario(page, seconds) {
   const random = mulberry32(seed);
