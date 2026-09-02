@@ -75,8 +75,11 @@ export function createStickyHeaders(
   overlay.append(active, incoming);
   container.appendChild(overlay);
 
-  // Header keys (cached); positions are read live from them.
+  // Geometry is immutable between refreshes, so cache positions as compact
+  // arrays instead of allocating query results inside every scroll frame.
   let keys: string[] = [];
+  let tops: number[] = [];
+  let heights: number[] = [];
   let groupCount = 0;
   let activeGroup = -1;
   let incomingGroup = -1;
@@ -84,10 +87,8 @@ export function createStickyHeaders(
   let enabled = true;
   let hiddenInline: HTMLElement | null = null;
 
-  const headerTop = (ordinal: number): number =>
-    positionOf(keys[ordinal] ?? "")?.top ?? 0;
-  const headerHeight = (ordinal: number): number =>
-    positionOf(keys[ordinal] ?? "")?.height ?? 0;
+  const headerTop = (ordinal: number): number => tops[ordinal] ?? 0;
+  const headerHeight = (ordinal: number): number => heights[ordinal] ?? 0;
 
   const fillSlot = (slot: HTMLElement, ordinal: number): void => {
     renderHeader(slot, ordinal);
@@ -194,6 +195,9 @@ export function createStickyHeaders(
     }
     pendingScroll = viewport.scrollTop;
     keys = headerKeys();
+    const positions = keys.map(positionOf);
+    tops = positions.map((position) => position?.top ?? 0);
+    heights = positions.map((position) => position?.height ?? 0);
     groupCount = keys.length;
     activeGroup = -1;
     clearIncoming();

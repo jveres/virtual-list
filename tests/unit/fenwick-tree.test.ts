@@ -38,6 +38,17 @@ const oracleIndexAt = (values: readonly number[], offset: number): number => {
   return Math.max(0, Math.min(values.length - 1, index));
 };
 
+const oracleLowerBound = (
+  values: readonly number[],
+  offset: number,
+): number => {
+  if (Number.isNaN(offset) || offset <= 0) return 0;
+  for (let count = 1; count <= values.length; count++) {
+    if (oraclePrefix(values, count) >= offset) return count;
+  }
+  return values.length;
+};
+
 describe("FenwickTree.prefix / total", () => {
   it("returns cumulative sums at each boundary", () => {
     const t = tree([10, 20, 30, 40]);
@@ -99,6 +110,19 @@ describe("FenwickTree.indexAt", () => {
     // Offset 0 lands on the last item whose prefix is still <= 0.
     expect(t.indexAt(0)).toBe(2);
     expect(t.indexAt(10)).toBe(2);
+  });
+});
+
+describe("FenwickTree.lowerBound", () => {
+  it("maps a pixel boundary to the exclusive item count", () => {
+    const t = tree([10, 20, 30]);
+    expect(t.lowerBound(0)).toBe(0);
+    expect(t.lowerBound(1)).toBe(1);
+    expect(t.lowerBound(10)).toBe(1);
+    expect(t.lowerBound(10.001)).toBe(2);
+    expect(t.lowerBound(30)).toBe(2);
+    expect(t.lowerBound(60)).toBe(3);
+    expect(t.lowerBound(1000)).toBe(3);
   });
 });
 
@@ -171,6 +195,7 @@ describe("FenwickTree property: matches a naive oracle", () => {
           expect(t.prefix(k)).toBe(oraclePrefix(values, k));
           const offset = randInt(oraclePrefix(values, size) + 40);
           expect(t.indexAt(offset)).toBe(oracleIndexAt(values, offset));
+          expect(t.lowerBound(offset)).toBe(oracleLowerBound(values, offset));
         }
       };
 

@@ -1233,6 +1233,7 @@ export function createVirtualList<T>(
     ) {
       return lastRange;
     }
+    const geometryChanged = lastReconcile.epoch !== geometryEpoch;
     lastReconcile = {
       scrollTop: vp.scrollTop,
       height: vp.height,
@@ -1240,7 +1241,9 @@ export function createVirtualList<T>(
     };
     const range = geometry.window(vp, overscanPx);
     lastRange = range;
-    for (const row of [...mountedRows]) {
+    // Deleting the current entry while iterating a Set is defined and does
+    // not skip its successor; avoid allocating an array on every scroll.
+    for (const row of mountedRows) {
       const index = geometry.indexOf(row.key);
       if (index < range.start || index >= range.end) unmountRow(row);
     }
@@ -1248,11 +1251,16 @@ export function createVirtualList<T>(
       const key = geometry.keyAt(index);
       const row = key === undefined ? undefined : rows.get(key);
       if (!row) continue;
-      if (!row.mounted) mountRow(row);
-      const offset = geometry.offsetOf(row.key);
-      if (row.offset !== offset) {
-        row.offset = offset;
-        row.slot.style.transform = `translateY(${offset}px)`;
+      const entering = !row.mounted;
+      if (entering) mountRow(row);
+      // Offsets cannot change during a plain scroll. Read the Fenwick tree
+      // only for rows entering the window or after a geometry commit.
+      if (entering || geometryChanged) {
+        const offset = geometry.offsetOf(row.key);
+        if (row.offset !== offset) {
+          row.offset = offset;
+          row.slot.style.transform = `translateY(${offset}px)`;
+        }
       }
     }
     return range;
@@ -1277,19 +1285,6 @@ export function createVirtualList<T>(
     callback({ signal: abort.signal });
   }
 
-  function sameState(a: VirtualListState, b: VirtualListState): boolean {
-    return (
-      a.count === b.count &&
-      a.start === b.start &&
-      a.end === b.end &&
-      a.atStart === b.atStart &&
-      a.atEnd === b.atEnd &&
-      a.following === b.following &&
-      a.totalSize === b.totalSize &&
-      a.held === b.held
-    );
-  }
-
   function publish(
     vp: GeometryViewport = viewportState(),
     reconciledRange?: { start: number; end: number },
@@ -1306,19 +1301,36 @@ export function createVirtualList<T>(
         ? 1
         : 0;
     const count = geometry.count - leading - trailing;
-    const state: VirtualListState = {
-      count,
-      start: Math.min(count, Math.max(0, range.start - leading)),
-      end: Math.min(count, Math.max(0, range.end - leading)),
-      atStart: vp.scrollTop <= AT_EDGE_EPSILON_PX,
-      atEnd: maxTop - vp.scrollTop <= AT_EDGE_EPSILON_PX,
-      following: smoothFollowArmed,
-      totalSize: geometry.totalSize,
-      held: pending !== null || dirtyRows.size > 0,
-    };
-    const changed = !sameState(lastState, state);
-    lastState = state;
-    if (changed) options.onState?.(state);
+    const start = Math.min(count, Math.max(0, range.start - leading));
+    const end = Math.min(count, Math.max(0, range.end - leading));
+    const atStart = vp.scrollTop <= AT_EDGE_EPSILON_PX;
+    const atEnd = maxTop - vp.scrollTop <= AT_EDGE_EPSILON_PX;
+    const totalSize = geometry.totalSize;
+    const held = pending !== null || dirtyRows.size > 0;
+    // Most scroll events remain inside the same mounted range. Avoid a
+    // short-lived public-state object unless a host-observable field changed.
+    if (
+      lastState.count !== count ||
+      lastState.start !== start ||
+      lastState.end !== end ||
+      lastState.atStart !== atStart ||
+      lastState.atEnd !== atEnd ||
+      lastState.following !== smoothFollowArmed ||
+      lastState.totalSize !== totalSize ||
+      lastState.held !== held
+    ) {
+      lastState = {
+        count,
+        start,
+        end,
+        atStart,
+        atEnd,
+        following: smoothFollowArmed,
+        totalSize,
+        held,
+      };
+      options.onState?.(lastState);
+    }
     if (disposed) return;
 
     // Proximity signals with entry/exit hysteresis (I3).

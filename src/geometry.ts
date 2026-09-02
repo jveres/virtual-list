@@ -190,8 +190,7 @@ export class Geometry {
       viewport.scrollTop + viewport.height + overscanPx,
     );
     const start = this.tree.indexAt(top); // Clamped to the last index.
-    let end = start;
-    while (end < this.keys.length && this.tree.prefix(end) < bottom) end++;
+    const end = this.tree.lowerBound(bottom);
     return { start, end };
   }
 
