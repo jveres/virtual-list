@@ -236,7 +236,7 @@
             <option value="openai">OpenAI</option>
           </select>
         </label>
-        <label class="ai-settings-field">
+        <label class="ai-settings-field" data-provider="openai">
           OpenAI API key
           <input
             type="password"
@@ -247,7 +247,7 @@
           />
           <span class="ai-settings-note" id="ai-key-status"></span>
         </label>
-        <label class="ai-settings-field">
+        <label class="ai-settings-field" data-provider="openai">
           Model
           <input
             type="text"
@@ -257,7 +257,7 @@
             spellcheck="false"
           />
         </label>
-        <div class="ai-settings-field">
+        <div class="ai-settings-field" data-provider="openai">
           Tools
           <label class="ai-tool-option">
             <input type="checkbox" id="ai-tool-web-search" />
@@ -276,7 +276,7 @@
             Thinking summary
           </label>
         </div>
-        <label class="ai-settings-field">
+        <label class="ai-settings-field" data-provider="openai">
           Request context
           <select id="ai-context">
             <option value="12">Last 12 turns</option>
@@ -284,11 +284,11 @@
             <option value="0">Full history</option>
           </select>
         </label>
-        <div class="ai-settings-actions">
+        <div class="ai-settings-actions" data-provider="openai">
           <button type="button" id="ai-test-key">Test key</button>
           <button type="button" id="ai-clear-history">Clear history</button>
         </div>
-        <p class="ai-settings-note">
+        <p class="ai-settings-note" data-provider="openai">
           Everything stays in this browser: the key in localStorage, the
           OpenAI conversation in IndexedDB. The key is sent only to
           api.openai.com, straight from this page. Not every model supports

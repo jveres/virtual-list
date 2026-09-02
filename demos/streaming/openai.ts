@@ -741,6 +741,17 @@ export function initAISettingsPanel(
     toggle.classList.toggle("active", getAISettings().provider === "openai");
   };
 
+  // Under the simulated provider nothing but the provider choice shows;
+  // every OpenAI-specific input, action, and note belongs to OpenAI.
+  const openAIFields = panel.querySelectorAll<HTMLElement>(
+    '[data-provider="openai"]',
+  );
+  const syncProviderFields = () => {
+    const hidden = providerSelect.value !== "openai";
+    for (const field of openAIFields) field.hidden = hidden;
+  };
+  syncProviderFields();
+
   const persist = () => {
     const previousProvider = getAISettings().provider;
     const contextTurns = Number(contextSelect.value);
@@ -764,6 +775,7 @@ export function initAISettingsPanel(
     };
     saveAISettings(next);
     syncToggle();
+    syncProviderFields();
     keyStatus.textContent = keyHint(next.apiKey);
     if (next.provider !== previousProvider) {
       options.onProviderChange?.(next.provider);
