@@ -57,6 +57,22 @@
       }
       header h1 {
         font-size: 15px;
+        font-weight: 600;
+        color: var(--fg-dim);
+      }
+      /* The same home link as the streaming chat's header. */
+      header .header-title a {
+        color: var(--accent);
+        text-decoration: none;
+        font-weight: 600;
+      }
+      header .header-title a:hover {
+        text-decoration: underline;
+      }
+      header .header-title .sep {
+        margin: 0 8px;
+        color: var(--fg-dim);
+        font-weight: 400;
       }
       header .ua {
         color: var(--fg-dim);
@@ -313,7 +329,10 @@
   </head>
   <body>
     <header>
-      <h1>dynamic-height lab</h1>
+      <h1 class="header-title">
+        <a href="/" title="Back to demos">virtual-list</a>
+        <span class="sep">·</span>dynamic-height lab
+      </h1>
       <span class="ua" id="ua"></span>
     </header>
     <main>
