@@ -567,6 +567,18 @@ export function createVirtualList<T>(
   });
   viewportObserver.observe(viewport);
 
+  // A glide cannot survive a hidden document: its animation frames pause
+  // while the controller's timers keep running and settle the phase, and on
+  // return the glide would resume writing under a runtime that believes it
+  // is idle — every commit then lands under a moving glide. Cancel it; the
+  // command resolves false (interrupted), like any other interruption.
+  const onVisibilityChange = (): void => {
+    if (document.visibilityState === "hidden" && glide !== null) {
+      guarded(() => glide?.cancel());
+    }
+  };
+  document.addEventListener("visibilitychange", onVisibilityChange);
+
   // --- Preparation (off-scroller, failure-atomic) ---------------------------
   function emptyPrepared(
     keys: readonly string[],
@@ -1372,6 +1384,7 @@ export function createVirtualList<T>(
     abortEdge("start");
     abortEdge("end");
     controller.dispose();
+    document.removeEventListener("visibilitychange", onVisibilityChange);
     if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);
     rowObserver.disconnect();
     viewportObserver.disconnect();

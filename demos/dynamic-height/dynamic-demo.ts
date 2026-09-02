@@ -532,9 +532,14 @@ function installWriteHook(): void {
       // Glide frames race a user grab by at most one frame before the
       // controller cancels the glide; those writes are not a violation.
       if (!commandIssuing && smoothPending === 0 && nativeActive(now)) {
+        const stack = (new Error().stack ?? "")
+          .split("\n")
+          .slice(1, 6)
+          .map((line) => line.trim())
+          .join(" < ");
         violation(
           "W",
-          `scrollTop written (${Math.round(actual)}) during native scroll — ${evidence(now)}`,
+          `scrollTop written (${Math.round(actual)}) during native scroll — ${evidence(now)} — from ${stack}`,
         );
       }
     },
@@ -1079,7 +1084,7 @@ function classifyBatch(records: MutationRecord[]): void {
   // unless verbose.
   if (verbose() || settleCommit) {
     log(
-      `COMMIT canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} · ${heightChanges.length} heights · ${offsetChanges} offsets · slots +${added.size}/−${removed}`,
+      `COMMIT canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} · ${heightChanges.length} heights · ${offsetChanges} offsets · slots +${added.size}/−${removed}${takeover ? " · takeover" : ""}${settleCommit ? " · settle" : ""} · mode=${scrollingMode()} smooth=${smoothPending} write=${wroteScrollTop}`,
       "good",
     );
   }
@@ -1787,10 +1792,13 @@ function boot(): void {
   staleFrames.clear();
   staleReported.clear();
   clippedKeys.clear();
-  createList();
-  // Start mid-list so both edge zones need a deliberate scroll.
-  const middle = items[Math.floor(items.length / 2)];
-  if (middle) void issue(() => list.scrollTo(String(middle.id)));
+  // The boot commit and the mid-list positioning are the lab's own commands.
+  issue(() => {
+    createList();
+    // Start mid-list so both edge zones need a deliberate scroll.
+    const middle = items[Math.floor(items.length / 2)];
+    if (middle) void list.scrollTo(String(middle.id));
+  });
   booted = true;
   maintainStreams();
   log("booted mid-list", "mark");

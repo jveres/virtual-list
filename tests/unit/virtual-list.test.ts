@@ -555,6 +555,30 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.state.count).toBe(60);
   });
 
+  it("cancels an in-flight glide when the document is hidden (the command resolves false)", async () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    void h.list.scrollTo("m20");
+    const command = h.list.scrollTo("end", { behavior: "smooth" });
+    vi.advanceTimersByTime(48); // A few frames in.
+    const midway = h.viewport.scrollTop;
+    expect(midway).toBeGreaterThan(20 * ROW_H);
+    expect(midway).toBeLessThan(50 * ROW_H - VIEWPORT_H);
+
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await expect(command).resolves.toBe(false);
+    vi.advanceTimersByTime(500);
+    expect(h.viewport.scrollTop).toBe(midway); // No frames written after hiding.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+  });
+
   it('"live" still settle-gates structural changes', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
