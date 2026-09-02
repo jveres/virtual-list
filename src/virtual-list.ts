@@ -125,7 +125,17 @@ export interface VirtualListState {
 }
 
 export type ScrollTarget = string | "start" | "end";
-export type ScrollOptions = { align?: "start"; behavior?: "auto" | "smooth" };
+export type ScrollOptions = {
+  align?: "start";
+  behavior?: "auto" | "smooth";
+  /**
+   * Smooth only: the glide's duration in milliseconds, replacing the
+   * distance-based policy (quick short hops, bounded long jumps). A short
+   * hop that should read as deliberate — a chat's pin-to-top on send —
+   * would otherwise run at the policy's floor.
+   */
+  duration?: number;
+};
 
 export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
@@ -1284,6 +1294,7 @@ export function createVirtualList<T>(
     const owned: ScrollOptions = {
       align: scrollOptions.align,
       behavior: scrollOptions.behavior,
+      duration: scrollOptions.duration,
     };
     return new Promise((resolve) => {
       if (
@@ -1375,7 +1386,10 @@ export function createVirtualList<T>(
           }),
         target: destination,
       },
-      (distancePx) => glideDuration(distancePx, viewport.clientHeight),
+      (distancePx) =>
+        scrollOptions.duration !== undefined && scrollOptions.duration > 0
+          ? scrollOptions.duration
+          : glideDuration(distancePx, viewport.clientHeight),
       (completed) =>
         guarded(() => {
           glide = null;

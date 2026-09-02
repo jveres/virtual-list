@@ -153,7 +153,7 @@ The definition of correct, referenced by number throughout the code:
   `createVirtualList(viewport, { items, key, render, overscanPx?,
   onState?, onReachStart/End?, onDestroy?, settleStrategy?,
   scrollingUpdates? })`,
-  `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior? })
+  `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior?, duration? })
   → Promise<boolean>`, `state` (adds `held`: work is waiting for settle),
   `dispose()`. Changes from the v1 shape: `estimateSize` is gone — every
   key is premeasured before it commits, so heights are never estimated

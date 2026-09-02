@@ -577,6 +577,18 @@ describe("v2 runtime — commits and slots", () => {
     });
   });
 
+  it("an explicit smooth duration replaces the distance policy", () => {
+    const h = mount(range(0, 50));
+    void h.list.scrollTo("m40"); // 400px short of the end: the policy's floor is 320ms.
+    const start = h.viewport.scrollTop;
+    void h.list.scrollTo("end", { behavior: "smooth", duration: 1_000 });
+    vi.advanceTimersByTime(500);
+    expect(h.viewport.scrollTop).toBeGreaterThan(start);
+    expect(h.viewport.scrollTop).toBeLessThan(50 * ROW_H - VIEWPORT_H); // Still gliding.
+    vi.advanceTimersByTime(800);
+    expect(h.viewport.scrollTop).toBe(50 * ROW_H - VIEWPORT_H);
+  });
+
   it('"live" still settle-gates structural changes', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });

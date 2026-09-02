@@ -87,6 +87,11 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
+// The send scroll travels about one viewport, which the distance-based
+// duration policy clamps to its 320ms floor — a quick flick next to the
+// buttons' long glides. An explicit duration gives the send its own
+// deliberate pace (tuned on main).
+const SEND_SCROLL_DURATION_MS = 650;
 const INITIAL_TRANSCRIPT_COUNT = 100;
 // The loaded data window over the transcript: how much is handed to the
 // virtualizer, and how much each scrollback load prepends.
@@ -1500,6 +1505,7 @@ async function handleSend(): Promise<void> {
       virtualList?.scrollTo(String(userMessage.id), {
         align: "start",
         behavior: "smooth",
+        duration: SEND_SCROLL_DURATION_MS,
       }) ?? Promise.resolve(false);
     void pinCommand.then(endSendGlide);
     if (shouldFlyIn) {
