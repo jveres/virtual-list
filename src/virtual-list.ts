@@ -5,6 +5,14 @@ import {
   type GeometryViewport,
 } from "./geometry";
 import { type Glide, glideDuration, startGlide } from "./glide";
+// TEMP TRACE
+function trace(tag: string, data?: Record<string, unknown>): void {
+  const buffer = (window as unknown as { __vlTrace?: string[] }).__vlTrace;
+  if (!buffer) return;
+  buffer.push(
+    `${Math.round(performance.now())} ${tag}${data ? ` ${JSON.stringify(data)}` : ""}`,
+  );
+}
 import { createItemMeasurer, type ItemMeasurer } from "./premeasure";
 import {
   createScrollSettleController,
@@ -1240,6 +1248,16 @@ export function createVirtualList<T>(
       // full pixel short). Writing a whole pixel bounds the anchor's
       // landing error to half a pixel everywhere.
       const target = Math.round(result.scrollTop);
+      trace("commit", {
+        policy,
+        mode: result.mode,
+        before: before.scrollTop,
+        target,
+        total: result.totalSize,
+        newRows: applying?.newRows.size ?? -1,
+        keys: applying?.keys.length ?? -1,
+        glide: glideKind,
+      });
       const smoothFollow =
         !booting &&
         options.followBehavior === "smooth" &&
@@ -1470,6 +1488,13 @@ export function createVirtualList<T>(
     smoothScrollReachedTarget: () => glide === null,
     onGestureStarted: () => {},
     onGestureSettled: () => {
+      trace("settled", {
+        pending: pending !== null,
+        dirty: dirtyRows.size,
+        glide: glideKind,
+        armed: smoothFollowArmed,
+        takingOver,
+      });
       // The phase reached idle: everything held commits, once — and only
       // then does a landed command learn whether it is still on target.
       const remeasureReady =
@@ -1494,7 +1519,8 @@ export function createVirtualList<T>(
         remeasurePolicy === undefined
       ) {
         const following =
-          lastState.atEnd || endCommand || glideKind === "follow";
+          !takingOver &&
+          (lastState.atEnd || endCommand || glideKind === "follow");
         if (smoothFollowArmed !== following) {
           smoothFollowArmed = following;
           publish();
@@ -1538,6 +1564,10 @@ export function createVirtualList<T>(
    * forced reflow — merely clearing timers would leave momentum alive),
    * then settle the phase so held work commits before the command.
    */
+  // A command is settling the phase it interrupts: that settle must not
+  // infer follow intent from the position the command is leaving.
+  let takingOver = false;
+
   function interruptNativeScroll(): void {
     if (!controller.isUserScrollActive()) return;
     // Write the CURRENT position back untouched: clamping it against a
@@ -1550,7 +1580,12 @@ export function createVirtualList<T>(
     void viewport.offsetHeight;
     viewport.style.overflowY = previousOverflowY;
     writeScrollTop(currentTop);
-    controller.finishGesture();
+    takingOver = true;
+    try {
+      controller.finishGesture();
+    } finally {
+      takingOver = false;
+    }
   }
 
   // --- Data -----------------------------------------------------------------
@@ -1594,6 +1629,23 @@ export function createVirtualList<T>(
         // rows wait in dirtyRows, not as a snapshot), or unchanged — and it
         // supersedes whatever did wait.
         pending = null;
+      } else if (
+        liveUpdates &&
+        prepared.anchor !== "end" &&
+        confinedBelowAnchor(prepared)
+      ) {
+        // "live": a structural change that leaves everything above the
+        // anchor untouched needs no scroll write (the anchor keeps its
+        // coordinate by construction) — commit it now, mid-phase: a
+        // version switch, an appended message. Holding it for a settle
+        // that momentum can postpone by seconds reads as a dead click.
+        trace("structural-live", {
+          keys: prepared.keys.length,
+          newRows: [...prepared.newRows.keys()].slice(0, 3),
+          top: viewport.scrollTop,
+        });
+        commit(prepared, "viewport");
+        return;
       } else {
         // These rows will wait: their heights are re-read at the settle
         // (edge slots keep their declared height).
@@ -1604,6 +1656,45 @@ export function createVirtualList<T>(
       }
       if (!liveCommit()) publish();
     });
+  }
+
+  /**
+   * Whether a snapshot (plus every dirty measurement it would commit with)
+   * changes nothing above the viewport's anchor: the committed keys up to
+   * the anchor are an unchanged, unreplaced prefix of the new keys, dirty
+   * rows sit at or below the anchor, and the anchor row itself either
+   * survives unreplaced or is replaced while the viewport sits exactly on
+   * its top (its successor inherits that coordinate).
+   */
+  function confinedBelowAnchor(prepared: Prepared<T>): boolean {
+    const anchor = geometry.anchorAt(viewportState());
+    if (anchor === null) return true;
+    const anchorIndex = geometry.indexOf(anchor.key);
+    for (let index = 0; index < anchorIndex; index++) {
+      const key = geometry.keyAt(index);
+      if (key === undefined || prepared.keys[index] !== key) return false;
+      if (prepared.newRows.has(key)) return false;
+    }
+    const anchorInPlace =
+      prepared.keys[anchorIndex] === anchor.key &&
+      !prepared.newRows.has(anchor.key);
+    if (!anchorInPlace) {
+      // The anchor row goes: its coordinate passes to the row taking its
+      // index only while the viewport sits exactly on its top and no row
+      // from it onward survives (a replaced tail — the predecessor then
+      // end-aligns to that very coordinate). An anchor that merely moved
+      // (a prepend, a reorder) needs the write.
+      if (anchor.offset > SCROLL_WRITE_EPSILON_PX) return false;
+      const nextKeys = new Set(prepared.keys);
+      for (let index = anchorIndex; index < geometry.count; index++) {
+        const key = geometry.keyAt(index);
+        if (key !== undefined && nextKeys.has(key)) return false;
+      }
+    }
+    for (const row of dirtyRows) {
+      if (geometry.indexOf(row.key) < anchorIndex) return false;
+    }
+    return true;
   }
 
   // --- Commands -------------------------------------------------------------
@@ -1665,6 +1756,12 @@ export function createVirtualList<T>(
     scrollOptions: ScrollOptions,
     done: (completed: boolean) => void,
   ): void {
+    trace("scrollTo", {
+      target,
+      top: viewport.scrollTop,
+      glide: glideKind,
+      active: controller.isUserScrollActive(),
+    });
     smoothFollowArmed = false;
     const keyed = target !== "start" && target !== "end";
     const below = Math.max(0, scrollOptions.offset ?? 0);
@@ -1750,6 +1847,10 @@ export function createVirtualList<T>(
 
   /** Automatic end-follow: one glide whose destination tracks live growth. */
   function startFollowGlide(): void {
+    trace("follow-glide?", {
+      blocked: glide !== null,
+      top: viewport.scrollTop,
+    });
     if (disposed || glide !== null) return;
     controller.beginProgrammaticGesture();
     glide = startGlide(

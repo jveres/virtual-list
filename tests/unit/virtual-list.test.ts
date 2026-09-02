@@ -357,6 +357,37 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a command's takeover of a follow glide never re-arms following", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400); // A gesture landing at the end engages following.
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    // Growth starts a follow glide (a programmatic phase).
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed);
+    expect(h.list.state.following).toBe(true);
+
+    // Scroll-to-top takes over: the settle it forces must not read "was at
+    // the end" as follow intent.
+    void h.list.scrollTo("start", { behavior: "smooth" });
+    expect(h.list.state.following).toBe(false);
+    vi.advanceTimersByTime(1410); // Landed; its settle cooldown is running.
+    expect(h.viewport.scrollTop).toBe(0);
+    // Live growth below the anchor in that gap must not glide back down.
+    h.heights.set(5, 200);
+    fireResize(0, h.rowElement("msg 5"), 200);
+    vi.advanceTimersByTime(600);
+    expect(h.viewport.scrollTop).toBe(0);
+    h.settle();
+    expect(h.list.state.following).toBe(false);
+    h.list.dispose();
+  });
+
   it("an instant command to the end arms following under smooth follow", () => {
     const initial = range(0, 50);
     const h = mount(initial, { followBehavior: "smooth" });
@@ -846,15 +877,36 @@ describe("v2 runtime — commits and slots", () => {
     await expect(command).resolves.toBe(true);
   });
 
-  it('"live" still settle-gates structural changes', () => {
+  it('"live" commits an append at once and settle-gates a change above the anchor', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
     h.userScroll(3005);
-    h.list.setItems([...initial, ...range(50, 62)]);
+    const before = h.viewport.scrollTop;
+    // Below the anchor: no scroll write can be needed — live.
+    const appended = [...initial, ...range(50, 62)];
+    h.list.setItems(appended);
+    expect(h.list.state.count).toBe(62);
+    expect(h.list.state.held).toBe(false);
+    expect(h.viewport.scrollTop).toBe(before);
+    // Above it: the anchor-preserving write waits for the settle.
+    h.list.setItems([...range(100, 105), ...appended]);
+    expect(h.list.state.count).toBe(62);
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+    expect(h.list.state.count).toBe(67);
+    expect(h.viewport.scrollTop).toBe(before + 5 * ROW_H);
+  });
+
+  it('"live" settle-gates a structural change whose policy is the end', () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(3005);
+    h.list.setItems([...initial, ...range(50, 62)], { anchor: "end" });
     expect(h.list.state.count).toBe(50);
     expect(h.list.state.held).toBe(true);
     h.settle();
     expect(h.list.state.count).toBe(62);
+    expect(h.list.state.atEnd).toBe(true);
   });
 
   it("promotion leaves a pending page load (and its anchor) waiting for settle", () => {
@@ -1670,6 +1722,61 @@ describe("v2 runtime — commands", () => {
       [18 * ROW_H + 900, 18 * ROW_H],
       [18 * ROW_H + 500, 18 * ROW_H],
     ]);
+  });
+
+  it("live: a structural change confined below the anchor commits mid-gesture", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(2000); // Anchor: m20 at its top; the gesture stays live.
+    const before = h.viewport.scrollTop;
+
+    // The tail is replaced (a version switch): everything above m20 keeps
+    // its item, key, and height, so no scroll write can be needed.
+    const switched = [...initial.slice(0, 30), ...range(100, 115)];
+    h.list.setItems(switched);
+    expect(h.list.state.held).toBe(false);
+    expect(h.list.state.count).toBe(45);
+    expect(h.rowElement("msg 100")).toBeDefined;
+    expect(h.viewport.scrollTop).toBe(before);
+    expect(h.list.state.totalSize).toBe(45 * ROW_H);
+
+    // The anchor row itself replaced while the viewport sits on its top:
+    // its successor inherits the coordinate — still live.
+    const anchorSwapped = [...initial.slice(0, 20), ...range(200, 230)];
+    h.list.setItems(anchorSwapped);
+    expect(h.list.state.held).toBe(false);
+    expect(h.viewport.scrollTop).toBe(before);
+    expect(h.rowElement("msg 200")).toBeDefined;
+
+    // A change above the anchor (a prepend) still waits for the settle.
+    h.list.setItems([...range(300, 305), ...anchorSwapped]);
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+    expect(h.list.state.held).toBe(false);
+    expect(h.viewport.scrollTop).toBe(before + 5 * ROW_H);
+    h.list.dispose();
+  });
+
+  it("live: a prepend arriving with the viewport exactly at the top waits for the settle", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(500);
+    h.userScroll(0); // Momentum reached the top: anchor m0 at offset 0.
+    h.list.setItems([...range(100, 110), ...initial]);
+    expect(h.list.state.held).toBe(true); // The anchor moved; a write waits.
+    expect(h.viewport.scrollTop).toBe(0);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(10 * ROW_H);
+    h.list.dispose();
+  });
+
+  it("live: replacing an anchor row the viewport is scrolled into waits for the settle", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(2050); // Anchor: m20, 50px into it.
+    h.list.setItems([...initial.slice(0, 20), ...range(200, 230)]);
+    expect(h.list.state.held).toBe(true);
+    h.list.dispose();
   });
 
   it("moves mounted slots to their new offsets before the commit's scroll write", () => {
