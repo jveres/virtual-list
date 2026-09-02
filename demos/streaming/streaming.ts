@@ -1131,8 +1131,8 @@ function transcriptIndexOf(message: Message): number {
   return transcriptIndexById.get(message.id) ?? 0;
 }
 
-// Structural fingerprint of a row's tool panels: the panels are built at row
-// construction, so any change here needs a rebuild, not an in-place update.
+// Structural fingerprint of a row's tool panels: a change refreshes a live
+// row's panel in place and rebuilds any other row (see updateRow).
 function toolSignature(message: Message): string {
   return (message.toolCalls ?? [])
     .map((toolCall) => `${toolCall.name}:${toolCall.status}`)

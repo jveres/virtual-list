@@ -186,7 +186,7 @@ export interface ScrollSettleController {
   recordProgrammaticScrollTop(target: number): void;
   /** Enter the gesture state machine for a library-driven scroll (no smooth-scroll cancel). */
   beginProgrammaticGesture(): void;
-  /** Mark the native scroll as ended and start the settle cooldown. */
+  /** A landed programmatic glide ends its phase: start the settle cooldown. */
   markSettlePending(): void;
   /** Settle the gesture now: reset state, then commit/notify via the host. */
   finishGesture(): void;

@@ -6,7 +6,13 @@ import {
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
-import { createEdgePill, createTraceLog, mulberry32 } from "../shared/lab.js";
+import {
+  bindCopyTrace,
+  createEdgePill,
+  createTraceLog,
+  mulberry32,
+  settleEdgePill,
+} from "../shared/lab.js";
 import { mustGet } from "../shared/utils.js";
 
 // The dynamic-height lab: adversarial, size-changing content on the v2
@@ -692,11 +698,7 @@ function hidePill(force = false): void {
 
 function chunkCommitted(edge: "start" | "end"): void {
   waitingChunk[edge] = false;
-  if (chunksLeft[edge] > 0) {
-    hidePill(true);
-  } else {
-    showPill(edge === "start" ? "at the top" : "at the bottom", edge, true);
-  }
+  settleEdgePill(edgePill, edge === "end", chunksLeft[edge]);
 }
 
 function startLoad(edge: "start" | "end", context: ReachContext): void {
@@ -1874,13 +1876,12 @@ mustGet("clear").addEventListener("click", () => {
 mustGet("upload").addEventListener("click", () => {
   void sendReport("manual");
 });
-mustGet("copy").addEventListener("click", () => {
-  const text = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\nviolations=${violations}\n${trace.ring.join("\n")}`;
-  void navigator.clipboard?.writeText(text).then(
-    () => log("trace copied", "good"),
-    () => log("clipboard unavailable — select the log manually", "warn"),
-  );
-});
+bindCopyTrace(
+  mustGet("copy"),
+  () =>
+    `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\nviolations=${violations}\n${trace.ring.join("\n")}`,
+  log,
+);
 
 installWriteHook();
 traceInput();

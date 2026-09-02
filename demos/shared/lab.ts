@@ -50,6 +50,33 @@ export function createTraceLog(element: HTMLElement): TraceLog {
 
 const PILL_STICKY_MS = 1400;
 
+/** Copy a lab's trace to the clipboard, logging the outcome. */
+export function bindCopyTrace(
+  button: HTMLElement,
+  text: () => string,
+  log: (message: string, cls: LogClass) => void,
+): void {
+  button.addEventListener("click", () => {
+    void navigator.clipboard?.writeText(text()).then(
+      () => log("trace copied", "good"),
+      () => log("clipboard unavailable — select the log manually", "warn"),
+    );
+  });
+}
+
+/**
+ * A chunk landed at an edge: hide the loader pill, or, with nothing left to
+ * load there, pin the "at the top/bottom" notice.
+ */
+export function settleEdgePill(
+  pill: EdgePill,
+  atEnd: boolean,
+  chunksLeft: number,
+): void {
+  if (chunksLeft > 0) pill.hide(true);
+  else pill.show(atEnd ? "at the bottom" : "at the top", atEnd, true);
+}
+
 export interface EdgePill {
   /** Shows the pill at the top or bottom edge; sticky pills fade on their own. */
   show(text: string, atBottom: boolean, sticky?: boolean): void;

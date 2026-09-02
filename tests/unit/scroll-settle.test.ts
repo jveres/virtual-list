@@ -622,8 +622,8 @@ describe("programmatic gestures", () => {
 
     // Timing discriminates the paths: an HONORED scrollend would settle
     // after the bare cooldown (~140ms); the ignored one leaves settling to
-    // the wheel-scrollend fallback (~280ms after the last scroll event) —
-    // main's normal idle path for a finished programmatic phase.
+    // the wheel-scrollend fallback (~280ms after the last scroll event),
+    // since the harness keeps the glide in flight throughout.
     vi.advanceTimersByTime(200);
     expect(harness.settled()).toBe(0);
     vi.advanceTimersByTime(200);

@@ -5,7 +5,13 @@ import {
   type ScrollSettleController,
   type VirtualListScrollSettleStrategy,
 } from "../../src/scroll-settle.js";
-import { createEdgePill, createTraceLog, mulberry32 } from "../shared/lab.js";
+import {
+  bindCopyTrace,
+  createEdgePill,
+  createTraceLog,
+  mulberry32,
+  settleEdgePill,
+} from "../shared/lab.js";
 import { mustGet } from "../shared/utils.js";
 
 // The scroll-settle lab: makes the settle controller testable in every real
@@ -254,15 +260,7 @@ function applyQueuedChunk(boundary: Boundary, reason: string): void {
     );
   }
   chunksApplied += 1;
-  if (chunksRemaining[boundary] > 0) {
-    hidePill(true);
-  } else {
-    showPill(
-      boundary === "top" ? "at the top" : "at the bottom",
-      boundary,
-      true,
-    );
-  }
+  settleEdgePill(edgePill, boundary === "bottom", chunksRemaining[boundary]);
   scheduleStatus();
 }
 
@@ -565,13 +563,12 @@ mustGet("reset").addEventListener("click", () => {
 mustGet("clear").addEventListener("click", () => {
   trace.clear();
 });
-mustGet("copy").addEventListener("click", () => {
-  const text = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\n${trace.ring.join("\n")}`;
-  void navigator.clipboard?.writeText(text).then(
-    () => log("trace copied", "good"),
-    () => log("clipboard unavailable — select the log manually", "warn"),
-  );
-});
+bindCopyTrace(
+  mustGet("copy"),
+  () =>
+    `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\n${trace.ring.join("\n")}`,
+  log,
+);
 
 traceEvents();
 rebuildList();

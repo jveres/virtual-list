@@ -287,18 +287,17 @@ describe("I1 — anchor preservation", () => {
   it("with no surviving successor, the predecessor end-aligns", () => {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 20));
-    const vp = viewport(geometry.offsetOf("m18") + 10);
+    const vp = viewport(geometry.offsetOf("m10") + 30); // Anchor m10, 30px in.
+    // The anchor and every old successor go; the rows after m9 are new keys,
+    // not survivors, and there is plenty of range below (no clamp).
     const commit = transact(geometry, vp, "viewport", () =>
-      geometry.setKeys(keysRange(0, 18)),
+      geometry.setKeys([...keysRange(0, 10), ...keysRange(100, 112)]),
     );
-    const predecessorBottom =
-      geometry.offsetOf("m17") + geometry.heightOf("m17");
-    expect(Math.min(commit.scrollTop, predecessorBottom)).toBeCloseTo(
-      // The raw target is the predecessor's bottom; resolve clamps it into
-      // the scrollable range.
-      Math.min(predecessorBottom, geometry.contentSize - VIEWPORT_H),
-      6,
-    );
+    const predecessorBottom = geometry.offsetOf("m9") + geometry.heightOf("m9");
+    expect(predecessorBottom).toBeLessThan(geometry.maxScrollTop(VIEWPORT_H));
+    // Not the removed anchor's coordinate carried over (predecessorBottom +
+    // 30), which a missing branch would fall back to.
+    expect(commit.scrollTop).toBe(predecessorBottom);
   });
 });
 
@@ -479,16 +478,15 @@ describe("I5 — pin-to-top reserve", () => {
 
   it("clears the pin when the pinned key is removed; the reserve drains out of view", () => {
     const { geometry, vp } = pinnedAtEnd();
+    const reserveBefore = geometry.reserve;
     transact(geometry, vp, "viewport", () =>
       geometry.setKeys(keysRange(0, 20).filter((k) => k !== "m18")),
     );
     expect(geometry.pinned).toBeNull();
-    // Standing inside the reserve keeps it (no yank)...
-    expect(geometry.totalSize).toBeGreaterThanOrEqual(
-      Math.min(vp.scrollTop, geometry.maxScrollTop(VIEWPORT_H)) +
-        VIEWPORT_H -
-        1,
-    );
+    // Standing inside the reserve keeps it whole (no yank): the pin's target
+    // is gone, but the floor holds what the viewport still stands on.
+    expect(reserveBefore).toBeGreaterThan(0);
+    expect(geometry.reserve).toBe(reserveBefore);
     // ...and it drains once the viewport leaves.
     transact(geometry, viewport(0), "none", () => {});
     expect(geometry.reserve).toBe(0);
