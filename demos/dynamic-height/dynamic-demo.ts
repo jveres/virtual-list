@@ -1780,6 +1780,11 @@ function boot(): void {
 
 /** Dispose (the leak check) and boot a new list; counters carry on. */
 function recreate(): void {
+  disposeCurrent();
+  boot();
+}
+
+function disposeCurrent(): void {
   stopStreams();
   const before = { created, destroyed };
   guardedCall("dispose", () => list.dispose());
@@ -1796,14 +1801,14 @@ function recreate(): void {
   }
   elementById.clear();
   paintObserver?.disconnect();
-  boot();
 }
 
 function reset(): void {
-  recreate();
-  // A fresh run: every counter starts over (the leak check above was the
-  // last use of the old ones), so the panel never shows violations whose
-  // traces belong to a previous run.
+  disposeCurrent();
+  // A fresh run: every counter starts over BEFORE the new list boots (the
+  // leak check above was the last use of the old ones) — zeroing after the
+  // boot left its rows uncounted and every later dispose "over-destroyed"
+  // by exactly that many.
   violations = 0;
   commits = 0;
   liveCommits = 0;
@@ -1813,6 +1818,7 @@ function reset(): void {
   imagesLoaded = 0;
   loadsAborted = 0;
   chaosOps = 0;
+  boot();
   scheduleStatus();
 }
 
