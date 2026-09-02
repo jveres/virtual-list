@@ -486,20 +486,6 @@ export function createVirtualList<T>(
     };
   }
 
-  /**
-   * Premeasure a rendered element. A measurement failure destroys it
-   * through the host: it will never be returned.
-   */
-  function premeasure(
-    item: T,
-    element: HTMLElement,
-  ): { element: HTMLElement; height: number } {
-    return measurer.measure(
-      () => element,
-      (failed) => options.onDestroy?.(failed, item),
-    );
-  }
-
   /** Destroy exactly once; safe to call from any path, host included. */
   function destroyRow(row: Row<T>): void {
     if (row.destroyed) return;
@@ -733,6 +719,9 @@ export function createVirtualList<T>(
     const inPlace: { row: Row<T>; item: T }[] = [];
     /** Equal-height phase-time updates: swapped into committed slots in phase 2. */
     const promotions: { row: Row<T>; fresh: Row<T> }[] = [];
+    const promotionCandidates: { row: Row<T>; fresh: Row<T> }[] = [];
+    /** Fresh renders measured together after every render succeeds. */
+    const freshRows: Row<T>[] = [];
     const adopted = new Set<string>();
     /** Teardown failures of what a mid-preparation dispose destroyed. */
     const disposeFailures: unknown[] = [];
@@ -770,8 +759,8 @@ export function createVirtualList<T>(
       return failures;
     };
 
-    /** Measure a freshly rendered element, owning it from this moment. */
-    const measureFresh = (
+    /** Retain a fresh render for the preparation's single measurement pass. */
+    const retainFresh = (
       key: string,
       item: T,
       element: HTMLElement,
@@ -784,9 +773,11 @@ export function createVirtualList<T>(
         }
         throw new DisposedDuringPreparation();
       }
-      const measured = premeasure(item, element);
-      const row = retain(key, item, measured.element, measured.height);
+      // The provisional height is never observable: phase 1 owns this row
+      // until every fresh element has been measured below.
+      const row = retain(key, item, element, 1);
       built.push(row);
+      freshRows.push(row);
       return row;
     };
 
@@ -808,7 +799,7 @@ export function createVirtualList<T>(
       }
       // A replacement: the old element's DOM was not advanced.
       row.renderedItem = previouslyRendered;
-      return measureFresh(row.key, item, rendered);
+      return retainFresh(row.key, item, rendered);
     };
 
     /** A key with a prepared-but-uncommitted row: adopt or advance it. */
@@ -855,15 +846,10 @@ export function createVirtualList<T>(
       // atomically at settle with its height; later updates in the same
       // phase advance that replacement in place (it is off-scroller)
       // through adoption.
-      const fresh = measureFresh(key, item, render(item));
-      if (
-        promoteSameHeight &&
-        !committed.dirty &&
-        fresh.height === committed.height
-      ) {
-        promotions.push({ row: committed, fresh });
-      } else {
-        newRows.set(key, fresh);
+      const fresh = retainFresh(key, item, render(item));
+      newRows.set(key, fresh);
+      if (promoteSameHeight && !committed.dirty) {
+        promotionCandidates.push({ row: committed, fresh });
       }
     };
 
@@ -903,7 +889,7 @@ export function createVirtualList<T>(
         } else {
           const committed = rows.get(key);
           if (committed === undefined) {
-            newRows.set(key, measureFresh(key, item, render(item)));
+            newRows.set(key, retainFresh(key, item, render(item)));
           } else if (
             committed.renderUnknown ||
             committed.renderedItem !== item
@@ -913,6 +899,33 @@ export function createVirtualList<T>(
         }
         if (disposed) throw new DisposedDuringPreparation();
       }
+
+      // Render first, then attach every fresh node together. One layout
+      // serves the whole preparation instead of one forced layout per row.
+      if (freshRows.length > 0) {
+        let heights: number[];
+        try {
+          heights = measurer.measureMany(freshRows.map((row) => row.element));
+        } finally {
+          // measureMany always detaches. Restore preparation ownership so
+          // rollback, disposal, and the eventual hand-off see complete rows.
+          for (const row of freshRows) {
+            if (!row.destroyed) row.slot.appendChild(row.element);
+          }
+        }
+        freshRows.forEach((row, index) => {
+          const height = quantizeHeight(heights[index] as number);
+          row.height = height;
+          row.slot.style.height = `${height}px`;
+        });
+      }
+
+      for (const candidate of promotionCandidates) {
+        if (candidate.fresh.height !== candidate.row.height) continue;
+        newRows.delete(candidate.row.key);
+        promotions.push(candidate);
+      }
+      if (disposed) throw new DisposedDuringPreparation();
     } catch (error) {
       // DOM restoration and local cleanup complete first; teardown
       // failures then surface together with the original error.
@@ -1059,8 +1072,8 @@ export function createVirtualList<T>(
       // can make the browser clamp scrollTop. Re-read after the canvas write
       // and reconcile that real position before this frame paints.
       const after = viewportState();
-      reconcileWindow(after);
-      publish(after);
+      const range = reconcileWindow(after);
+      publish(after, range);
       published = true;
     });
     return published;
@@ -1153,9 +1166,9 @@ export function createVirtualList<T>(
       }
       // Read once after the write: the engine may have clamped it.
       const after = viewportState();
-      reconcileWindow(after);
+      const range = reconcileWindow(after);
       if (disposed) return;
-      publish(after);
+      publish(after, range);
     } finally {
       deferTeardown(teardownFailures);
     }
@@ -1177,8 +1190,12 @@ export function createVirtualList<T>(
   }
 
   let lastReconcile = { scrollTop: Number.NaN, height: Number.NaN, epoch: -1 };
+  let lastRange = { start: 0, end: 0 };
 
-  function reconcileWindow(vp: GeometryViewport): void {
+  function reconcileWindow(vp: GeometryViewport): {
+    start: number;
+    end: number;
+  } {
     // A glide write and the scroll event it produces both reconcile; the
     // second pass finds nothing to do.
     if (
@@ -1186,7 +1203,7 @@ export function createVirtualList<T>(
       lastReconcile.height === vp.height &&
       lastReconcile.epoch === geometryEpoch
     ) {
-      return;
+      return lastRange;
     }
     lastReconcile = {
       scrollTop: vp.scrollTop,
@@ -1194,6 +1211,7 @@ export function createVirtualList<T>(
       epoch: geometryEpoch,
     };
     const range = geometry.window(vp, overscanPx);
+    lastRange = range;
     for (const row of [...mountedRows]) {
       const index = geometry.indexOf(row.key);
       if (index < range.start || index >= range.end) unmountRow(row);
@@ -1209,6 +1227,7 @@ export function createVirtualList<T>(
         row.slot.style.transform = `translateY(${offset}px)`;
       }
     }
+    return range;
   }
 
   // --- Events ---------------------------------------------------------------
@@ -1242,9 +1261,12 @@ export function createVirtualList<T>(
     );
   }
 
-  function publish(vp: GeometryViewport = viewportState()): void {
+  function publish(
+    vp: GeometryViewport = viewportState(),
+    reconciledRange?: { start: number; end: number },
+  ): void {
     if (disposed) return;
-    const range = geometry.window(vp, overscanPx);
+    const range = reconciledRange ?? geometry.window(vp, overscanPx);
     const maxTop = geometry.maxScrollTop(vp.height);
     // Host-facing indexes count items only; edge slots are the runtime's.
     const leading =
@@ -1290,8 +1312,8 @@ export function createVirtualList<T>(
   /** Window reconciliation plus ("live") what commits without a write. */
   function onScrolled(): void {
     const vp = viewportState();
-    reconcileWindow(vp);
-    if (!liveCommit()) publish(vp);
+    const range = reconcileWindow(vp);
+    if (!liveCommit()) publish(vp, range);
   }
 
   // --- The settle controller (the scroll-phase authority) -------------------
@@ -1509,8 +1531,8 @@ export function createVirtualList<T>(
         writeScrollTop(top);
       }
       const vp = viewportState();
-      reconcileWindow(vp);
-      publish(vp);
+      const range = reconcileWindow(vp);
+      publish(vp, range);
       done(!disposed && landedOn(target, below));
       return;
     }

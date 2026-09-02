@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Geometry } from "../../src/geometry";
 import type { VirtualListScrollSettleStrategy } from "../../src/scroll-settle";
 import {
   createVirtualList,
@@ -99,6 +100,8 @@ function mount(
     edgeSlots?: VirtualListOptions<Msg>["edgeSlots"];
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
+    /** Reports how many fresh peers share the detached root at each read. */
+    onMeasure?: (m: Msg, batchSize: number) => void;
     reach?: boolean | "start-only";
     width?: () => number;
     /** render() throws for items with this body. */
@@ -141,6 +144,7 @@ function mount(
   const stamp = (element: HTMLElement, m: Msg): HTMLElement => {
     element.dataset.id = String(m.id);
     element.getBoundingClientRect = () => {
+      hooks.onMeasure?.(m, element.parentElement?.childElementCount ?? 0);
       if (hooks.measureFailOn !== undefined && m.body === hooks.measureFailOn) {
         throw new Error(`measure failed: ${m.body}`);
       }
@@ -244,6 +248,32 @@ describe("v2 runtime — commits and slots", () => {
     expect(["clip", "hidden"]).toContain(slot.style.overflow);
     expect(slot.style.transform).toBe(`translateY(${49 * ROW_H}px)`);
     expect(h.canvas().children.length).toBeLessThan(20); // Windowed.
+  });
+
+  it("premeasures every fresh row in one detached layout batch", () => {
+    const reads: { id: number; batchSize: number }[] = [];
+    const h = mount(range(0, 50), {
+      onMeasure: (m, batchSize) => reads.push({ id: m.id, batchSize }),
+    });
+
+    expect(reads).toHaveLength(50);
+    expect(reads.map(({ id }) => id)).toEqual(
+      Array.from({ length: 50 }, (_, id) => id),
+    );
+    expect(reads.every(({ batchSize }) => batchSize === 50)).toBe(true);
+    h.list.dispose();
+  });
+
+  it("computes the visible geometry window once per ordinary scroll event", () => {
+    const windowSpy = vi.spyOn(Geometry.prototype, "window");
+    const h = mount(range(0, 50));
+    windowSpy.mockClear();
+
+    h.userScroll(2000);
+
+    expect(windowSpy).toHaveBeenCalledTimes(1);
+    h.list.dispose();
+    windowSpy.mockRestore();
   });
 
   it("commits idle updates immediately: append follows the end, prepend keeps the anchor", () => {
