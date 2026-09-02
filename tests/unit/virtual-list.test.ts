@@ -289,6 +289,7 @@ describe("v2 runtime — commits and slots", () => {
     h.list.setItems(streamed);
 
     expect(h.viewport.scrollTop).toBe(before); // No instant jump.
+    expect(h.list.state.following).toBe(true);
     vi.advanceTimersByTime(160);
     expect(h.viewport.scrollTop).toBeGreaterThan(before);
     expect(h.viewport.scrollTop).toBeLessThan(4600);
@@ -304,6 +305,10 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(4600);
     vi.advanceTimersByTime(500);
     expect(h.viewport.scrollTop).toBe(4800);
+    expect(h.list.state.following).toBe(true);
+
+    h.userScroll(4500);
+    expect(h.list.state.following).toBe(false);
     h.list.dispose();
   });
 

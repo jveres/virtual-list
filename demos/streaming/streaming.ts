@@ -1268,7 +1268,7 @@ function formatCount(value: number): string {
 
 function syncScrollButtons(state: VirtualListState): void {
   scrollTopBtn.hidden = state.atStart && !canLoadOlderMessages();
-  scrollBottomBtn.hidden = state.atEnd || sendGlideActive;
+  scrollBottomBtn.hidden = state.atEnd || state.following || sendGlideActive;
 }
 
 function syncMetrics(state = virtualList?.state): void {

@@ -168,7 +168,9 @@ The definition of correct, referenced by number throughout the code:
   remains at the logical end and streaming auto-follow stays engaged.
   Set `followBehavior: "smooth"` to animate automatic end-follow with a
   live-target glide as content grows. The default, `"instant"`, preserves
-  the atomic-write behavior. User input interrupts either behavior.
+  the atomic-write behavior. User input interrupts either behavior. While the
+  smooth follower owns the end target, `state.following` remains `true`,
+  including the quiet gaps between consecutive glide legs.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
   waiting for settle). Changes from the v1 shape: `estimateSize` is gone — every
   key is premeasured before it commits, so heights are never estimated

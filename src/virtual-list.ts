@@ -142,6 +142,8 @@ export interface VirtualListState {
   end: number;
   atStart: boolean;
   atEnd: boolean;
+  /** A smooth automatic end-follow currently owns the end target. */
+  following: boolean;
   totalSize: number;
   /** A prepared snapshot or dirty measurements are waiting for settle. */
   held: boolean;
@@ -233,6 +235,7 @@ const EMPTY_STATE: VirtualListState = {
   end: 0,
   atStart: true,
   atEnd: true,
+  following: false,
   totalSize: 0,
   held: false,
 };
@@ -1281,6 +1284,7 @@ export function createVirtualList<T>(
       a.end === b.end &&
       a.atStart === b.atStart &&
       a.atEnd === b.atEnd &&
+      a.following === b.following &&
       a.totalSize === b.totalSize &&
       a.held === b.held
     );
@@ -1308,6 +1312,7 @@ export function createVirtualList<T>(
       end: Math.min(count, Math.max(0, range.end - leading)),
       atStart: vp.scrollTop <= AT_EDGE_EPSILON_PX,
       atEnd: maxTop - vp.scrollTop <= AT_EDGE_EPSILON_PX,
+      following: smoothFollowArmed,
       totalSize: geometry.totalSize,
       held: pending !== null || dirtyRows.size > 0,
     };
@@ -1373,7 +1378,11 @@ export function createVirtualList<T>(
       else publish();
       settleParked((landed) => !disposed && landed());
       if (options.followBehavior === "smooth") {
-        smoothFollowArmed = lastState.atEnd;
+        const following = lastState.atEnd;
+        if (smoothFollowArmed !== following) {
+          smoothFollowArmed = following;
+          publish();
+        }
       }
     },
     onGestureReset: () => {},
