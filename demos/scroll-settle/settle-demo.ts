@@ -307,7 +307,6 @@ function startLoad(reason: string, boundary: Boundary): void {
   showPill(boundary === "top" ? "loading older…" : "loading newer…", boundary);
   log(`load start (${reason}, ${boundary})`);
   const timer = window.setTimeout(() => {
-    if (abortController.signal.aborted) return;
     loadAborts[boundary] = null;
     loadingBoundary[boundary] = false;
     chunksRemaining[boundary] -= 1;

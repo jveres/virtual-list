@@ -1260,8 +1260,10 @@ export function createVirtualList<T>(
         return;
       }
       if (prepared.newRows.size === 0 && sameKeysAsCommitted(prepared.keys)) {
-        // Everything in this snapshot was promoted (or nothing changed):
-        // nothing waits for settle, and it supersedes whatever did.
+        // No structural change and no retained replacement: the snapshot
+        // was fully applied — promoted, rendered in place ("live"; those
+        // rows wait in dirtyRows, not as a snapshot), or unchanged — and it
+        // supersedes whatever did wait.
         pending = null;
       } else {
         // These rows will wait: their heights are re-read at the settle.

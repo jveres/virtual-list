@@ -180,7 +180,8 @@ The definition of correct, referenced by number throughout the code:
 - Invariants I1–I6 stand as the definition of correct; their *mechanisms*
   change (no mid-gesture ResizeObserver corrections: an idle observation
   commits in its own delivery, which is I6, and a phase-time one waits for
-  the settle).
+  the settle — or, under `"live"`, commits at once when no scroll write is
+  needed).
 
 ## Verification vehicles
 
