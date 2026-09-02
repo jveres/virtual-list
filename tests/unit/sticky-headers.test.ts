@@ -35,9 +35,11 @@ describe("sticky headers", () => {
 
     viewport.scrollTop = 90;
     viewport.dispatchEvent(new Event("scroll")); // Queues a frame at 90.
+    // After the commit day 1 starts at 95: the frame sampled at 90 would
+    // resolve day 0 against the new tops, the refresh at 110 resolves day 1.
     positions = new Map([
       ["day:0", { top: 0, height: 44 }],
-      ["day:1", { top: 80, height: 44 }],
+      ["day:1", { top: 95, height: 44 }],
     ]);
     viewport.scrollTop = 110;
     sticky.refresh(); // Commit authority: day 1 is active now.

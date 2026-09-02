@@ -175,7 +175,7 @@ export interface ScrollSettleHost {
   onGestureSettled(): void;
   /** Gesture state was reset (settle or cancel). */
   onGestureReset(): void;
-  /** A scroll event landed: reconcile the window (geometry stays untouched). */
+  /** A scroll event landed: reconcile the window (and, under "live", commit what needs no scroll write). */
   onScrollEventObserved(): void;
 }
 

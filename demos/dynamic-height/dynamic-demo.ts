@@ -145,8 +145,8 @@ function violation(code: string, message: string): void {
 // --- Device report channel ------------------------------------------------
 // A phone or tablet cannot hand its trace over easily: the lab POSTs the
 // tail of its ring to the dev server (a vite middleware appends it under
-// browser-artifacts/). Debounced; a violation triggers it, so does the
-// "upload trace" button. Silently a no-op without the dev server.
+// browser-artifacts/). A violation triggers it (debounced); the "upload
+// trace" button sends at once. Silently a no-op without the dev server.
 
 let reportTimer = 0;
 /** Enough of the ring to read a violation's lead-up; the vite sink appends. */
@@ -194,7 +194,6 @@ type Kind = "text" | "stream" | "toggle" | "image" | "code";
 interface Item {
   id: number;
   kind: Kind;
-  version: number;
   words: string[];
   open: boolean;
   streamTarget: number;
@@ -228,7 +227,6 @@ function makeItem(id: number): Item {
   return {
     id,
     kind,
-    version: 0,
     words,
     open: random() < 0.5,
     streamTarget: kind === "stream" ? 50 + Math.floor(random() * 110) : 0,
@@ -395,7 +393,6 @@ function update(item: Item, row: HTMLElement): void {
     row.classList.toggle("loaded", item.imageLoaded);
     pic.style.aspectRatio = `800 / ${Math.round(800 * item.imageAspect)}`;
   }
-  row.dataset.version = String(item.version);
 }
 
 function render(item: Item, existing?: HTMLElement): HTMLElement {
@@ -865,9 +862,9 @@ function watchElement(row: Element): void {
   if (watchFrame !== 0) return;
   watchFrame = requestAnimationFrame(() => {
     watchFrame = 0;
-    for (const element of pendingWatches.splice(0)) {
-      if (element.parentElement?.parentElement === canvas) {
-        paintObserver?.observe(element);
+    for (const watched of pendingWatches.splice(0)) {
+      if (watched.parentElement?.parentElement === canvas) {
+        paintObserver?.observe(watched);
       }
     }
   });
@@ -1382,7 +1379,6 @@ function changeContent(
   const updated = {
     ...item,
     words: [...item.words],
-    version: item.version + 1,
   };
   mutate(updated);
   replaceItem(updated);

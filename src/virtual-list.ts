@@ -1514,7 +1514,8 @@ export function createVirtualList<T>(
       // inside a transaction; a host dispatching one synchronously from a
       // callback is dropped — the transaction's own reconcile follows.
       if (disposed || inTransaction) return;
-      // Geometry is untouchable here; only the window moves.
+      // The window moves; under "live", what needs no scroll write may
+      // commit too (see onScrolled).
       guarded(onScrolled);
     },
   });
