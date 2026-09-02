@@ -5,8 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VirtualListScrollSettleStrategy } from "../../src/scroll-settle";
 import {
   createVirtualList,
+  type EdgeSlot,
   type ScrollingUpdates,
   type VirtualList,
+  type VirtualListOptions,
   type VirtualListState,
 } from "../../src/virtual-list";
 
@@ -94,6 +96,7 @@ function mount(
     onDestroy?: (element: HTMLElement) => void;
     scrollingUpdates?: ScrollingUpdates;
     settleStrategy?: VirtualListScrollSettleStrategy;
+    edgeSlots?: VirtualListOptions<Msg>["edgeSlots"];
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     reach?: boolean | "start-only";
@@ -153,6 +156,7 @@ function mount(
     // The harness pins "same-height" (the mode most tests describe); the
     // runtime's own default is "live" (pinned by its own test).
     scrollingUpdates: hooks.scrollingUpdates ?? "same-height",
+    edgeSlots: hooks.edgeSlots,
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
@@ -1251,6 +1255,94 @@ describe("v2 runtime — retained nodes", () => {
     h.settle();
     expect(slot.style.height).toBe("300px");
     expect(h.list.state.totalSize).toBe(100 * ROW_H + 200);
+  });
+});
+
+describe("v2 runtime — edge slots", () => {
+  function loader(
+    key = "top",
+    height = 52,
+  ): EdgeSlot & { built: HTMLElement[] } {
+    const built: HTMLElement[] = [];
+    return {
+      key,
+      height,
+      built,
+      render: () => {
+        const element = document.createElement("div");
+        element.textContent = "Loading older…";
+        element.dataset.id = "slot";
+        built.push(element);
+        return element;
+      },
+    };
+  }
+
+  it("keeps a leading slot in the flow at its declared height, outside the host-facing counts", () => {
+    const slot = loader();
+    const h = mount(range(0, 20), { edgeSlots: { start: slot } });
+    void h.list.scrollTo("start");
+    const element = slot.built[0] as HTMLElement;
+    expect(element.isConnected).toBe(true);
+    expect(h.slotOf(element).style.height).toBe("52px");
+    expect(h.slotOf(element).style.transform).toBe("translateY(0px)");
+    expect(h.slotOf(h.rowElement("msg 0")).style.transform).toBe(
+      "translateY(52px)",
+    );
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.state.start).toBe(0);
+    expect(h.list.state.totalSize).toBe(20 * ROW_H + 52);
+    expect(h.list.positionOf("m0")).toEqual({ top: 52, height: ROW_H });
+    expect(h.list.elementOf("m0")).toBe(h.rowElement("msg 0"));
+    expect(h.list.elementOf("m19")).toBeNull(); // Unmounted.
+  });
+
+  it("a prepend replaces the slot's strip with content while the first row keeps its place", () => {
+    const initial = range(0, 40);
+    const h = mount(initial, { edgeSlots: { start: loader() } });
+    void h.list.scrollTo("start");
+    h.userScroll(400);
+    h.userScroll(20); // The viewport top sits inside the slot.
+    const first = h.rowElement("msg 0");
+    const topBefore = 52 - 20; // m0's viewport coordinate.
+    h.list.setItems([...range(-10, 0), ...initial], { anchor: "viewport" });
+    h.settle();
+    // m0 stayed put; the strip above it is the prepended content now.
+    expect(h.viewport.scrollTop).toBe(52 + 10 * ROW_H - topBefore);
+    expect(h.list.state.count).toBe(50);
+    expect(h.slotOf(first).style.transform).toBe(
+      `translateY(${52 + 10 * ROW_H}px)`,
+    );
+  });
+
+  it("setEdgeSlot changes are settle-gated, replace the element without onDestroy, and clear cleanly", () => {
+    const initial = range(0, 20);
+    const slot = loader();
+    const h = mount(initial, { edgeSlots: { start: slot } });
+    void h.list.scrollTo("start");
+    h.userScroll(300);
+    const done = loader("top", 52);
+    h.list.setEdgeSlot("start", done); // A new slot object: re-rendered at settle.
+    expect(h.list.state.held).toBe(true);
+    expect((slot.built[0] as HTMLElement).isConnected).toBe(true);
+    h.settle();
+    expect((slot.built[0] as HTMLElement).isConnected).toBe(false);
+    expect((done.built[0] as HTMLElement).isConnected).toBe(true);
+    expect(h.destroyed).toEqual([]); // Slot elements get no onDestroy.
+    h.list.setEdgeSlot("start", null);
+    expect(h.list.state.totalSize).toBe(20 * ROW_H);
+    expect((done.built[0] as HTMLElement).isConnected).toBe(false);
+    expect(h.destroyed).toEqual([]);
+  });
+
+  it("in-place slot content changes are not held: the declared height stands", () => {
+    const slot = loader();
+    const h = mount(range(0, 20), { edgeSlots: { start: slot } });
+    void h.list.scrollTo("start");
+    const element = slot.built[0] as HTMLElement;
+    element.textContent = "At the top";
+    fireResize(0, element, 52);
+    expect(h.list.state.held).toBe(false);
   });
 });
 

@@ -239,6 +239,39 @@ describe("I1 — anchor preservation", () => {
     expect(geometry.offsetOf("m1") - commit.scrollTop).toBeCloseTo(before, 6);
   });
 
+  it("an excluded key never anchors: a leading slot yields to its successor, a trailing one to its predecessor", () => {
+    const geometry = new Geometry(100);
+    geometry.setAnchorExclusion((key) => key.startsWith("slot:"));
+    seed(geometry, ["slot:top", ...keysRange(0, 20), "slot:bottom"]);
+    transact(geometry, viewport(0), "none", () =>
+      geometry.measure("slot:top", 52),
+    );
+
+    // Viewport top inside the leading slot: the anchor is m0, offset
+    // negative by what remains of the slot below the top.
+    const inSlot = geometry.anchorAt(viewport(20));
+    expect(inSlot?.key).toBe("m0");
+    expect(inSlot?.offset).toBeCloseTo(20 - 52, 6);
+
+    // A prepend replaces the slot's strip with content: m0 keeps its
+    // viewport coordinate exactly.
+    const vp = viewport(20);
+    const before = geometry.offsetOf("m0") - vp.scrollTop;
+    const commit = transact(geometry, vp, "viewport", () =>
+      geometry.setKeys([
+        "slot:top",
+        ...keysRange(-5, 0),
+        ...keysRange(0, 20),
+        "slot:bottom",
+      ]),
+    );
+    expect(geometry.offsetOf("m0") - commit.scrollTop).toBeCloseTo(before, 6);
+
+    // Viewport top inside the trailing slot: the predecessor anchors.
+    const tail = geometry.offsetOf("slot:bottom") + 10;
+    expect(geometry.anchorAt(viewport(tail))?.key).toBe("m19");
+  });
+
   it("a removed anchor falls to the first surviving successor, inheriting the offset", () => {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 20));

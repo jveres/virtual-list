@@ -63,6 +63,24 @@ export interface ReachContext {
 
 export type ScrollingUpdates = "freeze" | "same-height" | "live";
 
+export type Edge = "start" | "end";
+
+/**
+ * A fixed-height row the runtime keeps at an edge of the scroll surface — a
+ * "load more" / "at the top" slot in the flow, where an overlay would fight
+ * a sticky header for the same strip. It is geometry (it scrolls, it adds to
+ * the range) but never the anchor: when content replaces it, the content the
+ * user was reading keeps its place and the slot's strip shows the new rows.
+ * The element is the host's; it is not premeasured (the declared height is
+ * the committed height, the box clips) and receives no onDestroy. The host
+ * may change its content in place as long as the height holds.
+ */
+export interface EdgeSlot {
+  key: string;
+  height: number;
+  render: () => HTMLElement;
+}
+
 export interface VirtualListOptions<T> {
   items: readonly T[];
   key: (item: T) => string;
@@ -91,6 +109,8 @@ export interface VirtualListOptions<T> {
   onDestroy?: (element: HTMLElement, item: T) => void;
   /** Settle strategy override (tests); auto-detected otherwise. */
   settleStrategy?: VirtualListScrollSettleStrategy;
+  /** Fixed-height loader slots at the edges; see EdgeSlot. */
+  edgeSlots?: { start?: EdgeSlot | null; end?: EdgeSlot | null };
   /**
    * What happens to a same-key update that arrives during a scroll phase
    * (structural changes are settle-gated in every mode):
@@ -125,6 +145,15 @@ export interface VirtualListState {
 }
 
 export type ScrollTarget = string | "start" | "end";
+
+/** Edge slot keys live in a namespace no host key can collide with. */
+const SLOT_KEY_PREFIX = "\u0000edge:";
+function slotKey(edge: Edge, key: string): string {
+  return `${SLOT_KEY_PREFIX}${edge}:${key}`;
+}
+function isSlotKey(key: string): boolean {
+  return key.startsWith(SLOT_KEY_PREFIX);
+}
 export type ScrollOptions = {
   align?: "start";
   behavior?: "auto" | "smooth";
@@ -148,6 +177,12 @@ export interface VirtualList<T> {
    */
   scrollTo(target: ScrollTarget, options?: ScrollOptions): Promise<boolean>;
   readonly state: VirtualListState;
+  /** Set or clear an edge slot: a structural change, settle-gated. */
+  setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void;
+  /** Committed content-space top and height of a key (edge slots count); null if unknown. */
+  positionOf(key: string): { top: number; height: number } | null;
+  /** The mounted element of a key, or null when unmounted or unknown. */
+  elementOf(key: string): HTMLElement | null;
   dispose(): void;
 }
 
@@ -203,6 +238,10 @@ interface Row<T> {
   height: number;
   /** The offset last written to the slot's transform (NaN: never). */
   offset: number;
+  /** An edge slot row: no item, declared height, no observer, no onDestroy. */
+  edge?: Edge;
+  /** The EdgeSlot a slot row was built from (a new object re-renders it). */
+  edgeSlot?: EdgeSlot;
   mounted: boolean;
   /**
    * Its size may differ from `height`: content or width changed, or it
@@ -219,7 +258,6 @@ interface Prepared<T> {
   anchor: AnchorPolicy;
 }
 
-type Edge = "start" | "end";
 type Transaction = { run: () => void; discard?: () => void };
 type Scope = Transaction[];
 
@@ -241,7 +279,14 @@ export function createVirtualList<T>(
   // Heights are never estimated: every key is measured before it commits,
   // so the kernel's estimate is only a validation placeholder.
   const geometry = new Geometry(1);
+  geometry.setAnchorExclusion(isSlotKey);
   const rows = new Map<string, Row<T>>();
+  const edgeSlots: Record<Edge, EdgeSlot | null> = {
+    start: options.edgeSlots?.start ?? null,
+    end: options.edgeSlots?.end ?? null,
+  };
+  /** The last snapshot handed in — what a slot change re-applies. */
+  let lastItems: readonly T[] = options.items;
   const mountedRows = new Set<Row<T>>();
   /** Committed rows whose size may differ from their committed height. */
   const dirtyRows = new Set<Row<T>>();
@@ -446,7 +491,25 @@ export function createVirtualList<T>(
     if (row.mounted) unmountRow(row);
     dirtyRows.delete(row);
     row.slot.remove();
-    options.onDestroy?.(row.element, row.item);
+    if (!row.edge) options.onDestroy?.(row.element, row.item);
+  }
+
+  /** A slot row: the host's element at the declared height, no measurement. */
+  function retainEdgeSlot(edge: Edge, slot: EdgeSlot): Row<T> {
+    const element = slot.render();
+    element.style.position = "absolute";
+    element.style.top = "0";
+    element.style.left = "0";
+    element.style.right = "0";
+    const row = retain(
+      slotKey(edge, slot.key),
+      undefined as T,
+      element,
+      slot.height,
+    );
+    row.edge = edge;
+    row.edgeSlot = slot;
+    return row;
   }
 
   /**
@@ -520,6 +583,7 @@ export function createVirtualList<T>(
   const keyByElement = new WeakMap<HTMLElement, string>();
 
   function observeRow(row: Row<T>): void {
+    if (row.edge) return; // Declared height; the box clips.
     keyByElement.set(row.element, row.key);
     if (!inMeasurementDelivery) {
       rowObserver.observe(row.element);
@@ -543,6 +607,7 @@ export function createVirtualList<T>(
 
   /** Committed rows join the dirty set; pending rows are remeasured at commit anyway. */
   function markDirty(row: Row<T>): void {
+    if (row.edge) return; // Declared height stands.
     row.dirty = true;
     if (rows.get(row.key) === row) dirtyRows.add(row);
   }
@@ -621,13 +686,21 @@ export function createVirtualList<T>(
     // an end-follow) by an unrelated same-key update landing before
     // settle. Only an explicit anchor replaces it.
     const anchor: AnchorPolicy = explicitAnchor ?? pending?.anchor ?? "auto";
-    const keys = next.map(keyOf);
+    const itemKeys = next.map(keyOf);
     const itemByKey = new Map<string, T>();
     for (let index = 0; index < next.length; index++) {
-      const key = keys[index] as string;
+      const key = itemKeys[index] as string;
       if (itemByKey.has(key)) throw new Error(`duplicate key "${key}"`);
       itemByKey.set(key, next[index] as T);
     }
+    // Edge slots bracket the items in the key order.
+    const startSlot = edgeSlots.start;
+    const endSlot = edgeSlots.end;
+    const keys: string[] = [
+      ...(startSlot ? [slotKey("start", startSlot.key)] : []),
+      ...itemKeys,
+      ...(endSlot ? [slotKey("end", endSlot.key)] : []),
+    ];
 
     // Phase 1 — render and measure into local structures only. Nothing in
     // `rows` or `pending` is mutated until every host call has succeeded.
@@ -775,8 +848,35 @@ export function createVirtualList<T>(
       }
     };
 
+    /** An edge slot key: adopt, keep, or build the host's slot element. */
+    const prepareSlot = (key: string): void => {
+      const edge: Edge =
+        key === slotKey("start", startSlot?.key ?? "") ? "start" : "end";
+      const slot = edge === "start" ? startSlot : endSlot;
+      if (!slot) return;
+      const preparedBefore = previous?.newRows.get(key);
+      if (preparedBefore) {
+        adopted.add(key);
+        if (preparedBefore.edgeSlot === slot) {
+          newRows.set(key, preparedBefore);
+          return;
+        }
+        adopted.delete(key); // Superseded: dies in phase 2.
+      } else if (rows.get(key)?.edgeSlot === slot) {
+        return;
+      }
+      const row = retainEdgeSlot(edge, slot);
+      built.push(row);
+      newRows.set(key, row);
+    };
+
     try {
       for (const key of keys) {
+        if (isSlotKey(key)) {
+          prepareSlot(key);
+          if (disposed) throw new DisposedDuringPreparation();
+          continue;
+        }
         const item = itemByKey.get(key) as T;
         const preparedBefore = previous?.newRows.get(key);
         if (preparedBefore) {
@@ -1127,10 +1227,19 @@ export function createVirtualList<T>(
     if (disposed) return;
     const range = geometry.window(vp, overscanPx);
     const maxTop = geometry.maxScrollTop(vp.height);
+    // Host-facing indexes count items only; edge slots are the runtime's.
+    const leading =
+      geometry.count > 0 && isSlotKey(geometry.keyAt(0) ?? "") ? 1 : 0;
+    const trailing =
+      geometry.count > leading &&
+      isSlotKey(geometry.keyAt(geometry.count - 1) ?? "")
+        ? 1
+        : 0;
+    const count = geometry.count - leading - trailing;
     const state: VirtualListState = {
-      count: geometry.count,
-      start: range.start,
-      end: range.end,
+      count,
+      start: Math.min(count, Math.max(0, range.start - leading)),
+      end: Math.min(count, Math.max(0, range.end - leading)),
       atStart: vp.scrollTop <= AT_EDGE_EPSILON_PX,
       atEnd: maxTop - vp.scrollTop <= AT_EDGE_EPSILON_PX,
       totalSize: geometry.totalSize,
@@ -1257,6 +1366,7 @@ export function createVirtualList<T>(
     anchor: AnchorPolicy | undefined,
   ): void {
     if (disposed) return;
+    lastItems = snapshot;
     // Always prepared now (off-scroller, inside the reentrancy guard since
     // render() is a host callback); committed now only when idle.
     guarded(() => {
@@ -1277,8 +1387,11 @@ export function createVirtualList<T>(
         // supersedes whatever did wait.
         pending = null;
       } else {
-        // These rows will wait: their heights are re-read at the settle.
-        for (const row of prepared.newRows.values()) row.dirty = true;
+        // These rows will wait: their heights are re-read at the settle
+        // (edge slots keep their declared height).
+        for (const row of prepared.newRows.values()) {
+          if (!row.edge) row.dirty = true;
+        }
         pending = prepared;
       }
       if (!liveCommit()) publish();
@@ -1438,12 +1551,31 @@ export function createVirtualList<T>(
   // --- Boot -----------------------------------------------------------------
   commit(prepare(options.items, "end").prepared);
 
+  function setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void {
+    if (disposed) return;
+    edgeSlots[edge] = slot;
+    setItems(lastItems);
+  }
+
+  function positionOf(key: string): { top: number; height: number } | null {
+    if (geometry.indexOf(key) < 0) return null;
+    return { top: geometry.offsetOf(key), height: geometry.heightOf(key) };
+  }
+
+  function elementOf(key: string): HTMLElement | null {
+    const row = rows.get(key);
+    return row?.mounted ? row.element : null;
+  }
+
   return {
     setItems,
     scrollTo,
     get state(): VirtualListState {
       return lastState;
     },
+    setEdgeSlot,
+    positionOf,
+    elementOf,
     dispose,
   };
 }

@@ -61,6 +61,8 @@ export class Geometry {
   private readonly estimateForKey: (key: string) => number;
   private pinnedKey: string | null = null;
   private reservePx = 0;
+  /** Keys that never anchor (edge slots): the anchor falls to a neighbor. */
+  private neverAnchor: (key: string) => boolean = () => false;
 
   constructor(estimate: number | ((key: string) => number)) {
     this.estimateForKey =
@@ -69,6 +71,17 @@ export class Geometry {
 
   get count(): number {
     return this.keys.length;
+  }
+
+  /**
+   * Rows that must never be the anchor — a loader slot at an edge. When the
+   * viewport top sits in one, the anchor is its content neighbor (the
+   * successor for a leading slot, the predecessor for a trailing one) with
+   * the offset that keeps the exact coordinate, so the slot's replacement by
+   * content leaves the content the user was reading where it was.
+   */
+  setAnchorExclusion(predicate: (key: string) => boolean): void {
+    this.neverAnchor = predicate;
   }
 
   keyAt(index: number): string | undefined {
@@ -134,6 +147,21 @@ export class Geometry {
     // keeps the exact coordinate.
     const remaining = this.tree.prefix(index + 1) - top;
     if (remaining <= EPSILON && index + 1 < this.keys.length) index += 1;
+    if (this.neverAnchor(this.keys[index] as string)) {
+      const next = index + 1;
+      const previous = index - 1;
+      if (
+        next < this.keys.length &&
+        !this.neverAnchor(this.keys[next] as string)
+      ) {
+        index = next;
+      } else if (
+        previous >= 0 &&
+        !this.neverAnchor(this.keys[previous] as string)
+      ) {
+        index = previous;
+      }
+    }
     const key = this.keys[index];
     if (key === undefined) return null;
     return { key, offset: top - this.tree.prefix(index) };
