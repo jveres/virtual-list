@@ -165,8 +165,9 @@ The definition of correct, referenced by number throughout the code:
   onState?, onReachStart/End?, onDestroy?, settleStrategy?,
   scrollingUpdates?, followBehavior? })`,
   `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior?,
-  duration?, offset? })`, `setEdgeSlot(edge, slot | null)`, `positionOf(key)`,
-  `elementOf(key)`, `state`, `dispose()`; options add `edgeSlots`. An
+  duration?, offset? })`, `remeasure(key, { anchor? })`,
+  `setEdgeSlot(edge, slot | null)`, `positionOf(key)`, `elementOf(key)`,
+  `state`, `dispose()`; options add `edgeSlots`. An
   edge slot is a fixed-height host row the runtime keeps at an edge of the
   surface (a scrollback loader in the flow): geometry, but never the anchor
   — the kernel's anchor exclusion makes the anchor its content neighbor,
@@ -182,6 +183,13 @@ The definition of correct, referenced by number throughout the code:
   the atomic-write behavior. User input interrupts either behavior. While the
   smooth follower owns the end target, `state.following` remains `true`,
   including the quiet gaps between consecutive glide legs.
+  `remeasure` is the intent-bearing path for a discrete host interaction
+  such as opening a tool panel. It reads the mounted row on the next animation
+  frame (after the default action, before paint) and defaults to the viewport
+  anchor, disengaging and cancelling smooth automatic follow. During a native
+  scroll its measurement and explicit policy wait together for settle. A
+  missing or unmounted key is a no-op, and the later ResizeObserver delivery
+  sees the committed height and does not duplicate the commit.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
   waiting for settle). Changes from the v1 shape: `estimateSize` is gone — every
   key is premeasured before it commits, so heights are never estimated

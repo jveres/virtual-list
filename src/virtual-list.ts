@@ -191,6 +191,11 @@ export type ScrollOptions = {
   offset?: number;
 };
 
+export type RemeasureOptions = {
+  /** How the viewport should resolve the discrete, host-driven size change. */
+  anchor?: AnchorPolicy;
+};
+
 export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
   /**
@@ -201,6 +206,15 @@ export interface VirtualList<T> {
    * settle-time commit moved the viewport off it. Always settles.
    */
   scrollTo(target: ScrollTarget, options?: ScrollOptions): Promise<boolean>;
+  /**
+   * Schedule a mounted row for measurement on the next animation frame.
+   * This is the intent-bearing path for discrete host interactions such as
+   * opening a <details>: the frame runs after the default action changed
+   * layout, but before paint. The viewport anchor is the default, so a user
+   * expansion never re-engages automatic end-follow. Missing or unmounted
+   * keys are harmless no-ops.
+   */
+  remeasure(key: string, options?: RemeasureOptions): void;
   readonly state: VirtualListState;
   /** Set or clear an edge slot: a structural change, settle-gated. */
   setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void;
@@ -354,8 +368,17 @@ export function createVirtualList<T>(
   // runs, so disposal from that child must be able to discard them all.
   const liveScopes: Scope[] = [];
   let glide: Glide | null = null;
+  let glideKind: "command" | "follow" | null = null;
   /** Smooth end-follow survives the quiet gap between consecutive glide legs. */
   let smoothFollowArmed = false;
+  /**
+   * A host-driven measurement owns the next measurement commit's anchor.
+   * Registering this before the DOM changes prevents ResizeObserver from
+   * racing ahead with the default end-follow policy.
+   */
+  const remeasureRequests = new Map<string, AnchorPolicy>();
+  let remeasureFrame = 0;
+  let remeasurePolicy: AnchorPolicy | undefined;
   let booting = true;
   // A landed glide resolves only once its phase settles and held work has
   // committed, revalidated against the final geometry.
@@ -651,7 +674,12 @@ export function createVirtualList<T>(
     // "live" can commit without a scroll write, which commits now.
     inMeasurementDelivery = true;
     try {
-      if (idle()) commit(null);
+      // A discrete host interaction registered its anchor before changing
+      // the DOM. Its rAF (or settle) owns this measurement, so an earlier RO
+      // delivery must not accidentally resolve it with the default policy.
+      if (remeasureRequests.size > 0 || remeasurePolicy !== undefined) {
+        publish();
+      } else if (idle()) commit(null);
       else if (!liveCommit()) publish();
     } finally {
       inMeasurementDelivery = false;
@@ -1083,7 +1111,15 @@ export function createVirtualList<T>(
    * Returns whether it published (it did whenever it committed).
    */
   function liveCommit(): boolean {
-    if (!liveUpdates || disposed || dirtyRows.size === 0) return false;
+    if (
+      !liveUpdates ||
+      disposed ||
+      dirtyRows.size === 0 ||
+      remeasureRequests.size > 0 ||
+      remeasurePolicy !== undefined
+    ) {
+      return false;
+    }
     let published = false;
     guarded(() => {
       const vp = viewportState();
@@ -1434,10 +1470,23 @@ export function createVirtualList<T>(
     onGestureSettled: () => {
       // The phase reached idle: everything held commits, once — and only
       // then does a landed command learn whether it is still on target.
-      if (pending !== null || dirtyRows.size > 0) commit(null);
-      else publish();
+      const remeasureReady =
+        remeasureRequests.size === 0 && remeasurePolicy !== undefined;
+      const explicitPolicy = remeasurePolicy;
+      if (remeasureReady) remeasurePolicy = undefined;
+      if (pending !== null || dirtyRows.size > 0) {
+        commit(null, explicitPolicy);
+      } else {
+        publish();
+      }
       settleParked((landed) => !disposed && landed());
-      if (options.followBehavior === "smooth") {
+      // A scheduled interaction owns the next frame/settle. Do not infer a
+      // fresh end-follow intent in the gap after cancelling its old glide.
+      if (
+        options.followBehavior === "smooth" &&
+        remeasureRequests.size === 0 &&
+        remeasurePolicy === undefined
+      ) {
         const following = lastState.atEnd;
         if (smoothFollowArmed !== following) {
           smoothFollowArmed = following;
@@ -1516,7 +1565,11 @@ export function createVirtualList<T>(
       deferTeardown(teardownFailures);
       if (disposed) return;
       if (idle()) {
-        commit(prepared);
+        // A click-driven remeasure may be waiting for its post-activation
+        // frame. Any snapshot that happens to arrive first must preserve
+        // that newer viewport intent too; the measurement frame still owns
+        // and later consumes the policy.
+        commit(prepared, remeasurePolicy);
         return;
       }
       if (prepared.newRows.size === 0 && sameKeysAsCommitted(prepared.keys)) {
@@ -1659,6 +1712,7 @@ export function createVirtualList<T>(
       (completed) =>
         guarded(() => {
           glide = null;
+          glideKind = null;
           if (!completed || disposed) {
             done(false);
             return;
@@ -1667,6 +1721,7 @@ export function createVirtualList<T>(
           controller.markSettlePending();
         }),
     );
+    glideKind = "command";
   }
 
   /** Automatic end-follow: one glide whose destination tracks live growth. */
@@ -1687,9 +1742,81 @@ export function createVirtualList<T>(
       () =>
         guarded(() => {
           glide = null;
+          glideKind = null;
           if (!disposed) controller.markSettlePending();
         }),
     );
+    glideKind = "follow";
+  }
+
+  /** Commit a host-driven measurement once its post-activation frame arrives. */
+  function flushRemeasures(): void {
+    remeasureFrame = 0;
+    if (disposed) return;
+    guarded(() => {
+      let valid = false;
+      let requestedPolicy: AnchorPolicy | undefined;
+      for (const [key, anchor] of remeasureRequests) {
+        const row = rows.get(key);
+        if (!row?.mounted || row.edge) continue;
+        markDirty(row);
+        requestedPolicy = anchor;
+        valid = true;
+      }
+      remeasureRequests.clear();
+
+      if (!valid) {
+        remeasurePolicy = undefined;
+        publish();
+        return;
+      }
+      remeasurePolicy = requestedPolicy ?? remeasurePolicy;
+      if (!idle()) {
+        publish();
+        return;
+      }
+
+      const policy = remeasurePolicy ?? "viewport";
+      remeasurePolicy = undefined;
+      commit(null, policy);
+    });
+  }
+
+  function scheduleRemeasure(key: string, anchor: AnchorPolicy): void {
+    if (disposed) return;
+    const current = rows.get(key);
+    if (!current?.mounted || current.edge) return;
+    // Delete first so repeated requests retain latest-request ordering.
+    remeasureRequests.delete(key);
+    remeasureRequests.set(key, anchor);
+    remeasurePolicy = anchor;
+
+    if (anchor === "viewport") {
+      const automaticPhase =
+        controller.isUserScrollActive() &&
+        (glideKind === "follow" || smoothFollowArmed);
+      smoothFollowArmed = false;
+      if (glideKind === "follow") glide?.cancel();
+      // End only the programmatic phase we just cancelled. Genuine input
+      // clears the follow intent in cancelActiveSmoothScroll before this
+      // API can run, so a native gesture is never finished here.
+      if (automaticPhase) controller.finishGesture();
+      publish();
+    }
+
+    if (remeasureFrame === 0) {
+      remeasureFrame = requestAnimationFrame(flushRemeasures);
+    }
+  }
+
+  function remeasure(
+    key: string,
+    remeasureOptions: RemeasureOptions = {},
+  ): void {
+    if (disposed) return;
+    const anchor = remeasureOptions.anchor ?? "viewport";
+    if (enqueueDuringTransaction(() => remeasure(key, { anchor }))) return;
+    guarded(() => scheduleRemeasure(key, anchor));
   }
 
   function dispose(): void {
@@ -1706,6 +1833,8 @@ export function createVirtualList<T>(
     controller.dispose();
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);
+    if (remeasureFrame !== 0) cancelAnimationFrame(remeasureFrame);
+    remeasureRequests.clear();
     rowObserver.disconnect();
     viewportObserver.disconnect();
     measurer.dispose();
@@ -1749,6 +1878,7 @@ export function createVirtualList<T>(
   return {
     setItems,
     scrollTo,
+    remeasure,
     get state(): VirtualListState {
       return lastState;
     },

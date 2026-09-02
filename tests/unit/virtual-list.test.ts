@@ -322,6 +322,121 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
+    const h = mount(range(0, 50), { followBehavior: "smooth" });
+    const before = h.viewport.scrollTop;
+    const tail = h.rowElement("msg 49");
+
+    // The host declares intent before <details>' default action changes the
+    // row; the next frame observes its post-action height.
+    h.list.remeasure("m49", { anchor: "viewport" });
+    h.heights.set(49, 300);
+    vi.advanceTimersByTime(16);
+
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+    expect(h.slotOf(tail).style.height).toBe("300px");
+    expect(h.viewport.scrollTop).toBe(before);
+    expect(h.list.state.following).toBe(false);
+
+    // The later observer delivery is a no-op, not a second transaction.
+    const publications = h.states.length;
+    fireResize(0, tail, 300);
+    expect(h.states).toHaveLength(publications);
+    vi.advanceTimersByTime(500);
+    expect(h.viewport.scrollTop).toBe(before);
+  });
+
+  it("preserves remeasure intent when a snapshot commits before its frame", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    const before = h.viewport.scrollTop;
+
+    h.list.remeasure("m49", { anchor: "viewport" });
+    h.list.setItems([...initial, message(50)]); // Would normally end-follow.
+    expect(h.viewport.scrollTop).toBe(before);
+    expect(h.list.state.following).toBe(false);
+
+    h.heights.set(49, 300);
+    vi.advanceTimersByTime(16);
+    expect(h.list.state.totalSize).toBe(51 * ROW_H + 200);
+    expect(h.viewport.scrollTop).toBe(before);
+  });
+
+  it("cancels an active automatic glide before a user-driven remeasure", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed);
+    vi.advanceTimersByTime(64);
+    const interruptedAt = h.viewport.scrollTop;
+    expect(interruptedAt).toBeGreaterThan(50 * ROW_H - VIEWPORT_H);
+
+    h.list.remeasure("m49", { anchor: "viewport" });
+    expect(h.list.state.following).toBe(false);
+    h.heights.set(49, 500);
+    vi.advanceTimersByTime(16);
+
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 400);
+    expect(h.viewport.scrollTop).toBe(interruptedAt);
+    vi.advanceTimersByTime(500);
+    expect(h.viewport.scrollTop).toBe(interruptedAt);
+  });
+
+  it("does not settle native input that takes over before the remeasure frame", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed);
+    vi.advanceTimersByTime(64);
+
+    h.list.remeasure("m49", { anchor: "viewport" });
+    h.heights.set(49, 500);
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    h.userScroll(h.viewport.scrollTop - 100);
+    const userTop = h.viewport.scrollTop;
+    vi.advanceTimersByTime(16);
+
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+    expect(h.list.state.held).toBe(true);
+    expect(h.viewport.scrollTop).toBe(userTop);
+    h.settle();
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 400);
+    expect(h.viewport.scrollTop).toBe(userTop);
+  });
+
+  it("carries an explicit remeasure anchor through a native scroll settle", () => {
+    const h = mount(range(0, 50), {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4300);
+    h.userScroll(4400); // Active gesture, back at the old end.
+    const tail = h.rowElement("msg 49");
+
+    h.list.remeasure("m49", { anchor: "viewport" });
+    h.heights.set(49, 300);
+    vi.advanceTimersByTime(16);
+    fireResize(0, tail, 300);
+
+    // Even live mode cannot consume the explicit intent mid-gesture.
+    expect(h.list.state.totalSize).toBe(50 * ROW_H);
+    expect(h.slotOf(tail).style.height).toBe(`${ROW_H}px`);
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+    expect(h.slotOf(tail).style.height).toBe("300px");
+    expect(h.viewport.scrollTop).toBe(4400);
+    expect(h.list.state.following).toBe(false);
+  });
+
   it("commits idle updates immediately: append follows the end, prepend keeps the anchor", () => {
     const h = mount(range(10, 60));
     h.list.setItems(range(10, 62));

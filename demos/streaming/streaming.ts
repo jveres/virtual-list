@@ -1941,10 +1941,22 @@ viewport.addEventListener("click", (event) => {
   if (!Number.isFinite(messageId)) return;
   switchMessageVersion(messageId, button.dataset.dir === "prev" ? -1 : 1);
 });
-// Toggling a tool-call <details> needs no demo-side measurement call: the
-// runtime commits ResizeObserver measurements synchronously in the observer
-// callback — after layout, before paint — so the toggle lands in the same
-// painted frame (I6).
+// A tool panel is user-driven growth, not streaming growth: preserve the
+// clicked viewport rather than re-gluing an end-positioned transcript. The
+// runtime measures on the next frame, after <details>' default action.
+viewport.addEventListener(
+  "click",
+  (event) => {
+    if (!(event.target instanceof Element)) return;
+    const summary = event.target.closest(".tool-call-summary");
+    const row = summary?.closest<HTMLElement>("article.message");
+    const key = row?.dataset.key;
+    if (key !== undefined) {
+      virtualList.remeasure(key, { anchor: "viewport" });
+    }
+  },
+  { capture: true },
+);
 
 syncMetrics();
 document.documentElement.classList.remove("booting");
