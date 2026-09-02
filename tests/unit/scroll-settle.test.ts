@@ -458,7 +458,9 @@ describe("safari sequences (trace replay)", () => {
     expect(harness.controller.isUserScrollActive()).toBe(true);
     vi.advanceTimersByTime(300); // The wheel-idle window closes.
     expect(harness.controller.isUserScrollActive()).toBe(false);
-    expect(harness.settled()).toBe(0); // Cancelled, not settled: nothing moved.
+    // The host is notified even though scrollTop did not move: boundary
+    // work may have become held while this real wheel phase was active.
+    expect(harness.settled()).toBe(1);
   });
 
   it("never settles while rubber-band overscrolled; settles after the bounce", () => {

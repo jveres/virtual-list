@@ -59,9 +59,9 @@ as preserved primitives, with the smaller API built around them.
    and gap shrinkage, which is visibly wrong). Later updates in a held
    phase advance that off-scroller replacement in place; one fresh render
    per key per phase once held, one per update while promotable.
-   `scrollingUpdates` selects the policy: `"same-height"`
-   promotion as above), `"freeze"` (every phase-time update held until
-   settle), or `"live"` — the default — (rendered in place on the committed element at
+   `scrollingUpdates` selects the policy: `"same-height"` (promotion as
+   above), `"freeze"` (every phase-time update held until settle), or
+   `"live"` — the default — (rendered in place on the committed element at
    once, and its height committed at once whenever no anchor-preserving
    scroll write is needed for it — the row is at or below the viewport's
    anchor row, so only it and what lies below it change; the complete

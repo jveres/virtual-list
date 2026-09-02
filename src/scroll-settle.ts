@@ -890,8 +890,10 @@ export function createScrollSettleController(
       ) {
         // Wheel input that never moved the viewport (a tick at a pinned
         // edge, or one whose scrollend cancellation was withheld above):
-        // the gesture ends when the wheel goes quiet.
-        cancelUserScroll();
+        // the gesture settles when the wheel goes quiet. This must notify
+        // the host: a boundary chunk may have finished preparing while the
+        // phase was active and otherwise remains held indefinitely.
+        finishUserScroll();
         return;
       }
       scheduleWheelScrollEndFallback();
