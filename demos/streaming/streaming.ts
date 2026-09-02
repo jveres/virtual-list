@@ -1998,19 +1998,55 @@ syncEdgeLoaderMode();
 
 // One delegated listener powers copy buttons across every mounted row.
 attachInteractions(viewport);
-// A second delegated listener drives the per-message version navigators; it
-// survives row rebuilds because it lives on the viewport, not the rows.
-viewport.addEventListener("click", (event) => {
-  // The chevron is an inline SVG, so the click target may be an SVGElement;
-  // match on Element (closest is defined there) rather than HTMLElement.
-  if (!(event.target instanceof Element)) return;
-  const button = event.target.closest<HTMLElement>(".version-nav-btn");
-  if (!button || button.hasAttribute("disabled")) return;
+// The per-message version navigators, driven by delegated listeners on the
+// viewport so they survive row rebuilds.
+//
+// A tap that lands while the scroller is still decelerating or bouncing
+// doubles as "stop the animation" on iOS: pointer and touch events arrive,
+// the click never does. So a pointer tap that starts and ends on the same
+// navigator button activates it at pointerup, and the click that other
+// engines fire right after — possibly on the rebuilt row's button — is a
+// duplicate and ignored. Keyboard activation still comes through click.
+const NAV_CLICK_SUPPRESS_MS = 700;
+let navPointerTap: { button: HTMLElement; pointerId: number } | null = null;
+let navClickSuppressedUntil = 0;
+
+function versionNavButtonAt(target: EventTarget | null): HTMLElement | null {
+  // The chevron is an inline SVG, so the target may be an SVGElement; match
+  // on Element (closest is defined there) rather than HTMLElement.
+  if (!(target instanceof Element)) return null;
+  return target.closest<HTMLElement>(".version-nav-btn");
+}
+
+function activateVersionNav(button: HTMLElement): void {
+  if (button.hasAttribute("disabled")) return;
   const messageId = Number(
     button.closest<HTMLElement>(".version-nav")?.dataset.messageId,
   );
   if (!Number.isFinite(messageId)) return;
   switchMessageVersion(messageId, button.dataset.dir === "prev" ? -1 : 1);
+}
+
+viewport.addEventListener("pointerdown", (event) => {
+  const button = versionNavButtonAt(event.target);
+  navPointerTap = button ? { button, pointerId: event.pointerId } : null;
+});
+viewport.addEventListener("pointercancel", () => {
+  navPointerTap = null;
+});
+viewport.addEventListener("pointerup", (event) => {
+  const tap = navPointerTap;
+  navPointerTap = null;
+  if (!tap || tap.pointerId !== event.pointerId) return;
+  if (versionNavButtonAt(event.target) !== tap.button) return;
+  navClickSuppressedUntil = performance.now() + NAV_CLICK_SUPPRESS_MS;
+  activateVersionNav(tap.button);
+});
+viewport.addEventListener("click", (event) => {
+  const button = versionNavButtonAt(event.target);
+  if (!button) return;
+  if (performance.now() < navClickSuppressedUntil) return;
+  activateVersionNav(button);
 });
 // A tool panel is user-driven growth, not streaming growth: preserve the
 // clicked viewport rather than re-gluing an end-positioned transcript. The
