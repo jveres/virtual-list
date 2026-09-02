@@ -22,7 +22,6 @@ const CONTENT_HEIGHT = 5000;
 
 interface Harness {
   controller: ScrollSettleController;
-  viewport: HTMLElement;
   settled: () => number;
   started: () => number;
   cancelledSmooth: () => number;
@@ -97,7 +96,6 @@ function mount(
 
   const harness: Harness = {
     controller,
-    viewport,
     settled: () => settleCount,
     started: () => startCount,
     cancelledSmooth: () => cancelCount,

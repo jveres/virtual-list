@@ -35,8 +35,8 @@ export interface StoredTurn {
   sentAt?: number;
 }
 
-export const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
-export const DEFAULT_CONTEXT_TURNS = 12;
+const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
+const DEFAULT_CONTEXT_TURNS = 12;
 
 const STORAGE_KEY = "virtual-list:ai-settings";
 const HISTORY_KEY = "virtual-list:openai-history";
@@ -139,7 +139,7 @@ export function getAISettings(): AISettings {
   return settings;
 }
 
-export function saveAISettings(next: AISettings): void {
+function saveAISettings(next: AISettings): void {
   settings = next;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
@@ -297,7 +297,7 @@ export function saveOpenAIHistory(turns: readonly StoredTurn[]): void {
   );
 }
 
-export function clearOpenAIHistory(): void {
+function clearOpenAIHistory(): void {
   removeLegacyHistory();
   queueHistoryWrite((db) =>
     db
@@ -615,7 +615,7 @@ export async function* streamOpenAIChat(
 ): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
   if (!apiKey) {
     throw new Error(
-      "no API key configured — open the AI settings in the statusbar and paste an OpenAI key",
+      "no API key configured — open the AI settings in the header and paste an OpenAI key",
     );
   }
 
@@ -672,7 +672,7 @@ export async function* streamOpenAIChat(
  * Verifies a key against the API with a lightweight authenticated request.
  * Returns a human-readable verdict — never throws.
  */
-export async function testOpenAIKey(apiKey: string): Promise<string> {
+async function testOpenAIKey(apiKey: string): Promise<string> {
   if (!apiKey) return "No key entered.";
   try {
     const response = await fetch("https://api.openai.com/v1/models?limit=1", {
@@ -703,7 +703,7 @@ export interface AISettingsPanelOptions {
   onClearHistory?: () => void;
 }
 
-/** Wires the header's AI settings popover: load, persist, open/close. */
+/** Wires the header's AI settings dialog: load, persist, open/close. */
 export function initAISettingsPanel(
   options: AISettingsPanelOptions = {},
 ): void {

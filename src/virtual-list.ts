@@ -597,7 +597,7 @@ export function createVirtualList<T>(
     return error instanceof AggregateError ? [...error.errors] : [error];
   }
 
-  /** Retained, unmounted rows are measured detached, all in one layout. */
+  /** Unmounted rows (fresh or retained) are measured detached, all in one layout. */
   function remeasureDetached(detached: readonly Row<T>[]): number[] {
     if (detached.length === 0) return [];
     try {
@@ -967,19 +967,10 @@ export function createVirtualList<T>(
         if (disposed) throw new DisposedDuringPreparation();
       }
 
-      // Render first, then attach every fresh node together. One layout
+      // Render first, then measure every fresh node together. One layout
       // serves the whole preparation instead of one forced layout per row.
       if (freshRows.length > 0) {
-        let heights: number[];
-        try {
-          heights = measurer.measureMany(freshRows.map((row) => row.element));
-        } finally {
-          // measureMany always detaches. Restore preparation ownership so
-          // rollback, disposal, and the eventual hand-off see complete rows.
-          for (const row of freshRows) {
-            if (!row.destroyed) row.slot.appendChild(row.element);
-          }
-        }
+        const heights = remeasureDetached(freshRows);
         freshRows.forEach((row, index) => {
           const height = quantizeHeight(heights[index] as number);
           row.height = height;

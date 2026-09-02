@@ -1,4 +1,4 @@
-export type ChatRole = "user" | "assistant";
+type ChatRole = "user" | "assistant";
 export type AssistantStatus = "thinking" | "streaming" | "done" | "cancelled";
 
 export interface ChatToolCall {
@@ -123,13 +123,12 @@ export function syncToolCalls(row: HTMLElement, message: ChatMessage): void {
 // `.message-content` → role label + tool calls — and returns the content host
 // the caller fills with markdown (a static `.markdown-viewer` for finished rows,
 // or a live `createMarkdownViewer` mount for a streaming row).
-export function buildChatRow(
-  index: number,
-  message: ChatMessage,
-): { row: HTMLElement; content: HTMLElement } {
+export function buildChatRow(message: ChatMessage): {
+  row: HTMLElement;
+  content: HTMLElement;
+} {
   const row = document.createElement("article");
   row.className = `message ${message.role}`;
-  row.dataset.index = String(index);
 
   const content = document.createElement("div");
   content.className = "message-content";
@@ -159,19 +158,14 @@ export function buildSectionHeader(label: string): HTMLElement {
   return header;
 }
 
-export function buildChatItem(
-  index: number,
-  message: ChatMessage,
-  html: string,
-): HTMLElement {
-  const { row, content } = buildChatRow(index, message);
+export function buildChatItem(message: ChatMessage, html: string): HTMLElement {
+  const { row, content } = buildChatRow(message);
 
-  // markdown-viewer's stylesheet targets `.markdown-viewer > .markdown`; `.md`
-  // is kept on the inner element as the demo's JS hook and layout container.
+  // markdown-viewer's stylesheet targets `.markdown-viewer > .markdown`.
   const viewer = document.createElement("div");
   viewer.className = "markdown-viewer";
   const markdown = document.createElement("div");
-  markdown.className = "markdown md";
+  markdown.className = "markdown";
   markdown.innerHTML = html;
   viewer.appendChild(markdown);
   content.appendChild(viewer);

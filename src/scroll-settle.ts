@@ -628,12 +628,13 @@ export function createScrollSettleController(
     );
   }
 
-  function markPendingWheelScrollEnd(): void {
+  function markPendingWheelScrollEnd(firefoxEdge = false): void {
     setPendingNativeScrollEnd({
       scrollTop: Math.max(
         0,
         Math.min(nativeMaxScrollTop(), viewport.scrollTop),
       ),
+      firefoxEdge,
     });
     schedulePendingNativeScrollEnd();
   }
@@ -722,14 +723,7 @@ export function createScrollSettleController(
         // window (the full stability window once contested). Preserve an
         // already-classified edge release even if spinner chrome has since
         // grown the native scroll range.
-        setPendingNativeScrollEnd({
-          scrollTop: Math.max(
-            0,
-            Math.min(nativeMaxScrollTop(), viewport.scrollTop),
-          ),
-          firefoxEdge: true,
-        });
-        schedulePendingNativeScrollEnd();
+        markPendingWheelScrollEnd(true);
         return;
       }
       markPendingWheelScrollEnd();

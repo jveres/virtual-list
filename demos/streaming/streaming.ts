@@ -207,17 +207,13 @@ interface TreeNode {
 
 // Message ids start at 1, so 0 is free for the root sentinel.
 const TREE_ROOT_ID = 0;
-const tree = new Map<number, TreeNode>([
-  [
-    TREE_ROOT_ID,
-    {
-      message: null,
-      parentId: TREE_ROOT_ID,
-      childrenIds: [],
-      selectedChildIndex: 0,
-    },
-  ],
-]);
+const rootNode = (): TreeNode => ({
+  message: null,
+  parentId: TREE_ROOT_ID,
+  childrenIds: [],
+  selectedChildIndex: 0,
+});
+const tree = new Map<number, TreeNode>([[TREE_ROOT_ID, rootNode()]]);
 
 const BULK_RESPONSES = [
   `Sure — here's a quick rundown.
@@ -963,8 +959,6 @@ function seedConversationTree(count: number): void {
     addTreeChild(activeLeafId(), message, { select: true });
   }
   seedSyntheticBranches();
-  rebuildActiveTranscript();
-  loadedStart = Math.max(0, transcript.length - loadChunkCount());
 }
 
 function seedSyntheticBranches(): void {
@@ -1012,12 +1006,7 @@ function resetConversationState(): void {
   conversationEpoch++;
   topBoundaryLoadSeen = false;
   tree.clear();
-  tree.set(TREE_ROOT_ID, {
-    message: null,
-    parentId: TREE_ROOT_ID,
-    childrenIds: [],
-    selectedChildIndex: 0,
-  });
+  tree.set(TREE_ROOT_ID, rootNode());
   transcript.length = 0;
   loadedStart = 0;
   loadingTop = false;
@@ -1071,8 +1060,6 @@ function seedOpenAIConversation(): void {
       { select: true },
     );
   }
-  rebuildActiveTranscript();
-  loadedStart = Math.max(0, transcript.length - loadChunkCount());
 }
 
 function seedActiveConversation(): void {
@@ -1082,6 +1069,8 @@ function seedActiveConversation(): void {
   } else {
     seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
   }
+  rebuildActiveTranscript();
+  loadedStart = Math.max(0, transcript.length - loadChunkCount());
   refreshLoadedWindow();
 }
 
@@ -1216,17 +1205,13 @@ function streamingDisplayText(message: Message): string {
 // A finished row: the static markdown render plus, when the message has
 // sibling versions, the navigator that switches between them.
 function buildStaticRow(message: Message): HTMLElement {
-  const row = buildChatItem(
-    transcriptIndexOf(message),
-    message,
-    htmlForMessage(message),
-  );
+  const row = buildChatItem(message, htmlForMessage(message));
   appendVersionNav(row, message);
   return row;
 }
 
 function buildStreamingRow(message: Message): HTMLElement {
-  const { row, content } = buildChatRow(transcriptIndexOf(message), message);
+  const { row, content } = buildChatRow(message);
   // createMarkdownViewer takes over its host's children, so it gets a
   // dedicated wrapper rather than `content` (which also holds the role label
   // and tool calls).

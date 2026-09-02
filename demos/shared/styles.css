@@ -613,7 +613,7 @@ p.ai-settings-note {
 /* Markdown content (typography, code, tables, alerts, math) is styled by
    markdown-viewer's bundled stylesheet on `.markdown-viewer .markdown`. This
    rule only keeps the content box from overflowing the chat bubble — it covers
-   both static rows (`.markdown.md`) and live streaming rows (`.markdown`). */
+   both static rows and live streaming rows (`.markdown`). */
 .markdown-viewer .markdown {
   max-width: 100%;
 }
