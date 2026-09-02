@@ -40,8 +40,9 @@ export interface ItemMeasurer {
    * - Measurement failure after a successful build: `destroy` runs so the
    *   never-returned element's resources are torn down; a teardown failure
    *   aggregates with the measurement failure.
-   * - Abort, supersession, disposal, or eventual unmount of a returned
-   *   element: the CALLER destroys it, exactly once.
+   * - Abort, supersession, disposal, or removal of a returned element:
+   *   the CALLER destroys it, exactly once (leaving the DOM is not the end
+   *   of a retained element's life).
    */
   measure(
     build: () => HTMLElement,
