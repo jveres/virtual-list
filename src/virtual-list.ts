@@ -154,7 +154,7 @@ const MEASURE_EPSILON_PX = 0.5;
  * such seam: anchor writes land exactly.
  */
 function quantizeHeight(height: number): number {
-  return Math.ceil(height - 1e-6);
+  return Math.max(1, Math.ceil(height - 1e-6));
 }
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
@@ -265,7 +265,6 @@ export function createVirtualList<T>(
   // runs, so disposal from that child must be able to discard them all.
   const liveScopes: Scope[] = [];
   let glide: Glide | null = null;
-  let glideTarget: (() => number) | null = null;
   // A landed glide resolves only once its phase settles and held work has
   // committed, revalidated against the final geometry.
   let awaitingSettle: {
@@ -1149,10 +1148,11 @@ export function createVirtualList<T>(
       glide?.cancel();
       settleParked(() => false);
     },
-    smoothScrollReachedTarget: () =>
-      glide === null ||
-      glideTarget === null ||
-      Math.abs(viewport.scrollTop - glideTarget()) <= 2,
+    // The glide's own completion is the ONLY authority that ends its phase.
+    // Safari emits a scrollend after every programmatic write; judging
+    // "reached" by proximity (within 2px) ended the phase while the glide
+    // still had 1px frames to write, and a commit could land under it.
+    smoothScrollReachedTarget: () => glide === null,
     onGestureActivity: () => {},
     onGestureStarted: () => {},
     onGestureSettled: () => {
@@ -1333,7 +1333,6 @@ export function createVirtualList<T>(
     // landing settle, exactly like a native gesture — and so does the
     // command's own result.
     controller.beginProgrammaticGesture();
-    glideTarget = destination;
     glide = startGlide(
       {
         read: () => viewport.scrollTop,
@@ -1350,7 +1349,6 @@ export function createVirtualList<T>(
       (completed) =>
         guarded(() => {
           glide = null;
-          glideTarget = null;
           if (!completed || disposed) {
             done(false);
             return;

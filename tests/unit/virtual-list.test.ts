@@ -91,6 +91,11 @@ function mount(
     onState?: (state: VirtualListState) => void;
     onDestroy?: (element: HTMLElement) => void;
     scrollingUpdates?: "freeze" | "same-height" | "live";
+    settleStrategy?:
+      | "default"
+      | "safari-wheel"
+      | "chromium-wheel"
+      | "firefox-wheel";
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     reach?: boolean | "start-only";
@@ -146,7 +151,7 @@ function mount(
   const list = createVirtualList<Msg>(viewport, {
     items,
     key: (m) => `m${m.id}`,
-    settleStrategy: "default",
+    settleStrategy: hooks.settleStrategy ?? "default",
     // The harness pins "same-height" (the mode most tests describe); the
     // runtime's own default is "live" (pinned by its own test).
     scrollingUpdates: hooks.scrollingUpdates ?? "same-height",
@@ -507,6 +512,49 @@ describe("v2 runtime — commits and slots", () => {
     list.dispose();
   });
 
+  it("a glide's phase ends only when the glide completes, not at a mid-glide scrollend (Safari)", () => {
+    // Safari emits a scrollend after every programmatic write. In "live"
+    // mode at the end, streaming growth commits under the glide and moves
+    // its target, so the glide keeps chasing; a proximity-judged "reached"
+    // at such a scrollend started the settle cooldown mid-chase and let a
+    // structural commit land under a still-moving glide.
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      settleStrategy: "safari-wheel",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(3005);
+    h.userScroll(4380);
+    h.settle();
+    vi.advanceTimersByTime(2_000);
+    expect(h.list.state.held).toBe(false);
+
+    void h.list.scrollTo("end", { behavior: "smooth" });
+    for (
+      let frame = 0;
+      frame < 60 && 4400 - h.viewport.scrollTop > 2;
+      frame++
+    ) {
+      vi.advanceTimersByTime(16);
+    }
+    expect(h.viewport.scrollTop).toBeLessThan(4400); // Still gliding, within 2px.
+    h.viewport.dispatchEvent(new Event("scrollend")); // Safari: after a write.
+
+    // The end moves under the glide: the last row grows, live.
+    const last = h.rowElement("msg 49");
+    h.heights.set(49, 300);
+    fireResize(0, last, 300);
+    expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
+
+    vi.advanceTimersByTime(140 + 16); // The old cooldown would have settled here.
+    h.list.setItems([...range(-10, 0), ...initial]);
+    expect(h.list.state.count).toBe(50); // Held: the glide still owns the phase.
+    expect(h.list.state.held).toBe(true);
+
+    vi.advanceTimersByTime(3_000); // The glide lands, the phase settles.
+    expect(h.list.state.count).toBe(60);
+  });
+
   it('"live" still settle-gates structural changes', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
@@ -554,6 +602,12 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.slotOf(h.rowElement("msg 6")).style.transform).toBe(
       `translateY(${5 * ROW_H + 121}px)`,
     );
+
+    // Every valid positive measurement remains valid geometry, even below
+    // one CSS pixel.
+    h.heights.set(5, 0.25);
+    fireResize(0, row, 0.25);
+    expect(h.slotOf(row).style.height).toBe("1px");
   });
 
   it("a takeover writes the current position back untouched, never clamped to a rounded scrollHeight", () => {

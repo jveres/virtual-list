@@ -8,6 +8,7 @@ import { defineConfig, type Plugin } from "vite";
  * back on the desk.
  */
 function labReportSink(): Plugin {
+  const maxReportBytes = 1_000_000;
   return {
     name: "lab-report-sink",
     configureServer(server) {
@@ -18,10 +19,21 @@ function labReportSink(): Plugin {
           return;
         }
         let body = "";
+        let bytes = 0;
+        let rejected = false;
         request.on("data", (chunk) => {
+          bytes += chunk.length;
+          if (bytes > maxReportBytes) {
+            rejected = true;
+            response.statusCode = 413;
+            response.end();
+            request.destroy();
+            return;
+          }
           body += String(chunk);
         });
         request.on("end", () => {
+          if (rejected) return;
           try {
             const report = JSON.parse(body) as {
               why: string;

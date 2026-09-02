@@ -352,9 +352,10 @@ function scheduleImage(row: HTMLElement, img: HTMLImageElement, item: Item) {
   img.addEventListener("load", () => {
     const current = itemById.get(item.id);
     if (!current || current.imageLoaded) return;
-    current.imageLoaded = true;
     imagesLoaded += 1;
-    changeContent(current, `image #${item.id} loaded`);
+    changeContent(current, `image #${item.id} loaded`, (updated) => {
+      updated.imageLoaded = true;
+    });
   });
   const delay = checkbox("images").checked ? item.imageDelayMs : 0;
   imagesPending += 1;
@@ -454,6 +455,7 @@ let lastKeyAt = Number.NEGATIVE_INFINITY;
 let lastNativeScrollAt = Number.NEGATIVE_INFINITY;
 let frameHadNativeScroll = false;
 const expectedWrites: number[] = [];
+let lastScrollEventTop = Number.NaN;
 /** Advances on every runtime scrollTop write. */
 let writeSerial = 0;
 const runtimeWriteTimes: number[] = [];
@@ -597,6 +599,15 @@ function traceInput(): void {
     () => {
       const now = performance.now();
       const top = viewport.scrollTop;
+      // Safari (iPadOS) emits a second scroll event at the SAME position
+      // after a programmatic write. No movement is no input — and it must
+      // not clear the expected-write queue, or the runtime's next write
+      // goes unattributed too.
+      if (Math.abs(top - lastScrollEventTop) <= PX_EPSILON) {
+        noteInput(`scroll top=${Math.round(top)} (no movement)`);
+        return;
+      }
+      lastScrollEventTop = top;
       const index = expectedWrites.findIndex(
         (target) => Math.abs(target - top) <= PX_EPSILON,
       );
@@ -921,6 +932,7 @@ interface AnchorRecord {
 let anchorRecord: AnchorRecord | null = null;
 /** A runtime write happened and no batch has re-captured the anchor yet. */
 let anchorRefreshPending = false;
+let lastSeenWidth = viewport.clientWidth;
 
 function parseHeight(style: string | null): number | null {
   const match =
@@ -958,6 +970,13 @@ function classifyBatch(records: MutationRecord[]): void {
   // precede its mutations in the same task, and nothing moves it before
   // this microtask.
   const scrollTopNow = viewport.scrollTop;
+  // A width change the lab did not make (device rotation, browser chrome):
+  // every row may legitimately re-commit.
+  if (Math.abs(viewport.clientWidth - lastSeenWidth) > 0.5) {
+    lastSeenWidth = viewport.clientWidth;
+    recordWidthChange();
+    log(`environment width → ${lastSeenWidth}px`, "mark");
+  }
   const added = new Set<Element>();
   let removed = 0;
   const firstOldStyle = new Map<Element, string | null>();
@@ -1135,7 +1154,7 @@ function classifyBatch(records: MutationRecord[]): void {
   // A: the row under the viewport top stays where it was — unless this
   // commit legitimately kept an end-pinned viewport at the end.
   if (!commandIssuing && !nativeActive(now) && !glideMoving(now)) {
-    checkAnchor(canvasChange, heightChanges);
+    checkAnchor(canvasChange, heightChanges, wroteScrollTop);
   }
   expectAnchoredCommit = false;
   checkOverlap();
@@ -1225,9 +1244,12 @@ function captureAnchor(): AnchorRecord | null {
 function checkAnchor(
   canvasChange: { from: number | null; to: number | null } | null,
   heightChanges: readonly { key: string; from: number; to: number }[],
+  wroteScrollTop: boolean,
 ): void {
   const record = anchorRecord;
   if (!record) return;
+  const context = () =>
+    `mode=${scrollingMode()} held=${stateHeld} write=${wroteScrollTop} scrollTop ${Math.round(record.scrollTop)}→${Math.round(viewport.scrollTop)} canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} heights [${heightChanges.map((c) => `#${c.key} ${c.from}→${c.to}`).join(", ")}]`;
   // The viewport moved with no runtime write since the record — a native
   // scroll whose event has not fired yet: the baseline is stale, and the
   // batch is judged by G, not A.
@@ -1257,7 +1279,7 @@ function checkAnchor(
     if (itemById.has(Number(record.key))) {
       violation(
         "A",
-        `anchor #${record.key} survived the commit but left the window (viewport jumped to ${Math.round(viewport.scrollTop)})`,
+        `anchor #${record.key} survived the commit but left the window — ${context()}`,
       );
     } else if (verbose()) {
       log(`anchor #${record.key} removed across commit`);
@@ -1277,7 +1299,7 @@ function checkAnchor(
   if (Math.abs(top - record.top) > ANCHOR_EPSILON) {
     violation(
       "A",
-      `anchor #${record.key} moved ${record.top.toFixed(2)}→${top.toFixed(2)}px across a commit`,
+      `anchor #${record.key} moved ${record.top.toFixed(2)}→${top.toFixed(2)}px across a commit — ${context()}`,
     );
   }
 }
@@ -1372,12 +1394,22 @@ function scheduleStatus(): void {
 const random = mulberry32(0x9e3779b9);
 const streams = new Map<number, number>();
 
-/** Every content change is a new item object handed to setItems. */
-function changeContent(item: Item, what: string): void {
-  const updated = { ...item, version: item.version + 1 };
+/** Every content change, including nested words, is an immutable snapshot. */
+function changeContent(
+  item: Item,
+  what: string,
+  mutate: (updated: Item) => void = () => {},
+): Item {
+  const updated = {
+    ...item,
+    words: [...item.words],
+    version: item.version + 1,
+  };
+  mutate(updated);
   replaceItem(updated);
   guardedCall(`setItems (${what})`, () => list.setItems(items));
   recordContentChange(item.id, what);
+  return updated;
 }
 
 function maintainStreams(): void {
@@ -1401,8 +1433,13 @@ function syncLive(id: number): void {
   const item = itemById.get(id);
   const streaming = streams.has(id);
   if (item && item.streaming !== streaming && items.includes(item)) {
-    item.streaming = streaming;
-    changeContent(item, `stream #${id} ${streaming ? "live" : "idle"}`);
+    changeContent(
+      item,
+      `stream #${id} ${streaming ? "live" : "idle"}`,
+      (updated) => {
+        updated.streaming = streaming;
+      },
+    );
   }
 }
 
@@ -1422,10 +1459,15 @@ function startStream(id: number): void {
       return;
     }
     const burst = 1 + Math.floor(random() * 3);
-    for (let count = 0; count < burst; count++)
-      item.words.push(pick(WORDS, random));
-    changeContent(item, `stream #${id} +${burst} words`);
-    if (item.words.length >= item.streamTarget) {
+    const updated = changeContent(
+      item,
+      `stream #${id} +${burst} words`,
+      (next) => {
+        for (let count = 0; count < burst; count++)
+          next.words.push(pick(WORDS, random));
+      },
+    );
+    if (updated.words.length >= updated.streamTarget) {
       endStream(id);
       log(`stream #${id} done`);
       maintainStreams();
@@ -1446,10 +1488,13 @@ function stopStreams(): void {
 function flipToggle(id: number, why: string): void {
   const item = itemById.get(id);
   if (!item) return;
-  item.open = !item.open;
+  const open = !item.open;
   changeContent(
     item,
-    `toggle #${id} ${item.open ? "open" : "closed"} (${why})`,
+    `toggle #${id} ${open ? "open" : "closed"} (${why})`,
+    (updated) => {
+      updated.open = open;
+    },
   );
 }
 
@@ -1486,8 +1531,9 @@ function burst(): void {
   log("burst: 5 superseding setItems", "mark");
   for (let count = 0; count < 5; count++) {
     const item = pick(items, random);
-    item.words.push(pick(WORDS, random));
-    changeContent(item, `burst #${item.id}`);
+    changeContent(item, `burst #${item.id}`, (updated) => {
+      updated.words.push(pick(WORDS, random));
+    });
   }
 }
 
@@ -1589,8 +1635,9 @@ const CHAOS_OPS: { weight: number; name: string; run: () => void }[] = [
     run: () => {
       throwNextRender = true;
       const item = pick(items, random);
-      item.words.push(pick(WORDS, random));
-      changeContent(item, `chaos throw on #${item.id}`);
+      changeContent(item, `chaos throw on #${item.id}`, (updated) => {
+        updated.words.push(pick(WORDS, random));
+      });
       throwNextRender = false; // If nothing rendered, do not ambush a later call.
     },
   },

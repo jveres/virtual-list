@@ -47,6 +47,10 @@ const modes = selected(option("mode"), ALL_MODES, "mode");
 const quick = process.argv.includes("--quick");
 const chaosSeconds = Number(option("chaos") ?? 0);
 const seed = Number(option("seed") ?? Date.now() % 1_000_000);
+if (!Number.isFinite(chaosSeconds) || chaosSeconds < 0) {
+  throw new Error("--chaos must be a non-negative number of seconds");
+}
+if (!Number.isFinite(seed)) throw new Error("--seed must be a finite number");
 const headed = process.argv.includes("--headed");
 const externalUrl = process.env.BROWSER_MATRIX_URL;
 const baseUrl = externalUrl ?? DEFAULT_URL;
