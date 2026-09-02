@@ -893,7 +893,6 @@ function keyOfSlot(slot: Element): string {
 
 // --- Geometry telemetry: the MutationObserver on the canvas ----------------
 
-const knownSlots = new WeakSet<Element>();
 let canvasObserver: MutationObserver | null = null;
 /** Content serial each slot's last committed height was observed at. */
 const committedSerial = new Map<string, number>();
@@ -925,7 +924,6 @@ function parseOffset(style: string | null): number | null {
 
 function observeCanvas(target: HTMLElement): void {
   canvasObserver?.disconnect();
-  for (const child of target.children) knownSlots.add(child);
   canvasObserver = new MutationObserver(classifyBatch);
   canvasObserver.observe(target, {
     attributes: true,
@@ -976,7 +974,6 @@ function classifyBatch(records: MutationRecord[]): void {
       for (const node of record.addedNodes) {
         if (node instanceof Element) {
           added.add(node);
-          knownSlots.add(node);
           watchRow(node);
         }
       }
@@ -1503,6 +1500,12 @@ function widthTick(): void {
   window.setTimeout(widthTick, WIDTH_JITTER_MS);
 }
 
+/** The item under the viewport top per the lab's own anchor record. */
+function anchorItem(): Item | undefined {
+  const key = anchorRecord?.key;
+  return key === undefined ? undefined : itemById.get(Number(key));
+}
+
 function deleteItem(item: Item, why: string): void {
   items = items.filter((candidate) => candidate !== item);
   itemById.delete(item.id);
@@ -1576,8 +1579,7 @@ const CHAOS_OPS: { weight: number; name: string; run: () => void }[] = [
     weight: 1,
     name: "delete anchor",
     run: () => {
-      const key = anchorRecord?.key;
-      const item = key === undefined ? undefined : itemById.get(Number(key));
+      const item = anchorItem();
       if (item && items.length > 5) deleteItem(item, "chaos anchor");
     },
   },
@@ -1835,8 +1837,7 @@ mustGet("glide-top").addEventListener("click", () => glideTo("start"));
 mustGet("glide-bottom").addEventListener("click", () => glideTo("end"));
 mustGet("width").addEventListener("click", () => toggleWidth("button"));
 mustGet("delete-anchor").addEventListener("click", () => {
-  const key = anchorRecord?.key;
-  const item = key === undefined ? undefined : itemById.get(Number(key));
+  const item = anchorItem();
   if (item) deleteItem(item, "anchor");
 });
 mustGet("delete-random").addEventListener("click", () => {

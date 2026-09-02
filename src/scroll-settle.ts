@@ -690,9 +690,10 @@ export function createScrollSettleController(
         (hasPendingFirefoxEdgeRelease() || isNearProtectedFirefoxEdge())
       ) {
         // This may be the release — or a scrollend that slipped into a
-        // momentum-wheel gap mid-hold. Honor it only after the stability
-        // window. Preserve an already-classified edge release even if spinner
-        // chrome has since grown the native scroll range.
+        // momentum-wheel gap mid-hold. Honor it only after the confirmation
+        // window (the full stability window once contested). Preserve an
+        // already-classified edge release even if spinner chrome has since
+        // grown the native scroll range.
         setPendingNativeScrollEnd({
           scrollTop: Math.max(
             0,
@@ -805,7 +806,8 @@ export function createScrollSettleController(
           // A scrollend already fired and wheels followed it — either
           // trailing momentum-end markers after a real release, or the
           // gesture continuing past a momentum-gap scrollend. Re-arm the
-          // full stability window; only sustained wheel silence settles.
+          // window (confirmation, or the full stability window once
+          // contested); only wheel silence settles.
           schedulePendingNativeScrollEnd();
           return;
         }

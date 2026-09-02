@@ -353,9 +353,11 @@ async function runCase(engine, mode) {
     await page.click("#reset");
     await page.waitForTimeout(800);
     // The lab zeroes its violation count before the dispose, so a leak at
-    // reset lands here; its trace is already in `result.log`.
+    // reset lands here; the ring is re-read so its line reaches the
+    // artifact.
     afterReset = await page.evaluate(() => ({
       violations: document.getElementById("s-violations")?.textContent ?? "",
+      log: window.labTrace.join("\n"),
     }));
   } finally {
     if (!result || !afterReset) {
@@ -401,7 +403,7 @@ async function runCase(engine, mode) {
     await mkdir(artifactRoot, { recursive: true });
     await writeFile(
       resolve(artifactRoot, `${engine}-${mode}.log`),
-      `${errors.join("\n")}\n${result.log}`,
+      `${errors.join("\n")}\n${afterReset.log}`,
     );
     throw new Error(`${engine}/${mode} failed; see ${artifactRoot}`);
   }
