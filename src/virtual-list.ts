@@ -89,7 +89,7 @@ export interface VirtualListOptions<T> {
    * exactly once per element.
    */
   onDestroy?: (element: HTMLElement, item: T) => void;
-  /** Settle strategy override (labs and tests); auto-detected otherwise. */
+  /** Settle strategy override (tests); auto-detected otherwise. */
   settleStrategy?: VirtualListScrollSettleStrategy;
   /**
    * What happens to a same-key update that arrives during a scroll phase
@@ -124,6 +124,9 @@ export interface VirtualListState {
   held: boolean;
 }
 
+export type ScrollTarget = string | "start" | "end";
+export type ScrollOptions = { align?: "start"; behavior?: "auto" | "smooth" };
+
 export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
   /**
@@ -133,10 +136,7 @@ export interface VirtualList<T> {
    * newer command, dispose), when the target does not exist, or when the
    * settle-time commit moved the viewport off it. Always settles.
    */
-  scrollTo(
-    target: string | "start" | "end",
-    options?: { align?: "start"; behavior?: "auto" | "smooth" },
-  ): Promise<boolean>;
+  scrollTo(target: ScrollTarget, options?: ScrollOptions): Promise<boolean>;
   readonly state: VirtualListState;
   dispose(): void;
 }
@@ -210,8 +210,6 @@ interface Prepared<T> {
 }
 
 type Edge = "start" | "end";
-type ScrollTarget = string | "start" | "end";
-type ScrollOptions = { align?: "start"; behavior?: "auto" | "smooth" };
 type Transaction = { run: () => void; discard?: () => void };
 type Scope = Transaction[];
 
@@ -1184,6 +1182,9 @@ export function createVirtualList<T>(
     },
     onGestureReset: () => {},
     onScrollEventObserved: () => {
+      // Browsers dispatch scroll events asynchronously, so one cannot land
+      // inside a transaction; a host dispatching one synchronously from a
+      // callback is dropped — the transaction's own reconcile follows.
       if (disposed || inTransaction) return;
       // Geometry is untouchable here; only the window moves.
       guarded(onScrolled);

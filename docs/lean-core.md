@@ -251,7 +251,9 @@ not replace the physical desktop Safari and iOS Safari acceptance pass.
 3. The v2 runtime on the contract above: off-scroller preparation
    (render → premeasure → retain), dimensionally stable slots, settle-
    gated atomic commits into the kernel and DOM, commands/glide via the
-   controller's programmatic gesture. **Review checkpoint.**
+   controller's programmatic gesture. **Review checkpoint.** (Done;
+   eleven review rounds of lifecycle invariants, each with discriminating
+   regressions, signed off at `2c540c9`/`15db729`.)
 4. A focused dynamic-height lab: adversarial content only (delayed
    unknown-size images, expansion/shrinkage above/inside/below the
    viewport, off-scroller changes, remounts, rapid superseding changes,

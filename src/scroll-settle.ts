@@ -352,7 +352,7 @@ export function createScrollSettleController(
     return strategy === "firefox-wheel" || strategy === "safari-wheel";
   }
 
-  /** Only the wheel strategies ever set it; "default" never sees wheel input. */
+  /** Only the wheel strategies ever set it ("default" receives wheel events but never marks input active). */
   function hasActiveWheelInput(): boolean {
     return wheelInputActive;
   }

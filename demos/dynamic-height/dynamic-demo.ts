@@ -329,15 +329,15 @@ function scheduleImage(row: HTMLElement, img: HTMLImageElement, item: Item) {
   });
   const delay = checkbox("images").checked ? item.imageDelayMs : 0;
   imagesPending += 1;
-  let settled = false;
+  let srcAssigned = false;
   const timer = window.setTimeout(() => {
-    settled = true;
+    srcAssigned = true;
     imagesPending -= 1;
     img.src = imageSource(item);
   }, delay);
   cleanupByElement.set(row, () => {
     window.clearTimeout(timer);
-    if (!settled) imagesPending -= 1;
+    if (!srcAssigned) imagesPending -= 1;
   });
 }
 
