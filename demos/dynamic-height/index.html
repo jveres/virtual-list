@@ -8,95 +8,20 @@
     />
     <title>virtual-list · dynamic-height lab</title>
     <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="../shared/lab.css" />
     <style>
-      :root {
-        --bg: #ffffff;
-        --bg-panel: #f6f7f9;
-        --fg: #1a1d23;
-        --fg-dim: #8b93a1;
-        --border: #e3e6ea;
-        --accent: #4f6df5;
-        --good: #16a34a;
-        --warn: #d97706;
-        --bad: #dc2626;
-        color-scheme: light;
-      }
-      @media (prefers-color-scheme: dark) {
-        :root {
-          --bg: #16181d;
-          --bg-panel: #1d2027;
-          --fg: #d5d9e1;
-          --fg-dim: #737b89;
-          --border: #2a2e37;
-          --accent: #7d92ff;
-          color-scheme: dark;
-        }
-      }
-      * {
-        box-sizing: border-box;
-        margin: 0;
-      }
-      html,
-      body {
-        height: 100%;
-        overflow: hidden;
-      }
-      body {
-        display: flex;
-        flex-direction: column;
-        background: var(--bg);
-        color: var(--fg);
-        font: 14px/1.45 system-ui, sans-serif;
-      }
-      header {
-        display: flex;
-        align-items: baseline;
-        gap: 10px;
-        padding: 10px 16px;
-        border-bottom: 1px solid var(--border);
-      }
-      header h1 {
-        font-size: 15px;
-        font-weight: 600;
-        color: var(--fg-dim);
-      }
-      /* The same home link as the streaming chat's header. */
-      header .header-title a {
-        color: var(--accent);
-        text-decoration: none;
-        font-weight: 600;
-      }
-      header .header-title a:hover {
-        text-decoration: underline;
-      }
-      header .header-title .sep {
-        margin: 0 8px;
-        color: var(--fg-dim);
-        font-weight: 400;
-      }
-      header .ua {
-        color: var(--fg-dim);
-        font-size: 11px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      main {
-        flex: 1;
-        display: flex;
-        min-height: 0;
-      }
       .stage {
         position: relative;
         flex: 1;
         min-width: 0;
         /* Without this, the stacked (mobile) layout sizes the stage to its
-           content: the viewport then has no internal overflow and nothing
-           scrolls at all on iOS. */
+        content: the viewport then has no internal overflow and nothing
+        scrolls at all on iOS. */
         min-height: 0;
         display: flex;
         justify-content: center;
       }
+
       #viewport {
         height: 100%;
         width: 100%;
@@ -104,14 +29,16 @@
         overflow-y: auto;
         overscroll-behavior-y: contain;
         /* The runtime performs the single anchor-preserving write; native
-           scroll anchoring would add its own correction first. */
+        scroll anchoring would add its own correction first. */
         overflow-anchor: none;
       }
+
       .stage.narrow #viewport {
         max-width: 440px;
       }
+
       /* Rows are absolutely positioned by the runtime inside fixed-height,
-         clipped slots; their own height is content-driven. */
+      clipped slots; their own height is content-driven. */
       .row {
         display: flex;
         flex-direction: column;
@@ -121,24 +48,29 @@
         font-variant-numeric: tabular-nums;
         overflow-wrap: anywhere;
       }
+
       .row .idx {
         color: var(--fg-dim);
         font-size: 11px;
         font-weight: 600;
         letter-spacing: 0.03em;
       }
+
       /* Only a row actively receiving tokens says so. */
       .row.stream.live .idx::after {
         content: " · streaming";
         color: var(--accent);
       }
+
       .row.stream.done .idx::after {
         content: " · streamed";
         color: var(--fg-dim);
       }
+
       .row .body {
         line-height: 1.5;
       }
+
       .row .tg {
         align-self: flex-start;
         font: inherit;
@@ -150,23 +82,27 @@
         color: var(--fg);
         cursor: pointer;
       }
+
       .row .extra {
         padding: 10px 12px;
         border-left: 3px solid var(--accent);
         background: color-mix(in srgb, var(--accent) 8%, transparent);
         font-size: 13px;
       }
+
       /* Reserved at zero height until the item learns the size at load;
-         then CSS-sized through aspect-ratio, independent of decode. */
+      then CSS-sized through aspect-ratio, independent of decode. */
       .row .pic {
         display: block;
         width: 100%;
         height: 0;
         border-radius: 8px;
       }
+
       .row.loaded .pic {
         height: auto;
       }
+
       .row .code {
         margin: 0;
         padding: 10px 12px;
@@ -176,42 +112,7 @@
         white-space: pre-wrap;
         overflow-wrap: anywhere;
       }
-      .row.fresh {
-        animation: fresh 0.9s ease-out;
-      }
-      @keyframes fresh {
-        from {
-          background: color-mix(in srgb, var(--accent) 18%, transparent);
-        }
-      }
-      #pill {
-        position: absolute;
-        top: 10px;
-        left: 0;
-        right: 0;
-        display: flex;
-        justify-content: center;
-        pointer-events: none;
-        opacity: 0;
-        transition: opacity 0.15s ease;
-      }
-      #pill.visible {
-        opacity: 1;
-      }
-      #pill.bottom {
-        top: auto;
-        bottom: 10px;
-      }
-      #pill span {
-        padding: 5px 14px;
-        border: 1px solid var(--border);
-        border-radius: 999px;
-        background: var(--bg-panel);
-        font-size: 12px;
-        font-weight: 600;
-        color: var(--fg-dim);
-        box-shadow: 0 4px 14px rgb(0 0 0 / 0.15);
-      }
+
       aside {
         width: 400px;
         flex: none;
@@ -221,48 +122,17 @@
         background: var(--bg-panel);
         min-height: 0;
       }
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
-        gap: 1px;
-        background: var(--border);
-        border-bottom: 1px solid var(--border);
-      }
+
       .cell {
         background: var(--bg-panel);
         padding: 7px 10px;
       }
-      .cell b {
-        display: block;
-        font-size: 10px;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        color: var(--fg-dim);
-      }
-      .cell .val {
-        font-size: 13px;
-        font-variant-numeric: tabular-nums;
-      }
+
       .cell .val.bad {
         color: var(--bad);
         font-weight: 700;
       }
-      .cell .dot {
-        display: inline-block;
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        background: var(--fg-dim);
-        margin-right: 5px;
-        vertical-align: baseline;
-      }
-      .cell .dot.on {
-        background: var(--good);
-      }
-      .cell .dot.pending {
-        background: var(--warn);
-      }
+
       .controls {
         display: flex;
         flex-wrap: wrap;
@@ -271,6 +141,7 @@
         border-bottom: 1px solid var(--border);
         align-items: center;
       }
+
       .controls button,
       .controls select {
         font: inherit;
@@ -282,48 +153,29 @@
         color: var(--fg);
         cursor: pointer;
       }
+
       .controls label {
         display: flex;
         align-items: center;
         gap: 4px;
         font-size: 12px;
       }
-      #log {
-        flex: 1;
-        margin: 0;
-        padding: 10px;
-        overflow-y: auto;
-        font: 11px/1.5 ui-monospace, monospace;
-        white-space: pre-wrap;
-        overflow-wrap: anywhere;
-        color: var(--fg-dim);
-      }
-      #log .mark {
-        color: var(--accent);
-        font-weight: 700;
-      }
-      #log .good {
-        color: var(--good);
-        font-weight: 700;
-      }
-      #log .warn {
-        color: var(--warn);
-        font-weight: 700;
-      }
+
       #log .bad {
         color: var(--bad);
         font-weight: 700;
       }
+
       @media (max-width: 760px) {
         main {
-          flex-direction: column;
-        }
+        flex-direction: column;
+      }
         aside {
-          width: 100%;
-          height: 48%;
-          border-left: none;
-          border-top: 1px solid var(--border);
-        }
+        width: 100%;
+        height: 48%;
+        border-left: none;
+        border-top: 1px solid var(--border);
+      }
       }
     </style>
   </head>

@@ -1,0 +1,203 @@
+/* Panel chrome shared by the two labs (scroll-settle, dynamic-height).
+   Lab-specific rules stay in each lab's own <style>. */
+
+:root {
+  --bg: #ffffff;
+  --bg-panel: #f6f7f9;
+  --fg: #1a1d23;
+  --fg-dim: #8b93a1;
+  --border: #e3e6ea;
+  --accent: #4f6df5;
+  --good: #16a34a;
+  --warn: #d97706;
+  --bad: #dc2626;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --bg-panel: #1d2027;
+    --fg: #d5d9e1;
+    --fg-dim: #737b89;
+    --border: #2a2e37;
+    --accent: #7d92ff;
+    color-scheme: dark;
+  }
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    14px / 1.45 system-ui,
+    sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+header h1 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fg-dim);
+}
+
+/* The same home link as the streaming chat's header. */
+header .header-title a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+
+header .header-title a:hover {
+  text-decoration: underline;
+}
+
+header .header-title .sep {
+  margin: 0 8px;
+  color: var(--fg-dim);
+  font-weight: 400;
+}
+
+header .ua {
+  color: var(--fg-dim);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+main {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+}
+
+.row.fresh {
+  animation: fresh 0.9s ease-out;
+}
+
+@keyframes fresh {
+  from {
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+  }
+}
+
+#pill {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+#pill.visible {
+  opacity: 1;
+}
+
+#pill.bottom {
+  top: auto;
+  bottom: 10px;
+}
+
+#pill span {
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg-dim);
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.15);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.cell b {
+  display: block;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-dim);
+}
+
+.cell .val {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.cell .dot {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  margin-right: 5px;
+  vertical-align: baseline;
+}
+
+.cell .dot.on {
+  background: var(--good);
+}
+
+.cell .dot.pending {
+  background: var(--warn);
+}
+
+#log {
+  flex: 1;
+  margin: 0;
+  padding: 10px;
+  overflow-y: auto;
+  font:
+    11px / 1.5 ui-monospace,
+    monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--fg-dim);
+}
+
+#log .mark {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+#log .good {
+  color: var(--good);
+  font-weight: 700;
+}
+
+#log .warn {
+  color: var(--warn);
+  font-weight: 700;
+}

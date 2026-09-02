@@ -1144,9 +1144,7 @@ export function createVirtualList<T>(
       // There is no explicit scroll write, but shrinking the scroll range
       // can make the browser clamp scrollTop. Re-read after the canvas write
       // and reconcile that real position before this frame paints.
-      const after = viewportState();
-      const range = reconcileWindow(after);
-      publish(after, range);
+      reconcileAndPublish();
       if (smoothFollowArmed) followIfBehindEnd();
       published = true;
     });
@@ -1257,10 +1255,8 @@ export function createVirtualList<T>(
         writeScrollTop(target);
       }
       // Read once after the write: the engine may have clamped it.
-      const after = viewportState();
-      const range = reconcileWindow(after);
+      reconcileAndPublish();
       if (disposed) return;
-      publish(after, range);
       if (smoothFollow) startFollowGlide();
     } finally {
       deferTeardown(teardownFailures);
@@ -1438,9 +1434,18 @@ export function createVirtualList<T>(
 
   /** Window reconciliation plus ("live") what commits without a write. */
   function onScrolled(): void {
+    // The window moves first (a row the scroll exposed may be the one a live
+    // commit needs), then either the live commit or the plain publish.
     const vp = viewportState();
     const range = reconcileWindow(vp);
     if (!liveCommit()) publish(vp, range);
+  }
+
+  /** Reconcile the window against the real position and publish it. */
+  function reconcileAndPublish(): void {
+    const vp = viewportState();
+    const range = reconcileWindow(vp);
+    publish(vp, range);
   }
 
   // --- The settle controller (the scroll-phase authority) -------------------
@@ -1743,9 +1748,7 @@ export function createVirtualList<T>(
       if (target === "end" && options.followBehavior === "smooth") {
         smoothFollowArmed = true;
       }
-      const vp = viewportState();
-      const range = reconcileWindow(vp);
-      publish(vp, range);
+      reconcileAndPublish();
       done(!disposed && landedOn(target, below));
       return;
     }

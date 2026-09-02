@@ -3,9 +3,10 @@ import { FenwickTree } from "../../src/fenwick";
 import { mulberry32 } from "../../demos/shared/lab";
 
 // The Fenwick tree is the offset engine: prefix() gives the content-space top of
-// an index, total() the full height, and indexAt() maps a pixel offset back to
-// the item that owns it. Everything the virtualizer does with scroll geometry
-// rides on these three being exact.
+// an index, total() the full height, indexAt() maps a pixel offset back to the
+// item that owns it, and lowerBound() finds the first index whose prefix
+// reaches an offset. Everything the virtualizer does with scroll geometry
+// rides on these four being exact.
 
 const tree = (values: readonly number[]): FenwickTree =>
   new FenwickTree(Float64Array.from(values));

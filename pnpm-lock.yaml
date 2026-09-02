@@ -14,9 +14,6 @@ importers:
       '@types/node':
         specifier: ^26.4.0
         version: 26.4.0
-      '@vitest/coverage-v8':
-        specifier: ^4.1.11
-        version: 4.1.11(vitest@4.1.11)
       jsdom:
         specifier: ^30.0.1
         version: 30.0.1
@@ -916,20 +913,25 @@ snapshots:
       is-potential-custom-element-name: 1.0.1
       lru-cache: 11.5.2
 
-  '@babel/helper-string-parser@7.29.7': {}
+  '@babel/helper-string-parser@7.29.7':
+    optional: true
 
-  '@babel/helper-validator-identifier@7.29.7': {}
+  '@babel/helper-validator-identifier@7.29.7':
+    optional: true
 
   '@babel/parser@7.29.8':
     dependencies:
       '@babel/types': 7.29.8
+    optional: true
 
   '@babel/types@7.29.8':
     dependencies:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
+    optional: true
 
-  '@bcoe/v8-coverage@1.0.2': {}
+  '@bcoe/v8-coverage@1.0.2':
+    optional: true
 
   '@biomejs/biome@2.5.10':
     optionalDependencies:
@@ -996,7 +998,8 @@ snapshots:
 
   '@exodus/bytes@1.15.1': {}
 
-  '@jridgewell/resolve-uri@3.1.2': {}
+  '@jridgewell/resolve-uri@3.1.2':
+    optional: true
 
   '@jridgewell/sourcemap-codec@1.5.5': {}
 
@@ -1004,6 +1007,7 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+    optional: true
 
   '@oxc-project/types@0.146.0': {}
 
@@ -1142,6 +1146,7 @@ snapshots:
       std-env: 4.2.0
       tinyrainbow: 3.1.1
       vitest: 4.1.11(@types/node@26.4.0)(@vitest/coverage-v8@4.1.11)(jsdom@30.0.1)(vite@8.2.2(@types/node@26.4.0))
+    optional: true
 
   '@vitest/expect@4.1.11':
     dependencies:
@@ -1191,6 +1196,7 @@ snapshots:
       '@jridgewell/trace-mapping': 0.3.31
       estree-walker: 3.0.3
       js-tokens: 10.0.0
+    optional: true
 
   bidi-js@1.0.3:
     dependencies:
@@ -1238,7 +1244,8 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  has-flag@4.0.0: {}
+  has-flag@4.0.0:
+    optional: true
 
   html-encoding-sniffer@6.0.0:
     dependencies:
@@ -1246,24 +1253,29 @@ snapshots:
     transitivePeerDependencies:
       - '@noble/hashes'
 
-  html-escaper@2.0.2: {}
+  html-escaper@2.0.2:
+    optional: true
 
   is-potential-custom-element-name@1.0.1: {}
 
-  istanbul-lib-coverage@3.2.2: {}
+  istanbul-lib-coverage@3.2.2:
+    optional: true
 
   istanbul-lib-report@3.0.1:
     dependencies:
       istanbul-lib-coverage: 3.2.2
       make-dir: 4.0.0
       supports-color: 7.2.0
+    optional: true
 
   istanbul-reports@3.2.0:
     dependencies:
       html-escaper: 2.0.2
       istanbul-lib-report: 3.0.1
+    optional: true
 
-  js-tokens@10.0.0: {}
+  js-tokens@10.0.0:
+    optional: true
 
   jsdom@30.0.1:
     dependencies:
@@ -1355,10 +1367,12 @@ snapshots:
       '@babel/parser': 7.29.8
       '@babel/types': 7.29.8
       source-map-js: 1.2.1
+    optional: true
 
   make-dir@4.0.0:
     dependencies:
       semver: 7.8.5
+    optional: true
 
   mdn-data@2.27.1: {}
 
@@ -1419,7 +1433,8 @@ snapshots:
     dependencies:
       xmlchars: 2.2.0
 
-  semver@7.8.5: {}
+  semver@7.8.5:
+    optional: true
 
   siginfo@2.0.0: {}
 
@@ -1432,6 +1447,7 @@ snapshots:
   supports-color@7.2.0:
     dependencies:
       has-flag: 4.0.0
+    optional: true
 
   symbol-tree@3.2.4: {}
 
