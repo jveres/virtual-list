@@ -253,7 +253,7 @@ export class Geometry {
     }
 
     let target = viewport.scrollTop;
-    if (mode === "anchor" && capture.anchor !== null) {
+    if (mode === "anchor") {
       target = this.anchorTarget(capture) ?? viewport.scrollTop;
     }
     this.recomputeReserve(viewport.height, target);

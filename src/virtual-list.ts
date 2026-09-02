@@ -1,4 +1,4 @@
-import { type AnchorPolicy, Geometry } from "./geometry";
+import { type AnchorPolicy, Geometry, type GeometryViewport } from "./geometry";
 import { type Glide, glideDuration, startGlide } from "./glide";
 import { createItemMeasurer, type ItemMeasurer } from "./premeasure";
 import {
@@ -152,8 +152,11 @@ const EDGE_EXIT_PX = 1200;
  * showed as a 1px layout shift after a top load. Integral geometry has no
  * such seam: anchor writes land exactly.
  */
+/** Float noise a measurement may carry (100.0000001 is 100, not 101). */
+const HEIGHT_NOISE = 1e-6;
+
 function quantizeHeight(height: number): number {
-  return Math.max(1, Math.ceil(height - 1e-6));
+  return Math.max(1, Math.ceil(height - HEIGHT_NOISE));
 }
 const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
@@ -283,9 +286,7 @@ export function createVirtualList<T>(
     end: new Set(),
   };
 
-  type ViewportState = { scrollTop: number; height: number };
-
-  function viewportState(): ViewportState {
+  function viewportState(): GeometryViewport {
     return { scrollTop: viewport.scrollTop, height: viewport.clientHeight };
   }
 
@@ -742,12 +743,11 @@ export function createVirtualList<T>(
       // Otherwise it is retained and swapped in atomically at settle with
       // its height; later updates in the same phase advance that
       // replacement in place (it is off-scroller) through adoption.
-      // (Promotion compares whole-pixel heights: the committed unit.)
       const fresh = measureFresh(key, item, render(item));
       if (
         promoteSameHeight &&
         !committed.dirty &&
-        quantizeHeight(fresh.height) === committed.height
+        fresh.height === committed.height
       ) {
         promotions.push({ row: committed, fresh });
       } else {
@@ -1039,7 +1039,7 @@ export function createVirtualList<T>(
 
   let lastReconcile = { scrollTop: Number.NaN, height: Number.NaN, epoch: -1 };
 
-  function reconcileWindow(vp: ViewportState = viewportState()): void {
+  function reconcileWindow(vp: GeometryViewport = viewportState()): void {
     // A glide write and the scroll event it produces both reconcile; the
     // second pass finds nothing to do.
     if (
@@ -1105,7 +1105,7 @@ export function createVirtualList<T>(
     );
   }
 
-  function publish(vp: ViewportState = viewportState()): void {
+  function publish(vp: GeometryViewport = viewportState()): void {
     if (disposed) return;
     const range = geometry.window(vp, overscanPx);
     const maxTop = geometry.maxScrollTop(vp.height);
@@ -1287,15 +1287,21 @@ export function createVirtualList<T>(
     });
   }
 
+  /** The command's target scrollTop under current geometry; null once a keyed target is gone. */
+  function targetTop(target: ScrollTarget): number | null {
+    const maxTop = geometry.maxScrollTop(viewport.clientHeight);
+    if (target === "start") return 0;
+    if (target === "end") return maxTop;
+    const offset = geometry.offsetOf(target);
+    return offset < 0 ? null : Math.min(offset, maxTop);
+  }
+
   /** Whether the viewport is on the command's target under current geometry. */
   function landedOn(target: ScrollTarget): boolean {
-    const top = viewport.scrollTop;
-    const maxTop = geometry.maxScrollTop(viewport.clientHeight);
-    if (target === "start") return top <= AT_EDGE_EPSILON_PX;
-    if (target === "end") return maxTop - top <= AT_EDGE_EPSILON_PX;
-    const offset = geometry.offsetOf(target);
-    if (offset < 0) return false;
-    return Math.abs(top - Math.min(offset, maxTop)) <= AT_EDGE_EPSILON_PX;
+    const top = targetTop(target);
+    return (
+      top !== null && Math.abs(viewport.scrollTop - top) <= AT_EDGE_EPSILON_PX
+    );
   }
 
   function performScrollTo(
@@ -1324,14 +1330,9 @@ export function createVirtualList<T>(
       commit(null, "none");
     }
 
-    const destination = (): number => {
-      const height = viewport.clientHeight;
-      if (target === "start") return 0;
-      if (target === "end") return geometry.maxScrollTop(height);
-      const offset = geometry.offsetOf(target);
-      if (offset < 0) return viewport.scrollTop; // Lost: revalidation fails.
-      return Math.min(offset, geometry.maxScrollTop(height));
-    };
+    // A keyed target that disappears mid-glide holds position; the landing
+    // revalidation then fails.
+    const destination = (): number => targetTop(target) ?? viewport.scrollTop;
 
     if (scrollOptions.behavior !== "smooth") {
       const top = Math.round(destination());

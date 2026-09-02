@@ -214,7 +214,6 @@ let statusFrame = 0;
 let pillTimer = 0;
 let pillSticky = false;
 let glide: Glide | null = null;
-let glideTargetFn: (() => number) | null = null;
 
 function showPill(text: string, boundary: Boundary, sticky = false): void {
   window.clearTimeout(pillTimer);
@@ -414,10 +413,10 @@ function buildController(): ScrollSettleController {
     // A genuine user scroll interrupts the button glide.
     cancelActiveSmoothScroll: () => glide?.cancel(),
     // Scrollends emitted mid-glide are not the user's release.
-    smoothScrollReachedTarget: () => {
-      if (glide === null || glideTargetFn === null) return true;
-      return Math.abs(viewport.scrollTop - glideTargetFn()) <= 2;
-    },
+    // The glide's own completion is the only thing that ends its phase:
+    // Safari emits a scrollend after every programmatic write, and judging
+    // "reached" by proximity ended the phase while frames were still coming.
+    smoothScrollReachedTarget: () => glide === null,
     onGestureStarted: () => {
       gestures += 1;
       prematureFlagged = false;
@@ -489,7 +488,6 @@ function glideTo(boundary: Boundary): void {
   // commit at the settle that follows its landing.
   controller.beginProgrammaticGesture();
   log(`glide ${boundary}`, "mark");
-  glideTargetFn = target;
   glide = startGlide(
     {
       read: () => viewport.scrollTop,
@@ -502,7 +500,6 @@ function glideTo(boundary: Boundary): void {
     (distancePx) => glideDuration(distancePx, viewport.clientHeight),
     (completed) => {
       glide = null;
-      glideTargetFn = null;
       log(
         `glide ${completed ? "landed" : "cancelled"}`,
         completed ? "good" : "warn",

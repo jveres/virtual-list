@@ -63,20 +63,12 @@ as preserved primitives, with the smaller API built around them.
    would clip growth and gap shrinkage, which is visibly wrong); later
    updates in a held phase advance that off-scroller replacement in
    place. `"freeze"` holds every such update until settle.
-   `scrollingUpdates` selects the policy: `"same-height"` (promotion as
-   above), `"freeze"` (every phase-time update held until settle), or
-   `"live"` — the default — (rendered in place on the committed element at
-   once, and its height committed at once whenever no anchor-preserving
-   scroll write is needed for it — the row is at or below the viewport's
-   anchor row, so only it and what lies below it change; the complete
-   updated content is always visible, never a cut or blank line. Rows
-   strictly above the anchor are off-screen and commit at settle or the
-   moment the viewport reaches them. The trade-off is a scroll range that
-   changes under a live scroll. A shrink near the end can make the browser
-   clamp `scrollTop` to the new maximum; the runtime reconciles that
-   position in the same frame.) Structural changes are settle-gated in
-   every mode. The streaming chat will use `"live"` for its streaming last
-   message when checkpoint 5 hosts it on the v2 runtime.
+   In `"live"`, rows strictly above the anchor are off-screen and commit at
+   settle or the moment the viewport reaches them; the trade-off is a
+   scroll range that changes under a live scroll, and a shrink near the end
+   can make the browser clamp `scrollTop` to the new maximum, which the
+   runtime reconciles in the same frame. Structural changes are
+   settle-gated in every mode. The streaming chat uses `"live"`.
    While the surface is idle, the update renders in place and commits
    immediately (same pipeline). Changes made outside `setItems` — direct
    DOM mutation of a mounted row, a late resource growing an element — are
@@ -126,6 +118,26 @@ held work commit in that gap. Firefox alone preserves a pending edge release
 because its contested-release classifier explicitly distinguishes continued
 wheel input from a decaying momentum tail. Direct touch and scrollbar
 re-grabs invalidate the pending release on every engine.
+
+## Invariants
+
+The definition of correct, referenced by number throughout the code:
+
+- **I1** — the resolved scroll target keeps the visible anchor's viewport
+  coordinate stationary (a shrink clamps to the row's own extent).
+- **I2** — end-follow resolves against the final geometry of the
+  transaction: measurements landing inside it are fully reflected.
+- **I3** — reach signals fire once per approach, with entry/exit
+  hysteresis, and re-arm only after the viewport leaves the exit zone.
+- **I4** — one logical update is one transaction; API calls from host
+  callbacks queue behind it and run against the state those callbacks
+  observed; a failed transaction discards only what it queued.
+- **I5** — a pinned key can always be scrolled to the viewport top: the
+  reserve makes up the shortfall, is consumed by growth, regrown by
+  shrinkage, and never collapses out from under the viewport.
+- **I6** — an idle size change commits in the same painted frame as its
+  observation (after layout, before paint); a phase-time change commits at
+  the settle, or, under `"live"`, at once when no scroll write is needed.
 
 ## Preserved from v1 (signed off there, carried forward)
 
@@ -180,8 +192,9 @@ re-grabs invalidate the pending release on every engine.
   adversarial content (streaming rows, toggles, late-loading images,
   width-sensitive code, edge loads with abort, superseding bursts,
   deletions, width jitter), every change entering through setItems (in
-  place when idle, a fresh off-scroller render during a phase, or a
-  replacing render); late images reserve a zero box and re-enter through
+  place when idle or under `"live"`, a fresh off-scroller render during a
+  phase under `"same-height"`/`"freeze"`, or a replacing render); late
+  images reserve a zero box and re-enter through
   setItems at load. Its telemetry observes the runtime
   strictly from outside — a scrollTop write hook, a MutationObserver on
   the canvas, the lab's own native-scroll evidence — and reports each
@@ -191,7 +204,8 @@ re-grabs invalidate the pending release on every engine.
   across a commit, S stale slot height while quiet, L a mounted row
   disagreeing with its slot at the post-runtime ResizeObserver delivery (a
   clipped or gapped paint, held or not), T height re-committed without a
-  change, and D destroy-once or leak failures.
+  change, D destroy-once or leak failures, and X a runtime throw that is
+  not the lab's own chaos render failure (or an uncaught exception).
 - **demos/streaming** — the chat acceptance target (kept in-tree, excluded
   from typecheck until the v2 runtime hosts it), compared against `main`.
 

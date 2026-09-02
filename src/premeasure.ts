@@ -18,7 +18,7 @@ export interface ItemMeasurerConfig {
   viewport: HTMLElement;
   /** Class names applied to the measurement root so item CSS that keys off
    * the canvas (e.g. `.chat-canvas .message`) matches during measurement.
-   * (Labs and tests; the runtime does not forward one.) */
+   * (Tests only; the runtime does not forward one.) */
   canvasClassName?: string;
   /**
    * The width to measure at. Supplied by a host that already tracks the

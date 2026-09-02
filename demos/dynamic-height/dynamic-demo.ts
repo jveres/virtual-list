@@ -24,9 +24,9 @@ import {
 //   signal), superseding setItems bursts, deletion of random rows and of the
 //   very row under the viewport top.
 // Every change reaches the runtime through setItems (a new item object for
-// the key): in place while idle, rendered FRESH off-scroller during a scroll
-// phase (the contract freezes committed elements), or a replacing re-render
-// with the "replace" box. Late images learn their size at load and re-enter
+// the key): rendered in place while idle or under "live", rendered fresh
+// off-scroller during a scroll phase under "same-height"/"freeze", or a
+// replacing re-render with the "replace" box. Late images learn their size at load and re-enter
 // through setItems the same way — the lab never mutates a mounted row's
 // size directly.
 //
@@ -1089,10 +1089,6 @@ function classifyBatch(records: MutationRecord[]): void {
     );
   }
 
-  // "live": a commit under a live phase is legitimate iff it wrote no
-  // scrollTop and touched only rows at or below the anchor row (the
-  // anchor keeps its coordinate by construction; only what lies below
-  // it, and the canvas end, may change).
   // "live" commits only rows at or below the anchor row (the row under the
   // viewport top): a MOVED row must have started at or below the viewport
   // top (only rows after the anchor shift; the anchor keeps its offset), and
@@ -1412,7 +1408,7 @@ const streams = new Map<number, number>();
 function changeContent(
   item: Item,
   what: string,
-  mutate: (updated: Item) => void = () => {},
+  mutate: (updated: Item) => void,
 ): Item {
   const updated = {
     ...item,
@@ -1821,7 +1817,7 @@ function recreate(): void {
 
 function disposeCurrent(): void {
   stopStreams();
-  const before = { created, destroyed };
+  const createdBefore = created;
   guardedCall("dispose", () => list.dispose());
   canvasObserver?.disconnect();
   canvas = null;
@@ -1829,7 +1825,7 @@ function disposeCurrent(): void {
   if (live !== 0) {
     violation(
       "D",
-      `${live} element(s) leaked at dispose (created ${before.created}, destroyed ${destroyed})`,
+      `${live} element(s) leaked at dispose (created ${createdBefore}, destroyed ${destroyed})`,
     );
   } else {
     log(`dispose: every element destroyed exactly once (${destroyed})`, "good");

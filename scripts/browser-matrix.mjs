@@ -4,6 +4,7 @@
 //   pnpm run test:browser
 //   pnpm run test:browser -- --quick --engine=webkit --mode=live
 //   pnpm run test:browser -- --chaos=300 --engine=webkit   (seconds of chaos)
+//   --seed=<n> makes the chaos wheel input reproducible; --headed shows the browser
 //
 // Install engines once with:
 //   pnpm exec playwright install chromium firefox webkit
@@ -347,11 +348,10 @@ async function runCase(engine, mode) {
     await mark(page, "reset (leak check)");
     await page.click("#reset");
     await page.waitForTimeout(800);
+    // The lab zeroes its violation count before the dispose, so a leak at
+    // reset lands here; its trace is already in `result.log`.
     afterReset = await page.evaluate(() => ({
       violations: document.getElementById("s-violations")?.textContent ?? "",
-      bad: [...document.querySelectorAll("#log .bad")].map(
-        (element) => element.textContent?.trim() ?? "",
-      ),
     }));
   } finally {
     if (!result || !afterReset) {
@@ -378,7 +378,6 @@ async function runCase(engine, mode) {
     result.violations !== "0" ||
     afterReset.violations !== "0" ||
     result.bad.length > 0 ||
-    afterReset.bad.length > 0 ||
     errors.length > 0;
   const summary = {
     engine,
@@ -391,7 +390,7 @@ async function runCase(engine, mode) {
     nodes: result.nodes,
     clipped: result.clipped,
     errors,
-    bad: [...result.bad, ...afterReset.bad],
+    bad: result.bad,
   };
   process.stdout.write(`${JSON.stringify(summary)}\n`);
   if (failed) {

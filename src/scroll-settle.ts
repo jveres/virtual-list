@@ -155,8 +155,6 @@ export interface ScrollSettleHost {
   cancelActiveSmoothScroll(): void;
   /** False only while a programmatic smooth scroll is still short of its target. */
   smoothScrollReachedTarget(): boolean;
-  /** Any gesture signal (input or motion) was observed. */
-  onGestureActivity?(): void;
   /** The gesture transitioned idle → active: a scroll phase began. */
   onGestureStarted(): void;
   /** The gesture fully settled: held work may commit — the one structural moment. */
@@ -165,8 +163,6 @@ export interface ScrollSettleHost {
   onGestureReset(): void;
   /** A scroll event landed: reconcile the window (geometry stays untouched). */
   onScrollEventObserved(): void;
-  /** A native scroll end arrived and the gesture is quiet (informational). */
-  onNativeScrollEndIdle?(): void;
 }
 
 export interface ScrollSettleController {
@@ -612,15 +608,6 @@ export function createScrollSettleController(
     );
   }
 
-  /** Informational: a native scroll end arrived and the gesture is quiet
-   * (kept behind the same Firefox stability wait as a settle would be). */
-  function notifyNativeScrollEndIdle(): void {
-    if (!nativeScrollEndPending) return;
-    if (hasPendingFirefoxEdgeRelease()) return;
-    if (!canSettleUserScroll()) return;
-    host.onNativeScrollEndIdle?.();
-  }
-
   function markPendingWheelScrollEnd(): void {
     setPendingNativeScrollEnd({
       scrollTop: Math.max(
@@ -628,7 +615,6 @@ export function createScrollSettleController(
         Math.min(nativeMaxScrollTop(), viewport.scrollTop),
       ),
     });
-    notifyNativeScrollEndIdle();
     schedulePendingNativeScrollEnd();
   }
 
@@ -749,7 +735,6 @@ export function createScrollSettleController(
       chromiumEdgeWheelActive = null;
       chromiumEdgeWheelIdle = false;
     }
-    notifyNativeScrollEndIdle();
     schedulePendingNativeScrollEnd();
   }
 
@@ -763,8 +748,6 @@ export function createScrollSettleController(
       host.cancelActiveSmoothScroll();
       if (host.isDisposed()) return false;
     }
-    host.onGestureActivity?.();
-    if (host.isDisposed()) return false;
     const wasActive = userScrollActive;
     userScrollActive = true;
     if (!wasActive) {
@@ -825,7 +808,6 @@ export function createScrollSettleController(
       } else {
         scheduleChromiumStallFallback();
       }
-      notifyNativeScrollEndIdle();
       schedulePendingNativeScrollEnd();
     }, WHEEL_INPUT_IDLE_MS);
   }
@@ -860,7 +842,6 @@ export function createScrollSettleController(
         // recovers at the next gesture's settle.
         return;
       }
-      notifyNativeScrollEndIdle();
       if (nativeScrollEndPending) {
         schedulePendingNativeScrollEnd();
         return;
