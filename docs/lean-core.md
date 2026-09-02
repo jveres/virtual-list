@@ -45,20 +45,24 @@ as preserved primitives, with the smaller API built around them.
    - the mounted window,
    - one anchor-preserving scroll position.
 4. Same-key, size-changing updates — streaming text, disclosure toggles,
-   image decode, font swaps — are geometry changes and follow the same
-   rule. During a scroll phase the committed elements are **frozen along
-   with geometry**: the update is rendered fresh (`render(item)` without
-   `existing`) and premeasured off-scroller. **Equal-height promotion**:
-   if its height equals the committed height (within the measurement
-   epsilon) it is swapped into the committed slot immediately — same
-   height, same offset, no geometry change — so streaming keeps flowing
-   under a scroll; only once wrapping changes the height is the update
-   retained, and the settle commit then swaps content, height, offsets,
-   canvas, and anchor together — nothing mounted ever shows content that
-   disagrees with its slot (a fixed-height clipped box would clip growth
-   and gap shrinkage, which is visibly wrong). Later updates in a held
-   phase advance that off-scroller replacement in place; one fresh render
-   per key per phase once held, one per update while promotable.
+   image decode, font swaps — are geometry changes, and what happens to
+   one that arrives during a scroll phase is the `scrollingUpdates`
+   policy. The default, `"live"`, renders it in place on the committed
+   element at once and commits its height at once whenever no
+   anchor-preserving scroll write is needed for it — the row is at or
+   below the viewport's anchor row, so only it and what lies below it
+   change; the complete updated content is always visible. Under
+   `"same-height"` the committed elements are **frozen along with
+   geometry**: the update is rendered fresh (`render(item)` without
+   `existing`) and premeasured off-scroller; if its whole-pixel height
+   equals the committed height it is **promoted** — swapped into the
+   committed slot immediately, same height, same offset, no geometry
+   change — and otherwise retained until the settle commit swaps content,
+   height, offsets, canvas, and anchor together, so nothing mounted ever
+   shows content that disagrees with its slot (a fixed-height clipped box
+   would clip growth and gap shrinkage, which is visibly wrong); later
+   updates in a held phase advance that off-scroller replacement in
+   place. `"freeze"` holds every such update until settle.
    `scrollingUpdates` selects the policy: `"same-height"` (promotion as
    above), `"freeze"` (every phase-time update held until settle), or
    `"live"` — the default — (rendered in place on the committed element at
@@ -146,9 +150,10 @@ re-grabs invalidate the pending release on every engine.
   superseded, dispose) is, exactly once. `render(item, existing)` may
   mutate `existing` in place or return a replacement, which is
   premeasured off-scroller and swapped in at commit; `existing` is offered
-  only when mutating it is safe (idle, or an off-scroller pending
-  replacement) — during a scroll phase a committed row's update is
-  rendered fresh and swapped at settle.
+  when mutating it is safe (idle, an off-scroller pending replacement, or
+  in `"live"` mode) — under `"same-height"` and `"freeze"` a committed
+  row's phase-time update is rendered fresh and promoted or swapped at
+  settle.
 - v2 addition (lab-prototyped): the reach callbacks receive a context with
   an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
   runtime aborts only on conditions it knows objectively: the user reached

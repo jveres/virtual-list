@@ -113,11 +113,9 @@ describe("FenwickTree.add", () => {
     expect(t.indexAt(25)).toBe(2);
   });
 
-  it("exposes size and a power-of-two maxBit", () => {
+  it("exposes its size", () => {
     expect(tree([1, 1, 1, 1, 1]).size).toBe(5);
-    expect(tree([1, 1, 1, 1]).maxBit).toBe(4);
-    expect(tree([1, 1, 1, 1, 1]).maxBit).toBe(4);
-    expect(tree([1, 1, 1, 1, 1, 1, 1, 1]).maxBit).toBe(8);
+    expect(tree([]).size).toBe(0);
   });
 
   it("should ignore invalid indices and non-finite deltas", () => {
@@ -126,7 +124,7 @@ describe("FenwickTree.add", () => {
     t.add(1.5, 5);
     t.add(3, 5);
     t.add(1, Number.NaN);
-    expect(Array.from(t.toValues())).toEqual([10, 20, 30]);
+    expect([t.prefix(1), t.prefix(2), t.prefix(3)]).toEqual([10, 30, 60]);
     expect(t.total()).toBe(60);
   });
 });
@@ -144,7 +142,6 @@ describe("FenwickTree edge cases", () => {
   it("handles a single-element tree", () => {
     const t = tree([42]);
     expect(t.size).toBe(1);
-    expect(t.maxBit).toBe(1);
     expect(t.total()).toBe(42);
     expect(t.indexAt(0)).toBe(0);
     expect(t.indexAt(1000)).toBe(0);
@@ -156,172 +153,6 @@ describe("FenwickTree edge cases", () => {
     expect(t.total()).toBeCloseTo(4.25, 10);
   });
 });
-
-describe("FenwickTree capacity / append", () => {
-  it("defaults capacity to the value count", () => {
-    expect(tree([10, 20, 30]).capacity).toBe(3);
-    expect(tree([]).capacity).toBe(0);
-  });
-
-  it("should normalize fractional and non-finite capacity", () => {
-    expect(new FenwickTree(new Float64Array(0), 3.9).capacity).toBe(3);
-    expect(new FenwickTree(new Float64Array(0), Number.NaN).capacity).toBe(0);
-    expect(new FenwickTree(Float64Array.from([1, 2]), 0.5).capacity).toBe(2);
-  });
-
-  it("appends into spare capacity without disturbing existing sums", () => {
-    const t = new FenwickTree(Float64Array.from([10, 20]), 5);
-    expect(t.size).toBe(2);
-    expect(t.capacity).toBe(5);
-    expect(t.total()).toBe(30);
-
-    t.append(30);
-    expect(t.size).toBe(3);
-    expect(t.prefix(2)).toBe(30);
-    expect(t.prefix(3)).toBe(60);
-    expect(t.total()).toBe(60);
-    expect(t.indexAt(59)).toBe(2);
-
-    t.append(40);
-    t.append(50);
-    expect(t.size).toBe(5);
-    expect(t.total()).toBe(150);
-    expect(t.indexAt(99)).toBe(3);
-    // A boundary belongs to the next item: offset 100 is the top of item 4.
-    expect(t.indexAt(100)).toBe(4);
-    expect(t.indexAt(1000)).toBe(4);
-  });
-
-  it("keeps maxBit the largest power of two <= size as appends grow it", () => {
-    const t = new FenwickTree(Float64Array.from([1, 1, 1]), 8);
-    expect(t.maxBit).toBe(2);
-    t.append(1); // size 4
-    expect(t.maxBit).toBe(4);
-    t.append(1); // size 5
-    expect(t.maxBit).toBe(4);
-    t.append(1);
-    t.append(1);
-    t.append(1); // size 8
-    expect(t.maxBit).toBe(8);
-  });
-
-  it("supports add() on rows that were appended", () => {
-    const t = new FenwickTree(Float64Array.from([10]), 4);
-    t.append(10);
-    t.add(1, 5); // appended row grows from 10 to 15
-    expect(t.prefix(2)).toBe(25);
-    expect(t.indexAt(24)).toBe(1);
-  });
-
-  it("should include prior updates when append activates a parent node", () => {
-    const t = new FenwickTree(Float64Array.from([10, 20, 30]), 8);
-    t.add(1, 5); // [10, 25, 30]
-    t.append(40); // activates tree node 4, which covers every current row
-    expect(Array.from(t.toValues())).toEqual([10, 25, 30, 40]);
-    expect(t.total()).toBe(105);
-    expect(t.prefix(4)).toBe(105);
-  });
-
-  it("appends from an empty tree with capacity", () => {
-    const t = new FenwickTree(new Float64Array(0), 4);
-    expect(t.size).toBe(0);
-    expect(t.total()).toBe(0);
-    t.append(7);
-    expect(t.size).toBe(1);
-    expect(t.total()).toBe(7);
-    expect(t.indexAt(0)).toBe(0);
-  });
-
-  it("throws when appending past capacity", () => {
-    const t = new FenwickTree(Float64Array.from([1, 2]));
-    expect(() => t.append(3)).toThrow(/capacity/);
-  });
-
-  it("should reject a non-finite appended value", () => {
-    const t = new FenwickTree(new Float64Array(0), 1);
-    expect(() => t.append(Number.NaN)).toThrow(/finite/);
-    expect(t.size).toBe(0);
-    expect(t.total()).toBe(0);
-  });
-
-  it("property: appended trees agree with the oracle", () => {
-    const rng = mulberry32(0x51ab_7e11);
-    const randInt = (bound: number): number => Math.floor(rng() * bound);
-
-    for (let iteration = 0; iteration < 100; iteration++) {
-      const initial = randInt(20);
-      const appended = 1 + randInt(20);
-      const capacity = initial + appended + randInt(8);
-      const values = Array.from({ length: initial }, () => randInt(200));
-      const t = new FenwickTree(Float64Array.from(values), capacity);
-
-      for (let i = 0; i < appended; i++) {
-        const value = randInt(200);
-        t.append(value);
-        values.push(value);
-      }
-
-      const size = values.length;
-      expect(t.size).toBe(size);
-      expect(t.total()).toBe(oraclePrefix(values, size));
-      for (let probe = 0; probe < 6; probe++) {
-        const k = randInt(size + 2);
-        expect(t.prefix(k)).toBe(oraclePrefix(values, k));
-        const offset = randInt(oraclePrefix(values, size) + 40);
-        expect(t.indexAt(offset)).toBe(oracleIndexAt(values, offset));
-      }
-    }
-  });
-});
-
-describe("FenwickTree.valueAt / toValues", () => {
-  it("recovers individual values, including after add() updates", () => {
-    const t = tree([10, 20, 30, 40]);
-    expect(t.valueAt(0)).toBe(10);
-    expect(t.valueAt(2)).toBe(30);
-    t.add(2, 5); // 30 -> 35
-    expect(t.valueAt(2)).toBe(35);
-    expect(t.valueAt(3)).toBe(40);
-  });
-
-  it("extracts all logical values, ignoring capacity padding", () => {
-    const t = new FenwickTree(Float64Array.from([10, 20, 30]), 8);
-    t.append(40);
-    t.add(1, -5); // 20 -> 15
-    expect(Array.from(t.toValues())).toEqual([10, 15, 30, 40]);
-    expect(t.toValues().length).toBe(4);
-  });
-
-  it("handles empty trees", () => {
-    expect(tree([]).toValues().length).toBe(0);
-  });
-
-  it("property: valueAt and toValues agree with the oracle across random trees", () => {
-    const rng = mulberry32(0x7e57_ab1e);
-    const randInt = (bound: number): number => Math.floor(rng() * bound);
-
-    for (let iteration = 0; iteration < 200; iteration++) {
-      const size = 1 + randInt(40);
-      const capacity = size + randInt(8);
-      const values = Array.from({ length: size }, () => randInt(200));
-      const t = new FenwickTree(Float64Array.from(values), capacity);
-
-      for (let update = 0; update < 3; update++) {
-        const index = randInt(size);
-        const nextHeight = randInt(200);
-        t.add(index, nextHeight - (values[index] ?? 0));
-        values[index] = nextHeight;
-      }
-
-      expect(Array.from(t.toValues())).toEqual(values);
-      for (let probe = 0; probe < 5; probe++) {
-        const k = randInt(size);
-        expect(t.valueAt(k)).toBe(values[k]);
-      }
-    }
-  });
-});
-
 describe("FenwickTree property: matches a naive oracle", () => {
   it("property: prefix, total, and indexAt agree with the oracle across random trees and updates", () => {
     const rng = mulberry32(0x1234_abcd);

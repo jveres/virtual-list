@@ -143,7 +143,6 @@ export interface VirtualList<T> {
 
 const EDGE_ENTER_PX = 800;
 const EDGE_EXIT_PX = 1200;
-const MEASURE_EPSILON_PX = 0.5;
 
 /**
  * Committed heights are whole pixels (rounded up, so content is never
@@ -156,8 +155,11 @@ const MEASURE_EPSILON_PX = 0.5;
 function quantizeHeight(height: number): number {
   return Math.max(1, Math.ceil(height - 1e-6));
 }
+const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
+/** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
+const MIN_OVERSCAN_PX = 300;
 
 const EMPTY_STATE: VirtualListState = {
   count: 0,
@@ -221,7 +223,8 @@ export function createVirtualList<T>(
   const scrollingUpdates: ScrollingUpdates = options.scrollingUpdates ?? "live";
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
-  const overscanPx = options.overscanPx ?? Math.max(300, viewport.clientHeight);
+  const overscanPx =
+    options.overscanPx ?? Math.max(MIN_OVERSCAN_PX, viewport.clientHeight);
 
   // --- Committed state --------------------------------------------------------
   // Heights are never estimated: every key is measured before it commits,
@@ -271,7 +274,8 @@ export function createVirtualList<T>(
     done: (completed: boolean) => void;
     landed: () => boolean;
   } | null = null;
-  let lastState: VirtualListState | null = null;
+  // Replaced by the boot commit's publish before the list is handed out.
+  let lastState: VirtualListState = EMPTY_STATE;
   let reachStartArmed = true;
   let reachEndArmed = true;
   const reachAborts: Record<Edge, Set<AbortController>> = {
@@ -410,16 +414,16 @@ export function createVirtualList<T>(
   }
 
   /**
-   * Premeasure a built element. A measurement failure after the build
-   * destroys the element through the host (it will never be returned);
-   * a build failure has nothing to destroy.
+   * Premeasure a rendered element. A measurement failure destroys it
+   * through the host: it will never be returned.
    */
   function premeasure(
     item: T,
-    build: () => HTMLElement,
+    element: HTMLElement,
   ): { element: HTMLElement; height: number } {
-    return measurer.measure(build, (element) =>
-      options.onDestroy?.(element, item),
+    return measurer.measure(
+      () => element,
+      (failed) => options.onDestroy?.(failed, item),
     );
   }
 
@@ -556,7 +560,8 @@ export function createVirtualList<T>(
   const viewportObserver = new ResizeObserver(() => {
     if (disposed) return;
     const width = viewport.clientWidth;
-    const widthChanged = Math.abs(width - lastViewportWidth) > 0.5;
+    const widthChanged =
+      Math.abs(width - lastViewportWidth) > MEASURE_EPSILON_PX;
     lastViewportWidth = width;
     if (widthChanged) {
       for (const row of rows.values()) markDirty(row);
@@ -653,7 +658,7 @@ export function createVirtualList<T>(
       return failures;
     };
 
-    /** Render then measure, taking ownership of a fresh element first. */
+    /** Measure a freshly rendered element, owning it from this moment. */
     const measureFresh = (
       key: string,
       item: T,
@@ -667,7 +672,7 @@ export function createVirtualList<T>(
         }
         throw new DisposedDuringPreparation();
       }
-      const measured = premeasure(item, () => element);
+      const measured = premeasure(item, element);
       const row = retain(key, item, measured.element, measured.height);
       built.push(row);
       return row;
@@ -730,13 +735,14 @@ export function createVirtualList<T>(
       // A scroll phase is active: committed elements are frozen — content
       // as much as geometry, mounted or not (an unmounted row may mount
       // mid-phase at its committed height). The update is rendered FRESH
-      // and premeasured off-scroller. Equal height (within the measurement
-      // epsilon) on a clean committed row: PROMOTED — swapped into the
+      // and premeasured off-scroller. Equal whole-pixel height on a clean
+      // committed row: PROMOTED — swapped into the
       // committed slot in phase 2 with geometry untouched, so streaming
       // keeps flowing under a scroll until a wrap changes the height.
       // Otherwise it is retained and swapped in atomically at settle with
       // its height; later updates in the same phase advance that
       // replacement in place (it is off-scroller) through adoption.
+      // (Promotion compares whole-pixel heights: the committed unit.)
       const fresh = measureFresh(key, item, render(item));
       if (
         promoteSameHeight &&
@@ -1112,7 +1118,7 @@ export function createVirtualList<T>(
       totalSize: geometry.totalSize,
       held: pending !== null || dirtyRows.size > 0,
     };
-    const changed = lastState === null || !sameState(lastState, state);
+    const changed = !sameState(lastState, state);
     lastState = state;
     if (changed) options.onState?.(state);
     if (disposed) return;
@@ -1165,7 +1171,6 @@ export function createVirtualList<T>(
     // "reached" by proximity (within 2px) ended the phase while the glide
     // still had 1px frames to write, and a commit could land under it.
     smoothScrollReachedTarget: () => glide === null,
-    onGestureActivity: () => {},
     onGestureStarted: () => {},
     onGestureSettled: () => {
       // The phase reached idle: everything held commits, once — and only
@@ -1180,7 +1185,6 @@ export function createVirtualList<T>(
       // Geometry is untouchable here; only the window moves.
       guarded(onScrolled);
     },
-    onNativeScrollEndIdle: () => {},
   });
 
   /**
@@ -1378,7 +1382,6 @@ export function createVirtualList<T>(
     // transaction's, and each parent scope still holding undrained
     // siblings behind the child that is disposing.
     for (const scope of liveScopes) discardScope(scope);
-    discardScope(afterCommit);
     glide?.cancel();
     settleParked(() => false);
     abortEdge("start");
@@ -1411,7 +1414,7 @@ export function createVirtualList<T>(
     setItems,
     scrollTo,
     get state(): VirtualListState {
-      return lastState ?? EMPTY_STATE;
+      return lastState;
     },
     dispose,
   };

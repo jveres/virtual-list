@@ -2,7 +2,7 @@ import { FenwickTree } from "./fenwick";
 
 // The lean core's geometry kernel: keyed items, learned heights, offsets,
 // anchoring, and the pin-to-top reserve — as pure math. No DOM, no
-// scheduling, no side effects; the runtime (step 2) feeds it measurements
+// scheduling, no side effects; the runtime (step 3) feeds it measurements
 // and applies the single scroll target it resolves. Identity is the key;
 // indexes are derived positions and never survive an update.
 //
@@ -56,7 +56,6 @@ export class Geometry {
   private tree = new FenwickTree(new Float64Array(0));
   /** Learned (measured) heights by identity; estimates fill the rest. */
   private readonly heightByKey = new Map<string, number>();
-  private readonly measuredKeys = new Set<string>();
   private readonly estimateForKey: (key: string) => number;
   private pinnedKey: string | null = null;
   private reservePx = 0;
@@ -92,7 +91,7 @@ export class Geometry {
   }
 
   isMeasured(key: string): boolean {
-    return this.measuredKeys.has(key);
+    return this.heightByKey.has(key);
   }
 
   /** Content-space top of the item; `indexOf(key) === -1` yields -1. */
@@ -198,11 +197,8 @@ export class Geometry {
     this.keys = keys;
     this.indexByKey = indexByKey;
     this.tree = tree;
-    for (const key of this.measuredKeys) {
-      if (!indexByKey.has(key)) {
-        this.measuredKeys.delete(key);
-        this.heightByKey.delete(key);
-      }
+    for (const key of [...this.heightByKey.keys()]) {
+      if (!indexByKey.has(key)) this.heightByKey.delete(key);
     }
     if (this.pinnedKey !== null && !indexByKey.has(this.pinnedKey)) {
       this.pinnedKey = null;
@@ -220,7 +216,6 @@ export class Geometry {
     if (index === undefined || !Number.isFinite(height) || height <= 0) return;
     const delta = height - this.heightOf(key);
     this.heightByKey.set(key, height);
-    this.measuredKeys.add(key);
     if (delta !== 0) this.tree.add(index, delta);
   }
 

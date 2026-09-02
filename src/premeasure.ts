@@ -1,7 +1,6 @@
 // Detached premeasurement — the second preserved primitive from `main`
-// (its createVirtualListItemMeasurer), behavior kept intact, signature
-// generalized from index-coupling to a build callback so the keyed v2
-// runtime can use it unchanged.
+// (its createVirtualListItemMeasurer), behavior kept intact; the keyed v2
+// runtime hands it elements instead of indexes.
 //
 // Items are built and measured OFF-scroller: a hidden, fixed-position
 // measurement root appended to document.body, width-synced to the viewport

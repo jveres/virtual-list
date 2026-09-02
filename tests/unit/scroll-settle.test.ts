@@ -85,7 +85,6 @@ function mount(
       cancelCount += 1;
     },
     smoothScrollReachedTarget: () => !smoothActive,
-    onGestureActivity: () => {},
     onGestureStarted: () => {
       startCount += 1;
     },
@@ -94,7 +93,6 @@ function mount(
     },
     onGestureReset: () => {},
     onScrollEventObserved: () => {},
-    onNativeScrollEndIdle: () => {},
   });
 
   const harness: Harness = {

@@ -418,7 +418,6 @@ function buildController(): ScrollSettleController {
       if (glide === null || glideTargetFn === null) return true;
       return Math.abs(viewport.scrollTop - glideTargetFn()) <= 2;
     },
-    onGestureActivity: () => {},
     onGestureStarted: () => {
       gestures += 1;
       prematureFlagged = false;
@@ -475,7 +474,6 @@ function buildController(): ScrollSettleController {
       }
       scheduleStatus();
     },
-    onNativeScrollEndIdle: () => {},
   });
 }
 

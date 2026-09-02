@@ -2,8 +2,10 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { VirtualListScrollSettleStrategy } from "../../src/scroll-settle";
 import {
   createVirtualList,
+  type ScrollingUpdates,
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list";
@@ -90,12 +92,8 @@ function mount(
     replaceOnRerender?: boolean;
     onState?: (state: VirtualListState) => void;
     onDestroy?: (element: HTMLElement) => void;
-    scrollingUpdates?: "freeze" | "same-height" | "live";
-    settleStrategy?:
-      | "default"
-      | "safari-wheel"
-      | "chromium-wheel"
-      | "firefox-wheel";
+    scrollingUpdates?: ScrollingUpdates;
+    settleStrategy?: VirtualListScrollSettleStrategy;
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     reach?: boolean | "start-only";

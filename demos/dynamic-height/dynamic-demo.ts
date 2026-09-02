@@ -1121,18 +1121,16 @@ function classifyBatch(records: MutationRecord[]): void {
     return null;
   };
   const liveRejection = liveCommitRejection();
-  const liveCommitOk = (): boolean => liveRejection === null;
 
   // G: geometry is immutable under a live scroll phase.
   if (takeover) {
     if (verbose()) log("takeover commit (command ended the phase)");
   } else if (
-    !commandIssuing &&
     (nativeActive(now) || glideMoving(now)) &&
-    liveCommitOk()
+    liveRejection === null
   ) {
     liveCommits += 1;
-  } else if (!commandIssuing) {
+  } else {
     if (nativeActive(now)) {
       violation(
         "G",
@@ -1169,7 +1167,7 @@ function classifyBatch(records: MutationRecord[]): void {
 
   // A: the row under the viewport top stays where it was — unless this
   // commit legitimately kept an end-pinned viewport at the end.
-  if (!commandIssuing && !takeover && !nativeActive(now) && !glideMoving(now)) {
+  if (!takeover && !nativeActive(now) && !glideMoving(now)) {
     checkAnchor(canvasChange, heightChanges, wroteScrollTop);
   }
   expectAnchoredCommit = false;
@@ -1342,7 +1340,7 @@ function frameLoop(): void {
     }
   }
 
-  if (quietFrame && !commandIssuing) anchorRecord = captureAnchor();
+  if (quietFrame) anchorRecord = captureAnchor();
 
   const quiet =
     !nativeActive(now) &&
@@ -1841,15 +1839,15 @@ function disposeCurrent(): void {
 }
 
 function reset(): void {
-  disposeCurrent();
-  // A fresh run: every counter starts over BEFORE the new list boots (the
-  // leak check above was the last use of the old ones) — zeroing after the
-  // boot left its rows uncounted and every later dispose "over-destroyed"
-  // by exactly that many.
+  // A fresh run. Violation counters start over BEFORE the dispose, so a
+  // leak found by it lands in the new run's count; the node counters start
+  // over AFTER it and before the boot (zeroing after the boot left its rows
+  // uncounted and every later dispose "over-destroyed" by that many).
   violations = 0;
+  clippedPaints = 0;
+  disposeCurrent();
   commits = 0;
   liveCommits = 0;
-  clippedPaints = 0;
   created = 0;
   destroyed = 0;
   imagesLoaded = 0;
