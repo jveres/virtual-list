@@ -1,5 +1,6 @@
 import {
   createVirtualList,
+  type EdgeSlot,
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
@@ -8,6 +9,7 @@ import {
   type AssistantStatus,
   buildChatItem,
   buildChatRow,
+  buildSectionHeader,
   type ChatToolCall,
   setRoleLabel,
 } from "../shared/chat-ui.js";
@@ -19,6 +21,10 @@ import {
   type MarkdownViewerHandle,
   renderMarkdown,
 } from "../shared/markdown.js";
+import {
+  createStickyHeaders,
+  type StickyHeaders,
+} from "../shared/sticky-headers.js";
 import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
 import {
   at,
@@ -58,6 +64,16 @@ import "../shared/styles.css";
 // and its height commits at once whenever no anchor-preserving scroll write
 // is needed, so the reply keeps flowing under a scroll. Scrollback loads are
 // wired to the reach signal: reaching the other edge aborts them.
+//
+// Two presentation options, both configurable:
+// - the scrollback loader is a runtime EDGE SLOT in the flow (default;
+//   `?edge=pill` restores the floating pill). In the flow, the slot's strip
+//   turns into the loaded messages while the reading position holds — the
+//   visible "more to scroll" feedback — and it never competes with the
+//   sticky header for the top strip;
+// - day separators are rows, and a STICKY companion pins the current day at
+//   the top (`?sticky=off`, or the header toggle, turns it off). It reads
+//   the runtime's committed positions, which never move under a gesture.
 
 interface Message {
   id: number;
@@ -65,6 +81,23 @@ interface Message {
   markdown: string;
   status?: AssistantStatus;
   toolCalls?: ChatToolCall[];
+}
+
+/** A day separator row, interleaved into the runtime's items. */
+interface DayHeader {
+  kind: "day";
+  day: number;
+  label: string;
+}
+
+type ChatRow = Message | DayHeader;
+
+function isDayHeader(row: ChatRow): row is DayHeader {
+  return "kind" in row && row.kind === "day";
+}
+
+function rowKey(row: ChatRow): string {
+  return isDayHeader(row) ? `day:${row.day}` : String(row.id);
 }
 
 interface StreamAbort {
@@ -92,6 +125,13 @@ const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
 // buttons' long glides. An explicit duration gives the send its own
 // deliberate pace (tuned on main).
 const SEND_SCROLL_DURATION_MS = 650;
+// Synthetic days over the transcript: one separator per this many messages.
+const MESSAGES_PER_DAY = 12;
+// The in-flow scrollback slot's fixed height (main's boundary slot).
+const EDGE_SLOT_HEIGHT = 52;
+// The day pill's row height; a send pins its message this far below the
+// viewport top when the sticky header is on, so the pill never covers it.
+const DAY_HEADER_HEIGHT = 44;
 const INITIAL_TRANSCRIPT_COUNT = 100;
 // The loaded data window over the transcript: how much is handed to the
 // virtualizer, and how much each scrollback load prepends.
@@ -106,6 +146,9 @@ const EDGE_NO_MORE_HIDE_MS = 1400;
 const EDGE_HIDE_LINGER_MS = 400;
 
 const demoParams = new URLSearchParams(location.search);
+const edgeLoaderMode: "slot" | "pill" =
+  demoParams.get("edge") === "pill" ? "pill" : "slot";
+let stickyEnabled = demoParams.get("sticky") !== "off";
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
@@ -509,6 +552,10 @@ function canLoadOlderMessages(): boolean {
 // transcript's tail from loadedStart) and the id → transcript index lookup.
 function refreshLoadedWindow(): void {
   loadedStart = Math.min(Math.max(0, loadedStart), transcript.length);
+  // The window starts on a day boundary: a scrollback load then prepends
+  // whole days above the first loaded day's header, never between a header
+  // and its messages.
+  loadedStart -= loadedStart % MESSAGES_PER_DAY;
   messages = transcript.slice(loadedStart);
   transcriptIndexById.clear();
   transcript.forEach((message, index) => {
@@ -518,12 +565,78 @@ function refreshLoadedWindow(): void {
 
 // Assigned at boot; callbacks that can fire during the boot transaction
 // (onReachStart on a short conversation) must tolerate it being unset.
-let virtualList: VirtualList<Message> | undefined;
+let virtualList: VirtualList<ChatRow> | undefined;
+// Assigned right after the list; onState may fire before then.
+let stickyHeaders: StickyHeaders | undefined;
 
-/** One snapshot to the runtime; all data changes flow through here. */
-function pushItems(anchor?: "auto" | "viewport" | "end" | "none"): void {
+// --- Day separators --------------------------------------------------------
+
+const dayHeaders = new Map<number, DayHeader>();
+let labeledLastDay = -1;
+
+function dayOf(message: Message): number {
+  return Math.floor(transcriptIndexOf(message) / MESSAGES_PER_DAY);
+}
+
+function lastDay(): number {
+  return Math.max(0, Math.floor((transcript.length - 1) / MESSAGES_PER_DAY));
+}
+
+function dayLabel(day: number): string {
+  const back = lastDay() - day;
+  if (back === 0) return "Today";
+  if (back === 1) return "Yesterday";
+  const date = new Date();
+  date.setDate(date.getDate() - back);
+  return date.toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/** Header objects are cached per day so their identity is stable across
+ * snapshots; labels are relative to the last day, so a new day re-labels. */
+function dayHeader(day: number): DayHeader {
+  if (labeledLastDay !== lastDay()) {
+    dayHeaders.clear();
+    labeledLastDay = lastDay();
+  }
+  let header = dayHeaders.get(day);
+  if (!header) {
+    header = { kind: "day", day, label: dayLabel(day) };
+    dayHeaders.set(day, header);
+  }
+  return header;
+}
+
+/** The loaded window with a day separator before each day's first message. */
+function rowsForRuntime(): ChatRow[] {
+  const rows: ChatRow[] = [];
+  let current = -1;
+  for (const message of messages) {
+    const day = dayOf(message);
+    if (day !== current) {
+      current = day;
+      rows.push(dayHeader(day));
+    }
+    rows.push(message);
+  }
+  return rows;
+}
+
+function dayHeaderKeys(): string[] {
+  return rowsForRuntime().filter(isDayHeader).map(rowKey);
+}
+
+/** One snapshot to the runtime; all data changes flow through here.
+ * Returns the number of rows handed over (day separators included). */
+function pushItems(anchor?: "auto" | "viewport" | "end" | "none"): number {
   refreshLoadedWindow();
-  virtualList?.setItems(messages, anchor ? { anchor } : undefined);
+  syncEdgeSlot();
+  const rows = rowsForRuntime();
+  virtualList?.setItems(rows, anchor ? { anchor } : undefined);
+  return rows.length;
 }
 
 // The single mutation path: clones the message (the runtime re-renders rows
@@ -562,16 +675,78 @@ edgePill.append(edgeSpinner, edgeLabel);
 edgeOverlay.appendChild(edgePill);
 viewportWrap.appendChild(edgeOverlay);
 
-function setEdgeState(state: "hidden" | "loading" | "no-more"): void {
+type EdgeState = "hidden" | "loading" | "no-more";
+let edgeState: EdgeState = "hidden";
+
+function edgeLabelFor(state: EdgeState): string {
+  return state === "loading"
+    ? "Loading older messages"
+    : state === "no-more"
+      ? "At the top"
+      : "";
+}
+
+// --- The in-flow scrollback slot (edge loader "slot" mode) -------------------
+
+let edgeSlotElement: HTMLElement | null = null;
+let edgeSlotMounted = false;
+
+function applyEdgeSlotState(element: HTMLElement, state: EdgeState): void {
+  // In the flow, "hidden" is an invisible strip (main's idle slot); "At the
+  // top" stays until the conversation changes.
+  element.dataset.state = state === "hidden" ? "idle" : state;
+  const label = element.querySelector<HTMLElement>(".boundary-slot-label");
+  if (label) label.textContent = edgeLabelFor(state);
+}
+
+const edgeSlotSpec: EdgeSlot = {
+  key: "scrollback",
+  height: EDGE_SLOT_HEIGHT,
+  render: () => {
+    const element = document.createElement("div");
+    element.className = "boundary-slot";
+    element.setAttribute("role", "status");
+    const spinner = document.createElement("span");
+    spinner.className = "boundary-spinner";
+    spinner.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "boundary-slot-label";
+    element.append(spinner, label);
+    applyEdgeSlotState(element, edgeState);
+    edgeSlotElement = element;
+    return element;
+  },
+};
+
+// The slot exists to serve scrollback. A conversation whose top is loaded
+// from the start (a fresh OpenAI chat) must not mount it: its strip would
+// sit above the first message and turn the first send's pin into a visible
+// hop. Once a top load has run, the slot stays for its "At the top" state.
+function shouldMountEdgeSlot(): boolean {
+  if (edgeLoaderMode !== "slot" || messages.length === 0) return false;
+  return loadedStart > 0 || loadingTop || topBoundaryLoadSeen;
+}
+
+/** Mount or unmount the slot when its need changes (a structural change). */
+function syncEdgeSlot(): void {
+  const wanted = shouldMountEdgeSlot();
+  if (wanted === edgeSlotMounted) return;
+  edgeSlotMounted = wanted;
+  if (!wanted) edgeSlotElement = null;
+  virtualList?.setEdgeSlot("start", wanted ? edgeSlotSpec : null);
+}
+
+function setEdgeState(state: EdgeState): void {
   window.clearTimeout(edgeHideTimer);
   edgeHideTimer = 0;
+  edgeState = state;
+  if (edgeLoaderMode === "slot") {
+    // In place, at the slot's fixed height: no structural change.
+    if (edgeSlotElement) applyEdgeSlotState(edgeSlotElement, state);
+    return;
+  }
   edgeOverlay.dataset.state = state;
-  edgeLabel.textContent =
-    state === "loading"
-      ? "Loading older messages"
-      : state === "no-more"
-        ? "At the top"
-        : "";
+  edgeLabel.textContent = edgeLabelFor(state);
   if (state === "no-more") {
     edgeHideTimer = window.setTimeout(
       () => setEdgeState("hidden"),
@@ -635,11 +810,11 @@ function loadOlderChunk(signal?: AbortSignal): Promise<void> {
       loadedStart = Math.max(0, loadedStart - loadChunkCount());
       // A page load preserves the reading position — never an end-follow,
       // even when the viewport happens to sit at the bottom.
-      pushItems("viewport");
-      if (virtualList && virtualList.state.count < messages.length) {
+      const handed = pushItems("viewport");
+      if (virtualList && virtualList.state.count < handed) {
         // Deferred by the runtime: stay in the loading state until the
         // commit is confirmed through onState.
-        pendingPrepend = { count: messages.length, finish };
+        pendingPrepend = { count: handed, finish };
       } else {
         finish();
       }
@@ -1506,6 +1681,8 @@ async function handleSend(): Promise<void> {
         align: "start",
         behavior: "smooth",
         duration: SEND_SCROLL_DURATION_MS,
+        // Under the floating day pill, not behind it.
+        offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
       }) ?? Promise.resolve(false);
     void pinCommand.then(endSendGlide);
     if (shouldFlyIn) {
@@ -1610,16 +1787,31 @@ autosize();
 if (getAISettings().provider === "openai") await prepareOpenAIConversation();
 seedActiveConversation();
 
-virtualList = createVirtualList<Message>(viewport, {
-  items: messages,
-  key: (message) => String(message.id),
-  render: (message, existing) => {
+edgeSlotMounted = shouldMountEdgeSlot();
+virtualList = createVirtualList<ChatRow>(viewport, {
+  items: rowsForRuntime(),
+  key: rowKey,
+  render: (row, existing) => {
+    if (isDayHeader(row)) {
+      // A day row: static; a re-label (a new day arrived) updates in place.
+      if (existing) {
+        const pill = existing.querySelector<HTMLElement>(
+          ".section-header-pill",
+        );
+        if (pill) pill.textContent = row.label;
+        return existing;
+      }
+      const header = buildSectionHeader(row.label);
+      header.dataset.key = rowKey(row);
+      return header;
+    }
     if (existing) {
-      const updated = updateRow(existing, message);
+      const updated = updateRow(existing, row);
       if (updated) return updated;
     }
-    return buildRow(message);
+    return buildRow(row);
   },
+  edgeSlots: { start: edgeSlotMounted ? edgeSlotSpec : null },
   // The product choice for a chat: the streaming reply keeps rendering under
   // a scroll (see the header). Structural changes stay settle-gated.
   scrollingUpdates: "live",
@@ -1630,10 +1822,38 @@ virtualList = createVirtualList<Message>(viewport, {
     }
     syncScrollButtons(state);
     syncMetrics(state);
+    // Positions change only at commits: re-read them for the sticky header.
+    stickyHeaders?.refresh();
   },
   onReachStart: ({ signal }) => loadOlderMessages(signal),
   onDestroy: handleRowDestroy,
 });
+
+// The sticky day header: a companion on the runtime's read queries.
+stickyHeaders = createStickyHeaders({
+  container: viewportWrap,
+  viewport,
+  headerKeys: dayHeaderKeys,
+  positionOf: (key) => virtualList?.positionOf(key) ?? null,
+  elementOf: (key) => virtualList?.elementOf(key) ?? null,
+  renderHeader: (slot, ordinal) => {
+    const key = dayHeaderKeys()[ordinal];
+    const day = Number(key?.slice("day:".length));
+    slot.replaceChildren(buildSectionHeader(dayHeader(day).label));
+  },
+});
+const stickyToggle = mustGet("sticky-toggle", HTMLButtonElement);
+function syncSticky(): void {
+  stickyHeaders?.setEnabled(stickyEnabled);
+  stickyToggle.classList.toggle("active", stickyEnabled);
+  stickyToggle.setAttribute("aria-pressed", String(stickyEnabled));
+  viewportWrap.classList.toggle("sticky-on", stickyEnabled);
+}
+stickyToggle.addEventListener("click", () => {
+  stickyEnabled = !stickyEnabled;
+  syncSticky();
+});
+syncSticky();
 
 // One delegated listener powers copy buttons across every mounted row.
 attachInteractions(viewport);

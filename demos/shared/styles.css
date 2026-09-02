@@ -390,6 +390,36 @@ p.ai-settings-note {
   display: none;
 }
 
+/* With the sticky day header on, the floating pill (edge loader "pill"
+   mode) sits below it instead of on top of it. */
+.viewport-wrap.sticky-on .edge-overlay {
+  top: 54px;
+}
+
+/* The in-flow scrollback slot (edge loader "slot" mode, the default): a
+   runtime edge slot at a fixed height; the row clips, the label swaps. */
+.boundary-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: min(100%, 860px);
+  height: 52px;
+  margin: 0 auto;
+  padding: 0 24px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.boundary-slot[data-state="idle"] {
+  visibility: hidden;
+}
+
+.boundary-slot:not([data-state="loading"]) .boundary-spinner {
+  display: none;
+}
+
 @keyframes boundary-spin {
   to {
     transform: rotate(360deg);

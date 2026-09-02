@@ -164,6 +164,11 @@ export type ScrollOptions = {
    * would otherwise run at the policy's floor.
    */
   duration?: number;
+  /**
+   * Keyed targets only: land this many pixels below the viewport top — room
+   * for a floating sticky header, so a pinned message is not covered by it.
+   */
+  offset?: number;
 };
 
 export interface VirtualList<T> {
@@ -1408,6 +1413,7 @@ export function createVirtualList<T>(
       align: scrollOptions.align,
       behavior: scrollOptions.behavior,
       duration: scrollOptions.duration,
+      offset: scrollOptions.offset,
     };
     return new Promise((resolve) => {
       if (
@@ -1425,17 +1431,17 @@ export function createVirtualList<T>(
   }
 
   /** The command's target scrollTop under current geometry; null once a keyed target is gone. */
-  function targetTop(target: ScrollTarget): number | null {
+  function targetTop(target: ScrollTarget, below = 0): number | null {
     const maxTop = geometry.maxScrollTop(viewport.clientHeight);
     if (target === "start") return 0;
     if (target === "end") return maxTop;
     const offset = geometry.offsetOf(target);
-    return offset < 0 ? null : Math.min(offset, maxTop);
+    return offset < 0 ? null : Math.max(0, Math.min(offset - below, maxTop));
   }
 
   /** Whether the viewport is on the command's target under current geometry. */
-  function landedOn(target: ScrollTarget): boolean {
-    const top = targetTop(target);
+  function landedOn(target: ScrollTarget, below = 0): boolean {
+    const top = targetTop(target, below);
     return (
       top !== null && Math.abs(viewport.scrollTop - top) <= AT_EDGE_EPSILON_PX
     );
@@ -1469,7 +1475,9 @@ export function createVirtualList<T>(
 
     // A keyed target that disappears mid-glide holds position; the landing
     // revalidation then fails.
-    const destination = (): number => targetTop(target) ?? viewport.scrollTop;
+    const below = Math.max(0, scrollOptions.offset ?? 0);
+    const destination = (): number =>
+      targetTop(target, below) ?? viewport.scrollTop;
 
     if (scrollOptions.behavior !== "smooth") {
       const top = Math.round(destination());
@@ -1479,7 +1487,7 @@ export function createVirtualList<T>(
       const vp = viewportState();
       reconcileWindow(vp);
       publish(vp);
-      done(!disposed && landedOn(target));
+      done(!disposed && landedOn(target, below));
       return;
     }
 
@@ -1510,7 +1518,7 @@ export function createVirtualList<T>(
             done(false);
             return;
           }
-          awaitingSettle = { done, landed: () => landedOn(target) };
+          awaitingSettle = { done, landed: () => landedOn(target, below) };
           controller.markSettlePending();
         }),
     );

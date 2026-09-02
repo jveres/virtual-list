@@ -153,9 +153,19 @@ The definition of correct, referenced by number throughout the code:
   `createVirtualList(viewport, { items, key, render, overscanPx?,
   onState?, onReachStart/End?, onDestroy?, settleStrategy?,
   scrollingUpdates? })`,
-  `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior?, duration? })
-  → Promise<boolean>`, `state` (adds `held`: work is waiting for settle),
-  `dispose()`. Changes from the v1 shape: `estimateSize` is gone — every
+  `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior?,
+  duration?, offset? })`, `setEdgeSlot(edge, slot | null)`, `positionOf(key)`,
+  `elementOf(key)`, `state`, `dispose()`; options add `edgeSlots`. An
+  edge slot is a fixed-height host row the runtime keeps at an edge of the
+  surface (a scrollback loader in the flow): geometry, but never the anchor
+  — the kernel's anchor exclusion makes the anchor its content neighbor,
+  so when content replaces it the row the user was reading keeps its place
+  and the slot's strip shows the new rows. The two read queries serve a
+  sticky-header companion (`demos/shared/sticky-headers.ts`), which floats
+  the current day header over the viewport top and only ever reads
+  committed positions. `offset` lands a keyed target below such a header.
+  `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
+  waiting for settle). Changes from the v1 shape: `estimateSize` is gone — every
   key is premeasured before it commits, so heights are never estimated
   (hosts window their data; the chat demo hands the runtime a modest
   loaded window); `onUnmount` became `onDestroy(element, item)` — with
