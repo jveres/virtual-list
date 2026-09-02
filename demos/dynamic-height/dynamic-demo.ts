@@ -1732,13 +1732,15 @@ function issue<T>(work: () => T): T {
   // read as a mid-scroll commit. The flag is cleared by the batch, or by
   // this microtask (queued after the batch's) when there was none.
   takeoverPending = true;
-  queueMicrotask(() => {
-    takeoverPending = false;
-  });
   try {
     return work();
   } finally {
     commandIssuing = false;
+    // Queued AFTER the command's mutations, so the observer's own microtask
+    // (queued at the first mutation) runs first and sees the flag.
+    queueMicrotask(() => {
+      takeoverPending = false;
+    });
   }
 }
 
