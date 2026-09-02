@@ -28,14 +28,14 @@ import {
 //    waited for a settle are re-measured immediately before they commit (a
 //    detached image may have decoded since preparation), so the latest
 //    heights commit once.
-// 4. Same-key updates during a phase follow `scrollingUpdates`. Default
-//    ("same-height"): committed elements are frozen along with geometry;
+// 4. Same-key updates during a phase follow `scrollingUpdates`.
+//    "same-height": committed elements are frozen along with geometry;
 //    the update is rendered fresh and premeasured off-scroller, PROMOTED
 //    into the committed slot at once when its height is unchanged, and
 //    otherwise retained until the settle commit swaps content, height,
 //    offsets, canvas, and anchor together — nothing mounted ever shows
 //    content that disagrees with its slot. "freeze" holds every such
-//    update; "live" renders it in place and commits its height at once
+//    update; "live" (the default) renders it in place and commits its height at once
 //    whenever no anchor-preserving scroll write is needed for it (rows at
 //    or below the anchor row). Idle, every mode renders in place and
 //    commits at once.
@@ -94,12 +94,12 @@ export interface VirtualListOptions<T> {
   /**
    * What happens to a same-key update that arrives during a scroll phase
    * (structural changes are settle-gated in every mode):
-   * - "same-height" (default): rendered fresh and premeasured off-scroller;
-   *   if its height equals the committed height it is swapped into the
-   *   committed slot at once (no geometry change), otherwise held until
-   *   settle — streaming keeps flowing until a wrap changes the height;
+   * - "same-height": rendered fresh and premeasured off-scroller; if its
+   *   height equals the committed height it is swapped into the committed
+   *   slot at once (no geometry change), otherwise held until settle —
+   *   streaming keeps flowing until a wrap changes the height;
    * - "freeze": every such update is held until settle;
-   * - "live": rendered in place on the committed element right away, and
+   * - "live" (default): rendered in place on the committed element right away, and
    *   its height commits right away too when nothing on screen has to
    *   move for it — the row is at or below the viewport's anchor row, so
    *   only it and what lies below it change, with no scroll write. The
@@ -144,6 +144,18 @@ export interface VirtualList<T> {
 const EDGE_ENTER_PX = 800;
 const EDGE_EXIT_PX = 1200;
 const MEASURE_EPSILON_PX = 0.5;
+
+/**
+ * Committed heights are whole pixels (rounded up, so content is never
+ * clipped by the quantization). Fractional heights made every offset,
+ * canvas size, and anchor target fractional; engines then snap transformed
+ * rows to device pixels differently as the scroll position changes, which
+ * showed as a 1px layout shift after a top load. Integral geometry has no
+ * such seam: anchor writes land exactly.
+ */
+function quantizeHeight(height: number): number {
+  return Math.ceil(height - 1e-6);
+}
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 const AT_EDGE_EPSILON_PX = 1;
 
@@ -206,8 +218,7 @@ export function createVirtualList<T>(
   options: VirtualListOptions<T>,
 ): VirtualList<T> {
   const { key: keyOf, render } = options;
-  const scrollingUpdates: ScrollingUpdates =
-    options.scrollingUpdates ?? "same-height";
+  const scrollingUpdates: ScrollingUpdates = options.scrollingUpdates ?? "live";
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
   const overscanPx = options.overscanPx ?? Math.max(300, viewport.clientHeight);
@@ -382,7 +393,8 @@ export function createVirtualList<T>(
   ): Row<T> {
     const slot = createSlot();
     slot.appendChild(element);
-    slot.style.height = `${height}px`;
+    const quantized = quantizeHeight(height);
+    slot.style.height = `${quantized}px`;
     return {
       key,
       item,
@@ -390,7 +402,7 @@ export function createVirtualList<T>(
       renderUnknown: false,
       element,
       slot,
-      height,
+      height: quantized,
       offset: Number.NaN,
       mounted: false,
       dirty: false,
@@ -523,7 +535,7 @@ export function createVirtualList<T>(
       const height =
         entry.borderBoxSize?.[0]?.blockSize ??
         (entry.target as HTMLElement).getBoundingClientRect().height;
-      if (Math.abs(height - row.height) <= MEASURE_EPSILON_PX) continue;
+      if (quantizeHeight(height) === row.height) continue;
       markDirty(row);
       changed = true;
     }
@@ -718,7 +730,7 @@ export function createVirtualList<T>(
       if (
         promoteSameHeight &&
         !committed.dirty &&
-        Math.abs(fresh.height - committed.height) <= MEASURE_EPSILON_PX
+        quantizeHeight(fresh.height) === committed.height
       ) {
         promotions.push({ row: committed, fresh });
       } else {
@@ -829,7 +841,8 @@ export function createVirtualList<T>(
   }
 
   // --- The atomic commit ----------------------------------------------------
-  function commitHeight(row: Row<T>, height: number): void {
+  function commitHeight(row: Row<T>, measured: number): void {
+    const height = quantizeHeight(measured);
     row.dirty = false;
     dirtyRows.delete(row);
     row.height = height;

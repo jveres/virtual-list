@@ -3,6 +3,7 @@
 // Usage:
 //   pnpm run test:browser
 //   pnpm run test:browser -- --quick --engine=webkit --mode=live
+//   pnpm run test:browser -- --chaos=300 --engine=webkit   (seconds of chaos)
 //
 // Install engines once with:
 //   pnpm exec playwright install chromium firefox webkit
@@ -44,6 +45,8 @@ function selected(value, choices, label) {
 const engines = selected(option("engine"), ALL_ENGINES, "engine");
 const modes = selected(option("mode"), ALL_MODES, "mode");
 const quick = process.argv.includes("--quick");
+const chaosSeconds = Number(option("chaos") ?? 0);
+const seed = Number(option("seed") ?? Date.now() % 1_000_000);
 const headed = process.argv.includes("--headed");
 const externalUrl = process.env.BROWSER_MATRIX_URL;
 const baseUrl = externalUrl ?? DEFAULT_URL;
@@ -203,6 +206,73 @@ async function runFullScenario(page) {
   await page.waitForTimeout(2_500);
 }
 
+function mulberry32(seedValue) {
+  let state = seedValue >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Chaos: the lab's in-page adversary runs (bursts, throwing renders,
+ * inserts, reorders, deletions, commands, mode switches) while this loop
+ * feeds random wheel input — flicks, slow drags, reversals, pauses — and
+ * stops at the first violation so its trace is fresh.
+ */
+async function runChaosScenario(page, seconds) {
+  const random = mulberry32(seed);
+  const pickInt = (min, max) => min + Math.floor(random() * (max - min + 1));
+  await mark(page, `chaos start (seed ${seed}, ${seconds}s)`);
+  await page.check("#chaos");
+  const deadline = Date.now() + seconds * 1_000;
+  let lastCheck = Date.now();
+  while (Date.now() < deadline) {
+    const roll = random();
+    const direction = random() < 0.5 ? -1 : 1;
+    if (roll < 0.35) {
+      await wheel(
+        page,
+        direction * pickInt(60, 220),
+        pickInt(4, 40),
+        pickInt(8, 30),
+      );
+    } else if (roll < 0.55) {
+      await wheel(
+        page,
+        direction * pickInt(15, 60),
+        pickInt(20, 80),
+        pickInt(30, 70),
+      );
+    } else if (roll < 0.7) {
+      const delta = pickInt(60, 160);
+      await wheel(page, direction * delta, pickInt(5, 20));
+      await page.waitForTimeout(pickInt(0, 120));
+      await wheel(page, -direction * delta, pickInt(5, 20));
+    } else if (roll < 0.8) {
+      for (let count = 0; count < pickInt(3, 8); count += 1) {
+        await wheel(page, (count % 2 === 0 ? 1 : -1) * pickInt(40, 120), 2, 16);
+      }
+    } else {
+      await page.waitForTimeout(pickInt(300, 2_600));
+    }
+    if (Date.now() - lastCheck > 3_000) {
+      lastCheck = Date.now();
+      const violations = await page.evaluate(
+        () => document.getElementById("s-violations")?.textContent ?? "",
+      );
+      if (violations !== "0") {
+        await mark(page, `chaos stopped at first violation (${violations})`);
+        break;
+      }
+    }
+  }
+  await page.uncheck("#chaos");
+  await page.waitForTimeout(2_500);
+}
+
 async function readResult(page) {
   return page.evaluate(() => {
     const cell = (id) => document.getElementById(id)?.textContent ?? "";
@@ -213,9 +283,8 @@ async function readResult(page) {
       nodes: cell("s-nodes"),
       clipped: cell("s-clipped"),
       strategy: cell("s-strategy"),
-      bad: [...document.querySelectorAll("#log .bad")].map(
-        (element) => element.textContent?.trim() ?? "",
-      ),
+      // From the full ring, not the trimmed DOM log.
+      bad: window.labTrace.filter((line) => line.includes("VIOLATION")),
       log: window.labTrace.join("\n"),
     };
   });
@@ -266,7 +335,8 @@ async function runCase(engine, mode) {
     if (!box) throw new Error("dynamic-height viewport has no bounding box");
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
 
-    if (quick) await runQuickScenario(page);
+    if (chaosSeconds > 0) await runChaosScenario(page, chaosSeconds);
+    else if (quick) await runQuickScenario(page);
     else await runFullScenario(page);
     result = await readResult(page);
 

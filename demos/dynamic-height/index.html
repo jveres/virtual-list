@@ -365,12 +365,16 @@
             title="Phase-time same-key updates: same-height promotes equal-height updates at once; freeze holds every update until settle; live renders in place and commits the height at once when no scroll write is needed (changing it resets the list)"
             >scrolling
             <select id="scrolling-updates">
+              <option value="live" selected>live</option>
               <option value="same-height">same-height</option>
               <option value="freeze">freeze</option>
-              <option value="live">live</option>
             </select></label
           >
           <label><input type="checkbox" id="verbose" />verbose</label>
+          <label
+            title="Randomized adversary: bursts, throwing renders, inserts, reorders, deletions, width flips, commands, mode switches"
+            ><input type="checkbox" id="chaos" />chaos</label
+          >
         </div>
         <div class="controls">
           <button id="glide-top" type="button">⤒ top</button>
@@ -381,6 +385,7 @@
           <button id="burst" type="button">burst ×5</button>
           <button id="reset" type="button">reset</button>
           <button id="copy" type="button">copy trace</button>
+          <button id="upload" type="button" title="POST the trace tail to the dev server (browser-artifacts/)">upload trace</button>
           <button id="clear" type="button">clear log</button>
         </div>
         <pre id="log"></pre>

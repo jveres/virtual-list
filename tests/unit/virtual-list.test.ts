@@ -147,7 +147,9 @@ function mount(
     items,
     key: (m) => `m${m.id}`,
     settleStrategy: "default",
-    scrollingUpdates: hooks.scrollingUpdates,
+    // The harness pins "same-height" (the mode most tests describe); the
+    // runtime's own default is "live" (pinned by its own test).
+    scrollingUpdates: hooks.scrollingUpdates ?? "same-height",
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
@@ -467,6 +469,44 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.state.held).toBe(false);
   });
 
+  it('the runtime defaults to "live"', () => {
+    const viewport = document.createElement("div");
+    Object.defineProperties(viewport, {
+      clientHeight: { get: () => VIEWPORT_H },
+      clientWidth: { get: () => 300 },
+      scrollHeight: { get: () => 50 * ROW_H },
+    });
+    document.body.appendChild(viewport);
+    const seen: (HTMLElement | undefined)[] = [];
+    const initial = range(0, 50);
+    const list = createVirtualList<Msg>(viewport, {
+      items: initial,
+      key: (m) => `m${m.id}`,
+      settleStrategy: "default",
+      render: (m, existing) => {
+        if (m.id === 30) seen.push(existing);
+        if (existing) {
+          existing.textContent = m.body;
+          return existing;
+        }
+        const element = document.createElement("div");
+        element.textContent = m.body;
+        element.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
+        return element;
+      },
+    });
+    seen.length = 0;
+    viewport.scrollTop = 3005;
+    viewport.dispatchEvent(new Event("scroll")); // A gesture is active.
+    const next = [...initial];
+    next[30] = message(30, "live by default");
+    list.setItems(next);
+    // "live": the mounted element itself was offered and updated in place.
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.textContent).toBe("live by default");
+    list.dispose();
+  });
+
   it('"live" still settle-gates structural changes', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
@@ -499,21 +539,38 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(atEnd); // Its anchor survived too.
   });
 
+  it("commits whole-pixel heights: fractional measurements round up, geometry stays integral", () => {
+    const initial = range(0, 10);
+    const h = mount(initial);
+    void h.list.scrollTo("m2");
+    const row = h.rowElement("msg 5");
+    h.heights.set(5, 120.3);
+    fireResize(0, row, 120.3);
+    expect(h.slotOf(row).style.height).toBe("121px");
+    expect(h.list.state.totalSize).toBe(9 * ROW_H + 121);
+    // The same fractional size again is not a change.
+    fireResize(0, row, 120.3);
+    expect(h.list.state.held).toBe(false);
+    expect(h.slotOf(h.rowElement("msg 6")).style.transform).toBe(
+      `translateY(${5 * ROW_H + 121}px)`,
+    );
+  });
+
   it("a takeover writes the current position back untouched, never clamped to a rounded scrollHeight", () => {
     const initial = range(0, 50);
     let width = 300;
     const h = mount(initial, { width: () => width });
-    for (let id = 0; id < 50; id++) h.heights.set(id, 100.308); // Total 5015.4.
+    for (let id = 0; id < 50; id++) h.heights.set(id, 100.308); // Ceil: 101 each.
     width = 280;
     fireResize(1, h.viewport, VIEWPORT_H); // Re-measures everything (width path).
-    expect(h.list.state.totalSize).toBeCloseTo(5015.4, 6);
+    expect(h.list.state.totalSize).toBe(50 * 101); // Integral geometry.
 
     h.userScroll(3005);
-    h.userScroll(4415.4); // The true maximum; scrollHeight reads 5015.
-    expect(h.viewport.scrollTop).toBeCloseTo(4415.4, 6);
+    h.userScroll(4449.6); // A fractional native position near the maximum.
+    expect(h.viewport.scrollTop).toBeCloseTo(4449.6, 6);
     void h.list.scrollTo("end", { behavior: "smooth" }); // Takes over: interrupts.
-    // The clamped write (5015 − 600 = 4415) would have moved the viewport.
-    expect(h.viewport.scrollTop).toBeCloseTo(4415.4, 6);
+    // The takeover writes the current position back untouched.
+    expect(h.viewport.scrollTop).toBeCloseTo(4449.6, 6);
   });
 
   it("freezes committed rows outside the window too: a mid-phase remount shows committed content", () => {
@@ -593,9 +650,10 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.state.held).toBe(true);
 
     h.settle();
-    // Final anchor target is 30 * 100.308 + 5 = 3014.24. Writing 3014
-    // avoids WebKit flooring an arbitrary fractional target by almost 1px.
-    expect(h.viewport.scrollTop).toBe(3014);
+    // Heights commit as whole pixels (100.308 → 101), so the anchor target
+    // 30 * 101 + 5 = 3035 is integral by construction — nothing for WebKit
+    // to floor. (The write itself is rounded as well, as a second guard.)
+    expect(h.viewport.scrollTop).toBe(3035);
     expect(Number.isInteger(h.viewport.scrollTop)).toBe(true);
   });
 

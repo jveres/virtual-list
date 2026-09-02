@@ -54,7 +54,9 @@ import {
 //   T  a slot height was committed again with no content or width change
 //      in between (heights must commit once, latest);
 //   D  an element destroyed twice, never rendered by the lab, still in the
-//      DOM after destruction, or leaked at dispose.
+//      DOM after destruction, or leaked at dispose;
+//   X  the runtime threw where it must not (an uncaught exception, or a
+//      setItems/command failure not caused by the lab's own chaos throw).
 // A violation counter above 0 is a defect: copy the trace.
 
 const INITIAL_ROWS = 40;
@@ -159,6 +161,48 @@ function violation(code: string, message: string): void {
   violations += 1;
   log(`VIOLATION ${code}: ${message}`, "bad");
   scheduleStatus();
+  scheduleReport("violation");
+}
+
+// --- Device report channel ------------------------------------------------
+// A phone or tablet cannot hand its trace over easily: the lab POSTs the
+// tail of its ring to the dev server (a vite middleware appends it under
+// browser-artifacts/). Debounced; a violation triggers it, so does the
+// "upload trace" button. Silently a no-op without the dev server.
+
+let reportTimer = 0;
+
+function scheduleReport(why: string): void {
+  if (reportTimer !== 0) return;
+  reportTimer = window.setTimeout(() => {
+    reportTimer = 0;
+    void sendReport(why);
+  }, 1200);
+}
+
+async function sendReport(why: string): Promise<void> {
+  const body = JSON.stringify({
+    why,
+    userAgent: navigator.userAgent,
+    strategy: stat.strategy.textContent,
+    mode: mustGet<HTMLSelectElement>("scrolling-updates").value,
+    violations,
+    viewport: { width: innerWidth, height: innerHeight },
+    trace: traceRing.slice(-700),
+  });
+  try {
+    const response = await fetch("/__lab/report", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body,
+      keepalive: true,
+    });
+    if (!response.ok) throw new Error(String(response.status));
+    if (why === "manual") log("trace uploaded", "good");
+  } catch {
+    if (why === "manual")
+      log("upload failed — is the dev server running?", "warn");
+  }
 }
 
 // --- Content model ----------------------------------------------------------
@@ -372,6 +416,12 @@ function update(item: Item, row: HTMLElement): void {
 }
 
 function render(item: Item, existing?: HTMLElement): HTMLElement {
+  if (throwNextRender) {
+    // Chaos: the host's render fails once. The runtime must roll back
+    // atomically; the lab's later checks confirm nothing was left behind.
+    throwNextRender = false;
+    throw new Error(CHAOS_RENDER_ERROR);
+  }
   if (existing && !checkbox("replace").checked) {
     update(item, existing);
     return existing;
@@ -462,6 +512,16 @@ function installWriteHook(): void {
       expectedWrites.push(actual);
       if (expectedWrites.length > EXPECTED_WRITE_MAX) expectedWrites.shift();
       writeSerial += 1;
+      // A command moved the viewport: the anchor baseline is stale until
+      // re-captured. A commit's own write is followed by its geometry batch
+      // in the same microtask checkpoint (queued earlier), which consumes
+      // the pre-commit baseline first and then refreshes it.
+      anchorRefreshPending = true;
+      queueMicrotask(() => {
+        if (!anchorRefreshPending) return;
+        anchorRefreshPending = false;
+        anchorRecord = captureAnchor();
+      });
       runtimeWriteTimes.push(now);
       if (runtimeWriteTimes.length > 4) runtimeWriteTimes.shift();
       if (verbose()) log(`write scrollTop=${Math.round(actual)}`);
@@ -673,7 +733,9 @@ function startLoad(edge: "start" | "end", context: ReachContext): void {
     // (that end-follow is `auto`'s convention for live messages, not pages).
     expectAnchoredCommit = true;
     waitingChunk[edge] = true;
-    list.setItems(items, { anchor: "viewport" });
+    guardedCall(`setItems (load ${edge})`, () =>
+      list.setItems(items, { anchor: "viewport" }),
+    );
     if (stateHeld) {
       // The scroll surface is immutable while the user scrolls: the
       // runtime holds the prepared chunk for the settle signal.
@@ -857,6 +919,8 @@ interface AnchorRecord {
   writeSerial: number;
 }
 let anchorRecord: AnchorRecord | null = null;
+/** A runtime write happened and no batch has re-captured the anchor yet. */
+let anchorRefreshPending = false;
 
 function parseHeight(style: string | null): number | null {
   const match =
@@ -890,12 +954,10 @@ function classifyBatch(records: MutationRecord[]): void {
   // so a geometry batch knows whether a runtime write happened since.
   const wroteScrollTop = writeSerial !== writeSerialAtLastBatch;
   writeSerialAtLastBatch = writeSerial;
-  // The anchor row NOW (post-commit; a legitimate commit never moves the
-  // rows above it, so this is the pre-commit anchor as well).
-  const anchorNow = captureAnchor();
-  const anchorY = anchorNow
-    ? parseOffset(slotOf(anchorNow.key)?.getAttribute("style") ?? null)
-    : null;
+  // The scroll position the commit ran at: its writes (a glide frame)
+  // precede its mutations in the same task, and nothing moves it before
+  // this microtask.
+  const scrollTopNow = viewport.scrollTop;
   const added = new Set<Element>();
   let removed = 0;
   const firstOldStyle = new Map<Element, string | null>();
@@ -937,7 +999,15 @@ function classifyBatch(records: MutationRecord[]): void {
   let canvasChange: { from: number | null; to: number | null } | null = null;
   const heightChanges: { key: string; from: number; to: number }[] = [];
   let offsetChanges = 0;
-  let offsetsAboveAnchor = 0;
+  // Pre-commit placement of every slot that changed, straight from the
+  // mutation records — the ground truth for the "live" rule below.
+  const changedSlots: {
+    key: string;
+    offsetFrom: number | null;
+    heightFrom: number | null;
+    movedOffset: boolean;
+    resized: boolean;
+  }[] = [];
   for (const [target, oldStyle] of firstOldStyle) {
     const style = target.getAttribute("style");
     if (target === canvas) {
@@ -950,16 +1020,15 @@ function classifyBatch(records: MutationRecord[]): void {
     const key = keyOfSlot(target);
     const heightFrom = parseHeight(oldStyle);
     const heightTo = parseHeight(style);
-    if (heightFrom !== null && heightTo !== null && heightFrom !== heightTo) {
-      heightChanges.push({ key, from: heightFrom, to: heightTo });
-    }
+    const resized =
+      heightFrom !== null && heightTo !== null && heightFrom !== heightTo;
+    if (resized) heightChanges.push({ key, from: heightFrom, to: heightTo });
     const offsetFrom = parseOffset(oldStyle);
     const offsetTo = parseOffset(style);
-    if (offsetFrom !== offsetTo) {
-      offsetChanges += 1;
-      if (anchorY !== null && offsetTo !== null && offsetTo < anchorY) {
-        offsetsAboveAnchor += 1;
-      }
+    const movedOffset = offsetFrom !== offsetTo;
+    if (movedOffset) offsetChanges += 1;
+    if (resized || movedOffset) {
+      changedSlots.push({ key, offsetFrom, heightFrom, movedOffset, resized });
     }
   }
 
@@ -969,6 +1038,9 @@ function classifyBatch(records: MutationRecord[]): void {
     if (verbose() && (added.size > 0 || removed > 0)) {
       log(`window +${added.size}/−${removed}`);
     }
+    // The window moved (a command, a glide frame): new baseline.
+    anchorRefreshPending = false;
+    anchorRecord = captureAnchor();
     return;
   }
 
@@ -991,17 +1063,31 @@ function classifyBatch(records: MutationRecord[]): void {
   // scrollTop and touched only rows at or below the anchor row (the
   // anchor keeps its coordinate by construction; only what lies below
   // it, and the canvas end, may change).
+  // "live" commits only rows at or below the anchor row (the row under the
+  // viewport top): a MOVED row must have started at or below the viewport
+  // top (only rows after the anchor shift; the anchor keeps its offset), and
+  // a RESIZED row must not have been entirely above it (the anchor row may
+  // resize; rows above it would need an anchor write). Judged on the
+  // pre-commit placement from the records and the commit's scroll position.
   const liveCommitOk = (): boolean => {
     if (scrollingMode() !== "live") return false;
     // A glide writes every frame by design; under native input any write
     // disqualifies the commit.
     if (wroteScrollTop && smoothPending === 0) return false;
-    if (anchorY === null) return true; // No anchor on screen to protect.
-    for (const change of heightChanges) {
-      const y = parseOffset(slotOf(change.key)?.getAttribute("style") ?? null);
-      if (y !== null && y < anchorY) return false;
+    for (const slot of changedSlots) {
+      if (slot.offsetFrom === null) continue; // Freshly placed: not a move.
+      if (slot.movedOffset && slot.offsetFrom < scrollTopNow - PX_EPSILON) {
+        return false;
+      }
+      if (
+        slot.resized &&
+        slot.heightFrom !== null &&
+        slot.offsetFrom + slot.heightFrom <= scrollTopNow + PX_EPSILON
+      ) {
+        return false;
+      }
     }
-    return offsetsAboveAnchor === 0;
+    return true;
   };
 
   // G: geometry is immutable under a live scroll phase.
@@ -1056,6 +1142,7 @@ function classifyBatch(records: MutationRecord[]): void {
   // Consecutive commits before the next frame (an exempt anchor shrink,
   // then another commit 7ms later) must each be judged against the
   // geometry they started from.
+  anchorRefreshPending = false;
   anchorRecord = captureAnchor();
   scheduleStatus();
 }
@@ -1271,7 +1358,10 @@ function scheduleStatus(): void {
     stat.clipped.textContent = String(clippedKeys.size);
     stat.paints.textContent = String(clippedPaints);
     stat.paints.className = `val${clippedPaints > 0 ? " bad" : ""}`;
-    stat.streams.textContent = `${streams.size} active`;
+    stat.streams.textContent =
+      chaosOps > 0
+        ? `${streams.size} active · chaos ${chaosOps}`
+        : `${streams.size} active`;
     stat.images.textContent = `${imagesPending}/${imagesLoaded}`;
     stat.loads.textContent = `T:${chunksLeft.start} B:${chunksLeft.end} left · ${loadsAborted} aborted`;
   });
@@ -1286,7 +1376,7 @@ const streams = new Map<number, number>();
 function changeContent(item: Item, what: string): void {
   const updated = { ...item, version: item.version + 1 };
   replaceItem(updated);
-  list.setItems(items);
+  guardedCall(`setItems (${what})`, () => list.setItems(items));
   recordContentChange(item.id, what);
 }
 
@@ -1389,7 +1479,7 @@ function deleteItem(item: Item, why: string): void {
   items = items.filter((candidate) => candidate !== item);
   itemById.delete(item.id);
   log(`delete #${item.id} (${why}): setItems`, "mark");
-  list.setItems(items);
+  guardedCall(`setItems (delete #${item.id})`, () => list.setItems(items));
 }
 
 function burst(): void {
@@ -1399,6 +1489,182 @@ function burst(): void {
     item.words.push(pick(WORDS, random));
     changeContent(item, `burst #${item.id}`);
   }
+}
+
+// --- Chaos ------------------------------------------------------------------
+// A randomized adversary: every operation the lab exposes, at random, at a
+// random cadence, on top of streaming/toggles/images — including a render
+// that throws (the runtime must roll back atomically), mid-list inserts and
+// reorders, commands, width flips, and scrollingUpdates switches (the list
+// is recreated, counters carry on). The driver adds random wheel input.
+
+const CHAOS_RENDER_ERROR = "chaos: render failure";
+let throwNextRender = false;
+let chaosTimer = 0;
+let chaosOps = 0;
+let insertedId = 1_000_000;
+
+function describeError(error: unknown): string {
+  if (error instanceof AggregateError) {
+    return `AggregateError[${error.errors.map(describeError).join("; ")}]`;
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** Only the lab's own chaos throw (possibly aggregated) is an expected failure. */
+function isChaosFailure(error: unknown): boolean {
+  const all = error instanceof AggregateError ? error.errors : [error];
+  return (
+    all.length > 0 &&
+    all.every(
+      (entry) => entry instanceof Error && entry.message === CHAOS_RENDER_ERROR,
+    )
+  );
+}
+
+function guardedCall(what: string, work: () => void): void {
+  try {
+    work();
+  } catch (error) {
+    if (isChaosFailure(error)) {
+      log(`expected: ${what} threw (${describeError(error)})`, "warn");
+      return;
+    }
+    violation("X", `${what} threw: ${describeError(error)}`);
+  }
+}
+
+const CHAOS_OPS: { weight: number; name: string; run: () => void }[] = [
+  { weight: 3, name: "burst", run: burst },
+  {
+    weight: 2,
+    name: "delete random",
+    run: () => {
+      if (items.length > 5) deleteItem(pick(items, random), "chaos");
+    },
+  },
+  {
+    weight: 1,
+    name: "delete anchor",
+    run: () => {
+      const key = anchorRecord?.key;
+      const item = key === undefined ? undefined : itemById.get(Number(key));
+      if (item && items.length > 5) deleteItem(item, "chaos anchor");
+    },
+  },
+  {
+    weight: 2,
+    name: "insert mid-list",
+    run: () => {
+      const item = makeItem(insertedId);
+      insertedId += 1;
+      itemById.set(item.id, item);
+      const at = Math.floor(random() * (items.length + 1));
+      items = [...items.slice(0, at), item, ...items.slice(at)];
+      freshIds.add(item.id);
+      log(`chaos: insert #${item.id} at ${at}`, "mark");
+      guardedCall("setItems (insert)", () => list.setItems(items));
+    },
+  },
+  {
+    weight: 2,
+    name: "swap adjacent",
+    run: () => {
+      if (items.length < 2) return;
+      const at = Math.floor(random() * (items.length - 1));
+      const next = [...items];
+      const a = next[at];
+      const b = next[at + 1];
+      if (!a || !b) return;
+      next[at] = b;
+      next[at + 1] = a;
+      items = next;
+      log(`chaos: swap #${a.id} ↔ #${b.id}`, "mark");
+      guardedCall("setItems (swap)", () => list.setItems(items));
+    },
+  },
+  {
+    weight: 2,
+    name: "throwing render",
+    run: () => {
+      throwNextRender = true;
+      const item = pick(items, random);
+      item.words.push(pick(WORDS, random));
+      changeContent(item, `chaos throw on #${item.id}`);
+      throwNextRender = false; // If nothing rendered, do not ambush a later call.
+    },
+  },
+  { weight: 1, name: "width", run: () => toggleWidth("chaos") },
+  { weight: 1, name: "glide top", run: () => glideTo("start") },
+  { weight: 1, name: "glide bottom", run: () => glideTo("end") },
+  {
+    weight: 1,
+    name: "scrollTo random key",
+    run: () => {
+      const item = pick(items, random);
+      log(`chaos: scrollTo #${item.id}`, "mark");
+      const promise = issue(() => list.scrollTo(String(item.id)));
+      void promise.then((landed) => {
+        if (verbose()) log(`scrollTo #${item.id} → ${landed}`);
+      });
+    },
+  },
+  {
+    weight: 1,
+    name: "flip replace",
+    run: () => {
+      checkbox("replace").checked = !checkbox("replace").checked;
+      log(`chaos: replace ${checkbox("replace").checked ? "on" : "off"}`);
+    },
+  },
+  {
+    weight: 0.3,
+    name: "switch scrollingUpdates",
+    run: () => {
+      const modes: ScrollingUpdates[] = ["same-height", "freeze", "live"];
+      const next = pick(
+        modes.filter((mode) => mode !== scrollingMode()),
+        random,
+      );
+      mustGet<HTMLSelectElement>("scrolling-updates").value = next;
+      log(`chaos: scrollingUpdates → ${next} (recreate)`, "mark");
+      recreate();
+    },
+  },
+];
+
+function chaosTick(): void {
+  chaosTimer = 0;
+  if (!checkbox("chaos").checked) return;
+  const total = CHAOS_OPS.reduce((sum, op) => sum + op.weight, 0);
+  let roll = random() * total;
+  let op = CHAOS_OPS[0];
+  for (const candidate of CHAOS_OPS) {
+    roll -= candidate.weight;
+    if (roll < 0) {
+      op = candidate;
+      break;
+    }
+  }
+  if (op) {
+    chaosOps += 1;
+    if (verbose()) log(`chaos op: ${op.name}`);
+    guardedCall(`chaos ${op.name}`, op.run);
+  }
+  chaosTimer = window.setTimeout(chaosTick, 100 + random() * 500);
+}
+
+function startChaos(): void {
+  if (chaosTimer !== 0) return;
+  log("CHAOS on", "mark");
+  chaosTimer = window.setTimeout(chaosTick, 200);
+}
+
+function stopChaos(): void {
+  if (chaosTimer !== 0) window.clearTimeout(chaosTimer);
+  chaosTimer = 0;
+  throwNextRender = false;
+  log("CHAOS off", "mark");
 }
 
 // --- Commands ---------------------------------------------------------------
@@ -1465,10 +1731,11 @@ function boot(): void {
   scheduleStatus();
 }
 
-function reset(): void {
+/** Dispose (the leak check) and boot a new list; counters carry on. */
+function recreate(): void {
   stopStreams();
   const before = { created, destroyed };
-  list.dispose();
+  guardedCall("dispose", () => list.dispose());
   canvasObserver?.disconnect();
   canvas = null;
   const live = created - destroyed;
@@ -1482,17 +1749,24 @@ function reset(): void {
   }
   elementById.clear();
   paintObserver?.disconnect();
+  boot();
+}
+
+function reset(): void {
+  recreate();
   // A fresh run: every counter starts over (the leak check above was the
   // last use of the old ones), so the panel never shows violations whose
   // traces belong to a previous run.
   violations = 0;
   commits = 0;
+  liveCommits = 0;
   clippedPaints = 0;
   created = 0;
   destroyed = 0;
   imagesLoaded = 0;
   loadsAborted = 0;
-  boot();
+  chaosOps = 0;
+  scheduleStatus();
 }
 
 checkbox("streaming").addEventListener("change", () => {
@@ -1517,11 +1791,19 @@ mustGet("reset").addEventListener("click", () => {
   reset();
 });
 mustGet("scrolling-updates").addEventListener("change", () => {
-  log(
-    `scrollingUpdates → ${mustGet<HTMLSelectElement>("scrolling-updates").value} (reset)`,
-    "mark",
-  );
-  reset();
+  log(`scrollingUpdates → ${scrollingMode()} (recreate)`, "mark");
+  recreate();
+});
+checkbox("chaos").addEventListener("change", () => {
+  if (checkbox("chaos").checked) startChaos();
+  else stopChaos();
+});
+// Anything the runtime lets escape is a defect in its own right.
+window.addEventListener("error", (event) => {
+  violation("X", `uncaught: ${event.message}`);
+});
+window.addEventListener("unhandledrejection", (event) => {
+  violation("X", `unhandled rejection: ${describeError(event.reason)}`);
 });
 mustGet("clear").addEventListener("click", () => {
   logElement.replaceChildren();
@@ -1530,6 +1812,9 @@ mustGet("clear").addEventListener("click", () => {
   violations = 0;
   clippedPaints = 0;
   scheduleStatus();
+});
+mustGet("upload").addEventListener("click", () => {
+  void sendReport("manual");
 });
 mustGet("copy").addEventListener("click", () => {
   const trace = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\nviolations=${violations}\n${traceRing.join("\n")}`;
