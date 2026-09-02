@@ -219,6 +219,7 @@ export function createScrollSettleController(
   let chromiumEdgeSettleTimer = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
+  let scrollEventsSinceTouchStart = 0;
 
   function nativeMaxScrollTop(): number {
     return Math.max(0, viewport.scrollHeight - viewport.clientHeight);
@@ -258,6 +259,7 @@ export function createScrollSettleController(
 
   function handleScroll(): void {
     if (host.isDisposed()) return;
+    scrollEventsSinceTouchStart += 1;
     const previousScrollTop = lastScrollSampleTop;
     const nextScrollTop = viewport.scrollTop;
     const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
@@ -923,6 +925,7 @@ export function createScrollSettleController(
 
   function handleTouchScrollStart(): void {
     touchInputActive = true;
+    scrollEventsSinceTouchStart = 0;
     cancelPendingReleaseForDirectInput();
     handleUserScrollStart();
   }
@@ -934,6 +937,28 @@ export function createScrollSettleController(
 
   function handleTouchScrollEnd(event: TouchEvent): void {
     if (event.touches.length === 0) touchInputActive = false;
+    // A touch that lands on a decelerating scroller stops it dead (iOS):
+    // the touchstart cancelled the pending release, and no scroll event or
+    // scrollend follows a touch that never moved the viewport — nothing
+    // would ever settle the gesture, and every held update waits for the
+    // next real scroll. Re-arm the release; the cooldown and the edge
+    // quiet windows still guard it. Firefox keeps its edge contract: at a
+    // protected edge only the release scrollend may settle.
+    if (
+      !touchInputActive &&
+      userScrollActive &&
+      userScrollMoved &&
+      !nativeScrollEndPending &&
+      scrollEventsSinceTouchStart === 0 &&
+      !isRubberBandOverscrolled() &&
+      (strategy !== "firefox-wheel" || firefoxProtectedEdge === null)
+    ) {
+      // Through the cooldown, never on the spot: a final clamp scroll can
+      // still trail the touchend, and it must extend the release.
+      setPendingNativeScrollEnd();
+      schedulePendingNativeScrollEnd();
+      return;
+    }
     handleUserScrollMaybeEnd();
   }
 

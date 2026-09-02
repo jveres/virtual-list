@@ -1621,7 +1621,7 @@ export function createVirtualList<T>(
         // coordinate by construction) — commit it now, mid-phase: a
         // version switch, an appended message. Holding it for a settle
         // that momentum can postpone by seconds reads as a dead click.
-        commit(prepared, "viewport", "never");
+        commit(prepared, "none", "never");
         return;
       } else {
         // These rows will wait: their heights are re-read at the settle
@@ -1639,9 +1639,8 @@ export function createVirtualList<T>(
    * Whether a snapshot (plus every dirty measurement it would commit with)
    * changes nothing above the viewport's anchor: the committed keys up to
    * the anchor are an unchanged, unreplaced prefix of the new keys, dirty
-   * rows sit at or below the anchor, and the anchor row itself either
-   * survives unreplaced or is replaced while the viewport sits exactly on
-   * its top (its successor inherits that coordinate).
+   * rows sit at or below the anchor, and the anchor key did not move to
+   * another index. Such a commit needs no scroll write.
    */
   function confinedBelowAnchor(prepared: Prepared<T>): boolean {
     const anchor = geometry.anchorAt(viewportState());
@@ -1652,21 +1651,14 @@ export function createVirtualList<T>(
       if (key === undefined || prepared.keys[index] !== key) return false;
       if (prepared.newRows.has(key)) return false;
     }
-    const anchorInPlace =
-      prepared.keys[anchorIndex] === anchor.key &&
-      !prepared.newRows.has(anchor.key);
-    if (!anchorInPlace) {
-      // The anchor row goes: its coordinate passes to the row taking its
-      // index only while the viewport sits exactly on its top and no row
-      // from it onward survives (a replaced tail — the predecessor then
-      // end-aligns to that very coordinate). An anchor that merely moved
-      // (a prepend, a reorder) needs the write.
-      if (anchor.offset > SCROLL_WRITE_EPSILON_PX) return false;
+    // The anchor row itself may change in place — re-rendered, replaced by
+    // another row at its index, or removed: its offset is unchanged, and the
+    // new content simply renders at the position the viewport already
+    // holds (a shorter row lets the engine clamp). An anchor that merely
+    // moved (a prepend, a reorder) needs the write.
+    if (prepared.keys[anchorIndex] !== anchor.key) {
       const nextKeys = new Set(prepared.keys);
-      for (let index = anchorIndex; index < geometry.count; index++) {
-        const key = geometry.keyAt(index);
-        if (key !== undefined && nextKeys.has(key)) return false;
-      }
+      if (nextKeys.has(anchor.key)) return false;
     }
     for (const row of dirtyRows) {
       if (geometry.indexOf(row.key) < anchorIndex) return false;

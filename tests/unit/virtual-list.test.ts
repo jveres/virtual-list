@@ -1804,12 +1804,20 @@ describe("v2 runtime — commands", () => {
     h.list.dispose();
   });
 
-  it("live: replacing an anchor row the viewport is scrolled into waits for the settle", () => {
+  it("live: replacing the anchor row the viewport is scrolled into commits in place, without a write", () => {
     const initial = range(0, 50);
-    const h = mount(initial, { scrollingUpdates: "live" });
-    h.userScroll(2050); // Anchor: m20, 50px into it.
+    const writes: number[] = [];
+    const h = mount(initial, {
+      scrollingUpdates: "live",
+      onScrollWrite: () => writes.push(1),
+    });
+    h.userScroll(2050); // Anchor: m20, 50px into it — the message being switched.
+    writes.length = 0;
     h.list.setItems([...initial.slice(0, 20), ...range(200, 230)]);
-    expect(h.list.state.held).toBe(true);
+    expect(h.list.state.held).toBe(false);
+    expect(h.rowElement("msg 200")).toBeDefined;
+    expect(h.viewport.scrollTop).toBe(2050); // The new content at the same offset.
+    expect(writes).toEqual([]);
     h.list.dispose();
   });
 

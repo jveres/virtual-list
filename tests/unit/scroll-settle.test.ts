@@ -519,6 +519,31 @@ describe("safari sequences (trace replay)", () => {
     expect(harness.settled()).toBe(1);
   });
 
+  it("a touch that stops a decelerating scroll still lets the gesture settle", () => {
+    // iOS: the tap that stops a deceleration is a touchstart (cancelling any
+    // pending release) followed by a touchend, with no scroll event or
+    // scrollend in between — the tap held the viewport exactly still.
+    const harness = mount("safari-wheel");
+    harness.scrollTo(2000);
+    harness.scrollTo(2400); // Still decelerating: no scrollend yet.
+    harness.touchStart();
+    harness.touchEnd();
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(600);
+    expect(harness.settled()).toBe(1);
+
+    // The same after a scrollend whose release the touch cancelled.
+    harness.scrollTo(2800);
+    harness.scrollTo(3200);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(50);
+    harness.touchStart();
+    harness.touchEnd();
+    expect(harness.settled()).toBe(1);
+    vi.advanceTimersByTime(600);
+    expect(harness.settled()).toBe(2);
+  });
+
   it("cancels a pending release when touch re-grabs before new motion", () => {
     const harness = mount("safari-wheel", { canLoadBottom: true });
     harness.scrollTo(4300);
