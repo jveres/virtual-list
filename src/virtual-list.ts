@@ -385,6 +385,8 @@ export function createVirtualList<T>(
   let awaitingSettle: {
     done: (completed: boolean) => void;
     landed: () => boolean;
+    /** A command to the end: explicit follow intent under smooth follow. */
+    followsEnd: boolean;
   } | null = null;
   // Replaced by the boot commit's publish before the list is handed out.
   let lastState: VirtualListState = EMPTY_STATE;
@@ -1479,6 +1481,10 @@ export function createVirtualList<T>(
       } else {
         publish();
       }
+      // A completed command to the end is explicit follow intent: growth
+      // that outran its glide (fast streaming) must not read as "the user
+      // is not at the end" — a genuine interruption resolved it before this.
+      const endCommand = awaitingSettle?.followsEnd === true;
       settleParked((landed) => !disposed && landed());
       // A scheduled interaction owns the next frame/settle. Do not infer a
       // fresh end-follow intent in the gap after cancelling its old glide.
@@ -1487,10 +1493,20 @@ export function createVirtualList<T>(
         remeasureRequests.size === 0 &&
         remeasurePolicy === undefined
       ) {
-        const following = lastState.atEnd;
+        const following =
+          lastState.atEnd || endCommand || glideKind === "follow";
         if (smoothFollowArmed !== following) {
           smoothFollowArmed = following;
           publish();
+        }
+        // Following but not there: the end moved during the phase.
+        if (
+          following &&
+          Math.abs(
+            geometry.maxScrollTop(viewport.clientHeight) - viewport.scrollTop,
+          ) > SCROLL_WRITE_EPSILON_PX
+        ) {
+          startFollowGlide();
         }
       }
     },
@@ -1682,6 +1698,10 @@ export function createVirtualList<T>(
       if (Math.abs(top - viewport.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
         writeScrollTop(top);
       }
+      // An instant command to the end has no settle to arm following at.
+      if (target === "end" && options.followBehavior === "smooth") {
+        smoothFollowArmed = true;
+      }
       const vp = viewportState();
       const range = reconcileWindow(vp);
       publish(vp, range);
@@ -1717,7 +1737,11 @@ export function createVirtualList<T>(
             done(false);
             return;
           }
-          awaitingSettle = { done, landed: () => landedOn(target, below) };
+          awaitingSettle = {
+            done,
+            landed: () => landedOn(target, below),
+            followsEnd: target === "end",
+          };
           controller.markSettlePending();
         }),
     );

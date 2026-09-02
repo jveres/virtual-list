@@ -322,6 +322,53 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a command to the end re-engages following even when growth outran its glide", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    h.userScroll(4000);
+    h.settle();
+    expect(h.list.state.following).toBe(false);
+
+    const command = h.list.scrollTo("end", { behavior: "smooth" });
+    // The glide (320ms floor) lands on the end as it was; its settle
+    // cooldown is still running.
+    vi.advanceTimersByTime(330);
+    expect(h.viewport.scrollTop).toBe(4400);
+    // Fast streaming: the tail grows between the glide's landing and its
+    // settle ("live" commits it at once — it is below the anchor), so the
+    // viewport is no longer at the end when following is decided.
+    h.heights.set(49, 300);
+    fireResize(0, h.rowElement("msg 49"), 300);
+    expect(h.viewport.scrollTop).toBe(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    vi.advanceTimersByTime(600);
+    expect(h.viewport.scrollTop).toBe(4600);
+
+    // Following persists: the next growth is followed too.
+    h.heights.set(49, 500);
+    const again = [...initial];
+    again[49] = message(49, "streamed longer again");
+    h.list.setItems(again);
+    vi.advanceTimersByTime(600);
+    expect(h.viewport.scrollTop).toBe(4800);
+    expect(h.list.state.following).toBe(true);
+    void command;
+    h.list.dispose();
+  });
+
+  it("an instant command to the end arms following under smooth follow", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    h.userScroll(4000);
+    h.settle();
+    expect(h.list.state.following).toBe(false);
+    void h.list.scrollTo("end");
+    expect(h.viewport.scrollTop).toBe(4400);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;

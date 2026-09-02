@@ -182,7 +182,10 @@ The definition of correct, referenced by number throughout the code:
   live-target glide as content grows. The default, `"instant"`, preserves
   the atomic-write behavior. User input interrupts either behavior. While the
   smooth follower owns the end target, `state.following` remains `true`,
-  including the quiet gaps between consecutive glide legs.
+  including the quiet gaps between consecutive glide legs. A command to
+  `"end"` is explicit follow intent: a completed one arms following at its
+  settle even when growth outran its glide (fast streaming), and an instant
+  one arms it on the spot; only genuine input interrupts it.
   `remeasure` is the intent-bearing path for a discrete host interaction
   such as opening a tool panel. It reads the mounted row on the next animation
   frame (after the default action, before paint) and defaults to the viewport
