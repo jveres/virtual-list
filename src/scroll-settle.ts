@@ -515,8 +515,7 @@ export function createScrollSettleController(
     }
     if (!canSettleScrollPhase()) {
       if (
-        (usesWheelScrollEndFallback() &&
-          hasActiveWheelInput()) ||
+        (usesWheelScrollEndFallback() && hasActiveWheelInput()) ||
         hasActiveChromiumEdgeWheel() ||
         (strategy === "chromium-wheel" &&
           (chromiumWheelAwaitingFinalScrollEnd || chromiumEdgeWheelSuppressed))
@@ -693,7 +692,7 @@ export function createScrollSettleController(
   function handleScrollEnd(): void {
     if (host.isDisposed() || !host.noSmoothScrollInFlight()) return;
 
-    if usesWheelScrollEndFallback() {
+    if (usesWheelScrollEndFallback()) {
       if (!scrollPhaseActive) return;
       if (!scrollPhaseMoved) {
         // A scrollend from a programmatic write (a command's takeover, the
@@ -857,7 +856,7 @@ export function createScrollSettleController(
 
   function handleWheel(event: WheelEvent): void {
     if (host.isDisposed()) return;
-    if usesWheelScrollEndFallback() {
+    if (usesWheelScrollEndFallback()) {
       if (strategy === "firefox-wheel") {
         lastFirefoxWheelInputAt = performance.now();
       }
