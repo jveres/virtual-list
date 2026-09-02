@@ -6,7 +6,7 @@ import { glidePace, startGlide } from "../../src/glide";
 
 // The glide's contractual behaviors (I2): exact landing, and at least one
 // whole pixel of progress per frame — WebKit floors scrollTop writes, and a
-// sub-pixel step parks an exponential approach short of the target forever.
+// sub-pixel step would park an ease-out short of the target forever.
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -181,7 +181,7 @@ describe("glide", () => {
     for (const [timeToEnd, remaining] of short) {
       // Inside the landing window. The ease-out reaches the target within
       // a pixel before its nominal end, so the window is shorter than the
-      // landing's 650ms; the last 450ms are comfortably inside it.
+      // landing's 640ms; the last 450ms are comfortably inside it.
       if (timeToEnd > 450) continue;
       const other = long.get(timeToEnd);
       if (other === undefined) continue;
@@ -210,7 +210,7 @@ describe("glide", () => {
     const t0 = performance.now();
     vi.advanceTimersByTime(2000);
     expect(top).toBe(100_000);
-    // Nominal: 1080ms approach cap + 320ms landing; the landing snaps to
+    // Nominal: 800ms approach cap + 600ms landing; the landing snaps to
     // the target within a pixel a little before its nominal end.
     expect(doneAt - t0).toBeLessThanOrEqual(1400 + 32);
     expect(doneAt - t0).toBeGreaterThanOrEqual(1200);

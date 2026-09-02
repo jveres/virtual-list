@@ -336,10 +336,7 @@ describe("v2 runtime — commits and slots", () => {
     h.settle();
     expect(h.list.state.following).toBe(false);
 
-    const command = h.list.scrollTo("end", {
-      behavior: "smooth",
-      duration: 320,
-    });
+    void h.list.scrollTo("end", { behavior: "smooth", duration: 320 });
     // The glide lands on the end as it was; its settle cooldown is still
     // running.
     vi.advanceTimersByTime(330);
@@ -363,7 +360,6 @@ describe("v2 runtime — commits and slots", () => {
     vi.advanceTimersByTime(600);
     expect(h.viewport.scrollTop).toBe(4800);
     expect(h.list.state.following).toBe(true);
-    void command;
     h.list.dispose();
   });
 
@@ -860,9 +856,9 @@ describe("v2 runtime — commits and slots", () => {
     });
   });
 
-  it("an explicit smooth duration replaces the distance policy", () => {
+  it("an explicit smooth duration sets the glide's pace", () => {
     const h = mount(range(0, 50));
-    void h.list.scrollTo("m40"); // 400px short of the end: the policy's floor is 320ms.
+    void h.list.scrollTo("m40"); // 400px short of the end: one landing leg.
     const start = h.viewport.scrollTop;
     void h.list.scrollTo("end", { behavior: "smooth", duration: 1_000 });
     vi.advanceTimersByTime(500);
@@ -1746,7 +1742,7 @@ describe("v2 runtime — commands", () => {
     h.list.setItems(switched);
     expect(h.list.state.held).toBe(false);
     expect(h.list.state.count).toBe(45);
-    expect(h.rowElement("msg 100")).toBeDefined;
+    expect(h.rowElement("msg 100")).toBeDefined();
     expect(h.viewport.scrollTop).toBe(before);
     expect(h.list.state.totalSize).toBe(45 * ROW_H);
 
@@ -1756,7 +1752,7 @@ describe("v2 runtime — commands", () => {
     h.list.setItems(anchorSwapped);
     expect(h.list.state.held).toBe(false);
     expect(h.viewport.scrollTop).toBe(before);
-    expect(h.rowElement("msg 200")).toBeDefined;
+    expect(h.rowElement("msg 200")).toBeDefined();
 
     // A change above the anchor (a prepend) still waits for the settle.
     h.list.setItems([...range(300, 305), ...anchorSwapped]);
@@ -1782,7 +1778,7 @@ describe("v2 runtime — commands", () => {
     // the total stays 5000, so the bounce position is outside the range...
     h.list.setItems([...initial.slice(0, 45), ...range(100, 105)]);
     expect(h.list.state.held).toBe(false);
-    expect(h.rowElement("msg 100")).toBeDefined;
+    expect(h.rowElement("msg 100")).toBeDefined();
     // ...and leaves the bounce alone: no clamp write to the range.
     expect(writes).toEqual([]);
     expect(h.viewport.scrollTop).toBe(4440);
@@ -1818,7 +1814,7 @@ describe("v2 runtime — commands", () => {
     writes.length = 0;
     h.list.setItems([...initial.slice(0, 20), ...range(200, 230)]);
     expect(h.list.state.held).toBe(false);
-    expect(h.rowElement("msg 200")).toBeDefined;
+    expect(h.rowElement("msg 200")).toBeDefined();
     expect(h.viewport.scrollTop).toBe(2050); // The new content at the same offset.
     expect(writes).toEqual([]);
     h.list.dispose();

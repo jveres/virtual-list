@@ -126,23 +126,6 @@ button.active {
   color: #fff;
 }
 
-select.source-select {
-  height: 32px;
-  min-width: 118px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-surface);
-  color: var(--fg-muted);
-  padding: 0 8px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-select.source-select:disabled {
-  opacity: 0.6;
-}
-
 /* AI provider settings — a native modal dialog opened from the header. */
 .ai-settings-dialog {
   /* The global `* { margin: 0 }` reset erases the UA's `margin: auto` that
@@ -277,42 +260,6 @@ p.ai-settings-note {
   top: 0;
 }
 
-/* chat-history "scroll to index" footer control */
-.scroll-footer {
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 10px 20px;
-  border-top: 1px solid var(--border);
-  background: var(--bg);
-}
-
-.scroll-footer-label {
-  color: var(--fg-muted);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.scroll-index-input {
-  height: 32px;
-  width: 96px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg-surface);
-  color: var(--fg);
-  padding: 0 8px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.scroll-index-input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
 .icon-btn {
   display: flex;
   align-items: center;
@@ -341,9 +288,10 @@ p.ai-settings-note {
   overscroll-behavior-y: contain;
 }
 
-/* Edge loading is an overlay, never scroll geometry (I3): a floating pill
-   over the viewport's top edge, shown while older messages load and briefly
-   when scrollback exhausts. */
+/* The pill loader (`?edge=pill`): an overlay that is never scroll geometry, a
+   floating pill over the viewport's top edge, shown while older messages
+   load and briefly when scrollback exhausts. The default loader is the
+   in-flow boundary slot below. */
 .edge-overlay {
   position: absolute;
   top: 10px;
@@ -430,62 +378,6 @@ p.ai-settings-note {
   to {
     transform: rotate(360deg);
   }
-}
-
-.post-media {
-  display: grid;
-  gap: 8px;
-  max-width: 620px;
-  margin-top: 10px;
-}
-
-.post-media.count-2,
-.post-media.count-3,
-.post-media.count-4 {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.post-image {
-  position: relative;
-  display: block;
-  min-height: 120px;
-  max-height: min(360px, 62vh);
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg-code-block);
-  contain: style layout paint;
-}
-
-.post-media.count-2 .post-image,
-.post-media.count-3 .post-image,
-.post-media.count-4 .post-image {
-  aspect-ratio: 1 / 1;
-}
-
-.post-media.count-3 .post-image:nth-child(3) {
-  grid-column: 1 / -1;
-  aspect-ratio: 2 / 1;
-}
-
-.post-image img {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.post-image-placeholder {
-  pointer-events: none;
-}
-
-/* Local stand-in for a failed or stalled stock photo (see
-   shared/stock-photos.ts): a flat themed fill. The img shows a shared
-   transparent pixel, so the fill paints at the element's exact box in
-   either theme. */
-.stock-photo-fallback {
-  background: var(--bg-bubble);
 }
 
 .message {
@@ -706,45 +598,6 @@ p.ai-settings-note {
   font-size: 11.5px;
   line-height: 1.45;
   white-space: pre-wrap;
-}
-
-.collapsible-text {
-  position: relative;
-  overflow: hidden;
-}
-
-.collapsible-text.collapsed {
-  max-height: 190px;
-}
-
-.collapsible-text.collapsed::after {
-  content: "";
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  left: 0;
-  height: 42px;
-  pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--bg) 0%, transparent),
-    var(--bg)
-  );
-}
-
-.message.user .collapsible-text.collapsed::after {
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--bg-bubble) 0%, transparent),
-    var(--bg-bubble)
-  );
-}
-
-.text-toggle {
-  height: 28px;
-  margin-top: 8px;
-  margin-bottom: 2px;
-  padding: 0 9px;
 }
 
 @keyframes dot-pulse {

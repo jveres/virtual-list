@@ -50,9 +50,9 @@ lists, tables, and fenced code blocks — whenever they fit the answer.
 Use the available tools (web search, image generation, code execution) when
 they help answer the question.`;
 
-// A generated image embedded in a message as a base64 data URI. Stripping
-// matters twice: request context (megabytes of base64 would be sent back to
-// the API as text tokens) and the localStorage quota fallback.
+// A generated image embedded in a message as a base64 data URI, stripped
+// from the request context: megabytes of base64 would go back to the API as
+// text tokens.
 const GENERATED_IMAGE_RE =
   /!\[([^\]]*)\]\(data:image\/[a-z.+-]+;base64,[^)]*\)/g;
 
@@ -596,8 +596,9 @@ function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
 }
 
 /**
- * Streams a reply from the OpenAI Responses API, yielding text deltas and
- * finished generated images as they arrive. The key goes straight from this
+ * Streams a reply from the OpenAI Responses API, yielding text deltas,
+ * tool-call starts and ends, and partial and finished generated images as
+ * they arrive. The key goes straight from this
  * browser to api.openai.com — there is no backend. Throws with a readable
  * message on any failure; aborting `signal` ends the stream silently (fetch
  * rejects with an AbortError the caller owns).

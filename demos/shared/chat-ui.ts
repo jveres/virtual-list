@@ -17,28 +17,19 @@ export interface ChatMessage {
   toolCalls?: ChatToolCall[];
 }
 
-export interface ChatItemOptions {
-  indexLabel?: boolean;
-}
-
 function assistantStatus(message: ChatMessage): AssistantStatus {
   return message.role === "assistant" ? (message.status ?? "done") : "done";
 }
 
-export function setRoleLabel(
-  label: HTMLElement,
-  message: ChatMessage,
-  index: number,
-  options: ChatItemOptions = {},
-): void {
+export function setRoleLabel(label: HTMLElement, message: ChatMessage): void {
   if (message.role !== "assistant") {
-    label.textContent = options.indexLabel ? `User - #${index}` : "You";
+    label.textContent = "You";
     return;
   }
 
   const status = assistantStatus(message);
   label.dataset.status = status;
-  const text = options.indexLabel ? `Assistant - #${index}` : "Assistant";
+  const text = "Assistant";
   if (status === "done") {
     label.textContent = text;
     return;
@@ -76,7 +67,7 @@ function buildToolCall(toolCall: ChatToolCall): HTMLElement {
 
   const meta = document.createElement("span");
   meta.className = `tool-call-meta ${toolCall.status}`;
-  // A live call has no duration yet; it settles when the row rebuilds done.
+  // A live call has no duration yet; its panel is rebuilt when it settles.
   meta.textContent =
     toolCall.status === "running"
       ? toolCall.status
@@ -135,7 +126,6 @@ export function syncToolCalls(row: HTMLElement, message: ChatMessage): void {
 export function buildChatRow(
   index: number,
   message: ChatMessage,
-  options: ChatItemOptions = {},
 ): { row: HTMLElement; content: HTMLElement } {
   const row = document.createElement("article");
   row.className = `message ${message.role}`;
@@ -146,7 +136,7 @@ export function buildChatRow(
 
   const label = document.createElement("div");
   label.className = "role-label";
-  setRoleLabel(label, message, index, options);
+  setRoleLabel(label, message);
   content.appendChild(label);
 
   const tools = buildToolCalls(message);
@@ -173,9 +163,8 @@ export function buildChatItem(
   index: number,
   message: ChatMessage,
   html: string,
-  options: ChatItemOptions = {},
 ): HTMLElement {
-  const { row, content } = buildChatRow(index, message, options);
+  const { row, content } = buildChatRow(index, message);
 
   // markdown-viewer's stylesheet targets `.markdown-viewer > .markdown`; `.md`
   // is kept on the inner element as the demo's JS hook and layout container.

@@ -4,7 +4,7 @@ import {
   Geometry,
   type GeometryViewport,
 } from "./geometry";
-import { type Glide, glidePace, startGlide } from "./glide";
+import { type Glide, type GlideHost, glidePace, startGlide } from "./glide";
 import { createItemMeasurer, type ItemMeasurer } from "./premeasure";
 import {
   createScrollSettleController,
@@ -178,10 +178,11 @@ export type ScrollOptions = {
   align?: "start";
   behavior?: "auto" | "smooth";
   /**
-   * Smooth only: the glide's duration in milliseconds, replacing the
-   * distance-based policy (quick short hops, bounded long jumps). A short
-   * hop that should read as deliberate — a chat's pin-to-top on send —
-   * would otherwise run at the policy's floor.
+   * Smooth only: the pace of the glide, in milliseconds. It is the landing
+   * time of a one-viewport hop and the cap on the approach a longer trip
+   * makes before that same landing, so a trip from the far end takes at
+   * most twice it. A hop that should read as deliberate — a chat's
+   * pin-to-top on send — sets it; the default lands in 600ms.
    */
   duration?: number;
   /**
@@ -281,7 +282,11 @@ interface Row<T> {
   offset: number;
   /** An edge slot row: no item, declared height, no observer, no onDestroy. */
   edge?: Edge;
-  /** The EdgeSlot a slot row was built from (a new object re-renders it). */
+  /**
+   * The EdgeSlot a slot row was built from. setEdgeSlot stores a fresh copy,
+   * so every setEdgeSlot call re-renders; the identity check only spares
+   * successive setItems calls that leave the slots untouched.
+   */
   edgeSlot?: EdgeSlot;
   mounted: boolean;
   /**
@@ -1284,12 +1289,15 @@ export function createVirtualList<T>(
    * rotation, gone at the next layout.
    */
   function repositionMounted(): void {
-    for (const row of mountedRows) {
-      const offset = geometry.offsetOf(row.key);
-      if (offset < 0 || row.offset === offset) continue;
-      row.offset = offset;
-      row.slot.style.transform = `translateY(${offset}px)`;
-    }
+    for (const row of mountedRows) placeRow(row);
+  }
+
+  /** Move a row's slot to its committed offset (a no-op when unchanged). */
+  function placeRow(row: Row<T>): void {
+    const offset = geometry.offsetOf(row.key);
+    if (offset < 0 || row.offset === offset) return;
+    row.offset = offset;
+    row.slot.style.transform = `translateY(${offset}px)`;
   }
 
   function mountRow(row: Row<T>): void {
@@ -1344,13 +1352,7 @@ export function createVirtualList<T>(
       if (entering) mountRow(row);
       // Offsets cannot change during a plain scroll. Read the Fenwick tree
       // only for rows entering the window or after a geometry commit.
-      if (entering || geometryChanged) {
-        const offset = geometry.offsetOf(row.key);
-        if (row.offset !== offset) {
-          row.offset = offset;
-          row.slot.style.transform = `translateY(${offset}px)`;
-        }
-      }
+      if (entering || geometryChanged) placeRow(row);
     }
     return range;
   }
@@ -1541,16 +1543,16 @@ export function createVirtualList<T>(
     awaiting.done(verdict(awaiting.landed));
   }
 
+  // A command is settling the phase it interrupts: that settle must not
+  // infer follow intent from the position the command is leaving.
+  let takingOver = false;
+
   /**
    * An explicit command takes the viewport over: genuinely stop the
    * browser-owned animation (a write plus an overflow toggle through a
    * forced reflow — merely clearing timers would leave momentum alive),
    * then settle the phase so held work commits before the command.
    */
-  // A command is settling the phase it interrupts: that settle must not
-  // infer follow intent from the position the command is leaving.
-  let takingOver = false;
-
   function interruptNativeScroll(): void {
     if (!controller.isUserScrollActive()) return;
     // Write the CURRENT position back untouched: clamping it against a
@@ -1775,17 +1777,7 @@ export function createVirtualList<T>(
     // command's own result.
     controller.beginProgrammaticGesture();
     glide = startGlide(
-      {
-        read: () => viewport.scrollTop,
-        write: (top) =>
-          guarded(() => {
-            writeScrollTop(top);
-            // Before this frame paints: mount what the write exposed, and
-            // ("live") commit any dirty row the viewport just reached.
-            onScrolled();
-          }),
-        target: destination,
-      },
+      glideHost(destination),
       glidePace(viewport.clientHeight, scrollOptions.duration),
       (completed) =>
         guarded(() => {
@@ -1806,20 +1798,29 @@ export function createVirtualList<T>(
     glideKind = "command";
   }
 
+  /**
+   * A glide's view of the viewport. Each write is pre-announced to the
+   * controller and reconciled before the frame paints: mount what the write
+   * exposed, and ("live") commit any dirty row the viewport just reached.
+   */
+  function glideHost(target: () => number): GlideHost {
+    return {
+      read: () => viewport.scrollTop,
+      write: (top) =>
+        guarded(() => {
+          writeScrollTop(top);
+          onScrolled();
+        }),
+      target,
+    };
+  }
+
   /** Automatic end-follow: one glide whose destination tracks live growth. */
   function startFollowGlide(): void {
     if (disposed || glide !== null) return;
     controller.beginProgrammaticGesture();
     glide = startGlide(
-      {
-        read: () => viewport.scrollTop,
-        write: (top) =>
-          guarded(() => {
-            writeScrollTop(top);
-            onScrolled();
-          }),
-        target: () => geometry.maxScrollTop(viewport.clientHeight),
-      },
+      glideHost(() => geometry.maxScrollTop(viewport.clientHeight)),
       // Follow legs are short and frequent: a quicker landing than a
       // command's, so the end keeps up with the stream.
       glidePace(viewport.clientHeight, FOLLOW_LANDING_MS),

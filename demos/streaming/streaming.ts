@@ -49,9 +49,9 @@ import "../shared/styles.css";
 
 // The demo is the runtime's API pressure test: the full streaming chat —
 // send flow with pin-to-top, end-follow through streams, scrollback loading,
-// version branches, live tool panels — hosted on the four-method surface
-// (setItems / scrollTo / state / dispose) with no escape hatch into the
-// runtime's internals.
+// version branches, live tool panels — hosted on the runtime's public
+// surface (setItems / scrollTo / remeasure / setEdgeSlot / positionOf /
+// elementOf / state / dispose) with no escape hatch into its internals.
 //
 // The message data is immutable-by-replacement: every change clones the
 // message object and pushes a fresh snapshot through setItems. The runtime's
@@ -699,7 +699,7 @@ function updateMessage(id: number, mutate: (message: Message) => void): void {
   pushItems();
 }
 
-// --- Scrollback loading (I3: overlay, never geometry) -----------------------
+// --- Scrollback loading (an in-flow edge slot by default, a pill overlay) ---
 
 // Whether a top load has ever run for the current conversation — a fresh
 // conversation with nothing above must not flash "At the top".
@@ -1264,7 +1264,7 @@ function buildRow(message: Message): HTMLElement {
 function syncRoleLabel(element: HTMLElement, message: Message): void {
   const label = element.querySelector<HTMLElement>(".role-label");
   if (label && label.dataset.status !== message.status) {
-    setRoleLabel(label, message, transcriptIndexOf(message));
+    setRoleLabel(label, message);
   }
 }
 
