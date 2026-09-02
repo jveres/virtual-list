@@ -1829,6 +1829,7 @@ virtualList = createVirtualList<ChatRow>(viewport, {
   // The product choice for a chat: the streaming reply keeps rendering under
   // a scroll (see the header). Structural changes stay settle-gated.
   scrollingUpdates: "live",
+  followBehavior: "smooth",
   onState: (state) => {
     // A deferred prepend committed: close out the load it belongs to.
     if (pendingPrepend && state.count >= pendingPrepend.count) {

@@ -132,6 +132,8 @@ export interface VirtualListOptions<T> {
    *   maximum; the runtime reconciles that position in the same frame.
    */
   scrollingUpdates?: ScrollingUpdates;
+  /** Animate automatic end-follow as content grows; instant by default. */
+  followBehavior?: "instant" | "smooth";
 }
 
 export interface VirtualListState {
@@ -340,6 +342,9 @@ export function createVirtualList<T>(
   // runs, so disposal from that child must be able to discard them all.
   const liveScopes: Scope[] = [];
   let glide: Glide | null = null;
+  /** Smooth end-follow survives the quiet gap between consecutive glide legs. */
+  let smoothFollowArmed = false;
+  let booting = true;
   // A landed glide resolves only once its phase settles and held work has
   // committed, revalidated against the final geometry.
   let awaitingSettle: {
@@ -1074,6 +1079,14 @@ export function createVirtualList<T>(
       const after = viewportState();
       const range = reconcileWindow(after);
       publish(after, range);
+      if (
+        smoothFollowArmed &&
+        Math.abs(
+          geometry.maxScrollTop(viewport.clientHeight) - viewport.scrollTop,
+        ) > SCROLL_WRITE_EPSILON_PX
+      ) {
+        startFollowGlide();
+      }
       published = true;
     });
     return published;
@@ -1161,7 +1174,18 @@ export function createVirtualList<T>(
       // full pixel short). Writing a whole pixel bounds the anchor's
       // landing error to half a pixel everywhere.
       const target = Math.round(result.scrollTop);
-      if (Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX) {
+      const smoothFollow =
+        !booting &&
+        options.followBehavior === "smooth" &&
+        result.mode === "end" &&
+        Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX;
+      if (!booting && options.followBehavior === "smooth") {
+        smoothFollowArmed = result.mode === "end";
+      }
+      if (
+        !smoothFollow &&
+        Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX
+      ) {
         writeScrollTop(target);
       }
       // Read once after the write: the engine may have clamped it.
@@ -1169,6 +1193,7 @@ export function createVirtualList<T>(
       const range = reconcileWindow(after);
       if (disposed) return;
       publish(after, range);
+      if (smoothFollow) startFollowGlide();
     } finally {
       deferTeardown(teardownFailures);
     }
@@ -1331,6 +1356,7 @@ export function createVirtualList<T>(
     // command still parked for its settle resolves interrupted NOW — the
     // user owns the viewport from here, whatever the settle later finds.
     cancelActiveSmoothScroll: () => {
+      smoothFollowArmed = false;
       glide?.cancel();
       settleParked(() => false);
     },
@@ -1346,6 +1372,9 @@ export function createVirtualList<T>(
       if (pending !== null || dirtyRows.size > 0) commit(null);
       else publish();
       settleParked((landed) => !disposed && landed());
+      if (options.followBehavior === "smooth") {
+        smoothFollowArmed = lastState.atEnd;
+      }
     },
     onGestureReset: () => {},
     onScrollEventObserved: () => {
@@ -1498,6 +1527,7 @@ export function createVirtualList<T>(
     scrollOptions: ScrollOptions,
     done: (completed: boolean) => void,
   ): void {
+    smoothFollowArmed = false;
     const keyed = target !== "start" && target !== "end";
     const below = Math.max(0, scrollOptions.offset ?? 0);
     // A newer command supersedes the previous one whatever its state: a
@@ -1570,6 +1600,29 @@ export function createVirtualList<T>(
     );
   }
 
+  /** Automatic end-follow: one glide whose destination tracks live growth. */
+  function startFollowGlide(): void {
+    if (disposed || glide !== null) return;
+    controller.beginProgrammaticGesture();
+    glide = startGlide(
+      {
+        read: () => viewport.scrollTop,
+        write: (top) =>
+          guarded(() => {
+            writeScrollTop(top);
+            onScrolled();
+          }),
+        target: () => geometry.maxScrollTop(viewport.clientHeight),
+      },
+      (distancePx) => glideDuration(distancePx, viewport.clientHeight),
+      () =>
+        guarded(() => {
+          glide = null;
+          if (!disposed) controller.markSettlePending();
+        }),
+    );
+  }
+
   function dispose(): void {
     if (disposed) return;
     disposed = true;
@@ -1604,6 +1657,7 @@ export function createVirtualList<T>(
 
   // --- Boot -----------------------------------------------------------------
   commit(prepare(lastItems, "end").prepared);
+  booting = false;
 
   function setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void {
     if (disposed) return;

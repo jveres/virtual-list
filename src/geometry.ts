@@ -37,6 +37,8 @@ export interface Commit {
   scrollTop: number;
   /** Content size plus reserve — the scroll surface height. */
   totalSize: number;
+  /** Resolution intent, exposed so the DOM runtime can animate end-follow only. */
+  mode: "end" | "anchor" | "none";
 }
 
 /** Opaque transaction token from `capture`; spend it once in `resolve`. */
@@ -294,6 +296,7 @@ export class Geometry {
       return {
         scrollTop: this.maxScrollTop(viewport.height),
         totalSize: this.totalSize,
+        mode,
       };
     }
 
@@ -308,6 +311,7 @@ export class Geometry {
         Math.min(target, this.maxScrollTop(viewport.height)),
       ),
       totalSize: this.totalSize,
+      mode,
     };
   }
 

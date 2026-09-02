@@ -152,7 +152,7 @@ The definition of correct, referenced by number throughout the code:
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
   `createVirtualList(viewport, { items, key, render, overscanPx?,
   onState?, onReachStart/End?, onDestroy?, settleStrategy?,
-  scrollingUpdates? })`,
+  scrollingUpdates?, followBehavior? })`,
   `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior?,
   duration?, offset? })`, `setEdgeSlot(edge, slot | null)`, `positionOf(key)`,
   `elementOf(key)`, `state`, `dispose()`; options add `edgeSlots`. An
@@ -166,6 +166,9 @@ The definition of correct, referenced by number throughout the code:
   committed positions. `offset` lands a keyed target below such a header;
   an `align: "start"` pin includes that inset in its reserve, so the landing
   remains at the logical end and streaming auto-follow stays engaged.
+  Set `followBehavior: "smooth"` to animate automatic end-follow with a
+  live-target glide as content grows. The default, `"instant"`, preserves
+  the atomic-write behavior. User input interrupts either behavior.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
   waiting for settle). Changes from the v1 shape: `estimateSize` is gone — every
   key is premeasured before it commits, so heights are never estimated

@@ -96,6 +96,7 @@ function mount(
     onState?: (state: VirtualListState) => void;
     onDestroy?: (element: HTMLElement) => void;
     scrollingUpdates?: ScrollingUpdates;
+    followBehavior?: VirtualListOptions<Msg>["followBehavior"];
     settleStrategy?: VirtualListScrollSettleStrategy;
     edgeSlots?: VirtualListOptions<Msg>["edgeSlots"];
     /** Runs at the start of every render (probe hook). */
@@ -160,6 +161,7 @@ function mount(
     // The harness pins "same-height" (the mode most tests describe); the
     // runtime's own default is "live" (pinned by its own test).
     scrollingUpdates: hooks.scrollingUpdates ?? "same-height",
+    followBehavior: hooks.followBehavior,
     edgeSlots: hooks.edgeSlots,
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
@@ -274,6 +276,35 @@ describe("v2 runtime — commits and slots", () => {
     expect(windowSpy).toHaveBeenCalledTimes(1);
     h.list.dispose();
     windowSpy.mockRestore();
+  });
+
+  it("smoothly follows end-compatible growth when configured", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    const before = h.viewport.scrollTop;
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+
+    h.list.setItems(streamed);
+
+    expect(h.viewport.scrollTop).toBe(before); // No instant jump.
+    vi.advanceTimersByTime(160);
+    expect(h.viewport.scrollTop).toBeGreaterThan(before);
+    expect(h.viewport.scrollTop).toBeLessThan(4600);
+    vi.advanceTimersByTime(176);
+    expect(h.viewport.scrollTop).toBe(4600); // First leg caught the end.
+
+    // More growth during that leg's settle cooldown starts another leg;
+    // following is a persistent intent, not one animation per snapshot.
+    h.heights.set(49, 500);
+    const streamedAgain = [...initial];
+    streamedAgain[49] = message(49, "streamed longer again");
+    h.list.setItems(streamedAgain);
+    expect(h.viewport.scrollTop).toBe(4600);
+    vi.advanceTimersByTime(500);
+    expect(h.viewport.scrollTop).toBe(4800);
+    h.list.dispose();
   });
 
   it("commits idle updates immediately: append follows the end, prepend keeps the anchor", () => {

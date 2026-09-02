@@ -779,6 +779,13 @@ p.ai-settings-note {
   padding-bottom: 0;
 }
 
+/* A finished branched message has a real footer immediately after markdown.
+   The navigator supplies the breathing room, so retaining the phantom cursor
+   line here would separate the footer from the content it controls. */
+.message.assistant .markdown-viewer:has(+ .version-nav) .markdown {
+  padding-bottom: 0;
+}
+
 .message.assistant .markdown > .cursor {
   margin-top: var(--cursor-gap);
 }
