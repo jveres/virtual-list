@@ -5,14 +5,6 @@ import {
   type GeometryViewport,
 } from "./geometry";
 import { type Glide, glideDuration, startGlide } from "./glide";
-// TEMP TRACE
-function trace(tag: string, data?: Record<string, unknown>): void {
-  const buffer = (window as unknown as { __vlTrace?: string[] }).__vlTrace;
-  if (!buffer) return;
-  buffer.push(
-    `${Math.round(performance.now())} ${tag}${data ? ` ${JSON.stringify(data)}` : ""}`,
-  );
-}
 import { createItemMeasurer, type ItemMeasurer } from "./premeasure";
 import {
   createScrollSettleController,
@@ -1116,8 +1108,9 @@ export function createVirtualList<T>(
    * shrink may still make the browser clamp to a smaller maximum. Rows
    * strictly above the anchor are entirely off-screen and stay dirty for
    * settle — or for the scroll event that makes one of them the anchor,
-   * which commits it before that frame paints. Structural snapshots stay
-   * settle-gated.
+   * which commits it before that frame paints. A structural snapshot is
+   * live too when it changes nothing above the anchor (see
+   * confinedBelowAnchor); any other waits for the settle.
    * Returns whether it published (it did whenever it committed).
    */
   function liveCommit(): boolean {
@@ -1248,16 +1241,6 @@ export function createVirtualList<T>(
       // full pixel short). Writing a whole pixel bounds the anchor's
       // landing error to half a pixel everywhere.
       const target = Math.round(result.scrollTop);
-      trace("commit", {
-        policy,
-        mode: result.mode,
-        before: before.scrollTop,
-        target,
-        total: result.totalSize,
-        newRows: applying?.newRows.size ?? -1,
-        keys: applying?.keys.length ?? -1,
-        glide: glideKind,
-      });
       const smoothFollow =
         !booting &&
         options.followBehavior === "smooth" &&
@@ -1488,13 +1471,6 @@ export function createVirtualList<T>(
     smoothScrollReachedTarget: () => glide === null,
     onGestureStarted: () => {},
     onGestureSettled: () => {
-      trace("settled", {
-        pending: pending !== null,
-        dirty: dirtyRows.size,
-        glide: glideKind,
-        armed: smoothFollowArmed,
-        takingOver,
-      });
       // The phase reached idle: everything held commits, once — and only
       // then does a landed command learn whether it is still on target.
       const remeasureReady =
@@ -1639,11 +1615,6 @@ export function createVirtualList<T>(
         // coordinate by construction) — commit it now, mid-phase: a
         // version switch, an appended message. Holding it for a settle
         // that momentum can postpone by seconds reads as a dead click.
-        trace("structural-live", {
-          keys: prepared.keys.length,
-          newRows: [...prepared.newRows.keys()].slice(0, 3),
-          top: viewport.scrollTop,
-        });
         commit(prepared, "viewport");
         return;
       } else {
@@ -1756,12 +1727,6 @@ export function createVirtualList<T>(
     scrollOptions: ScrollOptions,
     done: (completed: boolean) => void,
   ): void {
-    trace("scrollTo", {
-      target,
-      top: viewport.scrollTop,
-      glide: glideKind,
-      active: controller.isUserScrollActive(),
-    });
     smoothFollowArmed = false;
     const keyed = target !== "start" && target !== "end";
     const below = Math.max(0, scrollOptions.offset ?? 0);
@@ -1847,10 +1812,6 @@ export function createVirtualList<T>(
 
   /** Automatic end-follow: one glide whose destination tracks live growth. */
   function startFollowGlide(): void {
-    trace("follow-glide?", {
-      blocked: glide !== null,
-      top: viewport.scrollTop,
-    });
     if (disposed || glide !== null) return;
     controller.beginProgrammaticGesture();
     glide = startGlide(

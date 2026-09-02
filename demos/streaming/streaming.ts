@@ -1889,7 +1889,8 @@ virtualList = createVirtualList<ChatRow>(viewport, {
   },
   edgeSlots: { start: edgeSlotMounted ? edgeSlotSpec : null },
   // The product choice for a chat: the streaming reply keeps rendering under
-  // a scroll (see the header). Structural changes stay settle-gated.
+  // a scroll (see the header). Structural changes above the anchor stay
+  // settle-gated; one below it (a version switch) applies at once.
   scrollingUpdates: "live",
   followBehavior: "smooth",
   onState: (state) => {
