@@ -1099,26 +1099,29 @@ function classifyBatch(records: MutationRecord[]): void {
   // a RESIZED row must not have been entirely above it (the anchor row may
   // resize; rows above it would need an anchor write). Judged on the
   // pre-commit placement from the records and the commit's scroll position.
-  const liveCommitOk = (): boolean => {
-    if (scrollingMode() !== "live") return false;
+  /** Null when the batch is a legitimate live commit; else why not. */
+  const liveCommitRejection = (): string | null => {
+    if (scrollingMode() !== "live") return `mode=${scrollingMode()}`;
     // A glide writes every frame by design; under native input any write
     // disqualifies the commit.
-    if (wroteScrollTop && smoothPending === 0) return false;
+    if (wroteScrollTop && smoothPending === 0) return "wrote scrollTop";
     for (const slot of changedSlots) {
       if (slot.offsetFrom === null) continue; // Freshly placed: not a move.
       if (slot.movedOffset && slot.offsetFrom < scrollTopNow - PX_EPSILON) {
-        return false;
+        return `#${slot.key} moved from ${slot.offsetFrom} above scrollTop ${Math.round(scrollTopNow)}`;
       }
       if (
         slot.resized &&
         slot.heightFrom !== null &&
         slot.offsetFrom + slot.heightFrom <= scrollTopNow + PX_EPSILON
       ) {
-        return false;
+        return `#${slot.key} resized entirely above scrollTop ${Math.round(scrollTopNow)} (${slot.offsetFrom}+${slot.heightFrom})`;
       }
     }
-    return true;
+    return null;
   };
+  const liveRejection = liveCommitRejection();
+  const liveCommitOk = (): boolean => liveRejection === null;
 
   // G: geometry is immutable under a live scroll phase.
   if (takeover) {
@@ -1133,7 +1136,7 @@ function classifyBatch(records: MutationRecord[]): void {
     if (nativeActive(now)) {
       violation(
         "G",
-        `geometry changed during native scroll (${heightChanges.length} heights, ${offsetChanges} offsets, canvas ${canvasChange ? "changed" : "same"}) — ${evidence(now)}`,
+        `geometry changed during native scroll (${heightChanges.length} heights, ${offsetChanges} offsets, canvas ${canvasChange ? "changed" : "same"}; not a live commit: ${liveRejection ?? "?"}; smooth=${smoothPending} write=${wroteScrollTop}) — ${evidence(now)}`,
       );
     } else if (!settleCommit && glideMoving(now)) {
       violation(

@@ -715,6 +715,14 @@ export function createScrollSettleController(
     if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
       if (!userScrollActive) return;
       if (!userScrollMoved) {
+        // A scrollend from a programmatic write (a command's takeover, the
+        // settle commit's anchor write) can arrive right after the wheel
+        // tick that started a fresh gesture — before that tick's own
+        // scroll event. Cancelling here opened an idle gap under live
+        // wheel input, and a commit landed in it. While wheel input is
+        // live the gesture stays; the wheel-idle timer cancels a gesture
+        // that never moved.
+        if (hasActiveWheelInput()) return;
         cancelUserScroll();
         return;
       }
@@ -872,6 +880,18 @@ export function createScrollSettleController(
       hydratePlaceholdersAfterNativeScrollEnd();
       if (nativeScrollEndPending) {
         schedulePendingNativeScrollEnd();
+        return;
+      }
+      if (
+        userScrollActive &&
+        !userScrollMoved &&
+        !hasActiveTouchOrPointerInput() &&
+        !isRubberBandOverscrolled()
+      ) {
+        // Wheel input that never moved the viewport (a tick at a pinned
+        // edge, or one whose scrollend cancellation was withheld above):
+        // the gesture ends when the wheel goes quiet.
+        cancelUserScroll();
         return;
       }
       scheduleWheelScrollEndFallback();

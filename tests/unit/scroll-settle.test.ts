@@ -427,6 +427,40 @@ describe("chromium sequences (trace replay)", () => {
 });
 
 describe("safari sequences (trace replay)", () => {
+  it("a scrollend from a programmatic write does not cancel the gesture a wheel tick just started", () => {
+    const harness = mount("safari-wheel");
+    // A command's write: pre-announced, its scroll event is consumed.
+    harness.controller.recordProgrammaticScrollTop(1000);
+    harness.scrollTo(1000);
+    expect(harness.controller.isUserScrollActive()).toBe(false);
+    // Momentum keeps delivering: a wheel tick starts a fresh gesture...
+    harness.wheel(-120);
+    expect(harness.controller.isUserScrollActive()).toBe(true);
+    // ...and the write's scrollend arrives before the tick's own scroll
+    // event. Cancelling here opened an idle gap under live wheel input.
+    harness.scrollEnd();
+    expect(harness.controller.isUserScrollActive()).toBe(true);
+    // The tick's scroll event lands; the gesture settles normally later.
+    harness.scrollTo(880);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(2_000);
+    expect(harness.controller.isUserScrollActive()).toBe(false);
+    expect(harness.settled()).toBe(1);
+  });
+
+  it("wheel input that never moves the viewport ends when the wheel goes quiet", () => {
+    const harness = mount("safari-wheel");
+    harness.controller.recordProgrammaticScrollTop(1000); // Mid-list, no edge.
+    harness.scrollTo(1000);
+    harness.wheel(-120);
+    expect(harness.controller.isUserScrollActive()).toBe(true);
+    harness.scrollEnd(); // Withheld: wheel input is live.
+    expect(harness.controller.isUserScrollActive()).toBe(true);
+    vi.advanceTimersByTime(300); // The wheel-idle window closes.
+    expect(harness.controller.isUserScrollActive()).toBe(false);
+    expect(harness.settled()).toBe(0); // Cancelled, not settled: nothing moved.
+  });
+
   it("never settles while rubber-band overscrolled; settles after the bounce", () => {
     const harness = mount("safari-wheel", { overscroll: true });
     harness.scrollTo(600);
