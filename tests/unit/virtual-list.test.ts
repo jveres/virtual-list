@@ -593,6 +593,21 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(50 * ROW_H - VIEWPORT_H);
   });
 
+  it("falls back safely for invalid optional command numbers", async () => {
+    const h = mount(range(0, 50));
+    await expect(h.list.scrollTo("m20", { offset: Number.NaN })).resolves.toBe(
+      true,
+    );
+    expect(h.viewport.scrollTop).toBe(20 * ROW_H);
+
+    const command = h.list.scrollTo("end", {
+      behavior: "smooth",
+      duration: Number.POSITIVE_INFINITY,
+    });
+    vi.advanceTimersByTime(2_000);
+    await expect(command).resolves.toBe(true);
+  });
+
   it('"live" still settle-gates structural changes', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
@@ -1344,6 +1359,43 @@ describe("v2 runtime — edge slots", () => {
     fireResize(0, element, 52);
     expect(h.list.state.held).toBe(false);
   });
+
+  it("rejects invalid slot heights and host keys in the reserved namespace", () => {
+    expect(() =>
+      mount(range(0, 1), { edgeSlots: { start: loader("bad", 0) } }),
+    ).toThrow(/height must be finite and > 0/);
+    expect(() =>
+      createVirtualList(document.createElement("div"), {
+        items: [message(0)],
+        key: () => "\u0000edge:start:collision",
+        render: () => document.createElement("div"),
+      }),
+    ).toThrow(/reserved edge-slot prefix/);
+  });
+
+  it("discards a reentrant slot change when the transaction that queued it fails", () => {
+    const slot = loader();
+    let queueSlot = false;
+    let h: ReturnType<typeof mount>;
+    const hooks = {
+      throwOn: "boom" as string | undefined,
+      onRender: (item: Msg) => {
+        if (queueSlot && item.id === 0) h.list.setEdgeSlot("start", slot);
+      },
+    };
+    h = mount(range(0, 3), hooks);
+    queueSlot = true;
+    const failing = range(0, 3);
+    failing[0] = message(0, "changed");
+    failing[1] = message(1, "boom");
+    expect(() => h.list.setItems(failing)).toThrow("render failed: boom");
+    expect(slot.built).toHaveLength(0);
+
+    queueSlot = false;
+    hooks.throwOn = undefined;
+    h.list.setItems(range(0, 3));
+    expect(slot.built).toHaveLength(0);
+  });
 });
 
 describe("v2 runtime — commands", () => {
@@ -1367,6 +1419,22 @@ describe("v2 runtime — commands", () => {
     fireResize(0, row, 300);
     expect(h.viewport.scrollTop).toBe(18 * ROW_H);
     expect(h.list.state.totalSize).toBe(18 * ROW_H + VIEWPORT_H);
+  });
+
+  it("an inset pin remains at the end so streaming growth auto-follows", async () => {
+    const h = mount(range(0, 20));
+    await expect(
+      h.list.scrollTo("m18", { align: "start", offset: 44 }),
+    ).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(18 * ROW_H - 44);
+    expect(h.list.state.atEnd).toBe(true);
+
+    const tail = h.rowElement("msg 19");
+    h.heights.set(19, 800);
+    fireResize(0, tail, 800);
+    expect(h.viewport.scrollTop).toBe(h.list.state.totalSize - VIEWPORT_H);
+    expect(h.viewport.scrollTop).toBeGreaterThan(18 * ROW_H - 44);
+    expect(h.list.state.atEnd).toBe(true);
   });
 
   it("a command during a gesture settles held work first, then executes", async () => {

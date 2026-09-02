@@ -186,6 +186,13 @@ export function createStickyHeaders(
   };
 
   const refresh = (): void => {
+    // A scroll frame sampled before this commit would apply stale scrollTop
+    // to the new offsets. Retire it; this refresh is the newer authority.
+    if (frame) {
+      cancelAnimationFrame(frame);
+      frame = 0;
+    }
+    pendingScroll = viewport.scrollTop;
     keys = headerKeys();
     groupCount = keys.length;
     activeGroup = -1;

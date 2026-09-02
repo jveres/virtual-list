@@ -146,7 +146,7 @@ const EDGE_NO_MORE_HIDE_MS = 1400;
 const EDGE_HIDE_LINGER_MS = 400;
 
 const demoParams = new URLSearchParams(location.search);
-const edgeLoaderMode: "slot" | "pill" =
+let edgeLoaderMode: "slot" | "pill" =
   demoParams.get("edge") === "pill" ? "pill" : "slot";
 let stickyEnabled = demoParams.get("sticky") !== "off";
 const instantReplies =
@@ -159,6 +159,7 @@ const promptInput = mustGet("prompt", HTMLTextAreaElement);
 const sendBtn = mustGet("send-btn", HTMLButtonElement);
 const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
 const scrollBottomBtn = mustGet("scroll-bottom-btn", HTMLButtonElement);
+const edgeLoaderToggle = mustGet("edge-loader-toggle", HTMLButtonElement);
 const windowStatus = mustGet("window-status");
 const virtualListStatus = mustGet("virtual-list-status");
 const composerMinHeight = Math.max(
@@ -753,6 +754,19 @@ function setEdgeState(state: EdgeState): void {
       EDGE_NO_MORE_HIDE_MS,
     );
   }
+}
+
+function syncEdgeLoaderMode(): void {
+  syncEdgeSlot();
+  const inFlow = edgeLoaderMode === "slot";
+  edgeLoaderToggle.classList.toggle("active", inFlow);
+  edgeLoaderToggle.setAttribute("aria-pressed", String(inFlow));
+  const label = inFlow ? "Edge loader: in flow" : "Edge loader: floating pill";
+  edgeLoaderToggle.title = label;
+  edgeLoaderToggle.setAttribute("aria-label", label);
+  edgeOverlay.dataset.state = inFlow ? "hidden" : edgeState;
+  edgeLabel.textContent = edgeLabelFor(edgeState);
+  if (edgeSlotElement) applyEdgeSlotState(edgeSlotElement, edgeState);
 }
 
 function scheduleEdgeHide(): void {
@@ -1854,6 +1868,12 @@ stickyToggle.addEventListener("click", () => {
   syncSticky();
 });
 syncSticky();
+
+edgeLoaderToggle.addEventListener("click", () => {
+  edgeLoaderMode = edgeLoaderMode === "slot" ? "pill" : "slot";
+  syncEdgeLoaderMode();
+});
+syncEdgeLoaderMode();
 
 // One delegated listener powers copy buttons across every mounted row.
 attachInteractions(viewport);

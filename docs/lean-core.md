@@ -163,7 +163,9 @@ The definition of correct, referenced by number throughout the code:
   and the slot's strip shows the new rows. The two read queries serve a
   sticky-header companion (`demos/shared/sticky-headers.ts`), which floats
   the current day header over the viewport top and only ever reads
-  committed positions. `offset` lands a keyed target below such a header.
+  committed positions. `offset` lands a keyed target below such a header;
+  an `align: "start"` pin includes that inset in its reserve, so the landing
+  remains at the logical end and streaming auto-follow stays engaged.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
   waiting for settle). Changes from the v1 shape: `estimateSize` is gone — every
   key is premeasured before it commits, so heights are never estimated

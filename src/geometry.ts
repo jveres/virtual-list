@@ -60,6 +60,8 @@ export class Geometry {
   private readonly heightByKey = new Map<string, number>();
   private readonly estimateForKey: (key: string) => number;
   private pinnedKey: string | null = null;
+  /** Space reserved above the pinned key for host chrome. */
+  private pinnedInsetPx = 0;
   private reservePx = 0;
   /** Keys that never anchor (edge slots): the anchor falls to a neighbor. */
   private neverAnchor: (key: string) => boolean = () => false;
@@ -148,17 +150,24 @@ export class Geometry {
     const remaining = this.tree.prefix(index + 1) - top;
     if (remaining <= EPSILON && index + 1 < this.keys.length) index += 1;
     if (this.neverAnchor(this.keys[index] as string)) {
-      const next = index + 1;
-      const previous = index - 1;
-      if (
+      let next = index + 1;
+      while (
         next < this.keys.length &&
-        !this.neverAnchor(this.keys[next] as string)
+        this.neverAnchor(this.keys[next] as string)
       ) {
+        next += 1;
+      }
+      if (next < this.keys.length) {
         index = next;
-      } else if (
-        previous >= 0 &&
-        !this.neverAnchor(this.keys[previous] as string)
-      ) {
+      } else {
+        let previous = index - 1;
+        while (
+          previous >= 0 &&
+          this.neverAnchor(this.keys[previous] as string)
+        ) {
+          previous -= 1;
+        }
+        if (previous < 0) return null;
         index = previous;
       }
     }
@@ -233,6 +242,7 @@ export class Geometry {
     }
     if (this.pinnedKey !== null && !indexByKey.has(this.pinnedKey)) {
       this.pinnedKey = null;
+      this.pinnedInsetPx = 0;
     }
   }
 
@@ -255,8 +265,12 @@ export class Geometry {
    * viewport top (the chat send flow). `null` releases the pin; remaining
    * reserve then drains only once the viewport no longer stands on it (I5).
    */
-  pin(key: string | null): void {
+  pin(key: string | null, inset = 0): void {
     this.pinnedKey = key !== null && this.indexByKey.has(key) ? key : null;
+    this.pinnedInsetPx =
+      this.pinnedKey !== null && Number.isFinite(inset)
+        ? Math.max(0, inset)
+        : 0;
   }
 
   /**
@@ -355,11 +369,13 @@ export class Geometry {
     let target = 0;
     if (this.pinnedKey !== null) {
       const pinnedTop = this.offsetOf(this.pinnedKey);
-      if (pinnedTop <= EPSILON) {
+      const targetTop = Math.max(0, pinnedTop - this.pinnedInsetPx);
+      if (targetTop <= EPSILON) {
         // Anchoring the very start needs no reserve; drop the stale pin.
         this.pinnedKey = null;
+        this.pinnedInsetPx = 0;
       } else {
-        target = Math.max(0, pinnedTop + viewportHeight - content);
+        target = Math.max(0, targetTop + viewportHeight - content);
       }
     }
     const viewportNeeds = Math.max(

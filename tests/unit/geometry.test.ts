@@ -272,6 +272,16 @@ describe("I1 — anchor preservation", () => {
     expect(geometry.anchorAt(viewport(tail))?.key).toBe("m19");
   });
 
+  it("skips consecutive excluded keys and has no anchor when every key is excluded", () => {
+    const geometry = new Geometry(10);
+    geometry.setAnchorExclusion((key) => key.startsWith("slot:"));
+    geometry.setKeys(["slot:start", "slot:end", "m0"]);
+    expect(geometry.anchorAt(viewport(0))?.key).toBe("m0");
+
+    geometry.setKeys(["slot:start", "slot:end"]);
+    expect(geometry.anchorAt(viewport(0))).toBeNull();
+  });
+
   it("a removed anchor falls to the first surviving successor, inheriting the offset", () => {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 20));
@@ -414,6 +424,19 @@ describe("auto policy", () => {
 });
 
 describe("I5 — pin-to-top reserve", () => {
+  it("includes a host inset in the pinned end position", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 20));
+    const commit = transact(geometry, viewport(0), "none", () =>
+      geometry.pin("m18", 44),
+    );
+    expect(commit.scrollTop).toBe(0);
+
+    const target = geometry.offsetOf("m18") - 44;
+    expect(geometry.maxScrollTop(VIEWPORT_H)).toBe(target);
+    expect(geometry.reserve).toBe(target + VIEWPORT_H - geometry.contentSize);
+  });
+
   function pinnedAtEnd(): { geometry: Geometry; vp: GeometryViewport } {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 20));

@@ -83,6 +83,7 @@ export interface EdgeSlot {
 
 export interface VirtualListOptions<T> {
   items: readonly T[];
+  /** Stable identity. Keys beginning with the reserved NUL edge-slot prefix are rejected. */
   key: (item: T) => string;
   /**
    * Build a row's element, or update `existing` in place for a same-key
@@ -153,6 +154,16 @@ function slotKey(edge: Edge, key: string): string {
 }
 function isSlotKey(key: string): boolean {
   return key.startsWith(SLOT_KEY_PREFIX);
+}
+
+function ownEdgeSlot(slot: EdgeSlot | null | undefined): EdgeSlot | null {
+  if (slot == null) return null;
+  if (!Number.isFinite(slot.height) || slot.height <= 0) {
+    throw new Error(
+      `edge slot "${slot.key}" height must be finite and > 0, got ${slot.height}`,
+    );
+  }
+  return { key: slot.key, height: slot.height, render: slot.render };
 }
 export type ScrollOptions = {
   align?: "start";
@@ -287,11 +298,11 @@ export function createVirtualList<T>(
   geometry.setAnchorExclusion(isSlotKey);
   const rows = new Map<string, Row<T>>();
   const edgeSlots: Record<Edge, EdgeSlot | null> = {
-    start: options.edgeSlots?.start ?? null,
-    end: options.edgeSlots?.end ?? null,
+    start: ownEdgeSlot(options.edgeSlots?.start),
+    end: ownEdgeSlot(options.edgeSlots?.end),
   };
   /** The last snapshot handed in — what a slot change re-applies. */
-  let lastItems: readonly T[] = options.items;
+  let lastItems: readonly T[] = [...options.items];
   const mountedRows = new Set<Row<T>>();
   /** Committed rows whose size may differ from their committed height. */
   const dirtyRows = new Set<Row<T>>();
@@ -695,6 +706,9 @@ export function createVirtualList<T>(
     const itemByKey = new Map<string, T>();
     for (let index = 0; index < next.length; index++) {
       const key = itemKeys[index] as string;
+      if (isSlotKey(key)) {
+        throw new Error(`item key "${key}" uses the reserved edge-slot prefix`);
+      }
       if (itemByKey.has(key)) throw new Error(`duplicate key "${key}"`);
       itemByKey.set(key, next[index] as T);
     }
@@ -1412,8 +1426,18 @@ export function createVirtualList<T>(
     const owned: ScrollOptions = {
       align: scrollOptions.align,
       behavior: scrollOptions.behavior,
-      duration: scrollOptions.duration,
-      offset: scrollOptions.offset,
+      duration:
+        scrollOptions.duration !== undefined &&
+        Number.isFinite(scrollOptions.duration) &&
+        scrollOptions.duration > 0
+          ? scrollOptions.duration
+          : undefined,
+      offset:
+        scrollOptions.offset !== undefined &&
+        Number.isFinite(scrollOptions.offset) &&
+        scrollOptions.offset > 0
+          ? scrollOptions.offset
+          : undefined,
     };
     return new Promise((resolve) => {
       if (
@@ -1453,6 +1477,7 @@ export function createVirtualList<T>(
     done: (completed: boolean) => void,
   ): void {
     const keyed = target !== "start" && target !== "end";
+    const below = Math.max(0, scrollOptions.offset ?? 0);
     // A newer command supersedes the previous one whatever its state: a
     // parked landed command resolves false BEFORE its phase is finished
     // (finishing it would otherwise resolve it true), an in-flight glide
@@ -1469,13 +1494,12 @@ export function createVirtualList<T>(
     // A keyed target with align:"start" reserves the shortfall (I5) — a
     // geometry change, committed now (the phase is idle).
     if (keyed && scrollOptions.align === "start") {
-      geometry.pin(target);
+      geometry.pin(target, below);
       commit(null, "none");
     }
 
     // A keyed target that disappears mid-glide holds position; the landing
     // revalidation then fails.
-    const below = Math.max(0, scrollOptions.offset ?? 0);
     const destination = (): number =>
       targetTop(target, below) ?? viewport.scrollTop;
 
@@ -1557,11 +1581,13 @@ export function createVirtualList<T>(
   }
 
   // --- Boot -----------------------------------------------------------------
-  commit(prepare(options.items, "end").prepared);
+  commit(prepare(lastItems, "end").prepared);
 
   function setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void {
     if (disposed) return;
-    edgeSlots[edge] = slot;
+    const owned = ownEdgeSlot(slot);
+    if (enqueueDuringTransaction(() => setEdgeSlot(edge, owned))) return;
+    edgeSlots[edge] = owned;
     setItems(lastItems);
   }
 
