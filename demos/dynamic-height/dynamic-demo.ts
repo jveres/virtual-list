@@ -155,7 +155,7 @@ async function sendReport(why: string): Promise<void> {
     why,
     userAgent: navigator.userAgent,
     strategy: stat.strategy.textContent,
-    mode: mustGet("scrolling-updates", HTMLSelectElement).value,
+    mode: scrollingMode(),
     violations,
     viewport: { width: innerWidth, height: innerHeight },
     trace: trace.ring.slice(-700),

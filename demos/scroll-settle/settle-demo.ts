@@ -101,8 +101,6 @@ function buildRow(index: number): HTMLElement {
   return row;
 }
 
-// --- Event/decision trace ---------------------------------------------------
-
 // --- Demo state -------------------------------------------------------------
 
 type Boundary = "top" | "bottom";

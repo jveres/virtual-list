@@ -212,7 +212,6 @@ export function createScrollSettleController(
   let wheelInputActive = false;
   let wheelInputTimer = 0;
   let chromiumEdgeWheelActive: ScrollBoundary | null = null;
-  let chromiumEdgeWheelIdle = false;
   let chromiumWheelSawNativeScrollEnd = false;
   let chromiumWheelAwaitingFinalScrollEnd = false;
   let chromiumEdgeWheelSuppressed = false;
@@ -349,20 +348,13 @@ export function createScrollSettleController(
     chromiumEdgeSettleTimer = 0;
   }
 
-  function usesWheelInputSettle(): boolean {
-    return (
-      strategy === "chromium-wheel" ||
-      strategy === "firefox-wheel" ||
-      strategy === "safari-wheel"
-    );
-  }
-
   function usesWheelScrollEndFallback(): boolean {
     return strategy === "firefox-wheel" || strategy === "safari-wheel";
   }
 
+  /** Only the wheel strategies ever set it; "default" never sees wheel input. */
   function hasActiveWheelInput(): boolean {
-    return usesWheelInputSettle() && wheelInputActive;
+    return wheelInputActive;
   }
 
   function hasActiveChromiumEdgeWheel(): boolean {
@@ -468,7 +460,6 @@ export function createScrollSettleController(
   function resetScrollSettleState(): void {
     wheelInputActive = false;
     chromiumEdgeWheelActive = null;
-    chromiumEdgeWheelIdle = false;
     chromiumWheelSawNativeScrollEnd = false;
     chromiumWheelAwaitingFinalScrollEnd = false;
     chromiumEdgeWheelSuppressed = false;
@@ -672,16 +663,13 @@ export function createScrollSettleController(
       chromiumWheelAwaitingFinalScrollEnd = false;
       chromiumEdgeWheelSuppressed = false;
       chromiumEdgeWheelActive = null;
-      chromiumEdgeWheelIdle = false;
       setPendingNativeScrollEnd();
       schedulePendingNativeScrollEnd();
     }, EDGE_SETTLE_QUIET_MS);
   }
 
   function handleScrollEnd(): void {
-    if (host.isDisposed()) return;
-    const smoothScrollReachedTarget = host.smoothScrollReachedTarget();
-    if (host.isDisposed() || !smoothScrollReachedTarget) return;
+    if (host.isDisposed() || !host.smoothScrollReachedTarget()) return;
 
     if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
       if (!userScrollActive) return;
@@ -725,16 +713,7 @@ export function createScrollSettleController(
       if (!wheelInputActive && chromiumWheelAwaitingFinalScrollEnd) {
         chromiumWheelAwaitingFinalScrollEnd = false;
         chromiumEdgeWheelActive = null;
-        chromiumEdgeWheelIdle = false;
       }
-    }
-    if (
-      strategy === "chromium-wheel" &&
-      chromiumEdgeWheelActive &&
-      chromiumEdgeWheelIdle
-    ) {
-      chromiumEdgeWheelActive = null;
-      chromiumEdgeWheelIdle = false;
     }
     schedulePendingNativeScrollEnd();
   }
@@ -785,7 +764,6 @@ export function createScrollSettleController(
       clearPendingNativeScrollEnd();
     }
     chromiumEdgeWheelActive = outwardBoundary;
-    chromiumEdgeWheelIdle = false;
     wheelInputActive = true;
     cancelWheelInputTimer();
     wheelInputTimer = window.setTimeout(() => {
@@ -793,7 +771,6 @@ export function createScrollSettleController(
       if (host.isDisposed()) return;
       wheelInputActive = false;
       if (outwardBoundary) {
-        chromiumEdgeWheelIdle = true;
         chromiumWheelAwaitingFinalScrollEnd = true;
         clearPendingNativeScrollEnd();
         scheduleChromiumEdgeSettleFallback(outwardBoundary);
@@ -808,8 +785,9 @@ export function createScrollSettleController(
     }, WHEEL_INPUT_IDLE_MS);
   }
 
+  /** `protectedEdge` is Firefox's protected edge; always null elsewhere. */
   function handleWheelInputSettle(
-    outwardBoundary: ScrollBoundary | null = null,
+    protectedEdge: ScrollBoundary | null = null,
   ): void {
     if (strategy !== "firefox-wheel" && strategy !== "safari-wheel") {
       return;
@@ -820,7 +798,7 @@ export function createScrollSettleController(
       wheelInputTimer = 0;
       if (host.isDisposed()) return;
       wheelInputActive = false;
-      if (strategy === "firefox-wheel" && outwardBoundary !== null) {
+      if (protectedEdge !== null) {
         // Firefox contract at an overscrolled edge (see the module header):
         // no settle and no idle notification here, in either branch.
         if (nativeScrollEndPending) {
@@ -906,9 +884,7 @@ export function createScrollSettleController(
       }
       if (!handleUserScrollStart()) return;
       if (outwardBoundary) userScrollMoved = true;
-      handleWheelInputSettle(
-        strategy === "firefox-wheel" ? firefoxProtectedEdge : outwardBoundary,
-      );
+      handleWheelInputSettle(firefoxProtectedEdge);
       return;
     }
 

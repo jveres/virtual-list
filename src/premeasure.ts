@@ -131,7 +131,6 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
       }
 
       syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
-      measureRoot.replaceChildren();
       let element: HTMLElement | null = null;
       try {
         element = prepareMeasuredItem(build());

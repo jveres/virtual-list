@@ -485,6 +485,8 @@ export function createVirtualList<T>(
 
   function measureInPlace(row: Row<T>): number {
     const height = row.element.getBoundingClientRect().height;
+    // A mounted row that reads 0 is hidden (display: none, a collapsed
+    // ancestor), not resized: its committed height stands.
     return Number.isFinite(height) && height > 0 ? height : row.height;
   }
 
@@ -1040,7 +1042,7 @@ export function createVirtualList<T>(
 
   let lastReconcile = { scrollTop: Number.NaN, height: Number.NaN, epoch: -1 };
 
-  function reconcileWindow(vp: GeometryViewport = viewportState()): void {
+  function reconcileWindow(vp: GeometryViewport): void {
     // A glide write and the scroll event it produces both reconcile; the
     // second pass finds nothing to do.
     if (

@@ -49,6 +49,8 @@ export interface Capture {
 }
 
 const EPSILON = 0.5;
+/** "At the end" tolerance; matches the runtime's AT_EDGE_EPSILON_PX. */
+const AT_END_EPSILON = 1;
 
 export class Geometry {
   private keys: readonly string[] = [];
@@ -161,7 +163,8 @@ export class Geometry {
       viewport: { ...viewport },
       policy,
       atEnd:
-        this.maxScrollTop(viewport.height) - viewport.scrollTop <= 2 * EPSILON,
+        this.maxScrollTop(viewport.height) - viewport.scrollTop <=
+        AT_END_EPSILON,
       oldKeys: this.keys,
       anchor:
         anchor === null
