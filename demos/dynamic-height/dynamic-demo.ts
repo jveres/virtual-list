@@ -95,6 +95,8 @@ const stage = mustGet("stage");
 const viewport = mustGet("viewport");
 const trace = createTraceLog(mustGet("log", HTMLPreElement));
 const log = trace.log;
+/** The input ring's clock (the trace log keeps its own, same origin). */
+const startedAt = performance.now();
 // Tooling hook: automated runs read the full ring, not the trimmed DOM log.
 (window as unknown as { labTrace: string[] }).labTrace = trace.ring;
 const checkbox = (id: string) => mustGet(id, HTMLInputElement);
