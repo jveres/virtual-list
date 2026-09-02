@@ -180,6 +180,12 @@ select.source-select:disabled {
   font-weight: 600;
 }
 
+/* The dialog hides the unselected provider's fields with the hidden
+   attribute; the fields' own display would otherwise override it. */
+.ai-settings-dialog [hidden] {
+  display: none !important;
+}
+
 .ai-settings-field {
   display: flex;
   flex-direction: column;
