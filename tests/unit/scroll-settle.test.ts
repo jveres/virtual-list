@@ -29,6 +29,8 @@ interface Harness {
   setSmoothActive: (active: boolean) => void;
   scrollTo: (top: number) => void;
   wheel: (deltaY: number, deltaMode?: number) => void;
+  touchStart: () => void;
+  touchEnd: () => void;
   scrollEnd: () => void;
   dispose: () => void;
 }
@@ -110,6 +112,14 @@ function mount(
     },
     wheel: (deltaY, deltaMode = WheelEvent.DOM_DELTA_PIXEL) => {
       viewport.dispatchEvent(new WheelEvent("wheel", { deltaY, deltaMode }));
+    },
+    touchStart: () => {
+      viewport.dispatchEvent(new Event("touchstart"));
+    },
+    touchEnd: () => {
+      const event = new Event("touchend");
+      Object.defineProperty(event, "touches", { value: [] });
+      viewport.dispatchEvent(event);
     },
     scrollEnd: () => {
       viewport.dispatchEvent(new Event("scrollend"));
@@ -296,6 +306,27 @@ describe("firefox edge sequences (trace replay)", () => {
     expect(harness.settled()).toBe(0);
     expect(harness.controller.isUserScrollActive()).toBe(true);
   });
+
+  it("cancels a pending wheel release when touch re-grabs the edge", () => {
+    const harness = mount("firefox-wheel", { canLoadTop: true });
+    harness.scrollTo(600);
+    harness.wheel(-50);
+    harness.scrollTo(0);
+    vi.advanceTimersByTime(150);
+    harness.scrollEnd(); // Pending Firefox edge release.
+
+    vi.advanceTimersByTime(100);
+    harness.touchStart();
+    harness.touchEnd();
+    vi.advanceTimersByTime(500);
+    // Touch is deliberate new input, never a decaying wheel-tail marker.
+    expect(harness.settled()).toBe(0);
+
+    harness.scrollTo(200);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(200);
+    expect(harness.settled()).toBe(1);
+  });
 });
 
 describe("firefox delta-mode coverage", () => {
@@ -430,6 +461,45 @@ describe("safari sequences (trace replay)", () => {
     vi.advanceTimersByTime(150);
     expect(harness.settled()).toBe(0);
     vi.advanceTimersByTime(300);
+    expect(harness.settled()).toBe(1);
+  });
+
+  it("cancels a pending bottom release when upward input resumes before motion", () => {
+    const harness = mount("safari-wheel", { canLoadBottom: true });
+    harness.scrollTo(4300);
+    harness.wheel(100);
+    harness.scrollTo(4700); // Bottom load is held behind this gesture.
+    vi.advanceTimersByTime(150); // Wheel input idles.
+    harness.scrollEnd(); // Possible release at the bottom.
+
+    vi.advanceTimersByTime(100); // Still inside its settle cooldown.
+    harness.wheel(-60); // User reverses, before Safari reports motion.
+    vi.advanceTimersByTime(300);
+    // The old bottom scrollend must not commit between reversal input and
+    // its delayed upward scroll event. A fresh fallback is still pending.
+    expect(harness.settled()).toBe(0);
+
+    harness.scrollTo(4500); // Safari delivers the upward motion.
+    harness.scrollEnd();
+    vi.advanceTimersByTime(200);
+    expect(harness.settled()).toBe(1);
+  });
+
+  it("cancels a pending release when touch re-grabs before new motion", () => {
+    const harness = mount("safari-wheel", { canLoadBottom: true });
+    harness.scrollTo(4300);
+    harness.scrollTo(4700);
+    harness.scrollEnd();
+
+    vi.advanceTimersByTime(100);
+    harness.touchStart();
+    harness.touchEnd();
+    // touchend must not honor the release that preceded this fresh touch.
+    expect(harness.settled()).toBe(0);
+
+    harness.scrollTo(4500);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(200);
     expect(harness.settled()).toBe(1);
   });
 });

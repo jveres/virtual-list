@@ -62,14 +62,17 @@ as preserved primitives, with the smaller API built around them.
    `scrollingUpdates` selects the policy: `"same-height"` (default,
    promotion as above), `"freeze"` (every phase-time update held until
    settle), or `"live"` (rendered in place on the committed element at
-   once, and its height committed at once whenever no scroll write is
-   needed for it — the row is at or below the viewport's anchor row, so
-   only it and what lies below it change; the complete updated content is
-   always visible, never a cut or blank line. Rows strictly above the
-   anchor are off-screen and commit at settle or the moment the viewport
-   reaches them. The trade-off is a scroll range that changes under a
-   live scroll.) Structural changes are settle-gated in every mode. The
-   streaming chat uses `"live"` for its streaming last message.
+   once, and its height committed at once whenever no anchor-preserving
+   scroll write is needed for it — the row is at or below the viewport's
+   anchor row, so only it and what lies below it change; the complete
+   updated content is always visible, never a cut or blank line. Rows
+   strictly above the anchor are off-screen and commit at settle or the
+   moment the viewport reaches them. The trade-off is a scroll range that
+   changes under a live scroll. A shrink near the end can make the browser
+   clamp `scrollTop` to the new maximum; the runtime reconciles that
+   position in the same frame.) Structural changes are settle-gated in
+   every mode. The streaming chat will use `"live"` for its streaming last
+   message when checkpoint 5 hosts it on the v2 runtime.
    While the surface is idle, the update renders in place and commits
    immediately (same pipeline). Changes made outside `setItems` — direct
    DOM mutation of a mounted row, a late resource growing an element — are
@@ -111,6 +114,14 @@ latency on every normal flick; the fast path was chosen. Standing lab
 watch items: the APZ re-grab race after fast commits (a ghost-edge
 bounce on fast re-grab means the 450ms buffer rises), and still-hold
 commit frequency in practice.
+
+Safari invalidates a pending release as soon as fresh wheel, touch, or
+pointer input resumes. Safari can report reversal input before the first
+scroll event in the new direction; retaining the old `scrollend` would let
+held work commit in that gap. Firefox alone preserves a pending edge release
+because its contested-release classifier explicitly distinguishes continued
+wheel input from a decaying momentum tail. Direct touch and scrollbar
+re-grabs invalidate the pending release on every engine.
 
 ## Preserved from v1 (signed off there, carried forward)
 
@@ -169,15 +180,42 @@ commit frequency in practice.
   setItems at load. Its telemetry observes the runtime
   strictly from outside — a scrollTop write hook, a MutationObserver on
   the canvas, the lab's own native-scroll evidence — and reports each
-  contract violation by code: G geometry changed under a live scroll
-  phase, W scrollTop written under native scroll, O slot overlap or a
-  non-clipping slot, A anchor moved across a commit, S stale slot height
-  while quiet, L a mounted row disagreeing with its slot at the
-  post-runtime ResizeObserver delivery (a clipped or gapped paint, held or
-  not), T height re-committed without a change, D destroy-once/leak
-  failures.
+  contract violation by code: G geometry changed under a live scroll phase
+  outside a valid `"live"` no-write commit, W `scrollTop` written under
+  native scroll, O slot overlap or a non-clipping slot, A anchor moved
+  across a commit, S stale slot height while quiet, L a mounted row
+  disagreeing with its slot at the post-runtime ResizeObserver delivery (a
+  clipped or gapped paint, held or not), T height re-committed without a
+  change, and D destroy-once or leak failures.
 - **demos/streaming** — the chat acceptance target (kept in-tree, excluded
   from typecheck until the v2 runtime hosts it), compared against `main`.
+
+## Browser matrix
+
+The repository includes an opt-in Playwright runner for the dynamic-height
+lab. It starts a private Vite server, exercises every scrolling policy in
+Chromium, Firefox, and WebKit with real wheel input, and fails on a lab
+violation, clipped paint, teardown leak, page error, console error, or wrong
+settle strategy.
+
+Install the Playwright engines once, then run the complete matrix:
+
+```sh
+pnpm exec playwright install chromium firefox webkit
+pnpm run test:browser
+```
+
+Use a focused run while developing a browser-specific fix:
+
+```sh
+pnpm run test:browser -- --quick --engine=webkit --mode=live
+```
+
+Failure traces are written to `browser-artifacts/`, which Git ignores. Set
+`BROWSER_MATRIX_URL` to test an already-running server. Set
+`BROWSER_MATRIX_CHROMIUM_CHANNEL=chrome` to use installed Chrome instead of
+Playwright Chromium. This matrix is reproducible engine evidence; it does
+not replace the physical desktop Safari and iOS Safari acceptance pass.
 
 ## Execution order
 
@@ -195,15 +233,16 @@ commit frequency in practice.
 4. A focused dynamic-height lab: adversarial content only (delayed
    unknown-size images, expansion/shrinkage above/inside/below the
    viewport, off-scroller changes, remounts, rapid superseding changes,
-   viewport-width changes) with telemetry that proves the invariants —
-   zero slot/canvas/offset/scrollTop change during native scrolling, no
-   row overlap (volatile content stays inside its committed slot), latest
-   heights committing once at settle, a stationary visual anchor,
-   immediate idle commits, held measurements invalidated by width/resource
-   changes, aborted/superseded retained nodes destroyed exactly once. All
-   dynamic-height behavior lives in the runtime; the lab only generates
-   content and reports violations. **Pass in Chromium, Firefox, desktop
-   Safari, iOS Safari.**
+   viewport-width changes) with telemetry that proves the invariants — no
+   structural geometry or `scrollTop` writes during native scrolling,
+   `"live"` commits limited to rows at or below the anchor with no explicit
+   write, no row overlap, latest held heights committing once at settle, a
+   stationary visual anchor outside the documented live-row changes,
+   immediate idle commits, held measurements invalidated by width or
+   resource changes, and aborted or superseded retained nodes destroyed
+   exactly once. All dynamic-height behavior lives in the runtime; the lab
+   only generates content and reports violations. **Pass in Chromium,
+   Firefox, desktop Safari, and iOS Safari.**
 5. Only then: host the streaming chat demo; gauntlet against `main`.
 
 ## Lessons carried as law

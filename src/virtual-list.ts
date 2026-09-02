@@ -36,8 +36,9 @@ import {
 //    offsets, canvas, and anchor together — nothing mounted ever shows
 //    content that disagrees with its slot. "freeze" holds every such
 //    update; "live" renders it in place and commits its height at once
-//    whenever no scroll write is needed for it (rows at or below the
-//    anchor row). Idle, every mode renders in place and commits at once.
+//    whenever no anchor-preserving scroll write is needed for it (rows at
+//    or below the anchor row). Idle, every mode renders in place and
+//    commits at once.
 //    A mounted row lives inside a dimensionally stable SLOT (fixed
 //    height, clipped) as the safety net for changes made outside setItems
 //    (direct DOM mutation, late resources): the ResizeObserver marks the
@@ -105,7 +106,9 @@ export interface VirtualListOptions<T> {
    *   complete updated content is always visible: never a cut or blank
    *   line. A dirty row strictly above the anchor is entirely off-screen
    *   and commits at settle (or the moment the viewport reaches it). The
-   *   trade-off is a scroll range that changes under a live scroll.
+   *   trade-off is a scroll range that changes under a live scroll. A
+   *   shrink near the end can make the browser clamp scrollTop to the new
+   *   maximum; the runtime reconciles that position in the same frame.
    */
   scrollingUpdates?: ScrollingUpdates;
 }
@@ -452,9 +455,16 @@ export function createVirtualList<T>(
   /** Retained, unmounted rows are measured detached, all in one layout. */
   function remeasureDetached(detached: readonly Row<T>[]): number[] {
     if (detached.length === 0) return [];
-    const heights = measurer.measureMany(detached.map((row) => row.element));
-    for (const row of detached) row.slot.appendChild(row.element); // Detached by the measurer.
-    return heights;
+    try {
+      return measurer.measureMany(detached.map((row) => row.element));
+    } finally {
+      // The measurer detaches every element on success and failure. Restore
+      // ownership before returning or surfacing an error; a row destroyed
+      // reentrantly during measurement must stay destroyed.
+      for (const row of detached) {
+        if (!row.destroyed) row.slot.appendChild(row.element);
+      }
+    }
   }
 
   function measureInPlace(row: Row<T>): number {
@@ -847,14 +857,16 @@ export function createVirtualList<T>(
   }
 
   /**
-   * "live": commit the dirty heights that need NO scroll write — rows at
-   * or below the viewport's anchor row — right now, mid-phase. The anchor
-   * keeps its coordinate by construction (nothing above it changed), so
-   * nothing on screen moves except the changed row and what lies below
-   * it; the canvas grows or shrinks at the bottom. Rows strictly above the
-   * anchor are entirely off-screen and stay dirty for settle — or for the
-   * scroll event that makes one of them the anchor, which commits it
-   * before that frame paints. Structural snapshots stay settle-gated.
+   * "live": commit the dirty heights that need NO anchor-preserving scroll
+   * write — rows at or below the viewport's anchor row — right now,
+   * mid-phase. The anchor keeps its coordinate by construction (nothing
+   * above it changed), so nothing on screen moves except the changed row
+   * and what lies below it; the canvas grows or shrinks at the bottom. A
+   * shrink may still make the browser clamp to a smaller maximum. Rows
+   * strictly above the anchor are entirely off-screen and stay dirty for
+   * settle — or for the scroll event that makes one of them the anchor,
+   * which commits it before that frame paints. Structural snapshots stay
+   * settle-gated.
    * Returns whether it published (it did whenever it committed).
    */
   function liveCommit(): boolean {
@@ -874,9 +886,12 @@ export function createVirtualList<T>(
       geometryEpoch += 1;
       const result = geometry.resolve(capture);
       canvas.style.height = `${result.totalSize}px`;
-      // No scroll write, by construction.
-      reconcileWindow(vp);
-      publish(vp);
+      // There is no explicit scroll write, but shrinking the scroll range
+      // can make the browser clamp scrollTop. Re-read after the canvas write
+      // and reconcile that real position before this frame paints.
+      const after = viewportState();
+      reconcileWindow(after);
+      publish(after);
       published = true;
     });
     return published;
@@ -910,7 +925,7 @@ export function createVirtualList<T>(
       const policy = policyOverride ?? applying?.anchor ?? "auto";
       const before = viewportState();
       const capture = geometry.capture(before, policy);
-      const toMeasure: Row<T>[] = [...dirtyRows];
+      const toMeasure = new Set<Row<T>>();
 
       if (applying) {
         // Keys and rows: drop removed, swap replaced, adopt new. A row is
@@ -942,9 +957,16 @@ export function createVirtualList<T>(
         // decoded since. Replacements ALWAYS reach the kernel: the key was
         // measured before, but with the old element.
         for (const row of applying.newRows.values()) {
-          if (row.dirty) toMeasure.push(row);
+          if (row.dirty) toMeasure.add(row);
           else commitHeight(row, row.height);
         }
+      }
+
+      // Build this set only after removals and replacements. A destroyed
+      // dirty row can share its key with a replacement; measuring it after
+      // the replacement would overwrite the replacement's geometry.
+      for (const row of dirtyRows) {
+        if (rows.get(row.key) === row) toMeasure.add(row);
       }
 
       commitMeasured(toMeasure);

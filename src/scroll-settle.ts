@@ -334,6 +334,12 @@ export function createScrollSettleController(
     cancelPendingUserScrollEnd();
   }
 
+  /** Touch and scrollbar input is deliberate; it is never a wheel tail. */
+  function cancelPendingReleaseForDirectInput(): void {
+    cancelFirefoxEdgeCommitFrame();
+    cancelPendingUserScrollEnd();
+  }
+
   function cancelSettleTimer(): void {
     if (!settleTimer) return;
     window.clearTimeout(settleTimer);
@@ -779,7 +785,12 @@ export function createScrollSettleController(
       cancelChromiumEdgeSettleTimer();
       host.onGestureStarted();
       if (host.isDisposed()) return false;
-    } else if (strategy !== "firefox-wheel" && strategy !== "safari-wheel") {
+    } else if (strategy !== "firefox-wheel") {
+      // Fresh input invalidates an earlier release. Safari can deliver the
+      // reversing wheel/touch input before its first scroll event; keeping
+      // the old scrollend would let it settle in that gap. Firefox alone
+      // retains an edge release because its contested/decaying-tail state
+      // machine classifies post-scrollend wheels explicitly.
       cancelPendingUserScrollEnd();
     }
     return true;
@@ -938,12 +949,12 @@ export function createScrollSettleController(
 
   function handleTouchScrollStart(): void {
     touchInputActive = true;
-    cancelFirefoxEdgeCommitForInput();
+    cancelPendingReleaseForDirectInput();
     handleUserScrollStart();
   }
 
   function handleTouchScrollMove(): void {
-    cancelFirefoxEdgeCommitForInput();
+    cancelPendingReleaseForDirectInput();
     handleUserScrollStart();
   }
 
@@ -978,7 +989,7 @@ export function createScrollSettleController(
       return;
     }
     activePointers.add(event.pointerId);
-    cancelFirefoxEdgeCommitForInput();
+    cancelPendingReleaseForDirectInput();
     handleUserScrollStart();
   }
 

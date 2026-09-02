@@ -10,6 +10,7 @@
     "format": "biome format --write .",
     "check": "biome check . && tsc --noEmit",
     "test": "vitest run",
+    "test:browser": "node scripts/browser-matrix.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {
@@ -18,6 +19,7 @@
     "jsdom": "^30.0.1",
     "katex": "^0.18.4",
     "markdown-viewer": "link:../markdown-viewer",
+    "playwright": "^1.62.1",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
     "vitest": "^4.1.11"

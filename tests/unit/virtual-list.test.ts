@@ -421,6 +421,27 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.destroyed).toEqual([]);
   });
 
+  it('"live" reconciles at the browser-clamped position after a canvas shrink', () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.heights.set(49, 1000);
+    fireResize(0, h.rowElement("msg 49"), 1000);
+    expect(h.viewport.scrollTop).toBe(5300);
+
+    h.userScroll(5298);
+    h.heights.set(49, 100);
+    const next = [...initial];
+    next[49] = message(49, "shrunk live");
+    h.list.setItems(next);
+
+    // Shrinking the canvas clamps the browser's real scrollTop even though
+    // the runtime did not write it. Reconciliation must use that clamped
+    // position in the same frame, or rows newly exposed above stay absent.
+    expect(h.viewport.scrollTop).toBe(4400);
+    expect(h.list.state.start).toBe(38);
+    expect(h.rowElement("msg 44")).toBeDefined();
+  });
+
   it('"live" keeps a dirty row above the anchor for settle, or for the scroll that reaches it', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
@@ -562,6 +583,22 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(20 * ROW_H + 150);
   });
 
+  it("writes a whole-pixel anchor target for fractional settle geometry", () => {
+    let width = 300;
+    const h = mount(range(0, 50), { width: () => width });
+    h.userScroll(3005); // Anchor m30, 5px into the row.
+    for (let id = 0; id < 50; id += 1) h.heights.set(id, 100.308);
+    width = 280;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    expect(h.list.state.held).toBe(true);
+
+    h.settle();
+    // Final anchor target is 30 * 100.308 + 5 = 3014.24. Writing 3014
+    // avoids WebKit flooring an arbitrary fractional target by almost 1px.
+    expect(h.viewport.scrollTop).toBe(3014);
+    expect(Number.isInteger(h.viewport.scrollTop)).toBe(true);
+  });
+
   it("invalidates held measurements after a viewport width change", () => {
     let width = 300;
     const h = mount(range(0, 50), { width: () => width });
@@ -600,6 +637,62 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.slotOf(h.rowElement("msg 11")).style.transform).toBe(
       `translateY(${11 * ROW_H + 80}px)`,
     );
+  });
+
+  it("never lets a dirty old row overwrite its replacement's geometry", () => {
+    const initial = range(0, 20);
+    const h = mount(initial, {
+      replaceOnRerender: true,
+      measureFailOn: "fresh-fail",
+    });
+    const old = h.rowElement("msg 10");
+
+    const failing = [...initial];
+    failing[10] = message(10, "fresh-fail");
+    expect(() => h.list.setItems(failing)).toThrow(
+      "measure failed: fresh-fail",
+    );
+    // The failed preparation conservatively leaves the committed row dirty.
+    // Give old and replacement elements different measurements so ordering
+    // is observable when the next transaction succeeds.
+    old.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
+    h.heights.set(10, 180);
+
+    const replacement = [...initial];
+    replacement[10] = message(10, "replacement");
+    h.list.setItems(replacement);
+
+    expect(h.slotOf(h.rowElement("replacement")).style.height).toBe("180px");
+    expect(h.list.state.totalSize).toBe(20 * ROW_H + 80);
+    expect(h.canvas().style.height).toBe(`${20 * ROW_H + 80}px`);
+    expect(h.slotOf(h.rowElement("msg 11")).style.transform).toBe(
+      `translateY(${11 * ROW_H + 80}px)`,
+    );
+  });
+
+  it("restores every retained element when a batched remeasurement fails", () => {
+    let width = 300;
+    const h = mount(range(0, 50), { width: () => width });
+    void h.list.scrollTo("start");
+    const row0 = h.rowElement("msg 0");
+    const row1 = h.rowElement("msg 1");
+    const slot0 = h.slotOf(row0);
+    const slot1 = h.slotOf(row1);
+
+    h.userScroll(3005); // Rows 0 and 1 are retained but unmounted.
+    expect(slot0.isConnected).toBe(false);
+    row0.getBoundingClientRect = () => {
+      throw new Error("remeasure failed");
+    };
+    width = 280;
+    fireResize(1, h.viewport, VIEWPORT_H); // Marks every retained row dirty.
+
+    expect(() => h.settle()).toThrow("remeasure failed");
+    // measureMany detached all retained elements before one read threw.
+    // Failure must not strip any of them from their owning slots.
+    expect(slot0.firstElementChild).toBe(row0);
+    expect(slot1.firstElementChild).toBe(row1);
+    expect(h.list.state.totalSize).toBe(50 * ROW_H);
   });
 
   it("rolls back a failed preparation: built rows destroyed once, held and committed state intact", () => {
@@ -1064,6 +1157,34 @@ describe("v2 runtime — commands", () => {
     await expect(command).resolves.toBe(false);
     expect(h.list.state.count).toBe(110);
     expect(h.viewport.scrollTop).toBe(10 * ROW_H);
+  });
+
+  it('a glide frame commits a newly reached "live" row before its scroll event', async () => {
+    const initial = range(0, 100);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    const command = h.list.scrollTo("start", { behavior: "smooth" });
+    vi.advanceTimersByTime(48);
+
+    const next = [...initial];
+    next[50] = message(50, "live on glide");
+    h.heights.set(50, 300);
+    h.list.setItems(next); // Still above the moving viewport: dirty and held.
+    expect(h.list.state.totalSize).toBe(100 * ROW_H);
+
+    for (
+      let frame = 0;
+      frame < 200 && h.viewport.scrollTop > 5005;
+      frame += 1
+    ) {
+      vi.advanceTimersByTime(16);
+    }
+    // The harness emits no automatic scroll event for a programmatic write.
+    // This can only be committed by the glide frame's pre-paint onScrolled().
+    expect(h.list.state.totalSize).toBe(100 * ROW_H + 200);
+    expect(h.slotOf(h.rowElement("live on glide")).style.height).toBe("300px");
+
+    vi.advanceTimersByTime(4000);
+    await expect(command).resolves.toBe(true);
   });
 
   it("resolves a landed glide only after its phase settles, revalidated", async () => {
