@@ -53,7 +53,12 @@ function addClassNames(
   }
 }
 
-function prepareMeasuredItem(element: HTMLElement): HTMLElement {
+/**
+ * The row-element positioning convention: absolute, pinned to its slot's
+ * edges, no transform. Applied to every measured element, and by the
+ * runtime to the elements it never measures (edge slots).
+ */
+export function positionRowElement(element: HTMLElement): HTMLElement {
   element.style.position = "absolute";
   element.style.transform = "none";
   element.style.top = "0";
@@ -113,7 +118,7 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
       }
       if (elements.length === 0) return [];
       syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
-      measureRoot.replaceChildren(...elements.map(prepareMeasuredItem));
+      measureRoot.replaceChildren(...elements.map(positionRowElement));
       try {
         return elements.map((element) =>
           positiveSize(element.getBoundingClientRect().height),

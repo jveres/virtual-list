@@ -5,7 +5,11 @@ import {
   type GeometryViewport,
 } from "./geometry";
 import { type Glide, type GlideHost, glidePace, startGlide } from "./glide";
-import { createItemMeasurer, type ItemMeasurer } from "./premeasure";
+import {
+  createItemMeasurer,
+  type ItemMeasurer,
+  positionRowElement,
+} from "./premeasure";
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,
@@ -113,7 +117,7 @@ export interface VirtualListOptions<T> {
    * exactly once per element.
    */
   onDestroy?: (element: HTMLElement, item: T) => void;
-  /** Settle strategy override (tests); auto-detected otherwise. */
+  /** Settle strategy; detected from the user agent when not given. */
   settleStrategy?: VirtualListScrollSettleStrategy;
   /** Fixed-height loader slots at the edges; see EdgeSlot. */
   edgeSlots?: { start?: EdgeSlot | null; end?: EdgeSlot | null };
@@ -220,7 +224,7 @@ export interface VirtualList<T> {
   readonly state: VirtualListState;
   /** Set or clear an edge slot: a structural change, settle-gated. */
   setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void;
-  /** Committed content-space top and height of a key (edge slots count); null if unknown. */
+  /** Committed content-space top and height of an item key (offsets include edge slots); null if unknown. */
   positionOf(key: string): { top: number; height: number } | null;
   /** The mounted element of a key, or null when unmounted or unknown. */
   elementOf(key: string): HTMLElement | null;
@@ -550,11 +554,9 @@ export function createVirtualList<T>(
 
   /** A slot row: the host's element at the declared height, no measurement. */
   function retainEdgeSlot(edge: Edge, slot: EdgeSlot): Row<T> {
-    const element = slot.render();
-    element.style.position = "absolute";
-    element.style.top = "0";
-    element.style.left = "0";
-    element.style.right = "0";
+    // Never measured, so positioned here the way the measurer positions
+    // every other row.
+    const element = positionRowElement(slot.render());
     const row = retain(
       slotKey(edge, slot.key),
       undefined as T,
@@ -602,7 +604,7 @@ export function createVirtualList<T>(
   }
 
   /** Unmounted rows (fresh or retained) are measured detached, all in one layout. */
-  function remeasureDetached(detached: readonly Row<T>[]): number[] {
+  function measureDetached(detached: readonly Row<T>[]): number[] {
     if (detached.length === 0) return [];
     try {
       return measurer.measureMany(detached.map((row) => row.element));
@@ -974,7 +976,7 @@ export function createVirtualList<T>(
       // Render first, then measure every fresh node together. One layout
       // serves the whole preparation instead of one forced layout per row.
       if (freshRows.length > 0) {
-        const heights = remeasureDetached(freshRows);
+        const heights = measureDetached(freshRows);
         freshRows.forEach((row, index) => {
           const height = quantizeHeight(heights[index] as number);
           row.height = height;
@@ -1091,7 +1093,7 @@ export function createVirtualList<T>(
     const detached: Row<T>[] = [];
     for (const row of toMeasure) (row.mounted ? mounted : detached).push(row);
     const mountedHeights = mounted.map(measureInPlace);
-    const detachedHeights = remeasureDetached(detached);
+    const detachedHeights = measureDetached(detached);
     mounted.forEach((row, index) => {
       commitHeight(row, mountedHeights[index] as number);
     });

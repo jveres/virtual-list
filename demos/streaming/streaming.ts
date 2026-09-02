@@ -59,9 +59,10 @@ import "../shared/styles.css";
 // and end-compatible snapshots keep end-follow engaged while streaming.
 //
 // On the v2 runtime (docs/lean-core.md): every row is premeasured
-// off-scroller before it commits, structural changes (scrollback prepends,
-// new turns) commit only when the scroll phase settles, and the streaming
-// reply runs under `scrollingUpdates: "live"` — its tokens render in place
+// off-scroller before it commits; a structural change above the anchor (a
+// scrollback prepend) commits only when the scroll phase settles, one below
+// it (a new turn, a version switch) at once; and the streaming reply runs
+// under `scrollingUpdates: "live"` — its tokens render in place
 // and its height commits at once whenever no anchor-preserving scroll write
 // is needed, so the reply keeps flowing under a scroll. Scrollback loads are
 // wired to the reach signal: reaching the other edge aborts them.

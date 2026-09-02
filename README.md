@@ -62,7 +62,8 @@ Everything under `src/`:
 - `glide.ts` — the programmatic smooth scroll: a fixed landing leg (the last
   viewport of travel, always the same time and ease-out) after a distance-
   derived approach, so a one-viewport hop and a jump across the list arrive
-  identically; exact landing, whole-pixel steps, live target, endpoint rebase.
+  identically; exact landing, at least a pixel per frame, live target,
+  endpoint rebase.
 
 ## Public API
 
