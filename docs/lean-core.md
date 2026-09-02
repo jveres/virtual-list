@@ -13,7 +13,9 @@ as preserved primitives, with the smaller API built around them.
 1. **Cross-browser scrollend detection** — the scroll-settle controller:
    per-engine heuristics (Chromium wheel-idle windows and single-scrollend
    sequences, Firefox edge stability windows against APZ ghost ends, Safari
-   rubber-band tails, a scrollend+cooldown default) yielding the best
+   rubber-band tails, a scrollend+cooldown "default" that is explicit
+   opt-in only — detection goes by engine, WebKit without a Safari token
+   included, and an unknown engine gets the Firefox contract) yielding the best
    obtainable settle signal for when structural changes to the scroller
    are safe — strong evidence, not proof, on wheel engines that expose no
    fingers-down state (the accepted trade-off below). Ported from `main`

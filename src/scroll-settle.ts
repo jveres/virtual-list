@@ -8,7 +8,8 @@
  * momentum, so each strategy encodes one engine's observed sequencing:
  * chromium's wheel-idle window and boundary-scrollend suppression, firefox's
  * early scrollend during a glide, safari's similar wheel behavior, and a
- * plain scrollend+cooldown default. The controller owns the viewport's
+ * plain scrollend+cooldown "default" (explicit opt-in only; an unknown
+ * engine falls to the Firefox contract). The controller owns the viewport's
  * scroll/scrollend/wheel/pointer/touch listeners and all gesture state; the
  * virtualizer supplies everything else through {@link ScrollSettleHost}.
  *
@@ -132,16 +133,29 @@ export type VirtualListScrollSettleStrategy =
 
 type ScrollBoundary = "top" | "bottom";
 
+/**
+ * Engine detection, by rendering engine rather than by browser brand:
+ * - Gecko (`Firefox/`; FxiOS is WebKit and carries no such token);
+ * - Chromium in every skin, headless included (`HeadlessChrome/`, `Edg/`,
+ *   `OPR/`; on iOS these brands run WebKit and use `CriOS/`, `EdgiOS/`);
+ * - everything else built on WebKit — Safari itself, and the in-app
+ *   browsers and WKWebViews whose user agent has no `Version/… Safari/`
+ *   token but rubber-bands exactly like Safari.
+ * An engine nobody has characterised gets the Firefox contract: it settles
+ * from wheel silence when no scrollend comes and never applies from a
+ * timer at a protected edge — the conservative choice. `"default"` (plain
+ * scrollend + cooldown) remains available explicitly for a host that knows
+ * its engine's scrollend is reliable.
+ */
 export function detectScrollSettleStrategy(
   userAgent = navigator.userAgent,
 ): VirtualListScrollSettleStrategy {
   if (/\bFirefox\//.test(userAgent)) return "firefox-wheel";
-  if (/\bVersion\/[\d.]+.*\bSafari\//.test(userAgent)) {
-    return "safari-wheel";
+  if (/\b(?:HeadlessChrome|Chrome|Chromium|Edg|OPR)\//.test(userAgent)) {
+    return "chromium-wheel";
   }
-  return /\b(?:Chrome|Chromium|Edg|OPR)\//.test(userAgent)
-    ? "chromium-wheel"
-    : "default";
+  if (/\bAppleWebKit\//.test(userAgent)) return "safari-wheel";
+  return "firefox-wheel";
 }
 
 /** What the settle controller needs from the virtualizer that owns it. */

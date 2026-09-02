@@ -177,8 +177,35 @@ describe("detectScrollSettleStrategy", () => {
         "Mozilla/5.0 AppleWebKit/605.1.15 Version/17.5 Safari/605.1.15",
       ),
     ).toBe("safari-wheel");
+    // Headless Chrome is Chrome: the token differs, the engine does not.
+    expect(
+      detectScrollSettleStrategy(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/140.0.0.0 Safari/537.36",
+      ),
+    ).toBe("chromium-wheel");
+    // WebKit without the Safari token — a WKWebView, an in-app browser,
+    // Chrome or Firefox on iOS — rubber-bands like Safari and settles like it.
+    expect(
+      detectScrollSettleStrategy(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      ),
+    ).toBe("safari-wheel");
+    expect(
+      detectScrollSettleStrategy(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) CriOS/126.0 Mobile/15E148 Safari/604.1",
+      ),
+    ).toBe("safari-wheel");
+    expect(
+      detectScrollSettleStrategy(
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) FxiOS/127.0 Mobile/15E148 Safari/605.1.15",
+      ),
+    ).toBe("safari-wheel");
+    // An engine nobody has characterised gets the conservative contract.
     expect(detectScrollSettleStrategy("Mozilla/5.0 jsdom/24.0")).toBe(
-      "default",
+      "firefox-wheel",
+    );
+    expect(detectScrollSettleStrategy("SomethingNew/1.0")).toBe(
+      "firefox-wheel",
     );
   });
 });
