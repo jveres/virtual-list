@@ -1741,6 +1741,13 @@ function issue<T>(work: () => T): T {
     return work();
   } finally {
     commandIssuing = false;
+    // The command ended the gesture (the runtime stops the native scroll
+    // and settles): input evidence from BEFORE it no longer means an active
+    // scroll. Wheel or scroll events that arrive after it count again. A
+    // finger still down does (the runtime cannot stop a touch).
+    lastWheelAt = Number.NEGATIVE_INFINITY;
+    lastKeyAt = Number.NEGATIVE_INFINITY;
+    lastNativeScrollAt = Number.NEGATIVE_INFINITY;
     // Queued AFTER the command's mutations, so the observer's own microtask
     // (queued at the first mutation) runs first and sees the flag.
     queueMicrotask(() => {
