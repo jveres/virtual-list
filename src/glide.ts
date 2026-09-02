@@ -106,7 +106,7 @@ export function startGlide(
     let step = eased - current;
     // Never a sub-pixel frame: floored engines must still make progress.
     if (Math.abs(step) < 1 || Math.sign(step) !== Math.sign(remaining)) {
-      step = Math.sign(remaining) * Math.min(1, Math.abs(remaining));
+      step = Math.sign(remaining); // |remaining| > SNAP_PX here.
     }
     host.write(current + step);
     lastWritten = current + step;

@@ -18,8 +18,9 @@ as preserved primitives, with the smaller API built around them.
    are safe — strong evidence, not proof, on wheel engines that expose no
    fingers-down state (the accepted trade-off below). Ported from `main`
    (`src/scroll-settle.ts`) and refined under lab traces: the unchanged
-   portions match `main`; the two Firefox deviations are flagged in-source
-   and documented here. Its engine knowledge is empirically verified and
+   portions match `main`; the Firefox deviations (the two-window edge
+   release, and Firefox alone retaining a pending release across fresh
+   input) are flagged in-source and documented here. Its engine knowledge is empirically verified and
    is not re-derived.
 2. **Chunk premeasurement** — items are built and measured OFF-scroller
    (a detached, width-synced measurement root) before they ever enter the
@@ -29,8 +30,8 @@ as preserved primitives, with the smaller API built around them.
 
 ## The core contract (normative)
 
-1. During an active native scroll, the scroll surface's **geometry is
-   immutable**: key order, measured extents, offsets, canvas size, and the
+1. During an active scroll phase (a native gesture or a programmatic
+   glide), the scroll surface's **geometry is immutable**: key order, measured extents, offsets, canvas size, and the
    scroll range do not change. Window reconciliation — mounting and
    unmounting already-known, premeasured rows at their fixed positions —
    continues freely throughout the scroll; without it a long momentum
@@ -176,8 +177,9 @@ The definition of correct, referenced by number throughout the code:
   outlive the scroll-away simply ignores the signal. A re-approach refires
   the reach (hysteresis) and refetches.
 - Invariants I1–I6 stand as the definition of correct; their *mechanisms*
-  change (I6's "same painted frame" is satisfied by premeasured commits,
-  not RO-synchronous corrections).
+  change (no mid-gesture ResizeObserver corrections: an idle observation
+  commits in its own delivery, which is I6, and a phase-time one waits for
+  the settle).
 
 ## Verification vehicles
 
@@ -230,8 +232,9 @@ Use a focused run while developing a browser-specific fix:
 pnpm run test:browser -- --quick --engine=webkit --mode=live
 ```
 
-Failure traces are written to `browser-artifacts/`, which Git ignores. Set
-`BROWSER_MATRIX_URL` to test an already-running server. Set
+Failure traces are written to `browser-artifacts/` (override with
+`BROWSER_MATRIX_ARTIFACTS`), which Git ignores. Set `BROWSER_MATRIX_URL`
+to test an already-running server. Set
 `BROWSER_MATRIX_CHROMIUM_CHANNEL=chrome` to use installed Chrome instead of
 Playwright Chromium. This matrix is reproducible engine evidence; it does
 not replace the physical desktop Safari and iOS Safari acceptance pass.

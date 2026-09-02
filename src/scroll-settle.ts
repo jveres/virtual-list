@@ -82,7 +82,7 @@ const EDGE_SETTLE_QUIET_MS = 450;
 // honored it on this single 1600ms timer, which committed under actively
 // held fingers). A decaying pixel-mode tail merely postpones. An
 // uncontested scrollend is a clean release signature and settles after
-// the short confirmation window (~0.3s after the scrollend; main's 1600ms
+// the short confirmation window (450ms after the last wheel; main's 1600ms
 // made every normal edge load wait ~1.5s). A contested one falls back to
 // the full stability window from the last wheel: active motion keeps
 // pushing it and a decaying tail at a pinned edge (which emits no second
@@ -119,8 +119,9 @@ const EDGE_PROXIMITY_EPSILON_PX = 2;
 const SETTLE_MOTION_EPSILON_PX = 0.05;
 
 // Upper bound on unmatched programmatic scroll targets kept for user-vs-self
-// scroll classification. One follow frame writes at most twice, and a scroll
-// event matches within a frame or two, so this only guards against runaway.
+// scroll classification. A commit writes once and a glide once per frame,
+// and a scroll event matches within a frame or two, so this only guards
+// against runaway.
 const MAX_PENDING_PROGRAMMATIC_SCROLLS = 8;
 
 export type VirtualListScrollSettleStrategy =
@@ -153,7 +154,7 @@ export interface ScrollSettleHost {
   canLoadAtBoundary(boundary: ScrollBoundary): boolean;
   /** Cancel an in-flight programmatic smooth scroll — a real user gesture began. */
   cancelActiveSmoothScroll(): void;
-  /** False only while a programmatic smooth scroll is still short of its target. */
+  /** False while a programmatic smooth scroll is in flight. */
   smoothScrollReachedTarget(): boolean;
   /** The gesture transitioned idle → active: a scroll phase began. */
   onGestureStarted(): void;
@@ -783,13 +784,8 @@ export function createScrollSettleController(
     } else if (nativeScrollEndPending) {
       clearPendingNativeScrollEnd();
     }
-    if (!outwardBoundary) {
-      chromiumEdgeWheelActive = null;
-      chromiumEdgeWheelIdle = false;
-    } else {
-      chromiumEdgeWheelActive = outwardBoundary;
-      chromiumEdgeWheelIdle = false;
-    }
+    chromiumEdgeWheelActive = outwardBoundary;
+    chromiumEdgeWheelIdle = false;
     wheelInputActive = true;
     cancelWheelInputTimer();
     wheelInputTimer = window.setTimeout(() => {

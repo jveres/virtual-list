@@ -124,7 +124,7 @@ export class Geometry {
   anchorAt(viewport: GeometryViewport): { key: string; offset: number } | null {
     if (this.keys.length === 0) return null;
     const top = Math.max(0, Math.min(viewport.scrollTop, this.contentSize));
-    let index = Math.min(this.tree.indexAt(top), this.keys.length - 1);
+    let index = this.tree.indexAt(top); // Clamped to the last index.
     // A row with less than EPSILON left below the viewport top is not what
     // the user sees as the top row: anchoring it would let its own growth
     // push the visually top-aligned successor down by the full delta.
@@ -148,7 +148,7 @@ export class Geometry {
       this.contentSize,
       viewport.scrollTop + viewport.height + overscanPx,
     );
-    const start = Math.min(this.tree.indexAt(top), this.keys.length - 1);
+    const start = this.tree.indexAt(top); // Clamped to the last index.
     let end = start;
     while (end < this.keys.length && this.tree.prefix(end) < bottom) end++;
     return { start, end };

@@ -133,22 +133,17 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
       syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
       measureRoot.replaceChildren();
       let element: HTMLElement | null = null;
-      let height = 0;
-      let measurementFailed = false;
-      let measurementError: unknown;
       try {
         element = prepareMeasuredItem(build());
         measureRoot.appendChild(element);
-        height = positiveSize(element.getBoundingClientRect().height);
-      } catch (error) {
-        measurementFailed = true;
-        measurementError = error;
-      }
-
-      measureRoot.replaceChildren();
-      if (measurementFailed) {
+        const height = positiveSize(element.getBoundingClientRect().height);
+        measureRoot.replaceChildren();
+        // Success: the caller owns the live element (see the ownership rule).
+        return { element, height };
+      } catch (measurementError) {
+        measureRoot.replaceChildren();
         // The element will never be returned: tear its resources down here
-        // (build-throw leaves no element to destroy).
+        // (a build throw leaves no element to destroy).
         if (element && destroy) {
           try {
             destroy(element);
@@ -161,11 +156,6 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
         }
         throw measurementError;
       }
-      if (!element) {
-        throw new Error("item build returned no element");
-      }
-      // Success: the caller owns the live element (see the ownership rule).
-      return { element, height };
     },
     measureMany(elements) {
       if (disposed) {

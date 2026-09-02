@@ -144,6 +144,9 @@ export interface VirtualList<T> {
 const EDGE_ENTER_PX = 800;
 const EDGE_EXIT_PX = 1200;
 
+/** Float noise a measurement may carry (100.0000001 is 100, not 101). */
+const HEIGHT_NOISE = 1e-6;
+
 /**
  * Committed heights are whole pixels (rounded up, so content is never
  * clipped by the quantization). Fractional heights made every offset,
@@ -152,9 +155,6 @@ const EDGE_EXIT_PX = 1200;
  * showed as a 1px layout shift after a top load. Integral geometry has no
  * such seam: anchor writes land exactly.
  */
-/** Float noise a measurement may carry (100.0000001 is 100, not 101). */
-const HEIGHT_NOISE = 1e-6;
-
 function quantizeHeight(height: number): number {
   return Math.max(1, Math.ceil(height - HEIGHT_NOISE));
 }
@@ -550,7 +550,7 @@ export function createVirtualList<T>(
     inMeasurementDelivery = true;
     try {
       if (idle()) commit(null);
-      else if (!(liveUpdates && liveCommit())) publish();
+      else if (!liveCommit()) publish();
     } finally {
       inMeasurementDelivery = false;
     }
@@ -736,13 +736,14 @@ export function createVirtualList<T>(
       // A scroll phase is active: committed elements are frozen — content
       // as much as geometry, mounted or not (an unmounted row may mount
       // mid-phase at its committed height). The update is rendered FRESH
-      // and premeasured off-scroller. Equal whole-pixel height on a clean
-      // committed row: PROMOTED — swapped into the
-      // committed slot in phase 2 with geometry untouched, so streaming
-      // keeps flowing under a scroll until a wrap changes the height.
-      // Otherwise it is retained and swapped in atomically at settle with
-      // its height; later updates in the same phase advance that
-      // replacement in place (it is off-scroller) through adoption.
+      // and premeasured off-scroller. Under "same-height", an equal
+      // whole-pixel height on a clean committed row is PROMOTED — swapped
+      // into the committed slot in phase 2 with geometry untouched, so
+      // streaming keeps flowing under a scroll until a wrap changes the
+      // height. Otherwise ("freeze" always) it is retained and swapped in
+      // atomically at settle with its height; later updates in the same
+      // phase advance that replacement in place (it is off-scroller)
+      // through adoption.
       const fresh = measureFresh(key, item, render(item));
       if (
         promoteSameHeight &&
@@ -900,7 +901,7 @@ export function createVirtualList<T>(
    * Returns whether it published (it did whenever it committed).
    */
   function liveCommit(): boolean {
-    if (disposed || dirtyRows.size === 0) return false;
+    if (!liveUpdates || disposed || dirtyRows.size === 0) return false;
     let published = false;
     guarded(() => {
       const vp = viewportState();
@@ -1145,7 +1146,7 @@ export function createVirtualList<T>(
   function onScrolled(): void {
     const vp = viewportState();
     reconcileWindow(vp);
-    if (!(liveUpdates && liveCommit())) publish(vp);
+    if (!liveCommit()) publish(vp);
   }
 
   // --- The settle controller (the scroll-phase authority) -------------------
@@ -1215,7 +1216,7 @@ export function createVirtualList<T>(
     viewport.style.overflowY = "hidden";
     void viewport.offsetHeight;
     viewport.style.overflowY = previousOverflowY;
-    viewport.scrollTop = currentTop;
+    writeScrollTop(currentTop);
     controller.finishGesture();
   }
 
@@ -1258,7 +1259,7 @@ export function createVirtualList<T>(
         for (const row of prepared.newRows.values()) row.dirty = true;
         pending = prepared;
       }
-      if (!(liveUpdates && liveCommit())) publish();
+      if (!liveCommit()) publish();
     });
   }
 

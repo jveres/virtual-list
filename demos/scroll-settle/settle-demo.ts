@@ -5,6 +5,8 @@ import {
   type ScrollSettleController,
   type VirtualListScrollSettleStrategy,
 } from "../../src/scroll-settle.js";
+import { createEdgePill, createTraceLog, mulberry32 } from "../shared/lab.js";
+import { mustGet } from "../shared/utils.js";
 
 // The scroll-settle lab: makes the settle controller testable in every real
 // browser, with no virtualizer in the way. A plain (non-virtualized) DOM list
@@ -50,21 +52,13 @@ const MAX_CHUNKS = 60;
 const LOAD_LATENCY_MS = 180;
 const REACH_EDGE_PX = 400;
 const PREMATURE_WINDOW_MS = 400;
-const LOG_RING_MAX = 4000;
-const LOG_DOM_MAX = 350;
-
-function mustGet<T extends HTMLElement = HTMLElement>(id: string): T {
-  const element = document.getElementById(id);
-  if (!element) throw new Error(`missing #${id}`);
-  return element as T;
-}
 
 const viewport = mustGet("viewport");
 const rows = mustGet("rows");
-const pill = mustGet("pill");
-const pillLabel = mustGet("pill-label");
-const logElement = mustGet<HTMLPreElement>("log");
-const strategySelect = mustGet<HTMLSelectElement>("strategy");
+const edgePill = createEdgePill(mustGet("pill"), mustGet("pill-label"));
+const trace = createTraceLog(mustGet("log", HTMLPreElement));
+const log = trace.log;
+const strategySelect = mustGet("strategy", HTMLSelectElement);
 
 const stat = {
   strategy: mustGet("s-strategy"),
@@ -83,16 +77,6 @@ const stat = {
 mustGet("ua").textContent = navigator.userAgent;
 
 // --- Deterministic row content ----------------------------------------------
-
-function mulberry32(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function buildRow(index: number): HTMLElement {
   const random = mulberry32(index * 2654435761);
@@ -118,24 +102,6 @@ function buildRow(index: number): HTMLElement {
 }
 
 // --- Event/decision trace ---------------------------------------------------
-
-const traceRing: string[] = [];
-const startedAt = performance.now();
-
-function log(message: string, cls?: "mark" | "good" | "warn"): void {
-  const line = `+${(performance.now() - startedAt).toFixed(0)}ms ${message}`;
-  traceRing.push(line);
-  if (traceRing.length > LOG_RING_MAX) traceRing.shift();
-
-  const span = document.createElement("span");
-  if (cls) span.className = cls;
-  span.textContent = `${line}\n`;
-  logElement.appendChild(span);
-  while (logElement.childNodes.length > LOG_DOM_MAX) {
-    logElement.firstChild?.remove();
-  }
-  logElement.scrollTop = logElement.scrollHeight;
-}
 
 // --- Demo state -------------------------------------------------------------
 
@@ -211,30 +177,14 @@ let lastInputAt = 0;
 let lastSettleAt = Number.NEGATIVE_INFINITY;
 let prematureFlagged = false;
 let statusFrame = 0;
-let pillTimer = 0;
-let pillSticky = false;
 let glide: Glide | null = null;
 
 function showPill(text: string, boundary: Boundary, sticky = false): void {
-  window.clearTimeout(pillTimer);
-  pillSticky = sticky;
-  pill.classList.toggle("bottom", boundary === "bottom");
-  pillLabel.textContent = text;
-  pill.classList.add("visible");
-  if (sticky) {
-    pillTimer = window.setTimeout(() => {
-      pillSticky = false;
-      pill.classList.remove("visible");
-    }, 1400);
-  }
+  edgePill.show(text, boundary === "bottom", sticky);
 }
 
-/** Hides the pill; a sticky pill ("at the top/bottom") survives unless forced. */
 function hidePill(force = false): void {
-  if (pillSticky && !force) return;
-  window.clearTimeout(pillTimer);
-  pillSticky = false;
-  pill.classList.remove("visible");
+  edgePill.hide(force);
 }
 
 function scheduleStatus(): void {
@@ -459,7 +409,7 @@ function buildController(): ScrollSettleController {
         prematureCount += 1;
         log("POST-SETTLE MOTION — premature settle?", "warn");
       }
-      if (mustGet<HTMLInputElement>("auto-load").checked) {
+      if (mustGet("auto-load", HTMLInputElement).checked) {
         const maxTop = viewport.scrollHeight - viewport.clientHeight;
         if (viewport.scrollTop < REACH_EDGE_PX) {
           // Reaching one edge aborts every started operation at the other:
@@ -613,12 +563,11 @@ mustGet("reset").addEventListener("click", () => {
   log("reset", "mark");
 });
 mustGet("clear").addEventListener("click", () => {
-  logElement.replaceChildren();
-  traceRing.length = 0;
+  trace.clear();
 });
 mustGet("copy").addEventListener("click", () => {
-  const trace = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\n${traceRing.join("\n")}`;
-  void navigator.clipboard?.writeText(trace).then(
+  const text = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\n${trace.ring.join("\n")}`;
+  void navigator.clipboard?.writeText(text).then(
     () => log("trace copied", "good"),
     () => log("clipboard unavailable — select the log manually", "warn"),
   );

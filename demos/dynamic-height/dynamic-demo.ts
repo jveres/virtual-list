@@ -6,6 +6,8 @@ import {
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
+import { createEdgePill, createTraceLog, mulberry32 } from "../shared/lab.js";
+import { mustGet } from "../shared/utils.js";
 
 // The dynamic-height lab: adversarial, size-changing content on the v2
 // runtime, with telemetry that observes the runtime STRICTLY FROM OUTSIDE.
@@ -77,19 +79,11 @@ const PX_EPSILON = 1;
  * movement (0.52px observed); a 1px step is visible and still caught.
  */
 const ANCHOR_EPSILON = 0.55;
-const LOG_RING_MAX = 4000;
-const LOG_DOM_MAX = 350;
 
 const WORDS =
   "the quick brown fox jumps over a lazy dog while streaming tokens arrive one after another and the row grows taller than its committed slot until the settle signal lets geometry move again so nothing under a live gesture ever shifts".split(
     " ",
   );
-
-function mustGet<T extends HTMLElement = HTMLElement>(id: string): T {
-  const element = document.getElementById(id);
-  if (!element) throw new Error(`missing #${id}`);
-  return element as T;
-}
 
 function pick<T>(items: readonly T[], random: () => number): T {
   const item = items[Math.floor(random() * items.length)];
@@ -97,20 +91,13 @@ function pick<T>(items: readonly T[], random: () => number): T {
   return item;
 }
 
-function mulberry32(seed: number): () => number {
-  let state = seed;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 const stage = mustGet("stage");
 const viewport = mustGet("viewport");
-const logElement = mustGet<HTMLPreElement>("log");
-const checkbox = (id: string) => mustGet<HTMLInputElement>(id);
+const trace = createTraceLog(mustGet("log", HTMLPreElement));
+const log = trace.log;
+// Tooling hook: automated runs read the full ring, not the trimmed DOM log.
+(window as unknown as { labTrace: string[] }).labTrace = trace.ring;
+const checkbox = (id: string) => mustGet(id, HTMLInputElement);
 const stat = {
   strategy: mustGet("s-strategy"),
   activeDot: mustGet("s-active"),
@@ -131,25 +118,6 @@ mustGet("ua").textContent = navigator.userAgent;
 stat.strategy.textContent = detectScrollSettleStrategy();
 
 // --- Trace ------------------------------------------------------------------
-
-const traceRing: string[] = [];
-const startedAt = performance.now();
-// Tooling hook: automated runs read the full ring, not the trimmed DOM log.
-(window as unknown as { labTrace: string[] }).labTrace = traceRing;
-
-function log(message: string, cls?: "mark" | "good" | "warn" | "bad"): void {
-  const line = `+${(performance.now() - startedAt).toFixed(0)}ms ${message}`;
-  traceRing.push(line);
-  if (traceRing.length > LOG_RING_MAX) traceRing.shift();
-  const span = document.createElement("span");
-  if (cls) span.className = cls;
-  span.textContent = `${line}\n`;
-  logElement.appendChild(span);
-  while (logElement.childNodes.length > LOG_DOM_MAX) {
-    logElement.firstChild?.remove();
-  }
-  logElement.scrollTop = logElement.scrollHeight;
-}
 
 function verbose(): boolean {
   return checkbox("verbose").checked;
@@ -185,10 +153,10 @@ async function sendReport(why: string): Promise<void> {
     why,
     userAgent: navigator.userAgent,
     strategy: stat.strategy.textContent,
-    mode: mustGet<HTMLSelectElement>("scrolling-updates").value,
+    mode: mustGet("scrolling-updates", HTMLSelectElement).value,
     violations,
     viewport: { width: innerWidth, height: innerHeight },
-    trace: traceRing.slice(-700),
+    trace: trace.ring.slice(-700),
   });
   try {
     const response = await fetch("/__lab/report", {
@@ -693,10 +661,7 @@ let heldCleared = false;
 
 // --- The edge pill (same presentation as the settle lab) --------------------
 
-const pill = mustGet("pill");
-const pillLabel = mustGet("pill-label");
-let pillTimer = 0;
-let pillSticky = false;
+const edgePill = createEdgePill(mustGet("pill"), mustGet("pill-label"));
 /** A chunk handed to the runtime while scrolling, committing at settle. */
 const waitingChunk: Record<"start" | "end", boolean> = {
   start: false,
@@ -704,25 +669,11 @@ const waitingChunk: Record<"start" | "end", boolean> = {
 };
 
 function showPill(text: string, edge: "start" | "end", sticky = false): void {
-  window.clearTimeout(pillTimer);
-  pillSticky = sticky;
-  pill.classList.toggle("bottom", edge === "end");
-  pillLabel.textContent = text;
-  pill.classList.add("visible");
-  if (sticky) {
-    pillTimer = window.setTimeout(() => {
-      pillSticky = false;
-      pill.classList.remove("visible");
-    }, 1400);
-  }
+  edgePill.show(text, edge === "end", sticky);
 }
 
-/** Hides the pill; a sticky pill ("at the top/bottom") survives unless forced. */
 function hidePill(force = false): void {
-  if (pillSticky && !force) return;
-  window.clearTimeout(pillTimer);
-  pillSticky = false;
-  pill.classList.remove("visible");
+  edgePill.hide(force);
 }
 
 function chunkCommitted(edge: "start" | "end"): void {
@@ -799,7 +750,7 @@ function onState(state: VirtualListState): void {
 }
 
 function scrollingMode(): ScrollingUpdates {
-  return mustGet<HTMLSelectElement>("scrolling-updates")
+  return mustGet("scrolling-updates", HTMLSelectElement)
     .value as ScrollingUpdates;
 }
 
@@ -1683,7 +1634,7 @@ const CHAOS_OPS: { weight: number; name: string; run: () => void }[] = [
         modes.filter((mode) => mode !== scrollingMode()),
         random,
       );
-      mustGet<HTMLSelectElement>("scrolling-updates").value = next;
+      mustGet("scrolling-updates", HTMLSelectElement).value = next;
       log(`chaos: scrollingUpdates → ${next} (recreate)`, "mark");
       recreate();
     },
@@ -1817,7 +1768,7 @@ function recreate(): void {
 
 function disposeCurrent(): void {
   stopStreams();
-  const createdBefore = created;
+
   guardedCall("dispose", () => list.dispose());
   canvasObserver?.disconnect();
   canvas = null;
@@ -1825,7 +1776,7 @@ function disposeCurrent(): void {
   if (live !== 0) {
     violation(
       "D",
-      `${live} element(s) leaked at dispose (created ${createdBefore}, destroyed ${destroyed})`,
+      `${live} element(s) leaked at dispose (created ${created}, destroyed ${destroyed})`,
     );
   } else {
     log(`dispose: every element destroyed exactly once (${destroyed})`, "good");
@@ -1890,8 +1841,7 @@ window.addEventListener("unhandledrejection", (event) => {
   violation("X", `unhandled rejection: ${describeError(event.reason)}`);
 });
 mustGet("clear").addEventListener("click", () => {
-  logElement.replaceChildren();
-  traceRing.length = 0;
+  trace.clear();
   // Violations without their traces are meaningless: the count restarts.
   violations = 0;
   clippedPaints = 0;
@@ -1901,8 +1851,8 @@ mustGet("upload").addEventListener("click", () => {
   void sendReport("manual");
 });
 mustGet("copy").addEventListener("click", () => {
-  const trace = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\nviolations=${violations}\n${traceRing.join("\n")}`;
-  void navigator.clipboard?.writeText(trace).then(
+  const text = `${navigator.userAgent}\nstrategy=${stat.strategy.textContent}\nviolations=${violations}\n${trace.ring.join("\n")}`;
+  void navigator.clipboard?.writeText(text).then(
     () => log("trace copied", "good"),
     () => log("clipboard unavailable — select the log manually", "warn"),
   );
