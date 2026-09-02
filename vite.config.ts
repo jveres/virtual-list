@@ -78,8 +78,8 @@ export default defineConfig({
           "demos/dynamic-height/index.html",
           import.meta.url,
         ).pathname,
-        // The streaming chat demo is the acceptance target; it returns to
-        // the build once the v2 runtime can host it.
+        streaming: new URL("demos/streaming/index.html", import.meta.url)
+          .pathname,
       },
     },
   },

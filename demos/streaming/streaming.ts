@@ -50,6 +50,14 @@ import "../shared/styles.css";
 // message object and pushes a fresh snapshot through setItems. The runtime's
 // keyed renderer re-renders exactly the changed rows (render(item, existing)),
 // and end-compatible snapshots keep end-follow engaged while streaming.
+//
+// On the v2 runtime (docs/lean-core.md): every row is premeasured
+// off-scroller before it commits, structural changes (scrollback prepends,
+// new turns) commit only when the scroll phase settles, and the streaming
+// reply runs under `scrollingUpdates: "live"` — its tokens render in place
+// and its height commits at once whenever no anchor-preserving scroll write
+// is needed, so the reply keeps flowing under a scroll. Scrollback loads are
+// wired to the reach signal: reaching the other edge aborts them.
 
 interface Message {
   id: number;
@@ -79,9 +87,6 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-// Fallback row-height estimate for an empty message (a thinking
-// placeholder); real rows get the content-aware estimate below.
-const ESTIMATED_ITEM_HEIGHT = 96;
 const INITIAL_TRANSCRIPT_COUNT = 100;
 // The loaded data window over the transcript: how much is handed to the
 // virtualizer, and how much each scrollback load prepends.
@@ -100,11 +105,6 @@ const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
   demoParams.has("fast-long") || demoParams.get("stream") === "fast-long";
-// Temporary diagnostics for the ghost-top bounce: ?debug-ghost logs raw
-// scroll state, the canvas gesture-shift transform, commit timing, and
-// input events around the top edge. Reproduce, paste, then strip.
-const debugGhost = demoParams.has("debug-ghost");
-
 const viewport = mustGet("viewport");
 const viewportWrap = viewport.parentElement as HTMLElement;
 const promptInput = mustGet("prompt", HTMLTextAreaElement);
@@ -118,50 +118,6 @@ const composerMinHeight = Math.max(
   promptInput.getBoundingClientRect().height,
 );
 
-// ?debug-ghost: one compact line per event. `shift` is the runtime's
-// gesture-shift canvas transform (visible in the DOM), `top`/`sh` the raw
-// scroll state, `count` the committed row count — together they separate a
-// shift-induced unreachable region from a deferred prepend and from a
-// premature settle.
-function ghostLog(tag: string, extra: Record<string, unknown> = {}): void {
-  if (!debugGhost) return;
-  const canvas = viewport.firstElementChild as HTMLElement | null;
-  console.log(
-    `[ghost] ${performance.now().toFixed(0)}ms ${tag}`,
-    JSON.stringify({
-      top: Math.round(viewport.scrollTop * 10) / 10,
-      sh: viewport.scrollHeight,
-      shift: canvas?.style.transform || "0",
-      count: virtualList?.state.count ?? -1,
-      atStart: virtualList?.state.atStart ?? false,
-      loadedStart,
-      loading: loadingTop,
-      ...extra,
-    }),
-  );
-}
-if (debugGhost) {
-  console.log(`[ghost] ua=${navigator.userAgent}`);
-  viewport.addEventListener("scroll", () => ghostLog("scroll"), {
-    passive: true,
-  });
-  viewport.addEventListener("scrollend", () => ghostLog("scrollend"), {
-    passive: true,
-  });
-  viewport.addEventListener(
-    "wheel",
-    (event) => ghostLog("wheel", { dy: Math.round(event.deltaY) }),
-    { passive: true },
-  );
-  viewport.addEventListener("touchstart", () => ghostLog("touchstart"), {
-    passive: true,
-  });
-  viewport.addEventListener("touchend", () => ghostLog("touchend"), {
-    passive: true,
-  });
-}
-
-let lastLoggedCount = -1;
 let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
 let nextResponse = 0;
@@ -170,11 +126,12 @@ let loadingTop = false;
 let sendGlideActive = false;
 const htmlCache = new Map<string, string>();
 // Live markdown-viewer instances for streaming rows, keyed by row element so
-// remounts and replacements never collide; the runtime's onUnmount callback
-// tears a viewer down when its row leaves the DOM.
+// remounts and replacements never collide; the runtime's onDestroy callback
+// tears a viewer down when it is done with the element for good (a retained
+// row that merely leaves the window keeps its viewer).
 const streamingViewers = new WeakMap<HTMLElement, MarkdownViewerHandle>();
-// Mounted row elements by message id, for the send animations. Pruned by the
-// same onUnmount callback.
+// Row elements by message id, for the send animations. Pruned by the same
+// onDestroy callback.
 const rowById = new Map<string, HTMLElement>();
 // The transcript is the *active path* through the message tree: the linear
 // list the virtualizer renders. `messages` is the loaded window over its tail.
@@ -442,30 +399,6 @@ function createMessage(message: Omit<Message, "id">): Message {
   return { id: nextMessageId++, ...message };
 }
 
-// Content-aware height estimate for unmeasured rows. Estimates live only in
-// visual space until a row is measured, and SYSTEMATIC error accumulates
-// into the runtime's bounded gesture shift during fast scrollback (the
-// ghost-top bounce came from a flat estimate ~100px under the real average).
-// Being within a few dozen pixels — and mean-zero — matters far more than
-// being simple.
-const MARKDOWN_IMAGE_RE = /!\[[^\]]*\]\([^)]*\)/g;
-
-function estimateMessageHeight(message: Message): number {
-  const text = message.markdown;
-  if (text === "") return ESTIMATED_ITEM_HEIGHT;
-  // Embedded images dominate a row's height and inflate text length
-  // (data URIs); count them separately.
-  const imageCount = (text.match(MARKDOWN_IMAGE_RE) ?? []).length;
-  const withoutImages =
-    imageCount > 0 ? text.replace(MARKDOWN_IMAGE_RE, "") : text;
-  // Lines come from explicit breaks and from wrapping (~70 chars per
-  // rendered line at the demo's measure); blank lines add block spacing.
-  const breaks = (withoutImages.match(/\n/g) ?? []).length;
-  const wrapped = Math.ceil(withoutImages.length / 70);
-  const lines = Math.max(breaks + 1, wrapped);
-  return Math.min(2400, 64 + lines * 26 + imageCount * 330);
-}
-
 function cloneToolCalls(toolCalls: readonly ChatToolCall[]): ChatToolCall[] {
   return toolCalls.map((toolCall) => ({ ...toolCall }));
 }
@@ -551,7 +484,7 @@ function appendToActiveBranch(nextMessages: readonly Message[]): void {
 // --- The loaded window and the virtualizer bridge ---------------------------
 
 // Nominal average row height for sizing scrollback chunks (data windowing
-// only — per-row estimates come from estimateMessageHeight).
+// only; the runtime never estimates — every row is premeasured).
 const NOMINAL_ROW_HEIGHT = 200;
 
 function loadChunkCount(): number {
@@ -665,7 +598,7 @@ let pendingPrepend: { count: number; finish: () => void } | null = null;
 // phase settles. The prepend preserves the reading position (I1), and the
 // runtime re-arms the reach-start signal once the viewport is past the
 // exit zone.
-function loadOlderChunk(): Promise<void> {
+function loadOlderChunk(signal?: AbortSignal): Promise<void> {
   if (activeLoad) return activeLoad;
   if (!canLoadOlderMessages()) return Promise.resolve();
   loadingTop = true;
@@ -689,23 +622,31 @@ function loadOlderChunk(): Promise<void> {
       }
       resolve();
     };
-    window.setTimeout(() => {
+    const timer = window.setTimeout(() => {
       if (epoch !== conversationEpoch) {
         finish();
         return;
       }
       loadedStart = Math.max(0, loadedStart - loadChunkCount());
-      pushItems();
+      // A page load preserves the reading position — never an end-follow,
+      // even when the viewport happens to sit at the bottom.
+      pushItems("viewport");
       if (virtualList && virtualList.state.count < messages.length) {
         // Deferred by the runtime: stay in the loading state until the
         // commit is confirmed through onState.
-        ghostLog("load-deferred", { handedOff: messages.length });
         pendingPrepend = { count: messages.length, finish };
       } else {
-        ghostLog("load-committed", { handedOff: messages.length });
         finish();
       }
     }, LOAD_OLDER_DELAY_MS);
+    // The runtime aborts a reach's signal when the user reaches the other
+    // edge (or on dispose): the simulated fetch dies with it, exactly as a
+    // real fetch(url, { signal }) would, and the loader state clears.
+    signal?.addEventListener("abort", () => {
+      if (activeLoad === null) return;
+      window.clearTimeout(timer);
+      finish();
+    });
   });
   return activeLoad;
 }
@@ -714,13 +655,13 @@ function loadOlderChunk(): Promise<void> {
 // setItems, which the runtime defers while a scroll phase (gesture or
 // glide) is active and commits — anchored, without movement — when the
 // phase truly settles. The demo never orchestrates scroll phases.
-function loadOlderMessages(): void {
+function loadOlderMessages(signal?: AbortSignal): void {
   if (activeLoad) return;
   if (!canLoadOlderMessages()) {
     if (topBoundaryLoadSeen) setEdgeState("no-more");
     return;
   }
-  void loadOlderChunk();
+  void loadOlderChunk(signal);
 }
 
 // --- Conversations ----------------------------------------------------------
@@ -1112,10 +1053,10 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
   return null;
 }
 
-// Live viewers are torn down when their row leaves the DOM (scrolled out,
-// replaced, or disposed) via the runtime's onUnmount callback; the animation
-// lookup is pruned there too.
-function handleRowUnmount(element: HTMLElement): void {
+// Live viewers are torn down when the runtime is done with the element for
+// good (its key removed, the row replaced, the snapshot superseded, or the
+// list disposed) via onDestroy; the animation lookup is pruned there too.
+function handleRowDestroy(element: HTMLElement): void {
   const handle = streamingViewers.get(element);
   if (handle) {
     handle.destroy();
@@ -1673,12 +1614,10 @@ virtualList = createVirtualList<Message>(viewport, {
     }
     return buildRow(message);
   },
-  estimateSize: estimateMessageHeight,
+  // The product choice for a chat: the streaming reply keeps rendering under
+  // a scroll (see the header). Structural changes stay settle-gated.
+  scrollingUpdates: "live",
   onState: (state) => {
-    if (debugGhost && state.count !== lastLoggedCount) {
-      ghostLog("count-commit", { from: lastLoggedCount, to: state.count });
-      lastLoggedCount = state.count;
-    }
     // A deferred prepend committed: close out the load it belongs to.
     if (pendingPrepend && state.count >= pendingPrepend.count) {
       pendingPrepend.finish();
@@ -1686,8 +1625,8 @@ virtualList = createVirtualList<Message>(viewport, {
     syncScrollButtons(state);
     syncMetrics(state);
   },
-  onReachStart: loadOlderMessages,
-  onUnmount: handleRowUnmount,
+  onReachStart: ({ signal }) => loadOlderMessages(signal),
+  onDestroy: handleRowDestroy,
 });
 
 // One delegated listener powers copy buttons across every mounted row.

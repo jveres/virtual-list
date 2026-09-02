@@ -210,8 +210,10 @@ The definition of correct, referenced by number throughout the code:
   clipped or gapped paint, held or not), T height re-committed without a
   change, D destroy-once or leak failures, and X a runtime throw that is
   not the lab's own chaos render failure (or an uncaught exception).
-- **demos/streaming** — the chat acceptance target (kept in-tree, excluded
-  from typecheck until the v2 runtime hosts it), compared against `main`.
+- **demos/streaming** — the chat acceptance target, hosted on the v2
+  runtime under `scrollingUpdates: "live"`: pin-to-top on send (I5 reserve
+  plus a smooth `scrollTo`), end-follow through streams, scrollback loads
+  wired to the reach signal, version branches, live tool panels.
 
 ## Browser matrix
 
@@ -282,6 +284,10 @@ not replace the physical desktop Safari and iOS Safari acceptance pass.
    desktop Safari; iPadOS and iPhone runs reported through the device
    channel and their findings fixed.)
 5. Only then: host the streaming chat demo; gauntlet against `main`.
+   (Hosted: `demos/streaming` runs on the v2 runtime in `"live"` mode —
+   pin-to-top, end-follow, scrollback with abort, branches, tool panels —
+   and is back in the typecheck and build. The gauntlet against `main` in
+   the four browsers is the remaining acceptance step.)
 
 ## Lessons carried as law
 
