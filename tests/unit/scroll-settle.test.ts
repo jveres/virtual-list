@@ -83,7 +83,7 @@ function mount(
     cancelActiveSmoothScroll: () => {
       cancelCount += 1;
     },
-    smoothScrollReachedTarget: () => !smoothActive,
+    noSmoothScrollInFlight: () => !smoothActive,
     onGestureStarted: () => {
       startCount += 1;
     },

@@ -66,44 +66,6 @@ export function bindThemeButtons(onChange: () => void): void {
   }
 }
 
-export function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
-
-/** Write textContent only when it changed, so status ticks don't dirty layout. */
-export function setTextIfChanged(
-  element: HTMLElement,
-  nextText: string,
-): string {
-  if (element.textContent !== nextText) element.textContent = nextText;
-  return nextText;
-}
-
-/** Resolve after `ms`, or immediately once `signal` aborts — never rejects. */
-export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) {
-      resolve();
-      return;
-    }
-    const timeout = window.setTimeout(resolve, ms);
-    signal?.addEventListener(
-      "abort",
-      () => {
-        window.clearTimeout(timeout);
-        resolve();
-      },
-      { once: true },
-    );
-  });
-}
-
-export function nextFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    requestAnimationFrame(() => resolve());
-  });
-}
-
 /**
  * Re-apply the document theme and sync the header buttons after a choice or
  * system change. Demo content restyles via CSS on [data-theme], so no

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Geometry, type GeometryViewport } from "../../src/geometry";
-import { mulberry32 } from "./prng";
+import { mulberry32 } from "../../demos/shared/lab";
 
 // The geometry kernel is judged by the lean-core invariants (docs/lean-core.md):
 // I1 — the resolved scroll target keeps the visible anchor's viewport

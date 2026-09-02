@@ -2,8 +2,9 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
 
 /**
- * Dev-only report sink for the labs: devices (a phone, a tablet) POST their
- * trace tail to /__lab/report and it lands in browser-artifacts/device-*.log,
+ * Dev-only report sink for the dynamic-height lab: a device (a phone, a
+ * tablet) POSTs its trace tail to /__lab/report and it lands in
+ * browser-artifacts/device-*.log,
  * one file per user agent, so a run on real Safari for iPadOS can be read
  * back on the desk.
  */

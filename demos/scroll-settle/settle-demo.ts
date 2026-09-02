@@ -365,7 +365,7 @@ function buildController(): ScrollSettleController {
     // The glide's own completion is the only thing that ends its phase:
     // Safari emits a scrollend after every programmatic write, and judging
     // "reached" by proximity ended the phase while frames were still coming.
-    smoothScrollReachedTarget: () => glide === null,
+    noSmoothScrollInFlight: () => glide === null,
     onGestureStarted: () => {
       gestures += 1;
       prematureFlagged = false;

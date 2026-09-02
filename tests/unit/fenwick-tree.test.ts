@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { FenwickTree } from "../../src/fenwick";
-import { mulberry32 } from "./prng";
+import { mulberry32 } from "../../demos/shared/lab";
 
 // The Fenwick tree is the offset engine: prefix() gives the content-space top of
 // an index, total() the full height, and indexAt() maps a pixel offset back to

@@ -40,8 +40,9 @@ pnpm run dev
   `?sticky=off` starts with the sticky day header off.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
-The labs can POST their trace to the dev server (`/__lab/report`), which
-appends it to `browser-artifacts/device-*.log`, one file per user agent.
+The dynamic-height lab can POST its trace to the dev server
+(`/__lab/report`), which appends it to `browser-artifacts/device-*.log`, one
+file per user agent.
 
 ## Runtime
 

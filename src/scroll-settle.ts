@@ -168,8 +168,8 @@ export interface ScrollSettleHost {
   canLoadAtBoundary(boundary: ScrollBoundary): boolean;
   /** Cancel an in-flight programmatic smooth scroll — a real user gesture began. */
   cancelActiveSmoothScroll(): void;
-  /** False while a programmatic smooth scroll is in flight. */
-  smoothScrollReachedTarget(): boolean;
+  /** False while a programmatic smooth scroll is in flight (a cancelled one counts as gone). */
+  noSmoothScrollInFlight(): boolean;
   /** The gesture transitioned idle → active: a scroll phase began. */
   onGestureStarted(): void;
   /** The gesture fully settled: held work may commit — the one structural moment. */
@@ -440,7 +440,7 @@ export function createScrollSettleController(
     );
   }
 
-  function canSettleUserScroll(): boolean {
+  function canSettleScrollPhase(): boolean {
     return (
       !hasActiveTouchOrPointerInput() &&
       !hasActiveWheelInput() &&
@@ -524,11 +524,11 @@ export function createScrollSettleController(
     resetScrollPhaseState();
   }
 
-  function maybeFinishUserScroll(): void {
+  function maybeFinishScrollPhase(): void {
     if (host.isDisposed() || !scrollPhaseActive || !nativeScrollEndPending) {
       return;
     }
-    if (!canSettleUserScroll()) {
+    if (!canSettleScrollPhase()) {
       if (
         ((strategy === "firefox-wheel" || strategy === "safari-wheel") &&
           wheelInputActive) ||
@@ -558,7 +558,7 @@ export function createScrollSettleController(
       if (
         host.isDisposed() ||
         !hasPendingFirefoxEdgeRelease() ||
-        !canSettleUserScroll()
+        !canSettleScrollPhase()
       ) {
         return;
       }
@@ -571,7 +571,7 @@ export function createScrollSettleController(
     settleFrame = requestAnimationFrame(() => {
       settleFrame = 0;
       if (host.isDisposed()) return;
-      maybeFinishUserScroll();
+      maybeFinishScrollPhase();
     });
   }
 
@@ -581,7 +581,7 @@ export function createScrollSettleController(
     settleTimer = window.setTimeout(() => {
       settleTimer = 0;
       if (host.isDisposed()) return;
-      maybeFinishUserScroll();
+      maybeFinishScrollPhase();
     }, delayMs);
   }
 
@@ -702,7 +702,7 @@ export function createScrollSettleController(
   }
 
   function handleScrollEnd(): void {
-    if (host.isDisposed() || !host.smoothScrollReachedTarget()) return;
+    if (host.isDisposed() || !host.noSmoothScrollInFlight()) return;
 
     if (strategy === "firefox-wheel" || strategy === "safari-wheel") {
       if (!scrollPhaseActive) return;
@@ -924,7 +924,7 @@ export function createScrollSettleController(
 
   function handleScrollPhaseMaybeEnd(): void {
     if (hasActiveTouchOrPointerInput()) return;
-    maybeFinishUserScroll();
+    maybeFinishScrollPhase();
     if (
       scrollPhaseActive &&
       !scrollPhaseMoved &&

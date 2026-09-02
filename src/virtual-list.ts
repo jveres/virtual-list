@@ -1464,7 +1464,7 @@ export function createVirtualList<T>(
     // Safari emits a scrollend after every programmatic write; judging
     // "reached" by proximity (within 2px) ended the phase while the glide
     // still had 1px frames to write, and a commit could land under it.
-    smoothScrollReachedTarget: () => glide === null,
+    noSmoothScrollInFlight: () => glide === null,
     onGestureStarted: () => {},
     onGestureSettled: () => {
       // The phase reached idle: everything held commits, once — and only

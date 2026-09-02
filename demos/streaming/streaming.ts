@@ -1862,9 +1862,7 @@ virtualList = createVirtualList<ChatRow>(viewport, {
         if (pill) pill.textContent = row.label;
         return existing;
       }
-      const header = buildSectionHeader(row.label);
-      header.dataset.key = rowKey(row);
-      return header;
+      return buildSectionHeader(row.label);
     }
     if (existing) {
       const updated = updateRow(existing, row);

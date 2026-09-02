@@ -331,7 +331,10 @@ describe("v2 runtime — commits and slots", () => {
 
   it("a command to the end re-engages following even when growth outran its glide", () => {
     const initial = range(0, 50);
-    const h = mount(initial, { followBehavior: "smooth" });
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
     h.userScroll(4000);
     h.settle();
     expect(h.list.state.following).toBe(false);
