@@ -1220,6 +1220,66 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a resize observed before its clamp's scroll event still keeps the pin stance", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    void h.list.scrollTo("m45", { align: "start" });
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    // An in-page composer resize: the engine clamps in the frame's layout,
+    // the observer runs in that frame, and the clamp's scroll event only
+    // arrives in the next one.
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    expect(h.viewport.scrollTop).toBe(4400);
+    h.viewport.dispatchEvent(new Event("scroll"));
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(4500);
+    expect(h.list.positionOf("m45")?.top).toBe(4500);
+    h.list.dispose();
+  });
+
+  it("a held snapshot with an explicit viewport anchor overrides the pin stance", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "same-height",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48);
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4400);
+    // The host asks for the viewport to be kept: its intent wins over the
+    // runtime's own pin stance.
+    h.list.setItems([...initial, message(50, "page")], { anchor: "viewport" });
+    h.settle();
+    await expect(landed).resolves.toBe(false);
+    expect(h.viewport.scrollTop).toBe(4400);
+    h.list.dispose();
+  });
+
+  it("a gesture ending within a pixel of the end is following without a glide", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4399.3);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    vi.advanceTimersByTime(700);
+    expect(h.viewport.scrollTop).toBe(4399.3); // No phase to move 0.7px.
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;

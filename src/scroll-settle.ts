@@ -301,8 +301,6 @@ export function createScrollSettleController(
     }
     resetScrollSample(nextScrollTop);
     if (
-      usesWheelScrollEndFallback() &&
-      nativeScrollEndPending &&
       wheelPendingNativeScrollEndTop !== null &&
       !programmaticScroll &&
       !isRubberBandOverscrolled() &&
@@ -501,9 +499,7 @@ export function createScrollSettleController(
   }
 
   function finishScrollPhase(): void {
-    cancelScrollPhaseTimers();
-    resetScrollSettleState();
-    resetScrollPhaseState();
+    cancelScrollPhase();
     if (host.isDisposed()) return;
     host.onGestureSettled();
   }
@@ -522,8 +518,8 @@ export function createScrollSettleController(
       if (
         (usesWheelScrollEndFallback() && hasActiveWheelInput()) ||
         hasActiveChromiumEdgeWheel() ||
-        (strategy === "chromium-wheel" &&
-          (chromiumWheelAwaitingFinalScrollEnd || chromiumEdgeWheelSuppressed))
+        chromiumWheelAwaitingFinalScrollEnd ||
+        chromiumEdgeWheelSuppressed
       ) {
         return;
       }
@@ -903,6 +899,8 @@ export function createScrollSettleController(
         }
       }
       if (!handleScrollPhaseStart()) return;
+      // An outward wheel at a loadable edge moves nothing, yet it is a
+      // gesture in intent: its phase must settle like one that moved.
       if (outwardBoundary) scrollPhaseMoved = true;
       handleWheelInputSettle(firefoxProtectedEdge);
       return;
@@ -993,7 +991,7 @@ export function createScrollSettleController(
     handleScrollPhaseStart();
   }
 
-  function settlePointerScrollWithoutNativeScrollEnd(): void {
+  function markPointerReleaseScrollEnd(): void {
     if (
       activePointers.size > 0 ||
       !scrollPhaseActive ||
@@ -1013,7 +1011,7 @@ export function createScrollSettleController(
       return;
     }
     activePointers.delete(event.pointerId);
-    settlePointerScrollWithoutNativeScrollEnd();
+    markPointerReleaseScrollEnd();
     handleScrollPhaseMaybeEnd();
   }
 

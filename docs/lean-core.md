@@ -153,9 +153,12 @@ The definition of correct, referenced by number throughout the code:
   height change while the viewport stands on the pin (a window resize, a
   device rotation) re-resolves to the pin: the row stays at the top and the
   reserve is sized to the new height. The engine clamps the position and
-  dispatches that scroll before the resize is observed; the controller
-  reads a scroll landing on the new maximum right after a client-height
-  change as layout, never as input.
+  dispatches that scroll either before the resize is observed (a window
+  resize) or in the frame after it (an in-page composer resize); the
+  controller reads a scroll landing on the new maximum right after a
+  client-height change as layout, never as input, and the runtime tells
+  the clamp by its direction — it pulls a position from past the stale
+  end back onto it.
 - **I6** — an idle size change commits in the same painted frame as its
   observation (after layout, before paint); a phase-time change commits at
   the settle, or, under `"live"`, at once when no scroll write is needed.

@@ -409,8 +409,7 @@ export function createVirtualList<T>(
    */
   const remeasureRequests = new Map<string, AnchorPolicy>();
   /** A host remeasure has claimed the next measurement commit's anchor. */
-  const remeasureOwnsNextCommit = (): boolean =>
-    remeasureRequests.size > 0 || remeasurePolicy !== undefined;
+  const remeasureOwnsNextCommit = (): boolean => remeasurePolicy !== undefined;
   let remeasureFrame = 0;
   let remeasurePolicy: AnchorPolicy | undefined;
   let booting = true;
@@ -738,7 +737,6 @@ export function createVirtualList<T>(
     const height = viewport.clientHeight;
     const heightChanged =
       Math.abs(height - lastViewportHeight) > MEASURE_EPSILON_PX;
-    lastViewportHeight = height;
     // The observer's first delivery, and any later size-neutral one, is
     // not a resize: nothing to commit.
     if (!widthChanged && !heightChanged) return;
@@ -768,6 +766,11 @@ export function createVirtualList<T>(
       if (resizeHeld !== "pin") resizeHeld = stoodOnPin ? "pin" : "viewport";
       publish();
     }
+    // Adopted only now: this delivery's own publish must not take the
+    // clamped position for where the viewport stood — the clamp's scroll
+    // event may still be on its way (an in-page composer resize clamps in
+    // the frame's layout and reports in the next one).
+    lastViewportHeight = height;
   });
   viewportObserver.observe(viewport);
 
@@ -1249,7 +1252,7 @@ export function createVirtualList<T>(
         for (const [key, row] of applying.newRows) {
           const old = rows.get(key);
           rows.set(key, row);
-          if (old && old !== row) doomed.push(old);
+          if (old) doomed.push(old);
         }
         teardownFailures.push(...destroyAll(doomed));
         if (disposed) return;
@@ -1579,11 +1582,13 @@ export function createVirtualList<T>(
       if (pending !== null || dirtyRows.size > 0) {
         // Rows grown under a pinned landing (the reply streaming below the
         // pinned prompt) commit on the pin's stance, not on a guess.
-        // A held pin stance implies a pin; a pending snapshot must keep it.
-        const pinnedKey = geometry.pinned as string;
+        // A live structural commit may have removed the pinned row since
+        // the stance was held; a pending snapshot must keep it.
+        const pinnedKey = geometry.pinned;
         const onPin =
           explicitPolicy === undefined &&
           resizeHeld === "pin" &&
+          pinnedKey !== null &&
           (pending === null ||
             (pending.anchor === "auto" && pending.keys.includes(pinnedKey)));
         if (onPin) commit(null, "pin", "allowed", "keep");
@@ -1908,10 +1913,12 @@ export function createVirtualList<T>(
 
   /** Start a follow glide when the viewport is not already at the end. */
   function followIfBehindEnd(): void {
+    // The same band as atEnd: a viewport within a pixel of the end is
+    // there, and never starts a glide phase to move under a pixel.
     const behind =
       Math.abs(
         geometry.maxScrollTop(viewport.clientHeight) - viewport.scrollTop,
-      ) > SCROLL_WRITE_EPSILON_PX;
+      ) > AT_EDGE_EPSILON_PX;
     if (behind) startFollowGlide();
   }
 
