@@ -102,6 +102,68 @@ describe("chat transcript round trip", () => {
     expect(parseTranscriptMarkdown(text)).toEqual(turns);
   });
 
+  it("closes a body cut inside a code block so the next turn stays a turn", () => {
+    const turns: StoredTurn[] = [
+      { role: "assistant", markdown: "Partial:\n\n```ts\nconst a = 1;" },
+      { role: "user", markdown: "Go on" },
+      { role: "assistant", markdown: "```ts\nconst b = 2;\n```" },
+    ];
+    const text = transcriptMarkdown(turns, days);
+    expect(parseTranscriptMarkdown(text)).toEqual([
+      { role: "assistant", markdown: "Partial:\n\n```ts\nconst a = 1;\n```" },
+      turns[1],
+      turns[2],
+    ]);
+  });
+
+  it("keeps a body that is only a heading, and a reply ending in one, in a tagged file", () => {
+    const turns: StoredTurn[] = [
+      { role: "user", markdown: "## Just a heading", sentAt: DAY },
+      { role: "assistant", markdown: "Body\n\n## Closing", sentAt: DAY + 1 },
+      { role: "user", markdown: "Next", sentAt: DAY + 2 },
+    ];
+    expect(parseTranscriptMarkdown(transcriptMarkdown(turns, days))).toEqual(
+      turns,
+    );
+  });
+
+  it("settles a tool call still running at export time, as persistence does", () => {
+    const turns: StoredTurn[] = [
+      {
+        role: "assistant",
+        markdown: "Working",
+        toolCalls: [
+          {
+            name: "code",
+            status: "running",
+            durationMs: 9,
+            input: "",
+            output: "",
+          },
+        ],
+      },
+    ];
+    const text = transcriptMarkdown(turns, days);
+    expect(text).toContain("> Tool call `code` (error, 9ms)");
+    expect(parseTranscriptMarkdown(text)[0]?.toolCalls).toEqual([
+      { name: "code", status: "error", durationMs: 9, input: "", output: "" },
+    ]);
+  });
+
+  it("falls back to the summaries when the turn comment's calls are unusable", () => {
+    const text = [
+      "**Assistant**",
+      '<!-- turn {"toolCalls":[{"name":"x","status":"running"}]} -->',
+      "",
+      "> Tool call `x` (done, 3ms)",
+      "",
+      "Body",
+    ].join("\n");
+    expect(parseTranscriptMarkdown(text)[0]?.toolCalls).toEqual([
+      { name: "x", status: "done", durationMs: 3, input: "", output: "" },
+    ]);
+  });
+
   it("returns nothing for a file without turns", () => {
     expect(parseTranscriptMarkdown("# notes\n\nplain text\n")).toEqual([]);
   });

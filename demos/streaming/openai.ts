@@ -170,7 +170,8 @@ function storedToolCalls(value: unknown): ChatToolCall[] | undefined {
 }
 
 // Any stored value → validated turns; shared by the IndexedDB record (a
-// structured-clone array) and the legacy localStorage JSON.
+// structured-clone array), the legacy localStorage JSON, and an imported
+// transcript.
 export function validateStoredTurns(value: unknown): StoredTurn[] {
   if (!Array.isArray(value)) return [];
   const turns: StoredTurn[] = [];

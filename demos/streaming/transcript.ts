@@ -26,6 +26,20 @@ function commentSafe(json: string): string {
   return json.replace(/--/g, "-\\u002d");
 }
 
+const FENCE = /^\s*(```|~~~)/;
+
+/** A body cut inside a code block (a reply stopped mid-fence) is closed, so the next turn's marker stays a marker. */
+function closeFences(body: string): string {
+  let open: string | null = null;
+  for (const line of body.split("\n")) {
+    const fence = FENCE.exec(line)?.[1];
+    if (!fence) continue;
+    if (open === null) open = fence;
+    else if (fence === open) open = null;
+  }
+  return open === null ? body : `${body}\n${open}`;
+}
+
 export function transcriptMarkdown<M extends TranscriptMessage>(
   messages: readonly M[],
   days: TranscriptDays<M>,
@@ -41,28 +55,29 @@ export function transcriptMarkdown<M extends TranscriptMessage>(
     lines.push(message.role === "user" ? USER_MARKER : ASSISTANT_MARKER);
     const meta: Record<string, unknown> = {};
     if (message.sentAt !== undefined) meta.sentAt = message.sentAt;
-    if (message.toolCalls?.length) {
-      meta.toolCalls = message.toolCalls.map(
-        ({ name, status, durationMs, input, output }) => ({
-          name,
-          status,
-          durationMs,
-          input,
-          output,
-        }),
-      );
-    }
+    // A call still running when the file is written is stored as
+    // persistence stores it: settled, as an error.
+    const toolCalls = message.toolCalls?.map(
+      ({ name, status, durationMs, input, output }) => ({
+        name,
+        status: status === "running" ? "error" : status,
+        durationMs,
+        input,
+        output,
+      }),
+    );
+    if (toolCalls?.length) meta.toolCalls = toolCalls;
     if (Object.keys(meta).length > 0) {
       lines.push(`${TURN_TAG}${commentSafe(JSON.stringify(meta))} -->`);
     }
     lines.push("");
-    for (const call of message.toolCalls ?? []) {
+    for (const call of toolCalls ?? []) {
       lines.push(
         `> Tool call \`${call.name}\` (${call.status}, ${Math.round(call.durationMs)}ms)`,
         "",
       );
     }
-    const body = message.markdown.trim();
+    const body = closeFences(message.markdown.trim());
     if (body) lines.push(body, "");
     else if (message.status && message.status !== "done") {
       lines.push(`_(${message.status})_`, "");
@@ -94,34 +109,36 @@ function isMarker(line: string): boolean {
 
 /**
  * Parse a transcript back into stored turns. Fenced code is opaque (a
- * marker inside a code block is text); a day heading is skipped when it
- * carries the day tag, or — in a file written before the tags — when a
- * role marker follows it.
+ * marker inside a code block is text) up to the closing fence of the same
+ * kind; the serializer closes every fence it writes. A day heading is
+ * skipped when it carries the day tag, or — in a file written before the
+ * tags, which has none — when a role marker follows it.
  */
 export function parseTranscriptMarkdown(text: string): StoredTurn[] {
   const lines = text.split(/\r?\n/);
+  const tagged = lines.includes(DAY_TAG);
   const turns: ParsedTurn[] = [];
   let current: ParsedTurn | null = null;
-  let inFence = false;
+  let openFence: string | null = null;
   let skipHeading = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string;
-    if (current && /^\s*(```|~~~)/.test(line)) {
-      inFence = !inFence;
-      current.body.push(line);
-      continue;
-    }
-    if (inFence) {
+    const fence = current ? FENCE.exec(line)?.[1] : undefined;
+    if (fence && (openFence === null || fence === openFence)) {
+      openFence = openFence === null ? fence : null;
       current?.body.push(line);
       continue;
     }
-    if (i === 0 && line === TITLE) continue;
+    if (openFence !== null) {
+      current?.body.push(line);
+      continue;
+    }
     if (line === DAY_TAG) {
       skipHeading = true;
       continue;
     }
     if (line.startsWith("## ")) {
-      const legacyDay = !skipHeading && isMarker(nextNonBlank(lines, i + 1));
+      const legacyDay = !tagged && isMarker(nextNonBlank(lines, i + 1));
       if (skipHeading || legacyDay) {
         skipHeading = false;
         continue;
@@ -173,13 +190,17 @@ export function parseTranscriptMarkdown(text: string): StoredTurn[] {
   return validateStoredTurns(
     turns.map((turn) => {
       const markdown = turn.body.join("\n").trim();
+      // The comment's calls carry the payloads; the summaries stand in
+      // when a hand-edited comment yields none.
+      const fromMeta = validateStoredTurns([
+        { role: turn.role, markdown: "-", toolCalls: turn.meta?.toolCalls },
+      ])[0]?.toolCalls;
       return {
         role: turn.role,
         markdown: STATUS_PLACEHOLDER.test(markdown) ? "" : markdown,
         sentAt: turn.meta?.sentAt,
         toolCalls:
-          turn.meta?.toolCalls ??
-          (turn.summaries.length > 0 ? turn.summaries : undefined),
+          fromMeta ?? (turn.summaries.length > 0 ? turn.summaries : undefined),
       };
     }),
   );

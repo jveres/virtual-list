@@ -1043,7 +1043,7 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
 
 // The seed-time snapshot of the persisted history. Seeding is synchronous, so
 // the async IndexedDB read happens up front — at boot and before a provider
-// switch — into this cache.
+// switch — into this cache; an import replaces it outright.
 let openAIHistory: readonly StoredTurn[] = [];
 // A transcript imported under the simulated provider; session-only.
 let importedConversation: readonly StoredTurn[] | null = null;
@@ -1924,7 +1924,18 @@ stickyHeaders = createStickyHeaders({
 // document: day separators become headings, a tool call a one-line note, a
 // reply that never finished its status.
 function transcriptMarkdown(): string {
-  return transcriptToMarkdown(transcript, { dayOf, dayLabel });
+  // A file is read later: a dated day gets its full date, not "Today".
+  return transcriptToMarkdown(transcript, {
+    dayOf,
+    dayLabel: (day) =>
+      isDatedDay(day)
+        ? new Date(day).toLocaleDateString(undefined, {
+            year: "numeric",
+            month: "long",
+            day: "numeric",
+          })
+        : dayLabel(day),
+  });
 }
 
 function downloadTranscript(): void {
