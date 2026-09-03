@@ -1384,7 +1384,11 @@ function formatCount(value: number): string {
 
 function syncScrollButtons(state: VirtualListState): void {
   scrollTopBtn.hidden = state.atStart && !canLoadOlderMessages();
-  scrollBottomBtn.hidden = state.atEnd || state.following || sendGlideActive;
+  // Following to the end will get there on its own; following under
+  // "keep-start" stops at the reply's start, and the end may well be off
+  // screen — the button is the way there.
+  const headedToEnd = state.following && followMode === "end";
+  scrollBottomBtn.hidden = state.atEnd || headedToEnd || sendGlideActive;
 }
 
 function syncMetrics(state = virtualList?.state): void {
