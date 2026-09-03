@@ -702,6 +702,10 @@ interface AISettingsPanelOptions {
   onProviderChange?: (provider: AIProvider) => void;
   /** Fires after the stored OpenAI history was cleared. */
   onClearHistory?: () => void;
+  /** Whether an import has replaced the simulated conversation. */
+  canRestoreConversation?: () => boolean;
+  /** Fires when the user asks for the built-in conversation back. */
+  onRestoreConversation?: () => void;
 }
 
 /** Wires the header's AI settings dialog: load, persist, open/close. */
@@ -743,16 +747,30 @@ export function initAISettingsPanel(
     toggle.classList.toggle("active", getAISettings().provider === "openai");
   };
 
-  // Under the simulated provider nothing but the provider choice shows;
-  // every OpenAI-specific input, action, and note belongs to OpenAI.
+  // Under the simulated provider nothing but the provider choice shows —
+  // plus, once an import has replaced the built-in conversation, the way
+  // back to it; every OpenAI-specific input, action, and note belongs to
+  // OpenAI.
   const openAIFields = panel.querySelectorAll<HTMLElement>(
     '[data-provider="openai"]',
   );
+  const simulatedFields = panel.querySelectorAll<HTMLElement>(
+    '[data-provider="simulated"]',
+  );
   const syncProviderFields = () => {
-    const hidden = providerSelect.value !== "openai";
-    for (const field of openAIFields) field.hidden = hidden;
+    const openAI = providerSelect.value === "openai";
+    for (const field of openAIFields) field.hidden = !openAI;
+    const restorable = !openAI && options.canRestoreConversation?.() === true;
+    for (const field of simulatedFields) field.hidden = !restorable;
   };
   syncProviderFields();
+  mustGet("ai-restore-conversation", HTMLButtonElement).addEventListener(
+    "click",
+    () => {
+      options.onRestoreConversation?.();
+      syncProviderFields();
+    },
+  );
 
   const persist = () => {
     const previousProvider = getAISettings().provider;
@@ -789,6 +807,7 @@ export function initAISettingsPanel(
       panel.close();
       return;
     }
+    syncProviderFields(); // An import since the last open may show a field.
     panel.showModal();
     // Move initial focus to the dialog surface so opening doesn't
     // focus-activate the first select control.

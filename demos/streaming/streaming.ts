@@ -1820,6 +1820,11 @@ initAISettingsPanel({
     // while the simulated transcript is showing needs no repaint.
     if (getAISettings().provider === "openai") reloadConversation();
   },
+  canRestoreConversation: () => importedConversation !== null,
+  onRestoreConversation: () => {
+    importedConversation = null;
+    reloadConversation();
+  },
 });
 
 scrollTopBtn.addEventListener("click", () => {
