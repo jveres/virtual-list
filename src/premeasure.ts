@@ -14,7 +14,7 @@
 // dimensionally stabilized by the host (fixed-extent boxes) or re-enter
 // through the settle-gated update pipeline.
 
-export interface ItemMeasurerConfig {
+interface ItemMeasurerConfig {
   viewport: HTMLElement;
   /** Class names applied to the measurement root so item CSS that keys off
    * the canvas (e.g. `.chat-canvas .message`) matches during measurement.

@@ -738,6 +738,86 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a taller viewport during a pinned command glide still lands the row at the top", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48);
+    // The composer shrinks mid-glide: the taller viewport shortens the
+    // range and the engine clamps the position below the pin. The stance
+    // the pre-resize position decided — on the pin — wins at the settle.
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4400);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    expect(h.list.state.totalSize).toBe(5200); // A 200px reserve under m45.
+    expect(h.viewport.scrollTop).toBe(4500);
+    expect(h.list.positionOf("m45")?.top).toBe(4500);
+    h.list.dispose();
+  });
+
+  it("a held resize settling away from the pin keeps the position", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    void h.list.scrollTo("m45", { align: "start" });
+    expect(h.viewport.scrollTop).toBe(4500);
+    h.userScroll(4000); // The phase is open, off the pin.
+    height = 500;
+    fireResize(1, h.viewport, 500);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(4000);
+    expect(h.list.state.totalSize).toBe(5000); // The reserve drained.
+    expect(h.list.state.following).toBe(false);
+    // Nothing else changed: the next settle commits nothing.
+    h.userScroll(3900);
+    const published = h.states.length;
+    h.settle();
+    expect(h.states.length).toBe(published);
+    h.list.dispose();
+  });
+
+  it("a resize during a follow glide never publishes a transient loss of following", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+      height: () => height,
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed); // A follow glide toward 4600 starts.
+    vi.advanceTimersByTime(48);
+    const published = h.states.length;
+    height = 500;
+    fireResize(1, h.viewport, 500);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4700);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(4700);
+    expect(h.list.state.following).toBe(true);
+    expect(h.states.slice(published).map((s) => s.following)).not.toContain(
+      false,
+    );
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;

@@ -1,4 +1,4 @@
-export interface Message {
+interface Message {
   role: "user" | "assistant";
   markdown: string;
 }

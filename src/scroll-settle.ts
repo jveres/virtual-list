@@ -158,7 +158,7 @@ export function detectScrollSettleStrategy(
 }
 
 /** What the settle controller needs from the virtualizer that owns it. */
-export interface ScrollSettleHost {
+interface ScrollSettleHost {
   viewport: HTMLElement;
   strategy: VirtualListScrollSettleStrategy;
   measureEpsilon: number;

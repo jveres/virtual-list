@@ -48,7 +48,7 @@ export interface Commit {
 }
 
 /** Opaque transaction token from `capture`; spend it once in `resolve`. */
-export interface Capture {
+interface Capture {
   readonly viewport: GeometryViewport;
   readonly policy: CapturePolicy;
   readonly atEnd: boolean;

@@ -373,8 +373,10 @@ export function createVirtualList<T>(
   // The position last observed through a scroll event or a commit: what the
   // viewport stood on BEFORE a resize the engine may already have clamped.
   let lastObservedTop = viewport.scrollTop;
-  // A viewport height change during a phase: its commit waits for the settle.
-  let resizeHeld = false;
+  // A viewport height change during a phase: its commit waits for the
+  // settle, carrying the stance the pre-resize position decided (I5) — the
+  // engine's clamp has moved the viewport off the pin by then.
+  let resizeHeld: "pin" | "viewport" | null = null;
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
   const measurer: ItemMeasurer = createItemMeasurer({
@@ -395,6 +397,8 @@ export function createVirtualList<T>(
   const liveScopes: Scope[] = [];
   let glide: Glide | null = null;
   let glideKind: "command" | "follow" | null = null;
+  // The in-flight command glide's destination is an align:"start" pin.
+  let glideToPin = false;
   /** Smooth end-follow survives the quiet gap between consecutive glide legs. */
   let smoothFollowArmed = false;
   /**
@@ -742,14 +746,16 @@ export function createVirtualList<T>(
     const stoodOnPin =
       heightChanged &&
       pinTop !== null &&
-      Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX;
+      (Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX ||
+        // A command gliding onto the pin stands on it in intent.
+        (glideKind === "command" && glideToPin));
     if (idle()) {
       commit(null, stoodOnPin ? "pin" : "viewport", "allowed", "keep");
     } else {
       // The reserve (I5) is sized to the viewport by a commit: a height
       // change during a phase with nothing else held still needs one at
       // the settle, or a pinned landing keeps a stale strip below it.
-      if (heightChanged) resizeHeld = true;
+      if (heightChanged) resizeHeld = stoodOnPin ? "pin" : "viewport";
       publish();
     }
   });
@@ -1545,16 +1551,12 @@ export function createVirtualList<T>(
       if (remeasureReady) remeasurePolicy = undefined;
       if (pending !== null || dirtyRows.size > 0) {
         commit(null, explicitPolicy);
-      } else if (resizeHeld) {
-        const pinTop = geometry.pinTop;
-        const standsOnPin =
-          pinTop !== null &&
-          Math.abs(viewport.scrollTop - pinTop) <= AT_EDGE_EPSILON_PX;
-        commit(null, standsOnPin ? "pin" : "viewport", "allowed", "keep");
+      } else if (resizeHeld !== null) {
+        commit(null, resizeHeld, "allowed", "keep");
       } else {
         publish();
       }
-      resizeHeld = false;
+      resizeHeld = null;
       // A completed command to the end is explicit follow intent: growth
       // that outran its glide (fast streaming) must not read as "the user
       // is not at the end" — a genuine interruption resolved it before this.
@@ -1836,6 +1838,7 @@ export function createVirtualList<T>(
         guarded(() => {
           glide = null;
           glideKind = null;
+          glideToPin = false;
           if (!completed || disposed) {
             done(false);
             return;
@@ -1849,6 +1852,7 @@ export function createVirtualList<T>(
         }),
     );
     glideKind = "command";
+    glideToPin = keyed && scrollOptions.align === "start";
   }
 
   /**
@@ -1890,6 +1894,7 @@ export function createVirtualList<T>(
         guarded(() => {
           glide = null;
           glideKind = null;
+          glideToPin = false;
           if (!disposed) controller.markSettlePending();
         }),
     );

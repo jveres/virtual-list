@@ -40,7 +40,7 @@ const MAX_DURATION_MS = 1400;
  * distance and capped at `approachCapMs`, so a long trip cruises and then
  * decelerates through the very same landing.
  */
-export interface GlidePace {
+interface GlidePace {
   landingMs: number;
   landingPx: number;
   approachCapMs: number;
