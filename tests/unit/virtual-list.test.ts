@@ -1831,13 +1831,13 @@ describe("v2 runtime — commands", () => {
     h.userScroll(2000);
     h.settle();
     const before = states.length;
-    // Two opposite changes below the anchor: m23 moves down 100px while
+    // Two opposite changes below the anchor: m23 moves down 50px while
     // count, window, edges, totalSize and held all stay as they were.
-    h.heights.set(22, 200);
-    h.heights.set(25, 0.5);
-    fireResize(0, h.rowElement("msg 22"), 200);
-    expect(h.list.positionOf("m23")?.top).toBe(2400);
-    fireResize(0, h.rowElement("msg 25"), 0.5);
+    h.heights.set(22, 150);
+    h.heights.set(25, 50);
+    fireResize(0, h.rowElement("msg 22"), 150);
+    fireResize(0, h.rowElement("msg 25"), 50);
+    expect(h.list.positionOf("m23")?.top).toBe(2350);
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
     expect(states.length).toBeGreaterThan(before);
     h.list.dispose();
