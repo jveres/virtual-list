@@ -1433,6 +1433,31 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("heights quantize to the device grid at a fractional ratio, so offsets never sit on half device pixels", () => {
+    const original = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", {
+      value: 1.5,
+      configurable: true,
+    });
+    try {
+      const h = mount(range(0, 50));
+      // 100px is 150 device pixels: unchanged. 41.2px is 61.8 device pixels:
+      // rounded up to 62, which is 41.333 CSS px — not 42.
+      h.heights.set(3, 41.2);
+      const grown = [...range(0, 50)];
+      grown[3] = message(3, "fractional");
+      h.list.setItems(grown);
+      expect(h.list.positionOf("m3")?.height).toBeCloseTo(62 / 1.5, 6);
+      expect(h.list.positionOf("m4")?.top).toBeCloseTo(300 + 62 / 1.5, 6);
+      h.list.dispose();
+    } finally {
+      Object.defineProperty(window, "devicePixelRatio", {
+        value: original,
+        configurable: true,
+      });
+    }
+  });
+
   it("a commit's scroll write lands on the device-pixel grid at a fractional ratio", () => {
     const original = window.devicePixelRatio;
     Object.defineProperty(window, "devicePixelRatio", {
@@ -1443,14 +1468,14 @@ describe("v2 runtime — commits and slots", () => {
       const h = mount(range(0, 50));
       h.userScroll(2050); // 50px into m20.
       h.settle();
-      // A row above grows by 1px: the anchor's coordinate is kept at 2051,
-      // which is not a device pixel at 1.25 — the write lands on the
-      // nearest one, 2051.2 (2564 device pixels).
+      // A row above grows to 101px — 101.6 on the device grid (127 device
+      // pixels): the anchor's coordinate moves to 2051.6, and the write
+      // lands on the nearest device pixel, 2052 (2565 device pixels).
       h.heights.set(3, 101);
       const grown = [...range(0, 50)];
       grown[3] = message(3, "one pixel taller");
       h.list.setItems(grown);
-      expect(h.viewport.scrollTop).toBe(2051.2);
+      expect(h.viewport.scrollTop).toBe(2052);
       h.list.dispose();
     } finally {
       Object.defineProperty(window, "devicePixelRatio", {

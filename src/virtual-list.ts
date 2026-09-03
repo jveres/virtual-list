@@ -274,15 +274,26 @@ const EDGE_EXIT_PX = 1200;
 const HEIGHT_NOISE = 1e-6;
 
 /**
- * Committed heights are whole pixels (rounded up, so content is never
- * clipped by the quantization). Fractional heights made every offset,
- * canvas size, and anchor target fractional; engines then snap transformed
- * rows to device pixels differently as the scroll position changes, which
- * showed as a 1px layout shift after a top load. Integral geometry has no
- * such seam: anchor writes land exactly.
+ * Committed heights are whole DEVICE pixels (rounded up, so content is
+ * never clipped by the quantization): a whole CSS pixel at an integral
+ * ratio, half of one at 2x, two thirds at 1.5x. Fractional heights made
+ * every offset, canvas size, and anchor target fractional; engines then
+ * snap transformed rows to device pixels differently as the scroll
+ * position changes, which showed as a 1px layout shift after a top load —
+ * and whole CSS pixels at a fractional ratio (Windows at 150%) put every
+ * offset on a half device pixel, where rows snapped up or down on their
+ * own and danced by a device pixel on each commit. Geometry integral on
+ * the device grid has no such seam: anchor writes land exactly.
  */
 function quantizeHeight(height: number): number {
-  return Math.max(1, Math.ceil(height - HEIGHT_NOISE));
+  const ratio = devicePixelRatioNow();
+  return Math.max(1 / ratio, Math.ceil(height * ratio - HEIGHT_NOISE) / ratio);
+}
+
+/** The device pixel ratio, 1 where there is no window (tests, SSR). */
+function devicePixelRatioNow(): number {
+  const ratio = globalThis.devicePixelRatio;
+  return Number.isFinite(ratio) && ratio > 0 ? ratio : 1;
 }
 const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
@@ -295,7 +306,7 @@ const SCROLL_WRITE_EPSILON_PX = 0.5;
  * Whole pixels at integral ratios, as before.
  */
 function snapToDevicePixel(value: number): number {
-  const ratio = globalThis.devicePixelRatio || 1;
+  const ratio = devicePixelRatioNow();
   return Math.round(value * ratio) / ratio;
 }
 const AT_EDGE_EPSILON_PX = 1;
