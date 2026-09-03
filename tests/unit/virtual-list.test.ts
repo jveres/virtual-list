@@ -117,6 +117,7 @@ function mount(
     followBehavior?: VirtualListOptions<Msg>["followBehavior"];
     settleStrategy?: VirtualListScrollSettleStrategy;
     edgeSlots?: VirtualListOptions<Msg>["edgeSlots"];
+    anchorable?: (m: Msg) => boolean;
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     /** Reports how many fresh peers share the detached root at each read. */
@@ -194,6 +195,7 @@ function mount(
     scrollingUpdates: hooks.scrollingUpdates ?? "same-height",
     followBehavior: hooks.followBehavior,
     edgeSlots: hooks.edgeSlots,
+    anchorable: hooks.anchorable,
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
@@ -1807,6 +1809,26 @@ describe("v2 runtime — commits and slots", () => {
     });
     vi.advanceTimersByTime(2_000);
     await expect(command).resolves.toBe(true);
+  });
+
+  it("a row that is not anchorable hands the anchor to the message under it: a load into its day keeps that message put", () => {
+    const initial = [message(100, "header"), ...range(13, 30)];
+    const h = mount(initial, {
+      scrollingUpdates: "live",
+      anchorable: (m) => m.id !== 100,
+    });
+    h.userScroll(500);
+    h.userScroll(0); // Momentum reached the top: the header shows, m13 anchors.
+    // The day extends upward: the same header now heads m1.
+    h.list.setItems([message(100, "header"), ...range(1, 30)], {
+      anchor: "viewport",
+    });
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+    // m13 keeps its coordinate: one row below the viewport top, as before.
+    expect(h.list.positionOf("m13")?.top).toBe(13 * ROW_H);
+    expect(h.viewport.scrollTop).toBe(12 * ROW_H);
+    h.list.dispose();
   });
 
   it("live: a replaced anchor whose successor moved down waits for the settle, which lands on the successor", () => {

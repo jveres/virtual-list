@@ -125,6 +125,14 @@ export interface VirtualListOptions<T> {
    * exactly once per element.
    */
   onDestroy?: (element: HTMLElement, item: T) => void;
+  /**
+   * Whether an item may be the reading anchor — the row whose viewport
+   * coordinate a commit preserves. A separator (a day header) should say
+   * no: the anchor then falls to the message under it, so a scrollback load
+   * that extends its day above it leaves that message where it was instead
+   * of following the header. Every item anchors when not given.
+   */
+  anchorable?: (item: T) => boolean;
   /** Settle strategy; detected from the user agent when not given. */
   settleStrategy?: VirtualListScrollSettleStrategy;
   /** Fixed-height loader slots at the edges; see EdgeSlot. */
@@ -343,7 +351,13 @@ export function createVirtualList<T>(
   // Heights are never estimated: every key is measured before it commits,
   // so the kernel's estimate is only a validation placeholder.
   const geometry = new Geometry(1);
-  geometry.setAnchorExclusion(isSlotKey);
+  const anchorable = options.anchorable;
+  geometry.setAnchorExclusion((key) => {
+    if (isSlotKey(key)) return true;
+    if (anchorable === undefined) return false;
+    const row = rows.get(key);
+    return row !== undefined && !anchorable(row.item);
+  });
   const rows = new Map<string, Row<T>>();
   const edgeSlots: Record<Edge, EdgeSlot | null> = {
     start: ownEdgeSlot(options.edgeSlots?.start),

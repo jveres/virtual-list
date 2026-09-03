@@ -87,6 +87,7 @@ const list = createVirtualList(viewport, {
   onReachStart: ({ signal }) => loadOlder(signal),
   onReachEnd: ({ signal }) => loadNewer(signal),
   onDestroy: (element) => {},
+  anchorable: (item) => item.kind !== "day", // separators never anchor
   settleStrategy: undefined, // detected from the user agent
 });
 
@@ -115,6 +116,10 @@ list.dispose();
   anchored instead of re-gluing an end-positioned transcript.
 - Edge slots are fixed-height host rows kept at the surface's edges — a
   scrollback loader in the flow — that are geometry but never the anchor.
+- `anchorable` says which items may be the reading anchor. A separator
+  (a day header) should say no: the anchor falls to the message under it,
+  so a scrollback load that extends its day above it leaves that message
+  where it was instead of following the header up.
 
 `demos/shared/sticky-headers.ts` is a companion that floats the current
 section header over the viewport using only `positionOf`/`elementOf`.

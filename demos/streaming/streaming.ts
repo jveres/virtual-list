@@ -97,16 +97,13 @@ interface Message {
   sentAt?: number;
 }
 
-/** A day separator row, interleaved into the runtime's items. Its identity
- * is the day AND the message it heads: when a scrollback load extends a
- * dated day upward, the header above the newly loaded messages is a new
- * row, so the old one — a fine anchor while it stood over the first loaded
- * message — is removed rather than moved to the top of the day, and the
- * runtime's anchor falls to that message instead of following the header. */
+/** A day separator row, interleaved into the runtime's items. Never the
+ * reading anchor (see `anchorable`): a scrollback load that extends a dated
+ * day upward moves the header above the newly loaded messages, and the
+ * message under it must keep its place. */
 interface DayHeader {
   kind: "day";
   day: number;
-  firstId: number;
   label: string;
 }
 
@@ -117,7 +114,7 @@ function isDayHeader(row: ChatRow): row is DayHeader {
 }
 
 function rowKey(row: ChatRow): string {
-  return isDayHeader(row) ? `day:${row.day}:${row.firstId}` : String(row.id);
+  return isDayHeader(row) ? `day:${row.day}` : String(row.id);
 }
 
 interface StreamAbort {
@@ -588,7 +585,7 @@ let stickyHeaders: StickyHeaders | undefined;
 
 // --- Day separators --------------------------------------------------------
 
-const dayHeaders = new Map<string, DayHeader>();
+const dayHeaders = new Map<number, DayHeader>();
 let labeledFor = "";
 
 // Two kinds of day share one number space, ordered along the transcript:
@@ -650,20 +647,19 @@ function dayLabel(day: number): string {
   return relativeDayLabel(back, date);
 }
 
-/** Header objects are cached per day and headed message so their identity
- * is stable across snapshots; labels are relative to the last synthetic day
- * and to today, so a new day re-labels. */
-function dayHeader(day: number, firstId: number): DayHeader {
+/** Header objects are cached per day so their identity is stable across
+ * snapshots; labels are relative to the last synthetic day and to today, so
+ * a new day re-labels. */
+function dayHeader(day: number): DayHeader {
   const labelBasis = `${lastDay()}:${localMidnight(Date.now())}`;
   if (labeledFor !== labelBasis) {
     dayHeaders.clear();
     labeledFor = labelBasis;
   }
-  const cacheKey = `${day}:${firstId}`;
-  let header = dayHeaders.get(cacheKey);
+  let header = dayHeaders.get(day);
   if (!header) {
-    header = { kind: "day", day, firstId, label: dayLabel(day) };
-    dayHeaders.set(cacheKey, header);
+    header = { kind: "day", day, label: dayLabel(day) };
+    dayHeaders.set(day, header);
   }
   return header;
 }
@@ -676,7 +672,7 @@ function rowsForRuntime(): ChatRow[] {
     const day = dayOf(message);
     if (day !== current) {
       current = day;
-      rows.push(dayHeader(day, message.id));
+      rows.push(dayHeader(day));
     }
     rows.push(message);
   }
@@ -1879,6 +1875,7 @@ edgeSlotRequested = shouldMountEdgeSlot();
 virtualList = createVirtualList<ChatRow>(viewport, {
   items: rowsForRuntime(),
   key: rowKey,
+  anchorable: (row) => !isDayHeader(row),
   render: (row, existing) => {
     if (isDayHeader(row)) {
       // A day row: static; a re-label (a new day arrived) updates in place.
