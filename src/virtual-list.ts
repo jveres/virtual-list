@@ -733,29 +733,31 @@ export function createVirtualList<T>(
     const widthChanged =
       Math.abs(width - lastViewportWidth) > MEASURE_EPSILON_PX;
     lastViewportWidth = width;
-    const height = viewport.clientHeight;
-    const heightChanged =
-      Math.abs(height - lastViewportHeight) > MEASURE_EPSILON_PX;
-    lastViewportHeight = height;
+    lastViewportHeight = viewport.clientHeight;
     if (widthChanged) {
       // Pending rows need no marking: a retained row that waits for a
       // settle is dirty by construction and re-measured at its commit.
       for (const row of rows.values()) markDirty(row);
     }
     const pinTop = geometry.pinTop;
+    // In flight, a glide's destination decides: a command onto the pin
+    // stands on it in intent, one leaving it does not even while its first
+    // frames are still within a pixel of it.
     const stoodOnPin =
-      heightChanged &&
       pinTop !== null &&
-      (Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX ||
-        // A command gliding onto the pin stands on it in intent.
-        (glideKind === "command" && glideToPin));
+      (glide !== null
+        ? glideToPin
+        : Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX);
     if (idle()) {
       commit(null, stoodOnPin ? "pin" : "viewport", "allowed", "keep");
     } else {
-      // The reserve (I5) is sized to the viewport by a commit: a height
-      // change during a phase with nothing else held still needs one at
-      // the settle, or a pinned landing keeps a stale strip below it.
-      if (heightChanged) resizeHeld = stoodOnPin ? "pin" : "viewport";
+      // The reserve (I5) is sized to the viewport by a commit: a change
+      // during a phase with nothing else held still needs one at the
+      // settle, or a pinned landing keeps a stale strip below it. A pin
+      // stance holds for the phase: the engine's clamp moves the observed
+      // position off the pin before the next delivery (an animating
+      // composer delivers several).
+      if (resizeHeld !== "pin") resizeHeld = stoodOnPin ? "pin" : "viewport";
       publish();
     }
   });
@@ -1533,6 +1535,9 @@ export function createVirtualList<T>(
       smoothFollowArmed = false;
       glide?.cancel();
       settleParked(() => false);
+      // A held pin stance was the glide's intent; the settle must not
+      // pull the user back onto the pin.
+      if (resizeHeld === "pin") resizeHeld = "viewport";
       // The host hears the interruption now, not at the first scroll event.
       if (wasFollowing) publish();
     },
@@ -1550,7 +1555,14 @@ export function createVirtualList<T>(
       const explicitPolicy = remeasurePolicy;
       if (remeasureReady) remeasurePolicy = undefined;
       if (pending !== null || dirtyRows.size > 0) {
-        commit(null, explicitPolicy);
+        // Rows grown under a pinned landing (the reply streaming below the
+        // pinned prompt) commit on the pin's stance, not on a guess.
+        const onPin =
+          explicitPolicy === undefined &&
+          pending === null &&
+          resizeHeld === "pin";
+        if (onPin) commit(null, "pin", "allowed", "keep");
+        else commit(null, explicitPolicy);
       } else if (resizeHeld !== null) {
         commit(null, resizeHeld, "allowed", "keep");
       } else {

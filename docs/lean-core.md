@@ -216,9 +216,11 @@ The definition of correct, referenced by number throughout the code:
   a resize or a mid-phase live commit leaves the intent as it found it and
   catches up if the end moved. A viewport height change during a phase
   gets its commit at the settle with the stance the pre-resize position
-  decided, so a pinned landing (I5) keeps its row at the top and its
-  reserve sized to the viewport it lands in even when the engine's clamp
-  moved the viewport meanwhile.
+  decided — in flight, the glide's destination decides, and a pin stance
+  holds for the phase — so a pinned landing (I5) keeps its row at the top
+  and its reserve sized to the viewport it lands in even when the engine's
+  clamp moved the viewport meanwhile. Genuine input drops a held pin
+  stance: the settle never pulls the user back onto the pin.
   `remeasure` is the intent-bearing path for a discrete host interaction
   such as opening a tool panel. It reads the mounted row on the next animation
   frame (after the default action, before paint) and defaults to the viewport

@@ -818,6 +818,103 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("genuine input after a held pin resize owns the viewport: the settle never pulls back to the pin", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    // The composer autosizes in the send frame, then the user scrolls up.
+    height = 560;
+    fireResize(1, h.viewport, 560);
+    vi.advanceTimersByTime(48);
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    h.userScroll(3000);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(3000);
+    expect(h.list.state.following).toBe(false);
+    await expect(landed).resolves.toBe(false);
+    h.list.dispose();
+  });
+
+  it("a glide leaving a pin never records the pin as its stance in its first frames", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    void h.list.scrollTo("m40", { align: "start" });
+    expect(h.viewport.scrollTop).toBe(4000);
+    const landed = h.list.scrollTo("start", { behavior: "smooth" });
+    // Frame 0: the viewport still stands within a pixel of the pin.
+    height = 560;
+    fireResize(1, h.viewport, 560);
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(0);
+    await expect(landed).resolves.toBe(true);
+    h.list.dispose();
+  });
+
+  it("a pin stance holds through later resize deliveries in the same phase", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48);
+    height = 560;
+    fireResize(1, h.viewport, 560); // Mid-glide: on the pin in intent.
+    advanceFramesUntil(() => h.viewport.scrollTop === 4500);
+    // An animating composer keeps delivering after the landing; the
+    // taller viewport's clamp moves the observed position off the pin.
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    height = 720;
+    fireResize(1, h.viewport, 720);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(4500);
+    expect(h.list.positionOf("m45")?.top).toBe(4500);
+    h.list.dispose();
+  });
+
+  it("rows grown under a pinned landing commit on the pin's stance", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48);
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    // The reply below the pinned prompt grows during the phase.
+    h.heights.set(47, 200);
+    fireResize(0, h.rowElement("msg 47"), 200);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4400);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(4500);
+    expect(h.list.state.totalSize).toBe(5200);
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;
