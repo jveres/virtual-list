@@ -896,6 +896,8 @@ const committedSerial = new Map<string, number>();
 interface AnchorRecord {
   key: string;
   top: number;
+  /** The anchor's bottom edge — the slice of it the user sees ends here. */
+  bottom: number;
   atEnd: boolean;
   /** Viewport position and write serial at capture: a different scrollTop
    * with the same serial means the viewport moved natively since. */
@@ -1200,12 +1202,14 @@ function atEndNow(): boolean {
 
 function captureAnchor(): AnchorRecord | null {
   const viewportTop = viewport.getBoundingClientRect().top;
-  let best: { key: string; top: number } | null = null;
+  let best: { key: string; top: number; bottom: number } | null = null;
   for (const { slot, key } of mountedSlots()) {
     const rect = slot.getBoundingClientRect();
     if (rect.bottom <= viewportTop + 0.5) continue;
     const top = rect.top - viewportTop;
-    if (best === null || top < best.top) best = { key, top };
+    if (best === null || top < best.top) {
+      best = { key, top, bottom: rect.bottom - viewportTop };
+    }
   }
   return best === null
     ? null
@@ -1262,16 +1266,30 @@ function checkAnchor(
     }
     return;
   }
-  // The anchor row itself shrank above the viewport's offset into it: the
-  // kernel clamps to the row's own bounds (I1), so its top legitimately
-  // moves down.
-  const own = heightChanges.find((change) => change.key === record.key);
-  if (own && own.to < -record.top - PX_EPSILON) {
-    if (verbose()) log(`anchor #${record.key} shrank under the viewport top`);
+  // The anchor row itself shrank under the viewport's offset into it —
+  // measured in place or replaced by a shorter row: its top must move, and
+  // the kernel keeps the slice the user saw (its bottom) where it was, so
+  // the rows below hold still. Judged by the bottom edge, then.
+  const viewportTop = viewport.getBoundingClientRect().top;
+  const rect = slot.getBoundingClientRect();
+  if (rect.height < -record.top - PX_EPSILON) {
+    const bottom = rect.bottom - viewportTop;
+    // A row shorter than the slice that was visible can only land at its
+    // own top; anything taller must keep the slice in place.
+    if (
+      rect.height >= record.bottom - PX_EPSILON &&
+      Math.abs(bottom - record.bottom) > ANCHOR_EPSILON
+    ) {
+      violation(
+        "A",
+        `anchor #${record.key} shrank under the viewport top and its bottom moved ${record.bottom.toFixed(2)}→${bottom.toFixed(2)}px — ${context()}`,
+      );
+    } else if (verbose()) {
+      log(`anchor #${record.key} shrank under the viewport top`);
+    }
     return;
   }
-  const top =
-    slot.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+  const top = rect.top - viewportTop;
   if (Math.abs(top - record.top) > ANCHOR_EPSILON) {
     violation(
       "A",

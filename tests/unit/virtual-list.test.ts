@@ -1831,6 +1831,32 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("an anchor row that shrinks under the viewport's offset keeps its visible bottom slice, so the rows below hold still", () => {
+    const h = mount(range(0, 50));
+    h.userScroll(580); // 80px into m5, whose bottom 20px show; m6 at 20px.
+    h.settle();
+    // m5 collapses to 50px (a panel closing): its top is gone from view.
+    h.heights.set(5, 50);
+    const collapsed = [...range(0, 50)];
+    collapsed[5] = message(5, "collapsed");
+    h.list.setItems(collapsed);
+    expect(h.list.positionOf("m6")?.top).toBe(550);
+    expect(h.viewport.scrollTop).toBe(530); // m6 still 20px below the top.
+    h.list.dispose();
+  });
+
+  it("an anchor row that shrinks below its visible slice lands at its own top", () => {
+    const h = mount(range(0, 50));
+    h.userScroll(580);
+    h.settle();
+    h.heights.set(5, 10); // Shorter than the 20px slice that was visible.
+    const collapsed = [...range(0, 50)];
+    collapsed[5] = message(5, "tiny");
+    h.list.setItems(collapsed);
+    expect(h.viewport.scrollTop).toBe(500);
+    h.list.dispose();
+  });
+
   it("live: a replaced anchor whose successor moved down waits for the settle, which lands on the successor", () => {
     // A day header keyed by the message it heads: a scrollback load of the
     // same day replaces the header at the top and inserts the older

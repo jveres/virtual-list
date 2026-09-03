@@ -139,7 +139,10 @@ re-grabs invalidate the pending release on every engine.
 The definition of correct, referenced by number throughout the code:
 
 - **I1** — the resolved scroll target keeps the visible anchor's viewport
-  coordinate stationary (a shrink clamps to the row's own extent).
+  coordinate stationary. An anchor row that shrinks under the viewport's
+  offset into it keeps the slice the user saw — its bottom — at the same
+  distance from the viewport top, so the rows below hold still; only a
+  row shorter than that slice lands at its own top.
 - **I2** — end-follow resolves against the final geometry of the
   transaction: measurements landing inside it are fully reflected.
 - **I3** — reach signals fire once per approach, with entry/exit

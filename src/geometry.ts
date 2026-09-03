@@ -54,7 +54,13 @@ interface Capture {
   readonly policy: CapturePolicy;
   readonly atEnd: boolean;
   readonly oldKeys: readonly string[];
-  readonly anchor: { key: string; offset: number; oldIndex: number } | null;
+  readonly anchor: {
+    key: string;
+    offset: number;
+    oldIndex: number;
+    /** The anchor's height at capture, for a shrink under the offset. */
+    height: number;
+  } | null;
 }
 
 const EPSILON = 0.5;
@@ -219,7 +225,11 @@ export class Geometry {
       anchor:
         anchor === null
           ? null
-          : { ...anchor, oldIndex: this.indexByKey.get(anchor.key) as number },
+          : {
+              ...anchor,
+              oldIndex: this.indexByKey.get(anchor.key) as number,
+              height: this.heightOf(anchor.key),
+            },
     };
   }
 
@@ -351,9 +361,16 @@ export class Geometry {
     if (anchor === null) return null;
 
     if (this.indexByKey.has(anchor.key)) {
-      // Clamp the in-row offset to the (possibly shrunken) current extent: a
-      // shrink cannot push the viewport above the item's own bounds.
-      const offset = Math.min(anchor.offset, this.heightOf(anchor.key));
+      // The in-row offset is kept while the row still reaches it. A row
+      // that shrank under the viewport's offset into it keeps the slice the
+      // user saw — its bottom — at the same distance from the viewport top,
+      // so the rows below hold their place (the row's own top moves, as it
+      // must: the content that was above the viewport is gone).
+      const height = this.heightOf(anchor.key);
+      const offset =
+        anchor.offset <= height
+          ? anchor.offset
+          : Math.max(0, height - (anchor.height - anchor.offset));
       return this.offsetOf(anchor.key) + offset;
     }
     // First surviving successor, inheriting the removed anchor's in-row
