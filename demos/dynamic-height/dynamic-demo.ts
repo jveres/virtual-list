@@ -81,8 +81,6 @@ const INPUT_WINDOW_MS = 120;
 const EXPECTED_WRITE_MAX = 8;
 const QUIET_FRAMES = 3;
 const PX_EPSILON = 1;
-/** The runtime keeps a committed height while an in-place measurement stays within this of it (L allows the same). */
-const HEIGHT_TOLERANCE_PX = 1.5;
 /**
  * Anchor drift: rectangles keep subpixel precision while Chromium rounds
  * scrollTop to whole pixels, so a correct commit can read up to ~0.5px of
@@ -812,7 +810,7 @@ function createPaintObserver(): void {
       const slotHeight = parseHeight(slot.getAttribute("style"));
       const mismatch =
         slotHeight !== null &&
-        Math.abs(contentHeight - slotHeight) > HEIGHT_TOLERANCE_PX;
+        Math.abs(contentHeight - slotHeight) > PX_EPSILON;
       if (!mismatch) {
         clippedKeys.delete(key);
         continue;

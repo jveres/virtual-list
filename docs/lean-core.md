@@ -162,10 +162,6 @@ The definition of correct, referenced by number throughout the code:
   client-height change as layout, never as input, and the runtime tells
   the clamp by its direction — it pulls a position from past the stale
   end back onto it.
-- **I6′** — a mounted row keeps its committed height while an in-place
-  measurement stays within 1.5px of it: the detached measurer and the
-  slot snap line boxes differently at a 1x ratio, and re-committing that
-  pixel moved every row below on each delivery.
 - **I6** — an idle size change commits in the same painted frame as its
   observation (after layout, before paint); a phase-time change commits at
   the settle, or, under `"live"`, at once when no scroll write is needed.
