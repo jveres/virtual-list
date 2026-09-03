@@ -1997,6 +1997,42 @@ importInput.addEventListener("change", () => {
   if (file) void importTranscript(file);
 });
 
+// A transcript dropped on the chat imports it. Only a file drag lights the
+// drop target; text or link drags fall through to the browser.
+function draggedFile(event: DragEvent): boolean {
+  return event.dataTransfer?.types.includes("Files") === true;
+}
+function transcriptFile(event: DragEvent): File | null {
+  const file = event.dataTransfer?.files[0] ?? null;
+  return file && /\.(md|markdown|txt)$/i.test(file.name) ? file : null;
+}
+let dragDepth = 0;
+viewportWrap.addEventListener("dragenter", (event) => {
+  if (!draggedFile(event)) return;
+  event.preventDefault();
+  dragDepth += 1;
+  viewportWrap.classList.add("drop-target");
+});
+viewportWrap.addEventListener("dragover", (event) => {
+  if (!draggedFile(event)) return;
+  event.preventDefault();
+  if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+});
+viewportWrap.addEventListener("dragleave", (event) => {
+  if (!draggedFile(event)) return;
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) viewportWrap.classList.remove("drop-target");
+});
+viewportWrap.addEventListener("drop", (event) => {
+  if (!draggedFile(event)) return;
+  event.preventDefault();
+  dragDepth = 0;
+  viewportWrap.classList.remove("drop-target");
+  const file = transcriptFile(event);
+  if (file) void importTranscript(file);
+  else window.alert("Drop a Markdown transcript (.md) to import it.");
+});
+
 const stickyToggle = mustGet("sticky-toggle", HTMLButtonElement);
 function syncSticky(): void {
   stickyHeaders?.setEnabled(stickyEnabled);

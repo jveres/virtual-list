@@ -282,6 +282,22 @@ p.ai-settings-note {
   min-height: 0;
 }
 
+/* A transcript file dragged over the chat: the whole surface is the target. */
+.viewport-wrap.drop-target::after {
+  content: "Drop to import the transcript";
+  position: absolute;
+  inset: 8px;
+  z-index: 5;
+  display: grid;
+  place-items: center;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg) 85%, transparent);
+  color: var(--accent);
+  font-weight: 600;
+  pointer-events: none;
+}
+
 .viewport {
   height: 100%;
   width: 100%;
