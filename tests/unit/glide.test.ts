@@ -43,8 +43,9 @@ describe("glide", () => {
   });
 
   it("converges exactly on engines that floor scrollTop writes, never stalling a frame", () => {
-    // A long enough trip that the curve creeps by fractions of a pixel in
-    // its tail — where a floored write would stall without the rule.
+    // A slow enough glide that the curve creeps by fractions of a pixel per
+    // frame through its tail — where a floored write would stall without
+    // the rule.
     const host = harness(0, 1000, true);
     let completed = false;
     const seen: number[] = [host.top];
@@ -53,10 +54,10 @@ describe("glide", () => {
       write(top);
       seen.push(host.top);
     };
-    startGlide(host, 300, (done) => {
+    startGlide(host, 3000, (done) => {
       completed = done;
     });
-    vi.advanceTimersByTime(1000);
+    vi.advanceTimersByTime(4000);
     expect(host.top).toBe(1000);
     expect(completed).toBe(true);
     // Every frame moved the floored position by at least a pixel.
