@@ -78,7 +78,8 @@ import "../shared/styles.css";
 //   sticky header for the top strip;
 // - day separators are rows, and a STICKY companion pins the current day at
 //   the top (`?sticky=off`, or the header toggle, turns it off). It reads
-//   the runtime's committed positions, which never move under a gesture.
+//   the runtime's committed positions, which move only at commits — each
+//   of which refreshes it — never under a native scroll write.
 
 interface Message {
   id: number;
@@ -1338,13 +1339,6 @@ function endSendGlide(): void {
 
 // --- Simulated streaming ----------------------------------------------------
 
-/** A call still "running" when its stream ended never finished: errored. */
-function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
-  return toolCall.status === "running"
-    ? { ...toolCall, status: "error" }
-    : toolCall;
-}
-
 // The reply to stream for a prompt: the next of the rotation, or the pinned
 // fast long-form variant.
 function replyFor(prompt = ""): ReplyVariant {
@@ -1409,6 +1403,13 @@ async function streamResponse(
 }
 
 // --- OpenAI streaming -------------------------------------------------------
+
+/** A call still "running" when its stream ended never finished: errored. */
+function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
+  return toolCall.status === "running"
+    ? { ...toolCall, status: "error" }
+    : toolCall;
+}
 
 // The active transcript, oldest → newest, as API turns — sliced per the
 // context setting (0 = full history). This reads `transcript`, the complete
@@ -1718,8 +1719,8 @@ async function handleSend(): Promise<void> {
       role: "assistant",
       markdown: "",
       status: "thinking",
-      // Real replies have no tool phase; the simulated set stays a prop of
-      // the canned rotation only.
+      // Real replies get no pre-seeded tool calls (theirs arrive from the
+      // stream); the simulated set is a prop of the canned rotation.
       ...(useOpenAI ? {} : { toolCalls: createSimulatedToolCalls() }),
       ...sentAt,
     });

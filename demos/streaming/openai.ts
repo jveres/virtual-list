@@ -50,14 +50,13 @@ lists, tables, and fenced code blocks — whenever they fit the answer.
 Use the available tools (web search, image generation, code execution) when
 they help answer the question.`;
 
-// A generated image embedded in a message as a base64 data URI, stripped
-// from the request context: megabytes of base64 would go back to the API as
-// text tokens.
 /** The Markdown shape of an embedded generated image (one source for every regex over it). */
 export const GENERATED_IMAGE_PATTERN =
   "!\\[[^\\]]*\\]\\(data:image\\/[a-z.+-]+;base64,[^)]*\\)";
 const GENERATED_IMAGE_RE = new RegExp(GENERATED_IMAGE_PATTERN, "g");
 
+// Generated images are stripped from the request context: megabytes of
+// base64 would go back to the API as text tokens.
 export function stripGeneratedImages(markdown: string): string {
   return markdown.replace(GENERATED_IMAGE_RE, "*[generated image]*");
 }

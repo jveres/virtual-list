@@ -10,9 +10,10 @@
  * in-flow header is hidden meanwhile so it never shows twice.
  *
  * Positions come from `positionOf` — the runtime's committed geometry, which
- * is immutable during a scroll phase (docs/lean-core.md), so the overlay can
- * never jitter mid-gesture; it changes only at commits, where the host calls
- * `refresh()` (from onState). Ported from `main`, keyed instead of indexed.
+ * changes only at commits (docs/lean-core.md; under "live" some land
+ * mid-gesture), each of which publishes, where the host calls `refresh()`
+ * (from onState). Between commits nothing moves, so the overlay never
+ * jitters. Ported from `main`, keyed instead of indexed.
  */
 
 export interface StickyHeadersConfig {
@@ -193,7 +194,6 @@ export function createStickyHeaders(
       cancelAnimationFrame(frame);
       frame = 0;
     }
-    pendingScroll = viewport.scrollTop;
     keys = headerKeys();
     const positions = keys.map(positionOf);
     tops = positions.map((position) => position?.top ?? 0);
