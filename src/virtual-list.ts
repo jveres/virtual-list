@@ -1760,10 +1760,23 @@ export function createVirtualList<T>(
     // another row at its index, or removed: its offset is unchanged, and the
     // new content simply renders at the position the viewport already
     // holds (a shorter row lets the engine clamp). An anchor that merely
-    // moved (a prepend, a reorder) needs the write.
+    // moved (a prepend, a reorder) needs the write — and so does a removed
+    // anchor whose surviving successor moved down: more rows inserted than
+    // removed between them is a prepend under a header, not a replacement,
+    // and the settle's anchor rule carries the viewport to that successor.
+    // (A successor moving up — a deletion — keeps its offset.)
     if (prepared.keys[anchorIndex] !== anchor.key) {
-      const nextKeys = new Set(prepared.keys);
-      if (nextKeys.has(anchor.key)) return false;
+      const nextIndex = new Map(
+        prepared.keys.map((key, index) => [key, index]),
+      );
+      if (nextIndex.has(anchor.key)) return false;
+      for (let index = anchorIndex + 1; index < geometry.count; index++) {
+        const key = geometry.keyAt(index) as string;
+        const moved = nextIndex.get(key);
+        if (moved === undefined) continue;
+        if (moved > index) return false;
+        break;
+      }
     }
     for (const row of dirtyRows) {
       if (geometry.indexOf(row.key) < anchorIndex) return false;

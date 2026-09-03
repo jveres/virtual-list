@@ -1809,6 +1809,25 @@ describe("v2 runtime — commits and slots", () => {
     await expect(command).resolves.toBe(true);
   });
 
+  it("live: a replaced anchor whose successor moved down waits for the settle, which lands on the successor", () => {
+    // A day header keyed by the message it heads: a scrollback load of the
+    // same day replaces the header at the top and inserts the older
+    // messages under it, above the first loaded message.
+    const initial = [message(100, "header:13"), ...range(13, 30)];
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(500);
+    h.userScroll(0); // Momentum reached the top: the header is the anchor.
+    const loaded = [message(101, "header:1"), ...range(1, 30)];
+    h.list.setItems(loaded, { anchor: "viewport" });
+    expect(h.list.state.held).toBe(true); // Not a replacement: a prepend.
+    expect(h.viewport.scrollTop).toBe(0);
+    h.settle();
+    // The old header is gone; its successor takes the header's old spot.
+    expect(h.list.positionOf("m13")?.top).toBe(13 * ROW_H);
+    expect(h.viewport.scrollTop).toBe(13 * ROW_H);
+    h.list.dispose();
+  });
+
   it('"live" commits an append at once and settle-gates a change above the anchor', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });

@@ -97,10 +97,16 @@ interface Message {
   sentAt?: number;
 }
 
-/** A day separator row, interleaved into the runtime's items. */
+/** A day separator row, interleaved into the runtime's items. Its identity
+ * is the day AND the message it heads: when a scrollback load extends a
+ * dated day upward, the header above the newly loaded messages is a new
+ * row, so the old one — a fine anchor while it stood over the first loaded
+ * message — is removed rather than moved to the top of the day, and the
+ * runtime's anchor falls to that message instead of following the header. */
 interface DayHeader {
   kind: "day";
   day: number;
+  firstId: number;
   label: string;
 }
 
@@ -111,7 +117,7 @@ function isDayHeader(row: ChatRow): row is DayHeader {
 }
 
 function rowKey(row: ChatRow): string {
-  return isDayHeader(row) ? `day:${row.day}` : String(row.id);
+  return isDayHeader(row) ? `day:${row.day}:${row.firstId}` : String(row.id);
 }
 
 interface StreamAbort {
@@ -582,7 +588,7 @@ let stickyHeaders: StickyHeaders | undefined;
 
 // --- Day separators --------------------------------------------------------
 
-const dayHeaders = new Map<number, DayHeader>();
+const dayHeaders = new Map<string, DayHeader>();
 let labeledFor = "";
 
 // Two kinds of day share one number space, ordered along the transcript:
@@ -644,19 +650,20 @@ function dayLabel(day: number): string {
   return relativeDayLabel(back, date);
 }
 
-/** Header objects are cached per day so their identity is stable across
- * snapshots; labels are relative to the last synthetic day and to today, so
- * a new day re-labels. */
-function dayHeader(day: number): DayHeader {
+/** Header objects are cached per day and headed message so their identity
+ * is stable across snapshots; labels are relative to the last synthetic day
+ * and to today, so a new day re-labels. */
+function dayHeader(day: number, firstId: number): DayHeader {
   const labelBasis = `${lastDay()}:${localMidnight(Date.now())}`;
   if (labeledFor !== labelBasis) {
     dayHeaders.clear();
     labeledFor = labelBasis;
   }
-  let header = dayHeaders.get(day);
+  const cacheKey = `${day}:${firstId}`;
+  let header = dayHeaders.get(cacheKey);
   if (!header) {
-    header = { kind: "day", day, label: dayLabel(day) };
-    dayHeaders.set(day, header);
+    header = { kind: "day", day, firstId, label: dayLabel(day) };
+    dayHeaders.set(cacheKey, header);
   }
   return header;
 }
@@ -669,15 +676,19 @@ function rowsForRuntime(): ChatRow[] {
     const day = dayOf(message);
     if (day !== current) {
       current = day;
-      rows.push(dayHeader(day));
+      rows.push(dayHeader(day, message.id));
     }
     rows.push(message);
   }
   return rows;
 }
 
+function dayHeaderRows(): DayHeader[] {
+  return rowsForRuntime().filter(isDayHeader);
+}
+
 function dayHeaderKeys(): string[] {
-  return rowsForRuntime().filter(isDayHeader).map(rowKey);
+  return dayHeaderRows().map(rowKey);
 }
 
 /** One snapshot to the runtime; all data changes flow through here.
@@ -1914,9 +1925,8 @@ stickyHeaders = createStickyHeaders({
   positionOf: (key) => virtualList?.positionOf(key) ?? null,
   elementOf: (key) => virtualList?.elementOf(key) ?? null,
   renderHeader: (slot, ordinal) => {
-    const key = dayHeaderKeys()[ordinal];
-    const day = Number(key?.slice("day:".length));
-    slot.replaceChildren(buildSectionHeader(dayHeader(day).label));
+    const label = dayHeaderRows()[ordinal]?.label ?? "";
+    slot.replaceChildren(buildSectionHeader(label));
   },
 });
 // --- Export ------------------------------------------------------------------
