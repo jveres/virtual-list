@@ -73,6 +73,14 @@ function buildToolCall(toolCall: ChatToolCall): HTMLElement {
       : `${toolCall.status} - ${toolCall.durationMs}ms`;
 
   summary.append(title, meta);
+  details.append(summary);
+
+  // A call without payloads (a transcript written before they were kept)
+  // is a summary line, not an empty panel.
+  if (toolCall.input === "" && toolCall.output === "") {
+    details.classList.add("bare");
+    return details;
+  }
 
   const body = document.createElement("div");
   body.className = "tool-call-body";
@@ -85,7 +93,7 @@ function buildToolCall(toolCall: ChatToolCall): HTMLElement {
   output.textContent = toolCall.output;
 
   body.append(input, output);
-  details.append(summary, body);
+  details.append(body);
   return details;
 }
 

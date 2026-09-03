@@ -553,6 +553,15 @@ p.ai-settings-note {
   list-style-position: inside;
 }
 
+.tool-call.bare > .tool-call-summary {
+  cursor: default;
+  list-style: none;
+}
+
+.tool-call.bare > .tool-call-summary::-webkit-details-marker {
+  display: none;
+}
+
 .tool-call-title {
   min-width: 0;
   overflow: hidden;
