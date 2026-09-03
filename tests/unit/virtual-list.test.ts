@@ -1464,10 +1464,11 @@ describe("v2 runtime — commits and slots", () => {
     const h = mount(range(0, 50));
     h.userScroll(2000);
     h.settle();
-    // Premeasured at 100 (the harness rounds nothing): the slot reads 99.2
-    // in place — a snapping difference, not a change.
-    h.heights.set(25, 99.2);
-    fireResize(0, h.rowElement("msg 25"), 99.2);
+    // Premeasured at 100 (the harness rounds nothing): the slot reads 98.8
+    // in place — one pixel less once quantized, a snapping difference,
+    // not a change.
+    h.heights.set(25, 98.8);
+    fireResize(0, h.rowElement("msg 25"), 98.8);
     expect(h.list.positionOf("m25")?.height).toBe(100);
     expect(h.list.positionOf("m26")?.top).toBe(2600);
     // A real change commits: 98.2 is more than the tolerance away.
