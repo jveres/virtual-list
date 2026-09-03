@@ -81,7 +81,6 @@ export default defineConfig({
         ).pathname,
         streaming: new URL("demos/streaming/index.html", import.meta.url)
           .pathname,
-        gallery: new URL("demos/gallery/index.html", import.meta.url).pathname,
       },
     },
   },

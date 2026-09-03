@@ -49,12 +49,6 @@ pnpm run dev
   mode; the dialog's choices persist in the browser, a URL parameter wins
   for the session.
 
-- `/demos/gallery/index.html` — the gallery: justified photo rows as the
-  virtualized items. A row's height follows from its photos' aspect
-  ratios and the width, so geometry is exact before an image has loaded;
-  a width change or a row-size choice re-flows the rows with the viewport
-  kept; scrolling forward pages more photos in through the reach signal.
-
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server
 (`/__lab/report`), which appends it to `browser-artifacts/device-*.log`, one
