@@ -775,12 +775,22 @@ p.ai-settings-note {
 .scroll-jump {
   position: absolute;
   right: -54px;
+  display: grid;
+  place-items: center;
   width: 38px;
   height: 38px;
+  padding: 0;
   border-radius: 999px;
   background: color-mix(in srgb, var(--bg) 88%, transparent);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
   pointer-events: auto;
+}
+
+/* Lucide move-up / move-down: one thin line, centred in the circle. */
+.scroll-jump svg {
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .scroll-jump-top {
