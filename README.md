@@ -130,6 +130,7 @@ section header over the viewport using only `positionOf`/`elementOf`.
 pnpm run check   # Biome + TypeScript
 pnpm test        # vitest, jsdom, deterministic
 pnpm run test:browser              # Chromium, Firefox, WebKit via Playwright
+pnpm run test:browser -- --suite=chat --engine=webkit
 pnpm run test:browser -- --chaos=300 --seed=7 --headed
 ```
 
@@ -138,5 +139,8 @@ against a controllable jsdom harness (a scripted `ResizeObserver`, fake
 timers, an engine-like scroll clamp), plus oracle and property tests for the
 geometry kernel and characterization tests for the glide. The browser matrix
 runs the dynamic-height lab in the three real engines and fails on any
-contract violation the lab reports; device runs (iPad, iPhone) are done by
-hand with the trace channel above.
+contract violation the lab reports, then the streaming chat's product-level
+invariants (`scripts/chat-invariants.mjs`: across a scrollback load, on an
+undated and on dated single-day conversations, the row under a fixed
+viewport point keeps its screen position); device runs (iPad, iPhone) are
+done by hand with the trace channel above.

@@ -1,7 +1,10 @@
-// Opt-in real-engine gate for the dynamic-height lab.
+// Opt-in real-engine gate: the dynamic-height lab (contract violations
+// counted from outside the runtime) and the streaming chat's product-level
+// invariants (scripts/chat-invariants.mjs).
 //
 // Usage:
-//   pnpm run test:browser
+//   pnpm run test:browser                       (lab and chat, every engine)
+//   pnpm run test:browser -- --suite=chat --engine=webkit
 //   pnpm run test:browser -- --quick --engine=webkit --mode=live
 //   pnpm run test:browser -- --chaos=300 --engine=webkit   (seconds of chaos)
 //   --seed=<n> makes the chaos wheel input reproducible; --headed shows the browser
@@ -14,6 +17,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
 import { chromium, firefox, webkit } from "playwright";
+import { runChatCase } from "./chat-invariants.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = 4173;
@@ -44,6 +48,11 @@ function selected(value, choices, label) {
 }
 
 const engines = selected(option("engine"), ALL_ENGINES, "engine");
+const ALL_SUITES = ["lab", "chat"];
+const suites =
+  option("suite") === undefined || option("suite") === "all"
+    ? ALL_SUITES
+    : selected(option("suite"), ALL_SUITES, "suite");
 const modes = selected(option("mode"), ALL_MODES, "mode");
 const quick = process.argv.includes("--quick");
 const chaosSeconds = Number(option("chaos") ?? 0);
@@ -402,11 +411,37 @@ async function runCase(engine, mode) {
   }
 }
 
+async function runChat(engine) {
+  const launchOptions = { headless: !headed };
+  if (engine === "chromium" && process.env.BROWSER_MATRIX_CHROMIUM_CHANNEL) {
+    launchOptions.channel = process.env.BROWSER_MATRIX_CHROMIUM_CHANNEL;
+  }
+  const browser = await browserType(engine).launch(launchOptions);
+  let summary;
+  try {
+    summary = await runChatCase(engine, browser, baseUrl);
+  } finally {
+    await browser.close();
+  }
+  process.stdout.write(`${JSON.stringify(summary)}\n`);
+  if (summary.violations.length > 0 || summary.errors.length > 0) {
+    await mkdir(artifactRoot, { recursive: true });
+    await writeFile(
+      resolve(artifactRoot, `${engine}-chat.log`),
+      [...summary.violations, ...summary.errors].join("\n"),
+    );
+    throw new Error(`${engine}/chat failed; see ${artifactRoot}`);
+  }
+}
+
 let server;
 try {
   server = await startServer();
   for (const engine of engines) {
-    for (const mode of modes) await runCase(engine, mode);
+    if (suites.includes("lab")) {
+      for (const mode of modes) await runCase(engine, mode);
+    }
+    if (suites.includes("chat")) await runChat(engine);
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
