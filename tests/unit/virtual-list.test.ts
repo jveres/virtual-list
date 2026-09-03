@@ -421,6 +421,36 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a live append during a follow glide leaves following engaged", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed); // A follow glide toward 4600 starts.
+    vi.advanceTimersByTime(48);
+    // A new message lands mid-glide: below the anchor, committed at once.
+    h.list.setItems([...streamed, message(50, "appended")]);
+    expect(h.list.state.following).toBe(true);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4700);
+    expect(h.viewport.scrollTop).toBe(4700);
+    // Growth inside the landed glide's cooldown is still followed.
+    h.heights.set(50, 200);
+    fireResize(0, h.rowElement("appended"), 200);
+    vi.advanceTimersByTime(700);
+    expect(h.viewport.scrollTop).toBe(4800);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
   it("an instant command to the end arms following under smooth follow", () => {
     const initial = range(0, 50);
     const h = mount(initial, { followBehavior: "smooth" });
@@ -536,10 +566,13 @@ describe("v2 runtime — commits and slots", () => {
     vi.advanceTimersByTime(16);
     fireResize(0, tail, 300);
 
-    // Even live mode cannot consume the explicit intent mid-gesture.
+    // Even live mode cannot consume the explicit intent mid-gesture — not
+    // at the observer delivery, nor at the next scroll event's live commit.
+    h.userScroll(4390);
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
     expect(h.slotOf(tail).style.height).toBe(`${ROW_H}px`);
     expect(h.list.state.held).toBe(true);
+    h.userScroll(4400);
     h.settle();
 
     expect(h.list.state.totalSize).toBe(50 * ROW_H + 200);
@@ -1474,14 +1507,14 @@ describe("v2 runtime — retained nodes", () => {
   it("dispose attempts every destruction even when a host teardown throws", () => {
     // (Removal at commit is covered by "completes the commit before
     // surfacing a teardown failure".) Every element is destroyed, once.
-    const h2 = mount(range(0, 20), {
+    const h = mount(range(0, 20), {
       onDestroy: (element) => {
         if (element.dataset.id === "5") throw new Error("teardown 5");
       },
     });
-    expect(() => h2.list.dispose()).toThrow("teardown 5");
-    expect(h2.destroyedElements).toHaveLength(20);
-    expect(new Set(h2.destroyedElements).size).toBe(20);
+    expect(() => h.list.dispose()).toThrow("teardown 5");
+    expect(h.destroyedElements).toHaveLength(20);
+    expect(new Set(h.destroyedElements).size).toBe(20);
   });
 
   it("destroys locally built rows when a supersession-time onDestroy disposes the list", () => {
@@ -1594,6 +1627,10 @@ describe("v2 runtime — edge slots", () => {
         const element = document.createElement("div");
         element.textContent = "Loading older…";
         element.dataset.id = "slot";
+        // Reads as taller than declared: only the runtime's edge-slot
+        // rules keep the declared height standing.
+        element.getBoundingClientRect = () =>
+          ({ height: 300, width: 300 }) as DOMRect;
         built.push(element);
         return element;
       },
@@ -1650,6 +1687,8 @@ describe("v2 runtime — edge slots", () => {
     h.settle();
     expect((slot.built[0] as HTMLElement).isConnected).toBe(false);
     expect((done.built[0] as HTMLElement).isConnected).toBe(true);
+    // The declared height, never the element's own reading.
+    expect(h.slotOf(done.built[0] as HTMLElement).style.height).toBe("52px");
     expect(h.destroyed).toEqual([]); // Slot elements get no onDestroy.
     h.list.setEdgeSlot("start", null);
     expect(h.list.state.totalSize).toBe(20 * ROW_H);

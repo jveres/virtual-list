@@ -70,11 +70,11 @@ export function bindCopyTrace(
  */
 export function settleEdgePill(
   pill: EdgePill,
-  atEnd: boolean,
+  atBottom: boolean,
   chunksLeft: number,
 ): void {
   if (chunksLeft > 0) pill.hide(true);
-  else pill.show(atEnd ? "at the bottom" : "at the top", atEnd, true);
+  else pill.show(atBottom ? "at the bottom" : "at the top", atBottom, true);
 }
 
 export interface EdgePill {

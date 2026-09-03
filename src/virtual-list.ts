@@ -1232,12 +1232,10 @@ export function createVirtualList<T>(
         }
       }
 
-      // Build this set only after removals and replacements. A destroyed
-      // dirty row can share its key with a replacement; measuring it after
-      // the replacement would overwrite the replacement's geometry.
-      for (const row of dirtyRows) {
-        if (rows.get(row.key) === row) toMeasure.add(row);
-      }
+      // Build this set only after removals and replacements: destroying a
+      // row drops it from dirtyRows, so a replaced key's old row can never
+      // be measured over its replacement.
+      for (const row of dirtyRows) toMeasure.add(row);
 
       commitMeasured(toMeasure);
       geometryEpoch += 1;
@@ -1255,7 +1253,14 @@ export function createVirtualList<T>(
         options.followBehavior === "smooth" &&
         result.mode === "end" &&
         Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX;
-      if (!booting && options.followBehavior === "smooth") {
+      // A settle or idle commit re-derives following from where it resolved;
+      // a mid-phase live commit (it never writes) leaves the follow glide
+      // that may be chasing the end exactly as it found it.
+      if (
+        !booting &&
+        options.followBehavior === "smooth" &&
+        scrollWrite === "allowed"
+      ) {
         smoothFollowArmed = result.mode === "end";
       }
       // A mid-phase commit never writes: its target equals the position by
