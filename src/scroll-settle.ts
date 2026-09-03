@@ -708,7 +708,6 @@ export function createScrollSettleController(
         return;
       }
       if (
-        strategy === "firefox-wheel" &&
         wheelInputThisPhase &&
         (hasPendingFirefoxEdgeRelease() || hasProtectedFirefoxEdge())
       ) {

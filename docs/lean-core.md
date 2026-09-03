@@ -221,8 +221,8 @@ The definition of correct, referenced by number throughout the code:
   and its reserve sized to the viewport it lands in even when the engine's
   clamp moved the viewport meanwhile. Genuine input that leaves the pin drops
   a held pin stance — the settle never pulls the user back onto the pin —
-  while a position at or beyond the stale range's end is the engine's own
-  (a clamp, a rubber-band bounce) and keeps it.
+  while the engine's own moves keep it: a clamp pulling a position past
+  the stale range's end back onto it, a rubber-band bounce beyond it.
   `remeasure` is the intent-bearing path for a discrete host interaction
   such as opening a tool panel. It reads the mounted row on the next animation
   frame (after the default action, before paint) and defaults to the viewport

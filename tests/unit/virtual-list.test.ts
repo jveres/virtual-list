@@ -946,12 +946,18 @@ describe("v2 runtime — commits and slots", () => {
     });
     void h.list.scrollTo("m45", { align: "start" });
     h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
-    height = 700;
-    fireResize(1, h.viewport, 700);
     // The taller viewport's range ends at 4400: the engine clamps the
-    // position there and reports it as a scroll — not the user's move.
+    // position there and reports it as a scroll before the observer runs
+    // — not the user's move. A second growth clamps again, this time with
+    // the stance already held.
+    height = 700;
     expect(h.viewport.scrollTop).toBe(4400);
     h.viewport.dispatchEvent(new Event("scroll"));
+    fireResize(1, h.viewport, 700);
+    height = 800;
+    expect(h.viewport.scrollTop).toBe(4300);
+    h.viewport.dispatchEvent(new Event("scroll"));
+    fireResize(1, h.viewport, 800);
     h.settle();
     expect(h.viewport.scrollTop).toBe(4500);
     expect(h.list.positionOf("m45")?.top).toBe(4500);
@@ -1158,6 +1164,59 @@ describe("v2 runtime — commits and slots", () => {
     const published = h.states.length;
     fireResize(1, h.viewport, VIEWPORT_H);
     expect(h.states.length).toBe(published);
+    h.list.dispose();
+  });
+
+  it("input that stops a glide onto the pin short owns the viewport where it stopped", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    h.userScroll(0);
+    h.settle();
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48);
+    height = 700;
+    fireResize(1, h.viewport, 700); // In flight: a "pin" stance.
+    vi.advanceTimersByTime(48);
+    // A tap stops the animation; nothing scrolls afterwards.
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 0 }));
+    const stopped = h.viewport.scrollTop;
+    expect(stopped).toBeLessThan(4400);
+    await expect(landed).resolves.toBe(false);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(stopped);
+    h.list.dispose();
+  });
+
+  it("a hand landing on the stale end from below is the user's, not a clamp", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    // Tall rows below the pin: the range reaches past the pin, so a taller
+    // viewport clamps nothing.
+    for (const id of [46, 47, 48, 49]) h.heights.set(id, 300);
+    h.list.setItems(
+      initial.map((m) => (m.id >= 46 ? message(m.id, `tall ${m.id}`) : m)),
+    );
+    expect(h.list.state.totalSize).toBe(5800);
+    void h.list.scrollTo("m45", { align: "start" });
+    expect(h.viewport.scrollTop).toBe(4500);
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 40 }));
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    // The End key: one scroll event, exactly at the range's end.
+    h.userScroll(5100);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(5100);
     h.list.dispose();
   });
 

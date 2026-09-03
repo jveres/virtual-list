@@ -1514,12 +1514,17 @@ export function createVirtualList<T>(
     // commit needs), then either the live commit or the plain publish.
     const vp = viewportState();
     // A genuine gesture that leaves the pin owns the viewport: a held pin
-    // stance (I5) is dropped — unless the move is the engine's, landing at
-    // (a clamp) or beyond (a rubber-band bounce) the stale range's end.
+    // stance (I5) is dropped — unless the move is the engine's: a clamp
+    // pulls a position past the stale range's end back onto it, a
+    // rubber-band bounce pushes beyond it. A hand landing on that end from
+    // below is the user's.
     if (resizeHeld === "pin" && glide === null) {
-      const atOrBeyondEnd =
-        vp.scrollTop - geometry.maxScrollTop(vp.height) >= -AT_EDGE_EPSILON_PX;
-      if (!atOrBeyondEnd) resizeHeld = "viewport";
+      const max = geometry.maxScrollTop(vp.height);
+      const beyondEnd = vp.scrollTop > max + AT_EDGE_EPSILON_PX;
+      const clamped =
+        lastObservedTop > max + AT_EDGE_EPSILON_PX &&
+        Math.abs(vp.scrollTop - max) <= AT_EDGE_EPSILON_PX;
+      if (!beyondEnd && !clamped) resizeHeld = "viewport";
     }
     const range = reconcileWindow(vp);
     if (!liveCommit()) publish(vp, range);
@@ -1549,6 +1554,10 @@ export function createVirtualList<T>(
     cancelActiveSmoothScroll: () => {
       const wasFollowing = smoothFollowArmed;
       smoothFollowArmed = false;
+      // Input that stops a glide onto the pin short (a tap, a scrollbar
+      // press) owns the viewport where it stopped; no scroll event follows
+      // to say so.
+      if (glide !== null && resizeHeld === "pin") resizeHeld = "viewport";
       glide?.cancel();
       settleParked(() => false);
       // The host hears the interruption now, not at the first scroll event.
@@ -1570,11 +1579,11 @@ export function createVirtualList<T>(
       if (pending !== null || dirtyRows.size > 0) {
         // Rows grown under a pinned landing (the reply streaming below the
         // pinned prompt) commit on the pin's stance, not on a guess.
-        const pinnedKey = geometry.pinned;
+        // A held pin stance implies a pin; a pending snapshot must keep it.
+        const pinnedKey = geometry.pinned as string;
         const onPin =
           explicitPolicy === undefined &&
           resizeHeld === "pin" &&
-          pinnedKey !== null &&
           (pending === null ||
             (pending.anchor === "auto" && pending.keys.includes(pinnedKey)));
         if (onPin) commit(null, "pin", "allowed", "keep");
