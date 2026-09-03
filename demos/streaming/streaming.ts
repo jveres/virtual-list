@@ -48,6 +48,10 @@ import {
 } from "./openai.js";
 
 import "../shared/styles.css";
+import {
+  parseTranscriptMarkdown,
+  transcriptMarkdown as transcriptToMarkdown,
+} from "./transcript.js";
 
 // The demo is the runtime's API pressure test: the full streaming chat —
 // send flow with pin-to-top, end-follow through streams, scrollback loading,
@@ -1041,6 +1045,8 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
 // the async IndexedDB read happens up front — at boot and before a provider
 // switch — into this cache.
 let openAIHistory: readonly StoredTurn[] = [];
+// A transcript imported under the simulated provider; session-only.
+let importedConversation: readonly StoredTurn[] | null = null;
 
 // Loads the history snapshot and the fence languages its static render needs
 // (loadLanguages ignores unknown names, so the raw info strings are safe to
@@ -1051,8 +1057,8 @@ async function prepareOpenAIConversation(): Promise<void> {
   if (languages.length > 0) await loadLanguages(languages);
 }
 
-function seedOpenAIConversation(): void {
-  for (const turn of openAIHistory) {
+function seedStoredTurns(turns: readonly StoredTurn[]): void {
+  for (const turn of turns) {
     addTreeChild(
       activeLeafId(),
       createMessage({
@@ -1071,7 +1077,9 @@ function seedOpenAIConversation(): void {
 function seedActiveConversation(): void {
   resetConversationState();
   if (getAISettings().provider === "openai") {
-    seedOpenAIConversation();
+    seedStoredTurns(openAIHistory);
+  } else if (importedConversation !== null) {
+    seedStoredTurns(importedConversation);
   } else {
     seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
   }
@@ -1911,36 +1919,7 @@ stickyHeaders = createStickyHeaders({
 // document: day separators become headings, a tool call a one-line note, a
 // reply that never finished its status.
 function transcriptMarkdown(): string {
-  const lines: string[] = ["# streaming-chat transcript", ""];
-  let currentDay: number | undefined;
-  for (const message of transcript) {
-    const day = dayOf(message);
-    if (day !== currentDay) {
-      currentDay = day;
-      // A file is read later: a dated day gets its full date, not "Today".
-      const label = isDatedDay(day)
-        ? new Date(day).toLocaleDateString(undefined, {
-            year: "numeric",
-            month: "long",
-            day: "numeric",
-          })
-        : dayLabel(day);
-      lines.push(`## ${label}`, "");
-    }
-    lines.push(`**${message.role === "user" ? "User" : "Assistant"}**`, "");
-    for (const call of message.toolCalls ?? []) {
-      lines.push(
-        `> Tool call \`${call.name}\` (${call.status}, ${Math.round(call.durationMs)}ms)`,
-        "",
-      );
-    }
-    const body = message.markdown.trim();
-    if (body) lines.push(body, "");
-    else if (message.status && message.status !== "done") {
-      lines.push(`_(${message.status})_`, "");
-    }
-  }
-  return lines.join("\n");
+  return transcriptToMarkdown(transcript, { dayOf, dayLabel });
 }
 
 function downloadTranscript(): void {
@@ -1962,6 +1941,45 @@ mustGet("download-btn", HTMLButtonElement).addEventListener(
   "click",
   downloadTranscript,
 );
+
+// Import replaces the conversation: the stored OpenAI history in this
+// browser, or the simulated transcript for this session.
+async function importTranscript(file: File): Promise<void> {
+  const turns = parseTranscriptMarkdown(await file.text());
+  if (turns.length === 0) {
+    window.alert(`${file.name} holds no chat turns.`);
+    return;
+  }
+  const useOpenAI = getAISettings().provider === "openai";
+  const target = useOpenAI
+    ? "the OpenAI history stored in this browser"
+    : "the simulated conversation for this session";
+  if (
+    !window.confirm(
+      `Replace ${target} with the ${turns.length} turns in ${file.name}?`,
+    )
+  ) {
+    return;
+  }
+  await loadLanguages(historyFenceLanguages(turns));
+  if (useOpenAI) {
+    openAIHistory = turns;
+    saveOpenAIHistory(turns);
+  } else {
+    importedConversation = turns;
+  }
+  reloadConversation();
+}
+
+const importInput = mustGet("import-file", HTMLInputElement);
+mustGet("import-btn", HTMLButtonElement).addEventListener("click", () =>
+  importInput.click(),
+);
+importInput.addEventListener("change", () => {
+  const file = importInput.files?.[0];
+  importInput.value = "";
+  if (file) void importTranscript(file);
+});
 
 const stickyToggle = mustGet("sticky-toggle", HTMLButtonElement);
 function syncSticky(): void {

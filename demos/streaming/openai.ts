@@ -171,7 +171,7 @@ function storedToolCalls(value: unknown): ChatToolCall[] | undefined {
 
 // Any stored value → validated turns; shared by the IndexedDB record (a
 // structured-clone array) and the legacy localStorage JSON.
-function validateTurns(value: unknown): StoredTurn[] {
+export function validateStoredTurns(value: unknown): StoredTurn[] {
   if (!Array.isArray(value)) return [];
   const turns: StoredTurn[] = [];
   for (const entry of value) {
@@ -199,7 +199,7 @@ function readLegacyHistory(): StoredTurn[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
-    return validateTurns(JSON.parse(raw));
+    return validateStoredTurns(JSON.parse(raw));
   } catch {
     return [];
   }
@@ -274,7 +274,7 @@ export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
       request.onerror = () =>
         reject(request.error ?? new Error("IndexedDB read failed"));
     });
-    if (stored !== undefined) return validateTurns(stored);
+    if (stored !== undefined) return validateStoredTurns(stored);
     const legacy = readLegacyHistory();
     if (legacy.length > 0) {
       saveOpenAIHistory(legacy);

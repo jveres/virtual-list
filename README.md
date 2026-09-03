@@ -33,7 +33,9 @@ pnpm run dev
 - `/demos/streaming/index.html` — the streaming chat, the acceptance target:
   send flow with pin-to-top, smooth end-follow through streams, scrollback
   loading in an in-flow edge slot, message versions, day separators with a
-  sticky header, tool panels, a Markdown export, and an optional real OpenAI
+  sticky header, tool panels, a lossless Markdown export and import (the
+  download and upload icons; import replaces the stored OpenAI history or
+  the simulated conversation for the session), and an optional real OpenAI
   provider (key stored in this browser only; tool panels are live there and
   canned under the simulated provider). `?stream=instant` (or `?instant`)
   removes the simulated token delays, `?stream=fast-long` (or `?fast-long`)
