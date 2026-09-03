@@ -42,7 +42,6 @@ export function setRoleLabel(label: HTMLElement, message: ChatMessage): void {
     dot.setAttribute("aria-hidden", "true");
     label.append(dot, text);
   }
-  dot.dataset.status = status;
   const className =
     status === "thinking" || status === "streaming"
       ? "dot pulse"

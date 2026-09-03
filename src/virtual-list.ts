@@ -373,9 +373,10 @@ export function createVirtualList<T>(
   // The position last observed through a scroll event or a commit: what the
   // viewport stood on BEFORE a resize the engine may already have clamped.
   let lastObservedTop = viewport.scrollTop;
-  // A viewport height change during a phase: its commit waits for the
-  // settle, carrying the stance the pre-resize position decided (I5) — the
-  // engine's clamp has moved the viewport off the pin by then.
+  // A viewport size change during a phase: its commit waits for the
+  // settle, carrying the stance decided when it arrived (I5) — a glide's
+  // destination in flight, else the pre-resize position; the engine's
+  // clamp has moved the viewport off the pin by the settle.
   let resizeHeld: "pin" | "viewport" | null = null;
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
@@ -396,7 +397,7 @@ export function createVirtualList<T>(
   // runs, so disposal from that child must be able to discard them all.
   const liveScopes: Scope[] = [];
   let glide: Glide | null = null;
-  let glideKind: "command" | "follow" | null = null;
+  let followGlide = false;
   // The in-flight command glide's destination is an align:"start" pin.
   let glideToPin = false;
   /** Smooth end-follow survives the quiet gap between consecutive glide legs. */
@@ -725,15 +726,19 @@ export function createVirtualList<T>(
   // A height change while the viewport stands on a pin keeps the pinned row
   // at the top and sizes the reserve to the new height (I5): a taller
   // viewport shrinks the scroll range, and the engine clamps the position
-  // before this delivery — the pre-resize position decides, so a viewport
-  // that had left the pin keeps its anchor instead.
+  // before this delivery — so the pre-resize position decides (a viewport
+  // that had left the pin keeps its anchor), and a glide in flight decides
+  // by its destination.
   const viewportObserver = new ResizeObserver(() => {
     if (disposed) return;
     const width = viewport.clientWidth;
     const widthChanged =
       Math.abs(width - lastViewportWidth) > MEASURE_EPSILON_PX;
     lastViewportWidth = width;
-    lastViewportHeight = viewport.clientHeight;
+    const height = viewport.clientHeight;
+    const heightChanged =
+      Math.abs(height - lastViewportHeight) > MEASURE_EPSILON_PX;
+    lastViewportHeight = height;
     if (widthChanged) {
       // Pending rows need no marking: a retained row that waits for a
       // settle is dirty by construction and re-measured at its commit.
@@ -751,13 +756,15 @@ export function createVirtualList<T>(
     if (idle()) {
       commit(null, stoodOnPin ? "pin" : "viewport", "allowed", "keep");
     } else {
-      // The reserve (I5) is sized to the viewport by a commit: a change
-      // during a phase with nothing else held still needs one at the
-      // settle, or a pinned landing keeps a stale strip below it. A pin
-      // stance holds for the phase: the engine's clamp moves the observed
-      // position off the pin before the next delivery (an animating
-      // composer delivers several).
-      if (resizeHeld !== "pin") resizeHeld = stoodOnPin ? "pin" : "viewport";
+      // The reserve (I5) is sized to the viewport by a commit: a size
+      // change during a phase with nothing else held still needs one at
+      // the settle, or a pinned landing keeps a stale strip below it. A
+      // pin stance holds for the phase: the engine's clamp moves the
+      // observed position off the pin before the next delivery (an
+      // animating composer delivers several).
+      if ((widthChanged || heightChanged) && resizeHeld !== "pin") {
+        resizeHeld = stoodOnPin ? "pin" : "viewport";
+      }
       publish();
     }
   });
@@ -1505,6 +1512,19 @@ export function createVirtualList<T>(
     // The window moves first (a row the scroll exposed may be the one a live
     // commit needs), then either the live commit or the plain publish.
     const vp = viewportState();
+    // A genuine gesture that leaves the pin owns the viewport: a held pin
+    // stance (I5) is dropped — unless the move is the engine's clamp,
+    // which lands exactly on the stale range's end.
+    if (resizeHeld === "pin" && glide === null && awaitingSettle === null) {
+      const pinTop = geometry.pinTop;
+      const onPin =
+        pinTop !== null &&
+        Math.abs(vp.scrollTop - pinTop) <= AT_EDGE_EPSILON_PX;
+      const atClamp =
+        Math.abs(vp.scrollTop - geometry.maxScrollTop(vp.height)) <=
+        AT_EDGE_EPSILON_PX;
+      if (!onPin && !atClamp) resizeHeld = "viewport";
+    }
     const range = reconcileWindow(vp);
     if (!liveCommit()) publish(vp, range);
   }
@@ -1559,7 +1579,7 @@ export function createVirtualList<T>(
         // pinned prompt) commit on the pin's stance, not on a guess.
         const onPin =
           explicitPolicy === undefined &&
-          pending === null &&
+          (pending === null || pending.anchor === "auto") &&
           resizeHeld === "pin";
         if (onPin) commit(null, "pin", "allowed", "keep");
         else commit(null, explicitPolicy);
@@ -1578,8 +1598,7 @@ export function createVirtualList<T>(
       // fresh end-follow intent in the gap after cancelling its old glide.
       if (options.followBehavior === "smooth" && !remeasureOwnsNextCommit()) {
         const following =
-          !takingOver &&
-          (lastState.atEnd || endCommand || glideKind === "follow");
+          !takingOver && (lastState.atEnd || endCommand || followGlide);
         if (smoothFollowArmed !== following) {
           smoothFollowArmed = following;
           publish();
@@ -1849,7 +1868,6 @@ export function createVirtualList<T>(
       (completed) =>
         guarded(() => {
           glide = null;
-          glideKind = null;
           glideToPin = false;
           if (!completed || disposed) {
             done(false);
@@ -1863,7 +1881,6 @@ export function createVirtualList<T>(
           controller.markSettlePending();
         }),
     );
-    glideKind = "command";
     glideToPin = keyed && scrollOptions.align === "start";
   }
 
@@ -1905,12 +1922,11 @@ export function createVirtualList<T>(
       () =>
         guarded(() => {
           glide = null;
-          glideKind = null;
-          glideToPin = false;
+          followGlide = false;
           if (!disposed) controller.markSettlePending();
         }),
     );
-    glideKind = "follow";
+    followGlide = true;
   }
 
   /** Commit a host-driven measurement once its post-activation frame arrives. */
@@ -1955,10 +1971,9 @@ export function createVirtualList<T>(
 
     if (anchor === "viewport") {
       const automaticPhase =
-        controller.isScrollPhaseActive() &&
-        (glideKind === "follow" || smoothFollowArmed);
+        controller.isScrollPhaseActive() && (followGlide || smoothFollowArmed);
       smoothFollowArmed = false;
-      if (glideKind === "follow") glide?.cancel();
+      if (followGlide) glide?.cancel();
       // End only the programmatic phase we just cancelled. Genuine input
       // clears the follow intent in cancelActiveSmoothScroll before this
       // API can run, so a native gesture is never finished here.

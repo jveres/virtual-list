@@ -1222,7 +1222,6 @@ function buildStreamingRow(message: Message): HTMLElement {
   // dedicated wrapper rather than `content` (which also holds the role label
   // and tool calls).
   const host = document.createElement("div");
-  host.className = "streaming-host";
   // The live viewer binds its own copy / table-copy click handler to its
   // root. The chat viewport also delegates those clicks (for static rows), so
   // stop the bubble here to keep both from firing on this one row. The
@@ -1777,9 +1776,7 @@ async function handleSend(): Promise<void> {
   } finally {
     if (assistantId !== null) {
       updateMessage(assistantId, (message) => {
-        if (message.role === "assistant") {
-          message.status = abort.cancelled ? "cancelled" : "done";
-        }
+        message.status = abort.cancelled ? "cancelled" : "done";
       });
     }
     // The finished (or cancelled-partial) assistant turn joins the history;

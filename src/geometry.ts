@@ -28,8 +28,9 @@ import { FenwickTree } from "./fenwick";
 export type AnchorPolicy = "auto" | "viewport" | "end" | "none";
 /**
  * The runtime's own resolution intents on top of the host policies: "pin"
- * puts the pinned key back at the viewport top (a viewport height change
- * under a pin the viewport stands on).
+ * puts the pinned key back at the viewport top (a viewport size change
+ * under a pin the viewport stands on or glides onto, and the rows grown
+ * under that pinned landing).
  */
 export type CapturePolicy = AnchorPolicy | "pin";
 

@@ -103,8 +103,8 @@ choice with its trade-off stated above.
 Settles during active input or motion are defects, always. The v2
 Firefox deviation (in the preserved controller, flagged in-source) is a
 two-window design: a pending edge release is CONTESTED when a
-post-scrollend wheel adds energy (grows past its predecessor beyond the
-2px jitter band), reverses direction (new intent), or arrives from a
+post-scrollend wheel adds energy (grows more than a pixel past its
+predecessor, with a 2px floor), reverses direction (new intent), or arrives from a
 line/page-delta device (discrete notches are deliberate input; momentum
 tails exist only on pixel-delta devices) — such a scrollend was a
 mid-momentum/mid-hold pause, not the release (`main` honored it on a

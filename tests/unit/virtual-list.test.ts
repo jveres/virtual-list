@@ -915,6 +915,86 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a gesture that leaves the pin after an in-gesture resize is never pulled back", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    void h.list.scrollTo("m45", { align: "start" });
+    expect(h.viewport.scrollTop).toBe(4500);
+    // The keyboard closes mid-gesture while the viewport stands on the pin,
+    // then the finger keeps going.
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    h.userScroll(3000);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(3000);
+    // The pin stands: its reserve is sized to the taller viewport.
+    expect(h.list.state.totalSize).toBe(5200);
+    h.list.dispose();
+  });
+
+  it("the engine's clamp off the pin during a gesture keeps the pin stance", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    void h.list.scrollTo("m45", { align: "start" });
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    // The taller viewport's range ends at 4400: the engine clamps the
+    // position there and reports it as a scroll — not the user's move.
+    expect(h.viewport.scrollTop).toBe(4400);
+    h.viewport.dispatchEvent(new Event("scroll"));
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(4500);
+    expect(h.list.positionOf("m45")?.top).toBe(4500);
+    h.list.dispose();
+  });
+
+  it("a snapshot held under a pinned landing commits on the pin's stance", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "same-height",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48);
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    // Scrollback arrives during the glide and waits for the settle: the
+    // pinned row moves down by a page, and the landing follows it.
+    h.list.setItems([message(-1, "older"), ...initial]);
+    expect(h.list.state.held).toBe(true);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4400);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(4600);
+    expect(h.list.positionOf("m45")?.top).toBe(4600);
+    h.list.dispose();
+  });
+
+  it("a size-neutral viewport observation during a gesture commits nothing at the settle", () => {
+    const h = mount(range(0, 50), { followBehavior: "smooth" });
+    h.userScroll(4000);
+    fireResize(1, h.viewport, VIEWPORT_H);
+    const published = h.states.length;
+    h.settle();
+    expect(h.states.length).toBe(published);
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;
