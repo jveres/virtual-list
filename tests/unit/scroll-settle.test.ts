@@ -639,6 +639,28 @@ describe("safari sequences (trace replay)", () => {
 });
 
 describe("programmatic gestures", () => {
+  it("a glide's trailing scrollend at a loadable edge settles on the plain cooldown (firefox)", () => {
+    // Firefox fires a scrollend after every programmatic write. The one that
+    // trails a follow glide's last frame near a loadable edge must not be
+    // read as a wheel gesture's edge release: no wheel input happened in
+    // this phase, and that window — measured from the last wheel — would
+    // have "elapsed" already and settle the phase at once, mid-stream.
+    const harness = mount("firefox-wheel", { canLoadBottom: true });
+    harness.setSmoothActive(true);
+    harness.controller.beginProgrammaticGesture();
+    harness.controller.recordProgrammaticScrollTop(4600);
+    harness.scrollTo(4600);
+    harness.controller.recordProgrammaticScrollTop(4700);
+    harness.scrollTo(4700); // The end.
+    harness.setSmoothActive(false); // The glide landed.
+    harness.controller.markSettlePending();
+    harness.scrollEnd(); // Firefox's scrollend for that last write.
+    vi.advanceTimersByTime(30);
+    expect(harness.settled()).toBe(0);
+    vi.advanceTimersByTime(200);
+    expect(harness.settled()).toBe(1);
+  });
+
   it("classifies glide writes as self-inflicted and settles after markSettlePending", () => {
     const harness = mount("firefox-wheel");
     harness.controller.beginProgrammaticGesture();

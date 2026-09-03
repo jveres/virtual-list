@@ -219,6 +219,12 @@ export function createScrollSettleController(
   // classification; non-pixel wheels reset it (units are incompatible).
   let lastFirefoxWheelDelta = 0;
   let lastFirefoxWheelInputAt = Number.NEGATIVE_INFINITY;
+  // Whether this phase has seen wheel input: the Firefox edge release and
+  // its windows are wheel-gesture contracts. A programmatic glide's own
+  // trailing scrollend (Firefox fires one per write) must settle on the
+  // plain cooldown, never "at once" through a window measured from a wheel
+  // that never came.
+  let wheelInputThisPhase = false;
   let firefoxProtectedEdge: ScrollBoundary | null = null;
   let settleFrame = 0;
   let firefoxEdgeCommitFrame = 0;
@@ -708,6 +714,7 @@ export function createScrollSettleController(
       }
       if (
         strategy === "firefox-wheel" &&
+        wheelInputThisPhase &&
         (hasPendingFirefoxEdgeRelease() || isNearProtectedFirefoxEdge())
       ) {
         // This may be the release — or a scrollend that slipped into a
@@ -748,6 +755,7 @@ export function createScrollSettleController(
     if (!wasActive) {
       clearPendingNativeScrollEnd();
       scrollPhaseMoved = false;
+      wheelInputThisPhase = false;
       resetScrollSample();
       chromiumWheelSawNativeScrollEnd = false;
       chromiumWheelAwaitingFinalScrollEnd = false;
@@ -859,6 +867,7 @@ export function createScrollSettleController(
     if (usesWheelScrollEndFallback()) {
       if (strategy === "firefox-wheel") {
         lastFirefoxWheelInputAt = performance.now();
+        wheelInputThisPhase = true;
       }
       const outwardBoundary = boundaryForOutwardWheel(event);
       if (
