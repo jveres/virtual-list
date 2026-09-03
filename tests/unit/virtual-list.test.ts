@@ -382,7 +382,10 @@ describe("v2 runtime — commits and slots", () => {
 
   it("a command's takeover of a follow glide never re-arms following", () => {
     const initial = range(0, 50);
-    const h = mount(initial, { followBehavior: "smooth" });
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
     h.userScroll(4000);
     h.settle();
     h.userScroll(4400); // A gesture landing at the end engages following.
@@ -394,14 +397,21 @@ describe("v2 runtime — commits and slots", () => {
     streamed[49] = message(49, "streamed longer");
     h.list.setItems(streamed);
     expect(h.list.state.following).toBe(true);
+    // The follow glide lands on the new end; its phase awaits the settle,
+    // so the viewport now reads "at the end" inside a live phase.
+    advanceFramesUntil(() => h.viewport.scrollTop === 4600);
+    expect(h.list.state.atEnd).toBe(true);
 
     // Scroll-to-top takes over: the settle it forces must not read "was at
-    // the end" as follow intent.
+    // the end" as follow intent. Were following re-armed, the first live
+    // commit after the command lands — before its own settle — would start
+    // a follow glide back to the end.
     void h.list.scrollTo("start", { behavior: "smooth" });
     expect(h.list.state.following).toBe(false);
-    vi.advanceTimersByTime(1410); // Landed; its settle cooldown is running.
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
     expect(h.viewport.scrollTop).toBe(0);
-    // Live growth below the anchor in that gap must not glide back down.
+    // Live growth below the anchor, inside the landed command's settle
+    // cooldown (140ms; no frame has passed since the landing).
     h.heights.set(5, 200);
     fireResize(0, h.rowElement("msg 5"), 200);
     vi.advanceTimersByTime(600);
@@ -1461,19 +1471,9 @@ describe("v2 runtime — retained nodes", () => {
     expect(h.list.state.count).toBe(20);
   });
 
-  it("attempts every destruction even when a host teardown throws", () => {
-    const h = mount(range(0, 20), {
-      onDestroy: (element) => {
-        if (element.dataset.id === "5") throw new Error("teardown 5");
-      },
-    });
-    // Removal at commit: the throw surfaces, the other removals still ran.
-    expect(() => h.list.setItems(range(10, 20))).toThrow("teardown 5");
-    expect(h.destroyed.sort((a, b) => a - b)).toEqual(
-      range(0, 10).map((m) => m.id),
-    );
-
-    // Dispose: every remaining element is destroyed, exactly once.
+  it("dispose attempts every destruction even when a host teardown throws", () => {
+    // (Removal at commit is covered by "completes the commit before
+    // surfacing a teardown failure".) Every element is destroyed, once.
     const h2 = mount(range(0, 20), {
       onDestroy: (element) => {
         if (element.dataset.id === "5") throw new Error("teardown 5");

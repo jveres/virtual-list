@@ -354,7 +354,7 @@ export function createVirtualList<T>(
   const mountedRows = new Set<Row<T>>();
   /** Committed rows whose size may differ from their committed height. */
   const dirtyRows = new Set<Row<T>>();
-  /** Advances on every geometry change; window reconciliation is memoized on it. */
+  /** Advances on every commit; window reconciliation is memoized on it and onState fires when it moved. */
   let geometryEpoch = 0;
 
   // --- Pending work (waits for the scroll phase to settle) ------------------

@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { mulberry32 } from "../../demos/shared/lab";
-import { Geometry, type GeometryViewport } from "../../src/geometry";
+import {
+  type AnchorPolicy,
+  Geometry,
+  type GeometryViewport,
+} from "../../src/geometry";
 
 // The geometry kernel is judged by the lean-core invariants (docs/lean-core.md):
 // I1 — the resolved scroll target keeps the visible anchor's viewport
@@ -27,7 +31,7 @@ function keysRange(from: number, to: number): string[] {
 function transact(
   geometry: Geometry,
   vp: GeometryViewport,
-  policy: "auto" | "viewport" | "end" | "none",
+  policy: AnchorPolicy,
   mutate: () => void,
 ) {
   const capture = geometry.capture(vp, policy);
