@@ -285,6 +285,25 @@ function quantizeHeight(height: number): number {
   return Math.max(1, Math.ceil(height - HEIGHT_NOISE));
 }
 const MEASURE_EPSILON_PX = 0.5;
+/**
+ * A mounted row keeps its committed height while an in-place measurement
+ * stays within this of it. The detached measurer and the slot lay text out
+ * at different fractional page offsets, and at a 1x ratio an engine snaps
+ * line boxes to whole device pixels differently in each — the same content
+ * reads a pixel taller in one than the other. Re-committing that
+ * difference moved every row below by a pixel on each delivery (a "dance"
+ * on a 1x Windows laptop); a slice this thin clipped or gapped inside the
+ * slot is invisible.
+ */
+const REMEASURE_TOLERANCE_PX = 1.5;
+
+/** Whether an in-place measurement changes a mounted row's committed height. */
+function remeasureChanges(measured: number, committed: number): boolean {
+  return (
+    quantizeHeight(measured) !== committed &&
+    Math.abs(measured - committed) > REMEASURE_TOLERANCE_PX
+  );
+}
 const SCROLL_WRITE_EPSILON_PX = 0.5;
 
 /**
@@ -741,7 +760,7 @@ export function createVirtualList<T>(
       const height =
         entry.borderBoxSize?.[0]?.blockSize ??
         (entry.target as HTMLElement).getBoundingClientRect().height;
-      if (quantizeHeight(height) === row.height) continue;
+      if (!remeasureChanges(height, row.height)) continue;
       markDirty(row);
       changed = true;
     }
