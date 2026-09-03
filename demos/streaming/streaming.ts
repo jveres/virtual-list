@@ -793,7 +793,7 @@ function edgeLabelFor(state: EdgeState): string {
   return state === "loading"
     ? "Loading older messages"
     : state === "no-more"
-      ? "At the top"
+      ? "No older messages"
       : "";
 }
 
@@ -916,8 +916,17 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
       loadingTop = false;
       activeLoad = null;
       if (epoch === conversationEpoch) {
-        if (!canLoadOlderMessages()) setEdgeState("no-more");
-        else scheduleEdgeHide(); // Linger: the next chunk may follow at once.
+        // History exhausted: the in-flow slot keeps its marker at the top
+        // of the conversation, where it belongs; the floating pill would
+        // announce it over whatever the user is reading (the load kept
+        // their place), so it only hides — the marker shows at the top.
+        if (!canLoadOlderMessages() && edgeLoaderMode === "slot") {
+          setEdgeState("no-more");
+        } else if (!canLoadOlderMessages()) {
+          setEdgeState("hidden");
+        } else {
+          scheduleEdgeHide(); // Linger: the next chunk may follow at once.
+        }
         syncMetrics();
       }
       resolve();
