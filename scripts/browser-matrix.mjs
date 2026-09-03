@@ -419,7 +419,10 @@ async function runChat(engine) {
   const browser = await browserType(engine).launch(launchOptions);
   let summary;
   try {
-    summary = await runChatCase(engine, browser, baseUrl);
+    summary = await runChatCase(engine, browser, baseUrl, {
+      seed,
+      chaosSeconds,
+    });
   } finally {
     await browser.close();
   }

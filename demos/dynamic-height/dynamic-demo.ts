@@ -1103,7 +1103,7 @@ function classifyBatch(records: MutationRecord[]): void {
     } else if (!settleCommit && glideMoving(now)) {
       violation(
         "G",
-        `geometry changed while a glide was still moving — ${evidence(now)}`,
+        `geometry changed while a glide was still moving (not a live commit: ${liveRejection ?? "?"}; ${heightChanges.length} heights, ${offsetChanges} offsets) — ${evidence(now)}`,
       );
     }
   }

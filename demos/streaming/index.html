@@ -93,32 +93,6 @@
           <button
             type="button"
             class="icon-btn"
-            id="edge-loader-toggle"
-            title="Edge loader: in flow"
-            aria-label="Edge loader: in flow"
-            aria-pressed="true"
-          >
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <rect x="2.5" y="2.5" width="11" height="3.5" rx="1" stroke="currentColor" stroke-width="1.4" />
-              <path d="M8 8v5M5.8 10.8 8 13l2.2-2.2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
-            id="sticky-toggle"
-            title="Sticky day headers"
-            aria-label="Sticky day headers"
-            aria-pressed="true"
-          >
-            <svg viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <path d="M5 2.5h6L9.8 5.8v1.7l1.7 1.4v1H4.5v-1l1.7-1.4V5.8L5 2.5Z" fill="currentColor" />
-              <path d="M8 9.8v3.7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-            </svg>
-          </button>
-          <button
-            type="button"
-            class="icon-btn"
             id="download-btn"
             title="Download the chat as Markdown"
             aria-label="Download the chat as Markdown"
@@ -241,6 +215,27 @@
         </div>
       </div>
       <dialog class="ai-settings-dialog" id="ai-settings-panel" tabindex="-1">
+        <div class="ai-settings-dialog-title">General</div>
+        <label class="ai-settings-field">
+          Autoscroll
+          <select id="autoscroll-mode">
+            <option value="end">Follow to the end</option>
+            <option value="keep-start">Stop when the reply's start reaches the top</option>
+          </select>
+        </label>
+        <label class="ai-settings-field">
+          Scrollback loader
+          <select id="edge-loader-mode">
+            <option value="slot">In the flow</option>
+            <option value="pill">Floating pill</option>
+          </select>
+        </label>
+        <div class="ai-settings-field">
+          <label class="ai-tool-option">
+            <input type="checkbox" id="sticky-toggle" />
+            Sticky day headers
+          </label>
+        </div>
         <div class="ai-settings-dialog-title">AI provider</div>
         <label class="ai-settings-field">
           Provider

@@ -161,7 +161,20 @@ export interface VirtualListOptions<T> {
   scrollingUpdates?: ScrollingUpdates;
   /** Animate automatic end-follow as content grows; instant by default. */
   followBehavior?: "instant" | "smooth";
+  /**
+   * How far automatic follow goes. "end" (default) keeps the end in view as
+   * content grows. "keep-start" follows only until the last row's top
+   * reaches the viewport top — a reply is read from its start, and once it
+   * is taller than the viewport the user scrolls at their own pace.
+   * Explicit commands and explicit "end" anchors still reach the true end;
+   * boot lands at the end.
+   */
+  followMode?: FollowMode;
+  /** Pixels kept clear above the last row's top under "keep-start" (a floating header). */
+  followInset?: number;
 }
+
+export type FollowMode = "end" | "keep-start";
 
 export interface VirtualListState {
   count: number;
@@ -245,6 +258,8 @@ export interface VirtualList<T> {
    * lies below the anchor (an end slot), which commits at once.
    */
   setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void;
+  /** Change how far automatic follow goes (see `followMode`); takes effect at the next growth. */
+  setFollowMode(mode: FollowMode, inset?: number): void;
   /** Committed content-space top and height of an item key (offsets include edge slots); null if unknown. */
   positionOf(key: string): { top: number; height: number } | null;
   /** The mounted element of a key, or null when unmounted or unknown. */
@@ -414,6 +429,8 @@ export function createVirtualList<T>(
   let followGlide = false;
   // The in-flight command glide's destination is an align:"start" pin.
   let glideToPin = false;
+  let followMode: FollowMode = options.followMode ?? "end";
+  let followInset = Math.max(0, options.followInset ?? 0);
   /** Smooth end-follow survives the quiet gap between consecutive glide legs. */
   let smoothFollowArmed = false;
   /**
@@ -1300,7 +1317,16 @@ export function createVirtualList<T>(
       // fractional write, WebKit floors it (the anchor then lands up to a
       // full pixel short). Writing a whole pixel bounds the anchor's
       // landing error to half a pixel everywhere.
-      const target = Math.round(result.scrollTop);
+      // A derived end-follow ("auto" resolving to the end, boot excepted)
+      // goes only as far as the follow mode allows.
+      const derivedFollow =
+        !booting && result.mode === "end" && policy === "auto";
+      const target = derivedFollow
+        ? followTarget(
+            Math.round(before.scrollTop),
+            Math.round(result.scrollTop),
+          )
+        : Math.round(result.scrollTop);
       const smoothFollow =
         !booting &&
         options.followBehavior === "smooth" &&
@@ -1327,8 +1353,9 @@ export function createVirtualList<T>(
       ) {
         smoothFollowArmed =
           (policy === "auto" || policy === "end") &&
-          geometry.maxScrollTop(viewport.clientHeight) - target <=
-            AT_EDGE_EPSILON_PX;
+          (geometry.maxScrollTop(viewport.clientHeight) - target <=
+            AT_EDGE_EPSILON_PX ||
+            atFollowLimit(target));
       }
       // A mid-phase commit never writes: its target equals the position by
       // construction, except where the engine holds the viewport outside
@@ -1626,7 +1653,11 @@ export function createVirtualList<T>(
       // fresh end-follow intent in the gap after cancelling its old glide.
       if (options.followBehavior === "smooth" && !remeasureOwnsNextCommit()) {
         const following =
-          !takingOver && (lastState.atEnd || endCommand || followGlide);
+          !takingOver &&
+          (lastState.atEnd ||
+            endCommand ||
+            followGlide ||
+            atFollowLimit(viewport.scrollTop));
         if (smoothFollowArmed !== following) {
           smoothFollowArmed = following;
           publish();
@@ -1943,14 +1974,50 @@ export function createVirtualList<T>(
   }
 
   /** Start a follow glide when the viewport is not already at the end. */
+  /**
+   * Where automatic follow goes from `current`, the end at most. Under
+   * "keep-start" the last row's top (less the inset) is the far limit, and
+   * a viewport already past it stays where it is: follow never moves
+   * backwards, and never past the start of what the user is reading.
+   */
+  function followTarget(current: number, end?: number): number {
+    const max = end ?? geometry.maxScrollTop(viewport.clientHeight);
+    if (followMode === "end") return max;
+    let index = geometry.count - 1;
+    while (index >= 0 && isSlotKey(geometry.keyAt(index) as string)) index -= 1;
+    if (index < 0) return max;
+    const limit = Math.max(
+      0,
+      geometry.offsetOf(geometry.keyAt(index) as string) - followInset,
+    );
+    return Math.min(max, Math.max(current, limit));
+  }
+
+  /** Under "keep-start", standing where the follow stopped is following. */
+  function atFollowLimit(position: number): boolean {
+    if (followMode === "end") return false;
+    const limit = followTarget(0);
+    return Math.abs(limit - position) <= AT_EDGE_EPSILON_PX;
+  }
+
   function followIfBehindEnd(): void {
     // The same band as atEnd: a viewport within a pixel of the end is
     // there, and never starts a glide phase to move under a pixel.
+    const current = viewport.scrollTop;
+    const delta = followTarget(current) - current;
     const behind =
-      Math.abs(
-        geometry.maxScrollTop(viewport.clientHeight) - viewport.scrollTop,
-      ) > AT_EDGE_EPSILON_PX;
+      followMode === "end"
+        ? Math.abs(delta) > AT_EDGE_EPSILON_PX
+        : delta > AT_EDGE_EPSILON_PX;
     if (behind) startFollowGlide();
+  }
+
+  function setFollowMode(mode: FollowMode, inset = 0): void {
+    if (disposed) return;
+    followMode = mode;
+    followInset = Math.max(0, inset);
+    // Widening the follow while it is engaged catches up at once.
+    if (smoothFollowArmed && idle()) followIfBehindEnd();
   }
 
   /** Automatic end-follow: one glide whose destination tracks live growth. */
@@ -1958,7 +2025,7 @@ export function createVirtualList<T>(
     if (disposed || glide !== null) return;
     controller.beginProgrammaticGesture();
     glide = startGlide(
-      glideHost(() => geometry.maxScrollTop(viewport.clientHeight)),
+      glideHost(() => followTarget(viewport.scrollTop)),
       // Follow legs are short and frequent: a quicker landing than a
       // command's, so the end keeps up with the stream.
       glidePace(viewport.clientHeight, FOLLOW_LANDING_MS),
@@ -2103,6 +2170,7 @@ export function createVirtualList<T>(
       return lastState;
     },
     setEdgeSlot,
+    setFollowMode,
     positionOf,
     elementOf,
     dispose,

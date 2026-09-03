@@ -36,13 +36,18 @@ pnpm run dev
   sticky header, tool panels, a lossless Markdown export and import (the
   download and upload icons, or drop a transcript on the chat; import
   replaces the stored OpenAI history or the simulated conversation for the
-  session), and an optional real OpenAI
+  session), a settings dialog whose General section holds the autoscroll
+  mode (follow to the end, or stop when the reply's start reaches the top),
+  theme, scrollback loader style, and sticky day headers, and an optional
+  real OpenAI
   provider (key stored in this browser only; tool panels are live there and
   canned under the simulated provider). `?stream=instant` (or `?instant`)
   removes the simulated token delays, `?stream=fast-long` (or `?fast-long`)
   streams a long reply quickly, `?edge=pill` uses a floating loader pill
-  instead of the in-flow slot, and `?sticky=off` starts with the sticky day
-  header off.
+  instead of the in-flow slot, `?sticky=off` starts with the sticky day
+  header off, and `?follow=keep-start` starts in the bounded autoscroll
+  mode; the dialog's choices persist in the browser, a URL parameter wins
+  for the session.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server
@@ -82,6 +87,8 @@ const list = createVirtualList(viewport, {
   overscanPx: 600,
   scrollingUpdates: "live", // | "same-height" | "freeze"
   followBehavior: "smooth", // | "instant"
+  followMode: "end", // | "keep-start": stop when the last row's top reaches the viewport top
+  followInset: 0, // px kept clear above that row under "keep-start"
   edgeSlots: { start: { key: "loader", height: 52, render } },
   onState: (state) => {},
   onReachStart: ({ signal }) => loadOlder(signal),
@@ -96,6 +103,7 @@ await list.scrollTo(key, { align: "start", behavior: "smooth", duration, offset 
 await list.scrollTo("end", { behavior: "smooth" });
 list.remeasure(key, { anchor: "viewport" });
 list.setEdgeSlot("start", slot | null);
+list.setFollowMode("keep-start", 44);
 list.positionOf(key); // { top, height } | null, committed positions only
 list.elementOf(key); // the mounted element | null
 list.state; // { count, start, end, atStart, atEnd, following, totalSize, held }

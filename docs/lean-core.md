@@ -229,6 +229,12 @@ The definition of correct, referenced by number throughout the code:
   a held pin stance — the settle never pulls the user back onto the pin —
   while the engine's own moves keep it: a clamp pulling a position past
   the stale range's end back onto it, a rubber-band bounce beyond it.
+  `followMode: "keep-start"` bounds automatic follow: it goes only until the
+  last row's top (less `followInset`) reaches the viewport top, and never
+  backwards, so a reply is read from its start and a viewport already past
+  that point stays put; explicit commands and explicit `"end"` anchors
+  still reach the end, and boot lands at the end. `setFollowMode` changes
+  the mode live; widening it while following catches up at once.
   `remeasure` is the intent-bearing path for a discrete host interaction
   such as opening a tool panel. It reads the mounted row on the next animation
   frame (after the default action, before paint) and defaults to the viewport

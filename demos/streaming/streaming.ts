@@ -2,6 +2,7 @@ import {
   type AnchorPolicy,
   createVirtualList,
   type EdgeSlot,
+  type FollowMode,
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
@@ -163,9 +164,60 @@ const EDGE_NO_MORE_HIDE_MS = 1400;
 const EDGE_HIDE_LINGER_MS = 400;
 
 const demoParams = new URLSearchParams(location.search);
-let edgeLoaderMode: "slot" | "pill" =
-  demoParams.get("edge") === "pill" ? "pill" : "slot";
-let stickyEnabled = demoParams.get("sticky") !== "off";
+// General options live in the settings dialog and persist in this browser;
+// a URL parameter wins for the session (the browser matrix drives them).
+const OPTIONS_KEY = "virtual-list:chat-options";
+interface ChatOptions {
+  edge: "slot" | "pill";
+  sticky: boolean;
+  follow: FollowMode;
+}
+function loadChatOptions(): ChatOptions {
+  const stored: Partial<ChatOptions> = (() => {
+    try {
+      return JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}");
+    } catch {
+      return {};
+    }
+  })();
+  const edgeParam = demoParams.get("edge");
+  const stickyParam = demoParams.get("sticky");
+  const followParam = demoParams.get("follow");
+  return {
+    edge:
+      edgeParam === "pill" || edgeParam === "slot"
+        ? edgeParam
+        : stored.edge === "pill"
+          ? "pill"
+          : "slot",
+    sticky:
+      stickyParam !== null ? stickyParam !== "off" : stored.sticky !== false,
+    follow:
+      followParam === "keep-start" || followParam === "end"
+        ? followParam
+        : stored.follow === "keep-start"
+          ? "keep-start"
+          : "end",
+  };
+}
+function saveChatOptions(): void {
+  try {
+    localStorage.setItem(
+      OPTIONS_KEY,
+      JSON.stringify({
+        edge: edgeLoaderMode,
+        sticky: stickyEnabled,
+        follow: followMode,
+      }),
+    );
+  } catch {
+    // Storage may be unavailable; the session keeps its choices.
+  }
+}
+const chatOptions = loadChatOptions();
+let edgeLoaderMode: "slot" | "pill" = chatOptions.edge;
+let stickyEnabled = chatOptions.sticky;
+let followMode: FollowMode = chatOptions.follow;
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
@@ -176,7 +228,8 @@ const promptInput = mustGet("prompt", HTMLTextAreaElement);
 const sendBtn = mustGet("send-btn", HTMLButtonElement);
 const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
 const scrollBottomBtn = mustGet("scroll-bottom-btn", HTMLButtonElement);
-const edgeLoaderToggle = mustGet("edge-loader-toggle", HTMLButtonElement);
+const edgeLoaderSelect = mustGet("edge-loader-mode", HTMLSelectElement);
+const autoscrollSelect = mustGet("autoscroll-mode", HTMLSelectElement);
 const windowStatus = mustGet("window-status");
 const virtualListStatus = mustGet("virtual-list-status");
 const composerMinHeight = Math.max(
@@ -816,11 +869,7 @@ function setEdgeState(state: EdgeState): void {
 function syncEdgeLoaderMode(): void {
   syncEdgeSlot();
   const inFlow = edgeLoaderMode === "slot";
-  edgeLoaderToggle.classList.toggle("active", inFlow);
-  edgeLoaderToggle.setAttribute("aria-pressed", String(inFlow));
-  const label = inFlow ? "Edge loader: in flow" : "Edge loader: floating pill";
-  edgeLoaderToggle.title = label;
-  edgeLoaderToggle.setAttribute("aria-label", label);
+  edgeLoaderSelect.value = edgeLoaderMode;
   edgeOverlay.dataset.state = inFlow ? "hidden" : edgeState;
   edgeLabel.textContent = edgeLabelFor(edgeState);
   if (edgeSlotElement) applyEdgeSlotState(edgeSlotElement, edgeState);
@@ -1900,6 +1949,8 @@ virtualList = createVirtualList<ChatRow>(viewport, {
   // settle-gated; one below it (a version switch) applies at once.
   scrollingUpdates: "live",
   followBehavior: "smooth",
+  followMode,
+  followInset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
   onState: (state) => {
     // A deferred prepend committed: close out the load it belongs to.
     if (pendingPrepend && state.count >= pendingPrepend.count) {
@@ -2040,24 +2091,35 @@ viewportWrap.addEventListener("drop", (event) => {
   else window.alert("Drop a Markdown transcript (.md) to import it.");
 });
 
-const stickyToggle = mustGet("sticky-toggle", HTMLButtonElement);
+const stickyToggle = mustGet("sticky-toggle", HTMLInputElement);
 function syncSticky(): void {
   stickyHeaders?.setEnabled(stickyEnabled);
-  stickyToggle.classList.toggle("active", stickyEnabled);
-  stickyToggle.setAttribute("aria-pressed", String(stickyEnabled));
+  stickyToggle.checked = stickyEnabled;
   viewportWrap.classList.toggle("sticky-on", stickyEnabled);
+  // The sticky header covers the top of the viewport: keep it clear of
+  // the reply's start under "keep-start".
+  virtualList?.setFollowMode(followMode, stickyEnabled ? DAY_HEADER_HEIGHT : 0);
 }
-stickyToggle.addEventListener("click", () => {
-  stickyEnabled = !stickyEnabled;
+stickyToggle.addEventListener("change", () => {
+  stickyEnabled = stickyToggle.checked;
   syncSticky();
+  saveChatOptions();
 });
 syncSticky();
 
-edgeLoaderToggle.addEventListener("click", () => {
-  edgeLoaderMode = edgeLoaderMode === "slot" ? "pill" : "slot";
+edgeLoaderSelect.addEventListener("change", () => {
+  edgeLoaderMode = edgeLoaderSelect.value === "pill" ? "pill" : "slot";
   syncEdgeLoaderMode();
+  saveChatOptions();
 });
 syncEdgeLoaderMode();
+
+autoscrollSelect.value = followMode;
+autoscrollSelect.addEventListener("change", () => {
+  followMode = autoscrollSelect.value === "keep-start" ? "keep-start" : "end";
+  virtualList?.setFollowMode(followMode, stickyEnabled ? DAY_HEADER_HEIGHT : 0);
+  saveChatOptions();
+});
 
 // One delegated listener powers copy buttons across every mounted row.
 attachInteractions(viewport);

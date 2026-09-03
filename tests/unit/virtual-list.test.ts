@@ -118,6 +118,8 @@ function mount(
     settleStrategy?: VirtualListScrollSettleStrategy;
     edgeSlots?: VirtualListOptions<Msg>["edgeSlots"];
     anchorable?: (m: Msg) => boolean;
+    followMode?: VirtualListOptions<Msg>["followMode"];
+    followInset?: number;
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     /** Reports how many fresh peers share the detached root at each read. */
@@ -196,6 +198,8 @@ function mount(
     followBehavior: hooks.followBehavior,
     edgeSlots: hooks.edgeSlots,
     anchorable: hooks.anchorable,
+    followMode: hooks.followMode,
+    followInset: hooks.followInset,
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
@@ -1334,6 +1338,98 @@ describe("v2 runtime — commits and slots", () => {
     fireResize(1, h.viewport, 800);
     expect(h.viewport.scrollTop).toBe(4600);
     expect(h.list.positionOf("m45")?.top).toBe(4600);
+    h.list.dispose();
+  });
+
+  it('"keep-start": smooth follow stops once the last row\'s top reaches the viewport top', () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+      followMode: "keep-start",
+    });
+    expect(h.viewport.scrollTop).toBe(4400); // Boot lands at the end.
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    // The tail grows to 300px: its top (4900) is still below the viewport
+    // top, so the end (4600) is followed.
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4600);
+    expect(h.viewport.scrollTop).toBe(4600);
+    // It grows past the viewport: the follow stops with its top at the
+    // viewport top (4900), never at the new end (5600).
+    h.heights.set(49, 1300);
+    const longer = [...initial];
+    longer[49] = message(49, "streamed much longer");
+    h.list.setItems(longer);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4900);
+    vi.advanceTimersByTime(700);
+    expect(h.viewport.scrollTop).toBe(4900);
+    // Further growth moves nothing.
+    h.heights.set(49, 1500);
+    const longest = [...initial];
+    longest[49] = message(49, "streamed longest");
+    h.list.setItems(longest);
+    vi.advanceTimersByTime(700);
+    expect(h.viewport.scrollTop).toBe(4900);
+    h.list.dispose();
+  });
+
+  it('"keep-start" keeps the inset clear above the row and honours explicit ends', async () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      scrollingUpdates: "live",
+      followMode: "keep-start",
+      followInset: 44,
+    });
+    // Instant follow: the write stops 44px above the tail's top.
+    h.heights.set(49, 1300);
+    const longer = [...initial];
+    longer[49] = message(49, "streamed much longer");
+    h.list.setItems(longer);
+    expect(h.viewport.scrollTop).toBe(4900 - 44);
+    // An explicit end anchor and an explicit command still reach the end.
+    h.list.setItems([...longer, message(50, "appended")], { anchor: "end" });
+    expect(h.viewport.scrollTop).toBe(
+      Number.parseFloat(h.canvas().style.height) - VIEWPORT_H,
+    );
+    h.userScroll(1000);
+    h.settle();
+    await h.list.scrollTo("end");
+    expect(h.viewport.scrollTop).toBe(
+      Number.parseFloat(h.canvas().style.height) - VIEWPORT_H,
+    );
+    h.list.dispose();
+  });
+
+  it("setFollowMode widens a stopped follow and catches up at once", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+      followMode: "keep-start",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    h.heights.set(49, 1300);
+    const longer = [...initial];
+    longer[49] = message(49, "streamed much longer");
+    h.list.setItems(longer);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4900);
+    h.settle(); // Standing at the limit is following.
+    expect(h.viewport.scrollTop).toBe(4900);
+    expect(h.list.state.following).toBe(true);
+    h.list.setFollowMode("end");
+    advanceFramesUntil(() => h.viewport.scrollTop === 5600);
+    expect(h.viewport.scrollTop).toBe(5600);
     h.list.dispose();
   });
 
