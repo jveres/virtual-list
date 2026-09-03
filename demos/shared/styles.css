@@ -786,6 +786,11 @@ p.ai-settings-note {
   pointer-events: auto;
 }
 
+/* The grid display above would outrank the user agent's [hidden] rule. */
+.scroll-jump[hidden] {
+  display: none;
+}
+
 /* Lucide move-up / move-down: one thin line, centred in the circle. */
 .scroll-jump svg {
   display: block;
