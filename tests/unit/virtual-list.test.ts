@@ -995,6 +995,172 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a held snapshot that removes the pinned key keeps the anchor, not the raw position", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "same-height",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48);
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4400);
+    // The pinned prompt and everything after it are deleted while a page
+    // lands above: the anchor (m44, now the last row) stays in view at the
+    // range's end — never the raw position, a page back.
+    h.list.setItems([...range(100, 110), ...initial.slice(0, 45)]);
+    h.settle();
+    await expect(landed).resolves.toBe(false);
+    expect(h.list.positionOf("m44")?.top).toBe(5400);
+    expect(h.viewport.scrollTop).toBeGreaterThanOrEqual(4800); // m44 in view.
+    expect(h.list.state.atEnd).toBe(true);
+    h.list.dispose();
+  });
+
+  it("wheel input that cannot move a clamped viewport keeps the pin stance", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    void h.list.scrollTo("m45", { align: "start" });
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 40 }));
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    expect(h.viewport.scrollTop).toBe(4400); // The taller range's clamp.
+    // Two more ticks toward the end move nothing: no scroll event follows.
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 40 }));
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 40 }));
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(4500); // I5: the row returns to the top.
+    expect(h.list.state.atEnd).toBe(true);
+    h.list.dispose();
+  });
+
+  it("an input-less scroll away from a parked pinned landing owns the viewport", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    advanceFramesUntil(() => h.viewport.scrollTop === 4500);
+    height = 700;
+    fireResize(1, h.viewport, 700); // Parked on the pin: a "pin" stance.
+    // A scrollbar drag or a host write: scroll events without pointer input.
+    h.userScroll(3000);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(3000);
+    await expect(landed).resolves.toBe(false);
+    h.list.dispose();
+  });
+
+  it("a glide arriving from afar onto the pin keeps the pin stance through its approach", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    h.userScroll(0);
+    h.settle();
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(48); // Frames far from the pin and the clamp.
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    advanceFramesUntil(() => h.viewport.scrollTop >= 4400);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(4500);
+    h.list.dispose();
+  });
+
+  it("a rubber-band bounce past the stale end keeps the pin stance", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+      overscroll: true,
+    });
+    void h.list.scrollTo("m45", { align: "start" });
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 40 }));
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    // The engine clamps to 4400, overshoots into the bounce, and returns.
+    h.userScroll(4400);
+    h.userScroll(4450);
+    h.userScroll(4400);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(4500);
+    h.list.dispose();
+  });
+
+  it("a follow glide after a pinned landing never inherits the pin stance", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m44", {
+      align: "start",
+      behavior: "smooth",
+    });
+    advanceFramesUntil(() => h.viewport.scrollTop === 4400);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    expect(h.list.state.following).toBe(true); // Pinned at the end.
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed); // A follow glide toward 4600.
+    vi.advanceTimersByTime(48);
+    height = 500;
+    fireResize(1, h.viewport, 500);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4700);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(4700); // The new end, not the pin.
+    expect(h.list.state.atEnd).toBe(true);
+    h.list.dispose();
+  });
+
+  it("a host remeasure never cancels a command glide", async () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    const landed = h.list.scrollTo("m10", { behavior: "smooth" });
+    vi.advanceTimersByTime(16);
+    h.list.remeasure("m44", { anchor: "viewport" });
+    vi.advanceTimersByTime(16);
+    advanceFramesUntil(() => h.viewport.scrollTop === 1000);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    h.list.dispose();
+  });
+
+  it("a size-neutral viewport observation while idle commits nothing", () => {
+    const h = mount(range(0, 50), { followBehavior: "smooth" });
+    const published = h.states.length;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    expect(h.states.length).toBe(published);
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;

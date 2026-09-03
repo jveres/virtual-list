@@ -18,7 +18,7 @@ interface ChatMessage {
 }
 
 function assistantStatus(message: ChatMessage): AssistantStatus {
-  return message.role === "assistant" ? (message.status ?? "done") : "done";
+  return message.status ?? "done";
 }
 
 export function setRoleLabel(label: HTMLElement, message: ChatMessage): void {

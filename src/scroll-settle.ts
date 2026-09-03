@@ -91,16 +91,15 @@ const CHROMIUM_QUIET_SETTLE_MS = 450;
 // observably identical to a release and commits after the short window.
 const FIREFOX_EDGE_RELEASE_CONFIRM_MS = 450;
 const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
-// Post-scrollend PIXEL-mode wheels at or below this magnitude, and not
-// growing past their predecessor, are trailing momentum-end markers (a
-// release whose scrollend landed inside the decaying tail), not a
-// continuing gesture — they postpone the short confirm window but do not
-// contest the release. A momentum tail decays (…6,5,5,4,3,2,1); a
-// continuing gesture adds energy (3 → 4 → 7 in the mid-hold lab trace).
-// Growth beyond the small jitter allowance, any large delta, a DIRECTION
-// REVERSAL (new intent), or any non-pixel delta (line/page wheel notches
-// are discrete deliberate input — such devices have no momentum tails)
-// contests.
+// Post-scrollend PIXEL-mode wheels that do not add energy are trailing
+// momentum-end markers (a release whose scrollend landed inside the
+// decaying tail), not a continuing gesture — they postpone the short
+// confirm window but do not contest the release. A momentum tail decays
+// (…6,5,5,4,3,2,1); a continuing gesture adds energy (3 → 4 → 7 in the
+// mid-hold lab trace). A delta growing more than a pixel past its
+// predecessor (with this floor), a DIRECTION REVERSAL (new intent), or any
+// non-pixel delta (line/page wheel notches are discrete deliberate input —
+// such devices have no momentum tails) contests.
 const FIREFOX_TRAILING_MARKER_MAX_DELTA = 2;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
@@ -391,7 +390,7 @@ export function createScrollSettleController(
   }
 
   function hasActiveChromiumEdgeWheel(): boolean {
-    return strategy === "chromium-wheel" && chromiumEdgeWheelActive !== null;
+    return chromiumEdgeWheelActive !== null;
   }
 
   /**
@@ -425,7 +424,7 @@ export function createScrollSettleController(
     return edge !== null && host.canLoadAtBoundary(edge) ? edge : null;
   }
 
-  function isNearProtectedFirefoxEdge(): boolean {
+  function hasProtectedFirefoxEdge(): boolean {
     return (
       firefoxProtectedEdge !== null || loadableBoundaryAtNativeEdge() !== null
     );
@@ -464,7 +463,7 @@ export function createScrollSettleController(
       // held fingers, which visibly flashes — and the rest of the gesture
       // routes to the overscroll effect, so the user can't even scroll into
       // the newly applied content until release.
-      !(strategy === "firefox-wheel" && isNearProtectedFirefoxEdge())
+      !(strategy === "firefox-wheel" && hasProtectedFirefoxEdge())
     );
   }
 
@@ -611,11 +610,7 @@ export function createScrollSettleController(
   }
 
   function hasPendingFirefoxEdgeRelease(): boolean {
-    return (
-      strategy === "firefox-wheel" &&
-      nativeScrollEndPending &&
-      pendingFirefoxEdgeRelease
-    );
+    return nativeScrollEndPending && pendingFirefoxEdgeRelease;
   }
 
   /** A release with no recorded position: settle after the cooldown. */
@@ -715,7 +710,7 @@ export function createScrollSettleController(
       if (
         strategy === "firefox-wheel" &&
         wheelInputThisPhase &&
-        (hasPendingFirefoxEdgeRelease() || isNearProtectedFirefoxEdge())
+        (hasPendingFirefoxEdgeRelease() || hasProtectedFirefoxEdge())
       ) {
         // This may be the release — or a scrollend that slipped into a
         // momentum-wheel gap mid-hold. Honor it only after the confirmation
@@ -819,9 +814,6 @@ export function createScrollSettleController(
   function handleWheelInputSettle(
     protectedEdge: ScrollBoundary | null = null,
   ): void {
-    if (!usesWheelScrollEndFallback()) {
-      return;
-    }
     armWheelIdle(() => {
       if (protectedEdge !== null) {
         // Firefox contract at an overscrolled edge (see the module header):
@@ -962,7 +954,7 @@ export function createScrollSettleController(
       !nativeScrollEndPending &&
       scrollEventsSinceTouchStart === 0 &&
       !isRubberBandOverscrolled() &&
-      (strategy !== "firefox-wheel" || firefoxProtectedEdge === null)
+      firefoxProtectedEdge === null
     ) {
       // Through the cooldown, never on the spot: a final clamp scroll can
       // still trail the touchend, and it must extend the release.

@@ -1196,13 +1196,13 @@ const TRAILING_IMAGE_RE = new RegExp(`${GENERATED_IMAGE_PATTERN}$`);
 // end with one; embedded image blocks append two) would otherwise parse into
 // an empty trailing paragraph hosting the typing cursor — a phantom line that
 // vanishes when streaming finalizes, jumping the content bottom at the end of
-// every reply (markdown-viewer's finalize spacer keeps the height only for
-// line-owning cursors that are still displayed). The exception: when the
-// stream ends with an image, keep one blank line so the cursor sits on its
-// own line below it — glued to the image corner it reads wrong, and hidden it
-// looks stalled. The finalize spacer keeps that line, so no end jump either
-// way. The stored markdown stays raw; trailing whitespace renders to nothing
-// in the final static parse, so finalize output is unchanged.
+// every reply. The exception: when the stream ends with an image, keep one
+// blank line so the cursor sits on its own line below it — glued to the
+// image corner it reads wrong, and hidden it looks stalled; the finalized
+// row keeps that line's height (see the streaming rules in styles.css), so
+// no end jump either way. The stored markdown stays raw; trailing whitespace
+// renders to nothing in the final static parse, so finalize output is
+// unchanged.
 function streamingDisplayText(message: Message): string {
   const trimmed = message.markdown.trimEnd();
   return TRAILING_IMAGE_RE.test(trimmed) ? `${trimmed}\n\n` : trimmed;

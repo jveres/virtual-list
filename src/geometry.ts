@@ -186,8 +186,7 @@ export class Geometry {
         index = previous;
       }
     }
-    const key = this.keys[index];
-    if (key === undefined) return null;
+    const key = this.keys[index] as string;
     return { key, offset: top - this.tree.prefix(index) };
   }
 

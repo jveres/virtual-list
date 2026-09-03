@@ -130,7 +130,7 @@ const queuedChunks: Record<
   Boundary,
   { fragment: DocumentFragment; count: number } | null
 > = { top: null, bottom: null };
-// The abort prototype for the v2 reach API: each boundary load carries an
+// The reach API's abort contract, exercised by hand: each boundary load carries an
 // AbortController; reaching the OPPOSITE edge aborts every started
 // operation for this one — the in-flight (simulated) fetch and the queued,
 // not-yet-committed chunk — exactly what a host would wire a real fetch to.
