@@ -309,16 +309,27 @@ function clearOpenAIHistory(): void {
   );
 }
 
+/**
+ * The message and code of an API error object, wherever the event put
+ * them: `{message, code}` at the top level, or nested under `error`.
+ */
+export function apiErrorDetail(value: unknown, fallback: string): string {
+  const source = isRecord(value) && isRecord(value.error) ? value.error : value;
+  if (!isRecord(source)) return fallback;
+  const message =
+    typeof source.message === "string" && source.message !== ""
+      ? source.message
+      : fallback;
+  const code = typeof source.code === "string" ? source.code : null;
+  return code ? `${message} (${code})` : message;
+}
+
 async function errorDetail(response: Response): Promise<string> {
   let detail = `${response.status} ${response.statusText}`.trim();
   try {
     const body: unknown = await response.json();
-    if (
-      isRecord(body) &&
-      isRecord(body.error) &&
-      typeof body.error.message === "string"
-    ) {
-      detail = `${detail}: ${body.error.message}`;
+    if (isRecord(body) && isRecord(body.error)) {
+      detail = `${detail}: ${apiErrorDetail(body, "request failed")}`;
     }
   } catch {
     // Non-JSON error body; the status line is enough.
@@ -578,20 +589,15 @@ function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
     return [];
   }
 
+  // The API reports a failure two ways, and its message sits at the top
+  // level or under `error` depending on the event: an `error` event
+  // (an exhausted balance arrives here as insufficient_quota, mid-stream),
+  // or a `response.failed` event carrying the failed response.
   if (parsed.type === "error") {
-    throw new Error(
-      typeof parsed.message === "string" ? parsed.message : "stream error",
-    );
+    throw new Error(apiErrorDetail(parsed, "stream error"));
   }
   if (parsed.type === "response.failed") {
-    const response = parsed.response;
-    throw new Error(
-      isRecord(response) &&
-        isRecord(response.error) &&
-        typeof response.error.message === "string"
-        ? response.error.message
-        : "response failed",
-    );
+    throw new Error(apiErrorDetail(parsed.response, "response failed"));
   }
 
   return [];
