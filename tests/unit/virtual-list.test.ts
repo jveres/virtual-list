@@ -498,6 +498,96 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a host's explicit viewport anchor while following resolves as asked and disengages following", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    // A bottom page load: a page is not a live message. The viewport keeps
+    // its position, and nothing glides it to the new end afterwards.
+    h.list.setItems([...initial, message(50, "page")], { anchor: "viewport" });
+    expect(h.viewport.scrollTop).toBe(4400);
+    expect(h.list.state.following).toBe(false);
+    vi.advanceTimersByTime(700);
+    expect(h.viewport.scrollTop).toBe(4400);
+    expect(h.list.state.following).toBe(false);
+    h.list.dispose();
+  });
+
+  it("an auto prepend that leaves the viewport at the end keeps following", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    // Scrollback lands above: the anchor keeps its place, so the viewport
+    // still stands at the end — glued there, it goes on following.
+    h.list.setItems([message(-1, "older"), ...initial]);
+    expect(h.viewport.scrollTop).toBe(4500);
+    expect(h.list.state.atEnd).toBe(true);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
+  it("a takeover never leaves a follow glide behind: a held end snapshot lands by write", async () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400); // A gesture at the end; its phase is open.
+    // Growth whose policy is the end waits for the settle.
+    h.list.setItems([...initial, message(50, "appended")], { anchor: "end" });
+    expect(h.viewport.scrollTop).toBe(4400);
+    // The command's takeover settles the phase: the held snapshot commits
+    // by write, and the command owns the viewport from there.
+    const landed = h.list.scrollTo("start");
+    expect(h.viewport.scrollTop).toBe(0);
+    vi.advanceTimersByTime(1000);
+    expect(h.viewport.scrollTop).toBe(0); // Never dragged back to the end.
+    expect(h.list.state.following).toBe(false);
+    await expect(landed).resolves.toBe(true);
+    h.list.dispose();
+  });
+
+  it("a live append in the gap between two follow legs is followed at once", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed); // A follow glide toward 4600.
+    advanceFramesUntil(() => h.viewport.scrollTop === 4600);
+    // The leg landed; its settle cooldown is running. A new message lands
+    // in that gap: committed at once (below the anchor), and followed.
+    h.list.setItems([...streamed, message(50, "appended")]);
+    expect(h.list.state.following).toBe(true);
+    vi.advanceTimersByTime(700);
+    expect(h.viewport.scrollTop).toBe(4700);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;

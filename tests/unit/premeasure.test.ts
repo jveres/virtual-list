@@ -7,8 +7,8 @@ import { createItemMeasurer } from "../../src/premeasure";
 // Lifecycle characterization only: jsdom has no layout engine, so measured
 // heights here are the positiveSize fallback (1) — real premeasurement
 // accuracy is validated in real browsers. What jsdom CAN pin: root
-// creation/teardown, width syncing, batch measurement, and detach-before-
-// return.
+// creation/teardown, width syncing, and detach-before-return (that many
+// fresh rows share ONE detached layout is pinned by the runtime suite).
 
 function makeViewport(width = 640): HTMLElement {
   const viewport = document.createElement("div");
@@ -58,7 +58,7 @@ describe("item measurer", () => {
     measurer.dispose(); // Idempotent.
   });
 
-  it("measures many retained elements in one pass and hands them all back detached", () => {
+  it("measures many retained elements and hands them all back detached", () => {
     const viewport = makeViewport();
     const measurer = createItemMeasurer({ viewport });
     const root = document.body.lastElementChild as HTMLElement;

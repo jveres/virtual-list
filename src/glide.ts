@@ -56,15 +56,13 @@ export function glidePace(
   viewportHeight: number,
   landingMs?: number,
 ): GlidePace {
-  const landing =
-    landingMs !== undefined && landingMs > 0 ? landingMs : LANDING_MS;
+  const explicit = landingMs !== undefined && landingMs > 0;
   return {
-    landingMs: landing,
+    landingMs: explicit ? landingMs : LANDING_MS,
     landingPx: Math.max(1, viewportHeight),
-    approachCapMs:
-      landingMs !== undefined && landingMs > 0
-        ? landingMs
-        : Math.max(0, MAX_DURATION_MS - LANDING_MS),
+    approachCapMs: explicit
+      ? landingMs
+      : Math.max(0, MAX_DURATION_MS - LANDING_MS),
   };
 }
 

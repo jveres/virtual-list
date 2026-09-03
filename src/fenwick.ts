@@ -74,8 +74,6 @@ export class FenwickTree {
   }
 
   indexAt(offset: number): number {
-    if (this.logicalSize === 0) return 0;
-
     let index = 0;
     let sum = 0;
 

@@ -741,7 +741,8 @@ export function createVirtualList<T>(
       heightChanged &&
       pinTop !== null &&
       Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX;
-    if (idle()) commit(null, stoodOnPin ? "pin" : "viewport");
+    if (idle())
+      commit(null, stoodOnPin ? "pin" : "viewport", "allowed", "keep");
     else publish();
   });
   viewportObserver.observe(viewport);
@@ -1165,10 +1166,17 @@ export function createVirtualList<T>(
     return published;
   }
 
+  /**
+   * `follow`: "derive" re-reads the smooth follow intent from where the
+   * commit resolved — the policy was a host's or a settle's, so its
+   * resolution IS the intent; "keep" leaves it as found — a resize's
+   * viewport/pin, a mid-phase live commit, a command's own pin.
+   */
   function commit(
     snapshot: Prepared<T> | null,
     policyOverride?: CapturePolicy,
     scrollWrite: "allowed" | "never" = "allowed",
+    follow: "derive" | "keep" = "derive",
   ): void {
     if (disposed) return;
     guarded(() => {
@@ -1176,7 +1184,7 @@ export function createVirtualList<T>(
       pending = null;
       committing = applying;
       try {
-        commitBody(applying, policyOverride, scrollWrite);
+        commitBody(applying, policyOverride, scrollWrite, follow);
       } finally {
         committing = null;
       }
@@ -1187,6 +1195,7 @@ export function createVirtualList<T>(
     applying: Prepared<T> | null,
     policyOverride: CapturePolicy | undefined,
     scrollWrite: "allowed" | "never",
+    follow: "derive" | "keep",
   ): void {
     // Teardown failures are collected here and surfaced only after the
     // commit has reached its consistent terminal state.
@@ -1252,19 +1261,25 @@ export function createVirtualList<T>(
         !booting &&
         options.followBehavior === "smooth" &&
         result.mode === "end" &&
+        // A command's takeover settles the phase it interrupts, and the
+        // command owns the motion from there: a held end-compatible
+        // snapshot lands by write, never by a glide the command would
+        // orphan (a smooth command to the start could then never settle).
+        !takingOver &&
         Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX;
-      // A settle or idle commit that could have followed the end ("auto",
-      // "end") re-derives following from where it resolved. Every other
-      // commit — a mid-phase live one (it never writes), a resize's
-      // "viewport"/"pin", a host's "none" — leaves the follow intent as it
-      // found it: a viewport that shrinks under a followed stream must not
-      // silently stop following.
-      const followCapable =
+      // Glued to the end — by an end resolution, or by standing there after
+      // the commit — is following; an explicit "viewport"/"none" that
+      // leaves the end (a bottom page load, an opened tool panel) is not.
+      if (
         !booting &&
         options.followBehavior === "smooth" &&
-        scrollWrite === "allowed" &&
-        (policy === "auto" || policy === "end");
-      if (followCapable) smoothFollowArmed = result.mode === "end";
+        follow === "derive"
+      ) {
+        smoothFollowArmed =
+          result.mode === "end" ||
+          geometry.maxScrollTop(viewport.clientHeight) - target <=
+            AT_EDGE_EPSILON_PX;
+      }
       // A mid-phase commit never writes: its target equals the position by
       // construction, except where the engine holds the viewport outside
       // the range (an iOS rubber-band bounce) and the clamp would fight it.
@@ -1279,11 +1294,11 @@ export function createVirtualList<T>(
       reconcileAndPublish();
       if (disposed) return;
       if (smoothFollow) startFollowGlide();
-      // Still following after a commit that resolved elsewhere (a shorter
-      // viewport uncovered the end): catch up.
-      else if (smoothFollowArmed && scrollWrite === "allowed") {
-        followIfBehindEnd();
-      }
+      // A kept intent whose commit resolved elsewhere — a shorter viewport
+      // uncovered the end, a live append landed in the gap between two
+      // follow legs — catches up (a glide is a phase of its own, never a
+      // write into a gesture; genuine input already cleared the intent).
+      else if (follow === "keep" && smoothFollowArmed) followIfBehindEnd();
     } finally {
       deferTeardown(teardownFailures);
     }
@@ -1640,7 +1655,7 @@ export function createVirtualList<T>(
         // coordinate by construction) — commit it now, mid-phase: a
         // version switch, an appended message. Holding it for a settle
         // that momentum can postpone by seconds reads as a dead click.
-        commit(prepared, "none", "never");
+        commit(prepared, "none", "never", "keep");
         return;
       } else {
         // These rows will wait: their heights are re-read at the settle
@@ -1764,7 +1779,7 @@ export function createVirtualList<T>(
     // geometry change, committed now (the phase is idle).
     if (keyed && scrollOptions.align === "start") {
       geometry.pin(target, below);
-      commit(null, "none");
+      commit(null, "none", "allowed", "keep");
     }
 
     // A keyed target that disappears mid-glide holds position; the landing

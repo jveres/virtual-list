@@ -206,7 +206,12 @@ The definition of correct, referenced by number throughout the code:
   including the quiet gaps between consecutive glide legs. A command to
   `"end"` is explicit follow intent: a completed one arms following at its
   settle even when growth outran its glide (fast streaming), and an instant
-  one arms it on the spot; only genuine input interrupts it.
+  one arms it on the spot; only genuine input interrupts it. Standing at
+  the end after a commit is following too (scrollback landing above a
+  followed end keeps it engaged); a host's explicit `"viewport"`/`"none"`
+  that leaves the end (a bottom page load) disengages it, while a resize
+  or a mid-phase live commit leaves the intent as it found it and catches
+  up if the end moved.
   `remeasure` is the intent-bearing path for a discrete host interaction
   such as opening a tool panel. It reads the mounted row on the next animation
   frame (after the default action, before paint) and defaults to the viewport

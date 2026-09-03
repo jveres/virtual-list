@@ -774,6 +774,18 @@ export function createScrollSettleController(
     return true;
   }
 
+  /** Wheel input is live until it has been quiet for the idle window. */
+  function armWheelIdle(onIdle: () => void): void {
+    wheelInputActive = true;
+    cancelWheelInputTimer();
+    wheelInputTimer = window.setTimeout(() => {
+      wheelInputTimer = 0;
+      if (host.isDisposed()) return;
+      wheelInputActive = false;
+      onIdle();
+    }, WHEEL_INPUT_IDLE_MS);
+  }
+
   function handleChromiumWheelInput(event: WheelEvent): void {
     if (strategy !== "chromium-wheel") return;
     const outwardBoundary = boundaryForOutwardWheel(event);
@@ -787,12 +799,7 @@ export function createScrollSettleController(
       clearPendingNativeScrollEnd();
     }
     chromiumEdgeWheelActive = outwardBoundary;
-    wheelInputActive = true;
-    cancelWheelInputTimer();
-    wheelInputTimer = window.setTimeout(() => {
-      wheelInputTimer = 0;
-      if (host.isDisposed()) return;
-      wheelInputActive = false;
+    armWheelIdle(() => {
       if (outwardBoundary) {
         chromiumWheelAwaitingFinalScrollEnd = true;
         clearPendingNativeScrollEnd();
@@ -805,7 +812,7 @@ export function createScrollSettleController(
         scheduleChromiumStallFallback();
       }
       schedulePendingNativeScrollEnd();
-    }, WHEEL_INPUT_IDLE_MS);
+    });
   }
 
   /** `protectedEdge` is Firefox's protected edge; always null elsewhere. */
@@ -815,12 +822,7 @@ export function createScrollSettleController(
     if (!usesWheelScrollEndFallback()) {
       return;
     }
-    wheelInputActive = true;
-    cancelWheelInputTimer();
-    wheelInputTimer = window.setTimeout(() => {
-      wheelInputTimer = 0;
-      if (host.isDisposed()) return;
-      wheelInputActive = false;
+    armWheelIdle(() => {
       if (protectedEdge !== null) {
         // Firefox contract at an overscrolled edge (see the module header):
         // no settle and no idle notification here, in either branch.
@@ -859,7 +861,7 @@ export function createScrollSettleController(
         return;
       }
       scheduleWheelScrollEndFallback();
-    }, WHEEL_INPUT_IDLE_MS);
+    });
   }
 
   function handleWheel(event: WheelEvent): void {
