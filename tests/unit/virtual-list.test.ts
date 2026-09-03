@@ -1433,6 +1433,33 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a commit's scroll write lands on the device-pixel grid at a fractional ratio", () => {
+    const original = window.devicePixelRatio;
+    Object.defineProperty(window, "devicePixelRatio", {
+      value: 1.25,
+      configurable: true,
+    });
+    try {
+      const h = mount(range(0, 50));
+      h.userScroll(2050); // 50px into m20.
+      h.settle();
+      // A row above grows by 1px: the anchor's coordinate is kept at 2051,
+      // which is not a device pixel at 1.25 — the write lands on the
+      // nearest one, 2051.2 (2564 device pixels).
+      h.heights.set(3, 101);
+      const grown = [...range(0, 50)];
+      grown[3] = message(3, "one pixel taller");
+      h.list.setItems(grown);
+      expect(h.viewport.scrollTop).toBe(2051.2);
+      h.list.dispose();
+    } finally {
+      Object.defineProperty(window, "devicePixelRatio", {
+        value: original,
+        configurable: true,
+      });
+    }
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;

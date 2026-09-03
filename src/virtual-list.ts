@@ -286,6 +286,18 @@ function quantizeHeight(height: number): number {
 }
 const MEASURE_EPSILON_PX = 0.5;
 const SCROLL_WRITE_EPSILON_PX = 0.5;
+
+/**
+ * A scroll write lands on the device-pixel grid: a whole CSS pixel is not
+ * representable at a fractional ratio (Windows at 125%: 0.8 CSS px per
+ * device pixel), and an engine that snaps the write leaves the anchor a
+ * fraction off — re-rounded at the next commit into a one-pixel jitter.
+ * Whole pixels at integral ratios, as before.
+ */
+function snapToDevicePixel(value: number): number {
+  const ratio = globalThis.devicePixelRatio || 1;
+  return Math.round(value * ratio) / ratio;
+}
 const AT_EDGE_EPSILON_PX = 1;
 const FOLLOW_LANDING_MS = 320;
 /** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
@@ -1315,18 +1327,18 @@ export function createVirtualList<T>(
       repositionMounted();
       // Engines quantize scroll positions differently: Chromium rounds a
       // fractional write, WebKit floors it (the anchor then lands up to a
-      // full pixel short). Writing a whole pixel bounds the anchor's
-      // landing error to half a pixel everywhere.
+      // full pixel short). Writing a whole device pixel bounds the anchor's
+      // landing error to half of one everywhere.
       // A derived end-follow ("auto" resolving to the end, boot excepted)
       // goes only as far as the follow mode allows.
       const derivedFollow =
         !booting && result.mode === "end" && policy === "auto";
       const target = derivedFollow
         ? followTarget(
-            Math.round(before.scrollTop),
-            Math.round(result.scrollTop),
+            snapToDevicePixel(before.scrollTop),
+            snapToDevicePixel(result.scrollTop),
           )
-        : Math.round(result.scrollTop);
+        : snapToDevicePixel(result.scrollTop);
       const smoothFollow =
         !booting &&
         options.followBehavior === "smooth" &&
