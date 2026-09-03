@@ -6,7 +6,7 @@ import { glidePace, startGlide } from "../../src/glide";
 
 // The glide's contractual behaviors (I2): exact landing, and at least one
 // whole pixel of progress per frame — WebKit floors scrollTop writes, and a
-// sub-pixel step would park an ease-out short of the target forever.
+// sub-pixel step would round back to the previous position: a stalled frame.
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -42,15 +42,29 @@ describe("glide", () => {
     expect(completed).toBe(true);
   });
 
-  it("converges exactly on engines that floor scrollTop writes", () => {
-    const host = harness(796, 800, true);
+  it("converges exactly on engines that floor scrollTop writes, never stalling a frame", () => {
+    // A long enough trip that the curve creeps by fractions of a pixel in
+    // its tail — where a floored write would stall without the rule.
+    const host = harness(0, 1000, true);
     let completed = false;
+    const seen: number[] = [host.top];
+    const write = host.write;
+    host.write = (top) => {
+      write(top);
+      seen.push(host.top);
+    };
     startGlide(host, 300, (done) => {
       completed = done;
     });
     vi.advanceTimersByTime(1000);
-    expect(host.top).toBe(800);
+    expect(host.top).toBe(1000);
     expect(completed).toBe(true);
+    // Every frame moved the floored position by at least a pixel.
+    for (let i = 1; i < seen.length; i += 1) {
+      expect(
+        (seen[i] as number) - (seen[i - 1] as number),
+      ).toBeGreaterThanOrEqual(1);
+    }
   });
 
   it("follows a moving target (streaming growth)", () => {

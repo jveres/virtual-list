@@ -427,6 +427,16 @@ describe("firefox delta-mode coverage", () => {
   });
 });
 
+/** A mid-list Chromium wheel gesture: two ticks with motion, no scrollend yet. */
+function chromiumMidListWheelPreamble(harness: Harness): void {
+  harness.scrollTo(600);
+  harness.wheel(-100);
+  harness.scrollTo(500);
+  vi.advanceTimersByTime(16);
+  harness.wheel(-80);
+  harness.scrollTo(420);
+}
+
 describe("chromium sequences (trace replay)", () => {
   it("suppresses the early edge scrollend and settles on the edge-quiet fallback", () => {
     const harness = mount("chromium-wheel", { canLoadTop: true });
@@ -450,12 +460,7 @@ describe("chromium sequences (trace replay)", () => {
 
   it("settles mid-list from the final scrollend once wheel input idles", () => {
     const harness = mount("chromium-wheel");
-    harness.scrollTo(600);
-    harness.wheel(-100);
-    harness.scrollTo(500);
-    vi.advanceTimersByTime(16);
-    harness.wheel(-80);
-    harness.scrollTo(420);
+    chromiumMidListWheelPreamble(harness);
     harness.scrollEnd(); // Consumed by the trailing wheel activity...
 
     // ...so settling waits for wheel idle (140) + cooldown (140).
@@ -467,12 +472,7 @@ describe("chromium sequences (trace replay)", () => {
 
   it("closes the wheel-idle dead-end via the stall fallback (no scrollend)", () => {
     const harness = mount("chromium-wheel");
-    harness.scrollTo(600);
-    harness.wheel(-100);
-    harness.scrollTo(500);
-    vi.advanceTimersByTime(16);
-    harness.wheel(-80);
-    harness.scrollTo(420);
+    chromiumMidListWheelPreamble(harness);
     // No scrollend ever: chromium fires one per sequence and a trailing
     // wheel consumed it. The stall fallback must still settle the gesture
     // ("stuck loads" close): idle (140) + quiet (450) + cooldown (140).
@@ -486,12 +486,7 @@ describe("chromium sequences (trace replay)", () => {
 describe("chromium quiet-settle timer", () => {
   it("a scrollend arriving inside the quiet window settles on its own cooldown, not the timer's", () => {
     const harness = mount("chromium-wheel");
-    harness.scrollTo(600);
-    harness.wheel(-100);
-    harness.scrollTo(500);
-    vi.advanceTimersByTime(16);
-    harness.wheel(-80);
-    harness.scrollTo(420);
+    chromiumMidListWheelPreamble(harness);
     // Wheel idle at ~156ms arms the stall timer for ~606ms. A scrollend at
     // 520ms is the release: its cooldown settles at ~660ms. The timer, firing
     // after it, must not re-arm the release and push the settle to ~746ms.
@@ -623,9 +618,11 @@ describe("safari sequences (trace replay)", () => {
   });
 
   it("cancels a pending release when touch re-grabs before new motion", () => {
-    const harness = mount("safari-wheel", { canLoadBottom: true });
-    harness.scrollTo(4300);
-    harness.scrollTo(4700);
+    // Mid-list, so no edge quiet window could hold the settle for other
+    // reasons: only the fresh touch cancelling the release does.
+    const harness = mount("safari-wheel");
+    harness.scrollTo(2000);
+    harness.scrollTo(2400);
     harness.scrollEnd();
 
     vi.advanceTimersByTime(100);
@@ -634,7 +631,7 @@ describe("safari sequences (trace replay)", () => {
     // touchend must not honor the release that preceded this fresh touch.
     expect(harness.settled()).toBe(0);
 
-    harness.scrollTo(4500);
+    harness.scrollTo(2600);
     harness.scrollEnd();
     vi.advanceTimersByTime(200);
     expect(harness.settled()).toBe(1);

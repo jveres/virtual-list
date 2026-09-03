@@ -2,8 +2,8 @@
 // is re-read every frame, so gliding to the end keeps up with streaming
 // growth. Two hard-won behaviors are contractual (I2):
 // - the step advances at least one whole pixel per frame — WebKit floors
-//   scrollTop writes, and a sub-pixel step would park the glide short of the
-//   target forever;
+//   scrollTop writes, and a sub-pixel step would round back to the previous
+//   position, a stalled frame in the glide's tail;
 // - the landing is exact: the final frame writes the target itself.
 //
 // A third is contractual for I1: when either endpoint moves externally —

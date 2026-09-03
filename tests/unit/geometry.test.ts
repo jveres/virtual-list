@@ -273,6 +273,11 @@ describe("I1 — anchor preservation", () => {
     geometry.setKeys(["slot:start", "slot:end", "m0"]);
     expect(geometry.anchorAt(viewport(0))?.key).toBe("m0");
 
+    // Excluded keys at the end: the anchor falls back to the last content
+    // key before them.
+    geometry.setKeys(["m0", "slot:a", "slot:b"]);
+    expect(geometry.anchorAt(viewport(25))?.key).toBe("m0");
+
     geometry.setKeys(["slot:start", "slot:end"]);
     expect(geometry.anchorAt(viewport(0))).toBeNull();
   });
@@ -352,6 +357,9 @@ describe("auto policy", () => {
     const commit = transact(geometry, vp, "auto", () =>
       geometry.setKeys([...keysRange(0, 10), ...keysRange(10, 30)]),
     );
+    // Not end-compatible, so anchor mode (the runtime would otherwise
+    // follow the end with a glide instead of the atomic anchor write).
+    expect(commit.mode).toBe("anchor");
     expect(geometry.offsetOf(anchorKey) - commit.scrollTop).toBeCloseTo(
       before,
       6,
@@ -483,9 +491,10 @@ describe("I5 — pin-to-top reserve", () => {
   it("clears the pin when the pinned key is removed; the reserve drains out of view", () => {
     const { geometry, vp } = pinnedAtEnd();
     const reserveBefore = geometry.reserve;
-    transact(geometry, vp, "viewport", () =>
-      geometry.setKeys(keysRange(0, 20).filter((k) => k !== "m18")),
-    );
+    transact(geometry, vp, "viewport", () => {
+      geometry.setKeys(keysRange(0, 20).filter((k) => k !== "m18"));
+      expect(geometry.pinned).toBeNull(); // Cleared by the key change itself.
+    });
     expect(geometry.pinned).toBeNull();
     // Standing inside the reserve keeps it whole (no yank): the pin's target
     // is gone, but the floor holds what the viewport still stands on.
@@ -494,6 +503,21 @@ describe("I5 — pin-to-top reserve", () => {
     // ...and it drains once the viewport leaves.
     transact(geometry, viewport(0), "none", () => {});
     expect(geometry.reserve).toBe(0);
+  });
+
+  it("drops a pin whose key reached the very start", () => {
+    const { geometry } = pinnedAtEnd(); // m18 pinned, reserve 400.
+    expect(geometry.pinned).toBe("m18");
+    expect(geometry.reserve).toBeGreaterThan(0);
+    // Everything above the pinned key goes: it is the first row now, and
+    // anchoring the start needs no reserve — the pin is stale.
+    transact(geometry, viewport(0), "viewport", () =>
+      geometry.setKeys(keysRange(18, 20)),
+    );
+    expect(geometry.pinned).toBeNull();
+    // No pin target any more; only the floor (two rows under a 600px
+    // viewport) keeps what the viewport still stands on.
+    expect(geometry.reserve).toBe(VIEWPORT_H - 2 * 100);
   });
 
   it("re-evaluates the reserve on viewport resize", () => {

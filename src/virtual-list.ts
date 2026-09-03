@@ -1253,16 +1253,18 @@ export function createVirtualList<T>(
         options.followBehavior === "smooth" &&
         result.mode === "end" &&
         Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX;
-      // A settle or idle commit re-derives following from where it resolved;
-      // a mid-phase live commit (it never writes) leaves the follow glide
-      // that may be chasing the end exactly as it found it.
-      if (
+      // A settle or idle commit that could have followed the end ("auto",
+      // "end") re-derives following from where it resolved. Every other
+      // commit — a mid-phase live one (it never writes), a resize's
+      // "viewport"/"pin", a host's "none" — leaves the follow intent as it
+      // found it: a viewport that shrinks under a followed stream must not
+      // silently stop following.
+      const followCapable =
         !booting &&
         options.followBehavior === "smooth" &&
-        scrollWrite === "allowed"
-      ) {
-        smoothFollowArmed = result.mode === "end";
-      }
+        scrollWrite === "allowed" &&
+        (policy === "auto" || policy === "end");
+      if (followCapable) smoothFollowArmed = result.mode === "end";
       // A mid-phase commit never writes: its target equals the position by
       // construction, except where the engine holds the viewport outside
       // the range (an iOS rubber-band bounce) and the clamp would fight it.
@@ -1277,6 +1279,11 @@ export function createVirtualList<T>(
       reconcileAndPublish();
       if (disposed) return;
       if (smoothFollow) startFollowGlide();
+      // Still following after a commit that resolved elsewhere (a shorter
+      // viewport uncovered the end): catch up.
+      else if (smoothFollowArmed && scrollWrite === "allowed") {
+        followIfBehindEnd();
+      }
     } finally {
       deferTeardown(teardownFailures);
     }

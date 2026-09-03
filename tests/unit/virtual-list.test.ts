@@ -451,6 +451,41 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a viewport resize while following keeps following and catches up", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+      height: () => height,
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+
+    // The composer grows: the viewport shrinks by 100px and the end is
+    // uncovered. Following stays on and the viewport glides to the new end.
+    height = 500;
+    fireResize(1, h.viewport, 500);
+    expect(h.list.state.following).toBe(true);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4500);
+    expect(h.viewport.scrollTop).toBe(4500);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+
+    // And the stream is still followed afterwards.
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4700);
+    expect(h.viewport.scrollTop).toBe(4700);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
   it("an instant command to the end arms following under smooth follow", () => {
     const initial = range(0, 50);
     const h = mount(initial, { followBehavior: "smooth" });
