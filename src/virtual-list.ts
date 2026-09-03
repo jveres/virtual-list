@@ -373,6 +373,8 @@ export function createVirtualList<T>(
   // The position last observed through a scroll event or a commit: what the
   // viewport stood on BEFORE a resize the engine may already have clamped.
   let lastObservedTop = viewport.scrollTop;
+  // A viewport height change during a phase: its commit waits for the settle.
+  let resizeHeld = false;
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
   const measurer: ItemMeasurer = createItemMeasurer({
@@ -741,9 +743,15 @@ export function createVirtualList<T>(
       heightChanged &&
       pinTop !== null &&
       Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX;
-    if (idle())
+    if (idle()) {
       commit(null, stoodOnPin ? "pin" : "viewport", "allowed", "keep");
-    else publish();
+    } else {
+      // The reserve (I5) is sized to the viewport by a commit: a height
+      // change during a phase with nothing else held still needs one at
+      // the settle, or a pinned landing keeps a stale strip below it.
+      if (heightChanged) resizeHeld = true;
+      publish();
+    }
   });
   viewportObserver.observe(viewport);
 
@@ -1170,7 +1178,7 @@ export function createVirtualList<T>(
    * `follow`: "derive" re-reads the smooth follow intent from where the
    * commit resolved — the policy was a host's or a settle's, so its
    * resolution IS the intent; "keep" leaves it as found — a resize's
-   * viewport/pin, a mid-phase live commit, a command's own pin.
+   * viewport/pin, a mid-phase live commit.
    */
   function commit(
     snapshot: Prepared<T> | null,
@@ -1267,16 +1275,22 @@ export function createVirtualList<T>(
         // orphan (a smooth command to the start could then never settle).
         !takingOver &&
         Math.abs(target - before.scrollTop) > SCROLL_WRITE_EPSILON_PX;
-      // Glued to the end — by an end resolution, or by standing there after
-      // the commit — is following; an explicit "viewport"/"none" that
-      // leaves the end (a bottom page load, an opened tool panel) is not.
+      // Follow intent, re-derived by a commit whose policy a host or a
+      // settle chose: standing at the end after a commit that could have
+      // followed it ("auto", "end" — boot included) is following, whether
+      // by an end resolution or by scrollback landing above a followed
+      // end. An explicit "viewport"/"none" is a statement about the
+      // viewport, never follow intent: a bottom page load, an opened tool
+      // panel — even a collapsed one whose shrink leaves the viewport
+      // clamped at the end. A takeover's settle commit is the command's;
+      // it leaves the intent the command already cleared.
       if (
-        !booting &&
         options.followBehavior === "smooth" &&
-        follow === "derive"
+        follow === "derive" &&
+        !takingOver
       ) {
         smoothFollowArmed =
-          result.mode === "end" ||
+          (policy === "auto" || policy === "end") &&
           geometry.maxScrollTop(viewport.clientHeight) - target <=
             AT_EDGE_EPSILON_PX;
       }
@@ -1509,9 +1523,12 @@ export function createVirtualList<T>(
     // command still parked for its settle resolves interrupted NOW — the
     // user owns the viewport from here, whatever the settle later finds.
     cancelActiveSmoothScroll: () => {
+      const wasFollowing = smoothFollowArmed;
       smoothFollowArmed = false;
       glide?.cancel();
       settleParked(() => false);
+      // The host hears the interruption now, not at the first scroll event.
+      if (wasFollowing) publish();
     },
     // The glide's own completion is the ONLY authority that ends its phase.
     // Safari emits a scrollend after every programmatic write; judging
@@ -1528,9 +1545,16 @@ export function createVirtualList<T>(
       if (remeasureReady) remeasurePolicy = undefined;
       if (pending !== null || dirtyRows.size > 0) {
         commit(null, explicitPolicy);
+      } else if (resizeHeld) {
+        const pinTop = geometry.pinTop;
+        const standsOnPin =
+          pinTop !== null &&
+          Math.abs(viewport.scrollTop - pinTop) <= AT_EDGE_EPSILON_PX;
+        commit(null, standsOnPin ? "pin" : "viewport", "allowed", "keep");
       } else {
         publish();
       }
+      resizeHeld = false;
       // A completed command to the end is explicit follow intent: growth
       // that outran its glide (fast streaming) must not read as "the user
       // is not at the end" — a genuine interruption resolved it before this.
@@ -1779,7 +1803,7 @@ export function createVirtualList<T>(
     // geometry change, committed now (the phase is idle).
     if (keyed && scrollOptions.align === "start") {
       geometry.pin(target, below);
-      commit(null, "none", "allowed", "keep");
+      commit(null, "none");
     }
 
     // A keyed target that disappears mid-glide holds position; the landing

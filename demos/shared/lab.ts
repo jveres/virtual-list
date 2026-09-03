@@ -11,12 +11,12 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-export type LogClass = "mark" | "good" | "warn" | "bad";
+type LogClass = "mark" | "good" | "warn" | "bad";
 
 const LOG_RING_MAX = 4000;
 const LOG_DOM_MAX = 350;
 
-export interface TraceLog {
+interface TraceLog {
   /** The full recent trace, oldest first (what "copy trace" exports). */
   readonly ring: string[];
   log(message: string, cls?: LogClass): void;
@@ -77,7 +77,7 @@ export function settleEdgePill(
   else pill.show(atBottom ? "at the bottom" : "at the top", atBottom, true);
 }
 
-export interface EdgePill {
+interface EdgePill {
   /** Shows the pill at the top or bottom edge; sticky pills fade on their own. */
   show(text: string, atBottom: boolean, sticky?: boolean): void;
   /** Hides the pill; a sticky pill ("at the top/bottom") survives unless forced. */

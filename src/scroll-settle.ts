@@ -778,9 +778,9 @@ export function createScrollSettleController(
   function armWheelIdle(onIdle: () => void): void {
     wheelInputActive = true;
     cancelWheelInputTimer();
+    // Dispose cancels this timer synchronously; it never fires disposed.
     wheelInputTimer = window.setTimeout(() => {
       wheelInputTimer = 0;
-      if (host.isDisposed()) return;
       wheelInputActive = false;
       onIdle();
     }, WHEEL_INPUT_IDLE_MS);

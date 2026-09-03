@@ -1,15 +1,15 @@
 import type { ChatToolCall } from "../shared/chat-ui.js";
 import { mustGet } from "../shared/utils.js";
 
-export type AIProvider = "simulated" | "openai";
+type AIProvider = "simulated" | "openai";
 
-export interface AIToolSettings {
+interface AIToolSettings {
   webSearch: boolean;
   imageGeneration: boolean;
   codeInterpreter: boolean;
 }
 
-export interface AISettings {
+interface AISettings {
   provider: AIProvider;
   apiKey: string;
   model: string;
@@ -325,7 +325,7 @@ async function errorDetail(response: Response): Promise<string> {
   return detail;
 }
 
-export type OpenAIStreamChunk =
+type OpenAIStreamChunk =
   | { kind: "text"; text: string }
   | { kind: "image"; id: string; markdown: string }
   | { kind: "image-partial"; id: string; markdown: string }
@@ -697,7 +697,7 @@ function keyHint(apiKey: string): string {
   return `Stored key: ${start}…${end} (${apiKey.length} chars)`;
 }
 
-export interface AISettingsPanelOptions {
+interface AISettingsPanelOptions {
   /** Fires after the provider setting changed and was persisted. */
   onProviderChange?: (provider: AIProvider) => void;
   /** Fires after the stored OpenAI history was cleared. */

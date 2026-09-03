@@ -56,7 +56,8 @@ export function glidePace(
   viewportHeight: number,
   landingMs?: number,
 ): GlidePace {
-  const explicit = landingMs !== undefined && landingMs > 0;
+  // The runtime hands over a positive duration or none at all.
+  const explicit = landingMs !== undefined;
   return {
     landingMs: explicit ? landingMs : LANDING_MS,
     landingPx: Math.max(1, viewportHeight),

@@ -16,7 +16,7 @@
  * jitters. Ported from `main`, keyed instead of indexed.
  */
 
-export interface StickyHeadersConfig {
+interface StickyHeadersConfig {
   /** A `position: relative` ancestor of the viewport; the overlay pins to its top. */
   container: HTMLElement;
   /** The scroll viewport (its `scrollTop` is read and its `scroll` observed). */

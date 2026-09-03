@@ -10,7 +10,7 @@ export interface ChatToolCall {
   open?: boolean;
 }
 
-export interface ChatMessage {
+interface ChatMessage {
   role: ChatRole;
   markdown: string;
   status?: AssistantStatus;

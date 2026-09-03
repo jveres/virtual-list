@@ -1,5 +1,5 @@
 const THEMES = ["light", "dark", "system"] as const;
-export type ThemeChoice = (typeof THEMES)[number];
+type ThemeChoice = (typeof THEMES)[number];
 
 export function isThemeChoice(value: string | undefined): value is ThemeChoice {
   return value !== undefined && (THEMES as readonly string[]).includes(value);

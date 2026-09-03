@@ -588,6 +588,156 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a viewport remeasure that shrinks the tail at the end never re-engages following", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    // The user collapses the tail: the viewport anchor is asked for and the
+    // engine clamps the viewport to the shorter end — standing there is
+    // not follow intent.
+    const published = h.states.length;
+    h.heights.set(49, 50);
+    h.list.remeasure("m49", { anchor: "viewport" });
+    vi.advanceTimersByTime(20);
+    expect(h.viewport.scrollTop).toBe(4350);
+    expect(h.list.state.following).toBe(false);
+    expect(h.states.slice(published).map((s) => s.following)).not.toContain(
+      true,
+    );
+    h.list.dispose();
+  });
+
+  it("a takeover's settle commit never publishes a transient following", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.list.setItems([...initial, message(50, "appended")], { anchor: "end" });
+    const published = h.states.length;
+    void h.list.scrollTo("start");
+    expect(h.viewport.scrollTop).toBe(0);
+    expect(h.states.slice(published).map((s) => s.following)).not.toContain(
+      true,
+    );
+    h.list.dispose();
+  });
+
+  it("boots following when the initial snapshot stands at the end", () => {
+    const h = mount(range(0, 50), { followBehavior: "smooth" });
+    expect(h.list.state.atEnd).toBe(true);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+    // Instant follow never reports following.
+    const plain = mount(range(0, 50));
+    expect(plain.list.state.following).toBe(false);
+    plain.list.dispose();
+  });
+
+  it("a viewport resize during a command glide re-sizes the pin's reserve at the settle", async () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      height: () => height,
+    });
+    const landed = h.list.scrollTo("m45", {
+      align: "start",
+      behavior: "smooth",
+    });
+    expect(h.list.state.totalSize).toBe(5100); // A 100px reserve under m45.
+    vi.advanceTimersByTime(48);
+    // The composer grows mid-glide: the shorter viewport needs no reserve.
+    height = 500;
+    fireResize(1, h.viewport, 500);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4500);
+    h.settle();
+    await expect(landed).resolves.toBe(true);
+    expect(h.list.state.totalSize).toBe(5000);
+    expect(h.list.state.atEnd).toBe(true);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
+  it("genuine input during a follow glide publishes the lost intent at once", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed); // A follow glide starts.
+    vi.advanceTimersByTime(48);
+    expect(h.list.state.following).toBe(true);
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    expect(h.list.state.following).toBe(false);
+    h.list.dispose();
+  });
+
+  it("a command's own pin commit never arms following", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.settle();
+    expect(h.list.state.following).toBe(true);
+    // Pinning the row the viewport already stands on at the end changes no
+    // geometry: the pin commit resolves at the end, and must not read that
+    // as the follow intent the command just cleared.
+    const published = h.states.length;
+    void h.list.scrollTo("m44", { align: "start", behavior: "smooth" });
+    expect(h.list.state.following).toBe(false);
+    expect(h.states.slice(published).map((s) => s.following)).not.toContain(
+      true,
+    );
+    h.list.dispose();
+  });
+
+  it("a settle whose commit starts a follow glide keeps following through the glide", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "same-height",
+    });
+    h.userScroll(4000);
+    h.settle();
+    h.userScroll(4400);
+    h.heights.set(49, 300);
+    const streamed = [...initial];
+    streamed[49] = message(49, "streamed longer");
+    h.list.setItems(streamed); // Growth waits for the settle.
+    expect(h.list.state.held).toBe(true);
+    const published = h.states.length;
+    h.settle(); // The commit resolves the end and starts a follow glide.
+    expect(h.list.state.following).toBe(true);
+    expect(h.states.slice(published).map((s) => s.following)).not.toContain(
+      false,
+    );
+    advanceFramesUntil(() => h.viewport.scrollTop === 4600);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;
