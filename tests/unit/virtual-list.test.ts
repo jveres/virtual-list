@@ -73,11 +73,22 @@ function advanceFramesUntil(done: () => boolean, maxFrames = 200): void {
 
 /** Instance 0 observes rows, instance 1 the viewport (construction order). */
 function fireResize(instance: number, target: Element, height: number): void {
-  const entry = {
-    target,
-    borderBoxSize: [{ blockSize: height, inlineSize: 0 }],
-  } as unknown as ResizeObserverEntry;
-  roInstances[instance]?.callback([entry], null as never);
+  fireResizes(instance, [[target, height]]);
+}
+
+/** One delivery carrying several entries, as an engine batches them. */
+function fireResizes(
+  instance: number,
+  sizes: readonly (readonly [Element, number])[],
+): void {
+  const entries = sizes.map(
+    ([target, height]) =>
+      ({
+        target,
+        borderBoxSize: [{ blockSize: height, inlineSize: 0 }],
+      }) as unknown as ResizeObserverEntry,
+  );
+  roInstances[instance]?.callback(entries, null as never);
 }
 
 // --- Harness ---------------------------------------------------------------
@@ -1831,12 +1842,15 @@ describe("v2 runtime — commands", () => {
     h.userScroll(2000);
     h.settle();
     const before = states.length;
-    // Two opposite changes below the anchor: m23 moves down 50px while
-    // count, window, edges, totalSize and held all stay as they were.
+    // Two opposite changes below the anchor in ONE delivery, hence one
+    // commit: m23 moves down 50px while count, window, edges, totalSize and
+    // held all stay as they were.
     h.heights.set(22, 150);
     h.heights.set(25, 50);
-    fireResize(0, h.rowElement("msg 22"), 150);
-    fireResize(0, h.rowElement("msg 25"), 50);
+    fireResizes(0, [
+      [h.rowElement("msg 22"), 150],
+      [h.rowElement("msg 25"), 50],
+    ]);
     expect(h.list.positionOf("m23")?.top).toBe(2350);
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
     expect(states.length).toBeGreaterThan(before);
