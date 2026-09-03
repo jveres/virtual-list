@@ -5,6 +5,7 @@ import {
   type GeometryViewport,
 } from "./geometry";
 import { type Glide, type GlideHost, glidePace, startGlide } from "./glide";
+
 import {
   createItemMeasurer,
   type ItemMeasurer,
@@ -16,6 +17,8 @@ import {
   type ScrollSettleController,
   type VirtualListScrollSettleStrategy,
 } from "./scroll-settle";
+
+export type { AnchorPolicy } from "./geometry";
 
 // The v2 runtime, built on the two preserved primitives — the browser-
 // adaptive scroll-settle controller and detached premeasurement — under
@@ -106,6 +109,11 @@ export interface VirtualListOptions<T> {
    */
   render: (item: T, existing?: HTMLElement) => HTMLElement;
   overscanPx?: number;
+  /**
+   * Called whenever a state field changes, and after every commit even
+   * when none did — committed positions may have moved (a companion that
+   * reads positionOf, like a sticky header, re-reads them here).
+   */
   onState?: (state: VirtualListState) => void;
   onReachStart?: (context: ReachContext) => void;
   onReachEnd?: (context: ReachContext) => void;
@@ -123,7 +131,8 @@ export interface VirtualListOptions<T> {
   edgeSlots?: { start?: EdgeSlot | null; end?: EdgeSlot | null };
   /**
    * What happens to a same-key update that arrives during a scroll phase
-   * (structural changes are settle-gated in every mode):
+   * (a structural change waits for the settle in every mode, except one
+   * confined below the anchor under "live", which needs no scroll write):
    * - "same-height": rendered fresh and premeasured off-scroller; if its
    *   height equals the committed height, and the committed row has no
    *   measurement of its own waiting, it is swapped into the committed slot
@@ -408,6 +417,7 @@ export function createVirtualList<T>(
   } | null = null;
   // Replaced by the boot commit's publish before the list is handed out.
   let lastState: VirtualListState = EMPTY_STATE;
+  let lastPublishedEpoch = -1;
   let reachStartArmed = true;
   let reachEndArmed = true;
   const reachAborts: Record<Edge, Set<AbortController>> = {
@@ -1393,8 +1403,12 @@ export function createVirtualList<T>(
     const totalSize = geometry.totalSize;
     const held = pending !== null || dirtyRows.size > 0;
     // Most scroll events remain inside the same mounted range. Avoid a
-    // short-lived public-state object unless a host-observable field changed.
+    // short-lived public-state object unless a host-observable field
+    // changed — or geometry did: a commit can move committed positions
+    // while every field stays the same, and a host reading positionOf
+    // must hear about it.
     if (
+      lastPublishedEpoch !== geometryEpoch ||
       lastState.count !== count ||
       lastState.start !== start ||
       lastState.end !== end ||
@@ -1404,6 +1418,7 @@ export function createVirtualList<T>(
       lastState.totalSize !== totalSize ||
       lastState.held !== held
     ) {
+      lastPublishedEpoch = geometryEpoch;
       lastState = {
         count,
         start,

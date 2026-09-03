@@ -1824,6 +1824,25 @@ describe("v2 runtime — commands", () => {
     h.list.dispose();
   });
 
+  it("publishes after a commit that moves positions but changes no state field", () => {
+    const initial = range(0, 50);
+    const states: VirtualListState[] = [];
+    const h = mount(initial, { onState: (state) => states.push(state) });
+    h.userScroll(2000);
+    h.settle();
+    const before = states.length;
+    // Two opposite changes below the anchor: m23 moves down 100px while
+    // count, window, edges, totalSize and held all stay as they were.
+    h.heights.set(22, 200);
+    h.heights.set(25, 0.5);
+    fireResize(0, h.rowElement("msg 22"), 200);
+    expect(h.list.positionOf("m23")?.top).toBe(2400);
+    fireResize(0, h.rowElement("msg 25"), 0.5);
+    expect(h.list.state.totalSize).toBe(50 * ROW_H);
+    expect(states.length).toBeGreaterThan(before);
+    h.list.dispose();
+  });
+
   it("moves mounted slots to their new offsets before the commit's scroll write", () => {
     // WebKit lays out at a scroll write: every mounted slot must already
     // sit at its committed offset, or the scroll range freezes stale.

@@ -1,4 +1,5 @@
 import {
+  type AnchorPolicy,
   createVirtualList,
   type EdgeSlot,
   type VirtualList,
@@ -677,7 +678,7 @@ function dayHeaderKeys(): string[] {
 
 /** One snapshot to the runtime; all data changes flow through here.
  * Returns the number of rows handed over (day separators included). */
-function pushItems(anchor?: "auto" | "viewport" | "end" | "none"): number {
+function pushItems(anchor?: AnchorPolicy): number {
   refreshLoadedWindow();
   syncEdgeSlot();
   const rows = rowsForRuntime();

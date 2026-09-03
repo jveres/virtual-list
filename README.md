@@ -100,9 +100,9 @@ list.dispose();
 
 - `setItems` hands over a whole snapshot; new and replaced rows are rendered
   and premeasured off the scroller, and the commit is one atomic write.
-  During a scroll the snapshot waits for the settle, except what needs no
-  scroll write: same-key updates under `"live"`, and structural changes
-  confined below the anchor (an appended message, a version switch).
+  During a scroll the snapshot waits for the settle, except, under
+  `"live"`, what needs no scroll write: same-key updates, and structural
+  changes confined below the anchor (an appended message, a version switch).
 - `scrollTo` with `align: "start"` on a key pins it to the viewport top and
   reserves the shortfall below (a chat's send flow); `offset` lands it
   below a floating header. A smooth command is interrupted by genuine user
