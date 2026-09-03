@@ -725,9 +725,9 @@ export function createVirtualList<T>(
   // A height change while the viewport stands on a pin keeps the pinned row
   // at the top and sizes the reserve to the new height (I5): a taller
   // viewport shrinks the scroll range, and the engine clamps the position
-  // before this delivery — so the pre-resize position decides (a viewport
-  // that had left the pin keeps its anchor), and a glide in flight decides
-  // by its destination.
+  // in layout, reporting it before or after this delivery — so the
+  // pre-resize position decides (a viewport that had left the pin keeps
+  // its anchor), and a glide in flight decides by its destination.
   const viewportObserver = new ResizeObserver(() => {
     if (disposed) return;
     const width = viewport.clientWidth;
@@ -756,6 +756,9 @@ export function createVirtualList<T>(
         : Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX);
     if (idle()) {
       commit(null, stoodOnPin ? "pin" : "viewport", "allowed", "keep");
+      // The commit's write is where the viewport stands now; the next
+      // delivery must not compare against the pre-resize position.
+      if (!disposed) lastObservedTop = viewport.scrollTop;
     } else {
       // The reserve (I5) is sized to the viewport by a commit: a size
       // change during a phase with nothing else held still needs one at
@@ -1440,8 +1443,9 @@ export function createVirtualList<T>(
     reconciledRange?: { start: number; end: number },
   ): void {
     if (disposed) return;
-    // A resize is observed only after the engine's own scroll event for the
-    // clamp it caused; that position is not where the viewport stood.
+    // Until a resize has been adopted, a position at the new height is the
+    // engine's clamp (its scroll event, or the observer's own publish), not
+    // where the viewport stood.
     if (Math.abs(vp.height - lastViewportHeight) <= MEASURE_EPSILON_PX) {
       lastObservedTop = vp.scrollTop;
     }

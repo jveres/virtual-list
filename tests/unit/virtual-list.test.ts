@@ -1280,6 +1280,61 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("a pin removed by a live commit leaves the held stance to the anchor", () => {
+    const initial = range(0, 50);
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+      height: () => height,
+    });
+    void h.list.scrollTo("m40", { align: "start" });
+    expect(h.viewport.scrollTop).toBe(4000);
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -40 }));
+    height = 700;
+    fireResize(1, h.viewport, 700); // On the pin: a "pin" stance.
+    // The pinned row is deleted mid-phase: below-the-anchor, so it commits
+    // live, and the pin goes with it. m41 now heads the viewport.
+    h.list.setItems(initial.filter((m) => m.id !== 40));
+    expect(h.list.positionOf("m41")?.top).toBe(4000);
+    // A row above grows and waits for the settle: the anchor (m41) keeps
+    // its place — a pin stance without a pin must not fall to the raw
+    // position and shift the top row.
+    h.heights.set(35, 200);
+    fireResize(0, h.rowElement("msg 35"), 200);
+    h.settle();
+    expect(h.list.positionOf("m41")?.top).toBe(4100);
+    expect(h.viewport.scrollTop).toBe(4100);
+    h.list.dispose();
+  });
+
+  it("two idle resizes on the pin without a scroll event between keep the pin", () => {
+    const initial = range(0, 50);
+    let width = 800;
+    let height = VIEWPORT_H;
+    const h = mount(initial, {
+      followBehavior: "smooth",
+      width: () => width,
+      height: () => height,
+    });
+    void h.list.scrollTo("m45", { align: "start" });
+    // A rotation: the narrower viewport re-wraps a row above the pin, so
+    // the pin's top moves in the resize commit itself, which writes it.
+    h.heights.set(40, 200);
+    width = 500;
+    height = 700;
+    fireResize(1, h.viewport, 700);
+    expect(h.list.positionOf("m45")?.top).toBe(4600);
+    expect(h.viewport.scrollTop).toBe(4600);
+    // The next delivery arrives before any scroll event: the viewport
+    // stands on the pin where the commit put it.
+    height = 800;
+    fireResize(1, h.viewport, 800);
+    expect(h.viewport.scrollTop).toBe(4600);
+    expect(h.list.positionOf("m45")?.top).toBe(4600);
+    h.list.dispose();
+  });
+
   it("remeasures a user-expanded tail with a viewport anchor and no follow", () => {
     const h = mount(range(0, 50), { followBehavior: "smooth" });
     const before = h.viewport.scrollTop;

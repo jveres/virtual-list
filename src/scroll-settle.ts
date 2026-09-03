@@ -282,10 +282,11 @@ export function createScrollSettleController(
     const nextScrollTop = viewport.scrollTop;
     const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
     const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
-    // A viewport that grew (a window resize, a device rotation) shrinks the
-    // scroll range, and the engine clamps the position to the new maximum
-    // — dispatching that scroll BEFORE any resize observer runs. Layout
-    // moved the viewport, not the user.
+    // A viewport that grew (a window resize, an in-page composer) shrinks
+    // the scroll range, and the engine clamps the position to the new
+    // maximum, dispatching that scroll before or after the resize is
+    // observed. Layout moved the viewport, not the user: the height is
+    // sampled here, at scroll events only, so either order reads the same.
     const clientHeight = viewport.clientHeight;
     const layoutClamp =
       Math.abs(clientHeight - lastScrollSampleHeight) > measureEpsilon &&
