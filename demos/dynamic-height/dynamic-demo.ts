@@ -1077,7 +1077,9 @@ function classifyBatch(records: MutationRecord[]): void {
       if (
         slot.resized &&
         slot.heightFrom !== null &&
-        slot.offsetFrom + slot.heightFrom <= scrollTopNow + PX_EPSILON
+        // Tolerance must not classify a still-visible row as above the
+        // viewport. Its bottom must be clearly past the viewport top.
+        slot.offsetFrom + slot.heightFrom <= scrollTopNow - PX_EPSILON
       ) {
         return `#${slot.key} resized entirely above scrollTop ${Math.round(scrollTopNow)} (${slot.offsetFrom}+${slot.heightFrom})`;
       }
