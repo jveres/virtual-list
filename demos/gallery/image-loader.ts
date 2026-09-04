@@ -5,7 +5,7 @@
 // gallery leaves hundreds of downloads competing with the ones on screen.
 
 export interface LoaderMetrics {
-  /** Waiting for a slot. */
+  /** Unique sources waiting for a slot. */
   queued: number;
   /** Downloading now. */
   inFlight: number;
@@ -25,7 +25,7 @@ export interface LoaderMetrics {
 export interface ImageLoader {
   /** Queue an image for its source; one already fetched shows at once. */
   add(img: HTMLImageElement, src: string): void;
-  /** The image left the scroller: drop it from the queue, or abandon its download. */
+  /** Unsubscribe an image; abandon its request only when no images still need it. */
   remove(img: HTMLImageElement): void;
   /** The viewport moved: the queue's order follows it (one viewport read, one per queued image). */
   reprioritize(): void;
@@ -33,10 +33,10 @@ export interface ImageLoader {
   metrics(): Readonly<LoaderMetrics>;
 }
 
-interface Pending {
-  img: HTMLImageElement;
+interface ImageRequest {
   src: string;
-  /** Distance from the viewport, in pixels; 0 inside it. */
+  images: Set<HTMLImageElement>;
+  /** Distance of the nearest subscriber to the viewport, in pixels. */
   distance: number;
 }
 
@@ -58,15 +58,12 @@ export function createImageLoader(options: {
     reused: 0,
     concurrency: options.concurrency,
   };
-  const queue: Pending[] = [];
-  const inFlight = new Map<
-    HTMLImageElement,
-    { src: string; done: () => void }
-  >();
+  const queue: ImageRequest[] = [];
+  const requests = new Map<string, ImageRequest>();
+  const subscriptions = new WeakMap<HTMLImageElement, ImageRequest>();
+  const inFlight = new Map<string, () => void>();
   /** Sources that have arrived: a later image of the same source shows at once. */
   const fetched = new Set<string>();
-  /** Images waiting for a source that is in flight for another image. */
-  const followers = new Map<string, Set<HTMLImageElement>>();
   let metricsFrame = 0;
 
   function publish(): void {
@@ -85,70 +82,71 @@ export function createImageLoader(options: {
   }
 
   /** Shows an image whose source the loader has fetched. */
-  function show(img: HTMLImageElement, src: string): void {
-    metrics.reused++;
+  function show(img: HTMLImageElement, src: string, reused = true): void {
+    if (reused) metrics.reused++;
     img.classList.add("loaded");
     img.src = src;
   }
 
-  function inFlightFor(src: string): boolean {
-    for (const flight of inFlight.values()) if (flight.src === src) return true;
-    return false;
-  }
-
-  /** Queue an image behind a source in flight for another: it shows when that one arrives. */
-  function follow(img: HTMLImageElement, src: string): void {
-    const set = followers.get(src) ?? new Set<HTMLImageElement>();
-    followers.set(src, set);
-    set.add(img);
-  }
-
-  function enqueue(img: HTMLImageElement, src: string, r: DOMRect): void {
-    queue.push({ img, src, distance: distanceOf(img, r) });
-    metrics.peakQueued = Math.max(metrics.peakQueued, queue.length);
+  function updateDistance(request: ImageRequest, r: DOMRect): void {
+    request.distance = Infinity;
+    for (const img of request.images) {
+      request.distance = Math.min(request.distance, distanceOf(img, r));
+    }
   }
 
   function add(img: HTMLImageElement, src: string): void {
+    const previous = subscriptions.get(img);
+    if (previous?.src === src) return;
+    if (previous) remove(img);
+    img.classList.remove("loaded", "failed");
     if (fetched.has(src)) {
       show(img, src);
       publish();
       return;
     }
-    if (inFlightFor(src)) {
-      follow(img, src);
-      publish();
-      return;
+    img.removeAttribute("src");
+    const distance = distanceOf(img, viewport.getBoundingClientRect());
+    let request = requests.get(src);
+    if (!request) {
+      request = { src, images: new Set(), distance };
+      requests.set(src, request);
+      queue.push(request);
+      metrics.peakQueued = Math.max(metrics.peakQueued, queue.length);
     }
-    enqueue(img, src, viewport.getBoundingClientRect());
+    request.images.add(img);
+    request.distance = Math.min(request.distance, distance);
+    subscriptions.set(img, request);
     pump();
   }
 
   function remove(img: HTMLImageElement): void {
-    const queued = queue.findIndex((p) => p.img === img);
-    if (queued >= 0) {
-      queue.splice(queued, 1);
-      publish();
-      return;
+    const request = subscriptions.get(img);
+    if (!request) return;
+    subscriptions.delete(img);
+    request.images.delete(img);
+    if (request.images.size > 0) {
+      if (!inFlight.has(request.src)) {
+        updateDistance(request, viewport.getBoundingClientRect());
+      }
+    } else {
+      requests.delete(request.src);
+      const cancel = inFlight.get(request.src);
+      if (cancel) {
+        inFlight.delete(request.src);
+        cancel();
+        metrics.cancelled++;
+      } else {
+        const index = queue.indexOf(request);
+        if (index >= 0) queue.splice(index, 1);
+      }
     }
-    for (const set of followers.values()) set.delete(img);
-    const flight = inFlight.get(img);
-    if (!flight) return;
-    // Abandon the download: an image without a source aborts its fetch.
-    inFlight.delete(img);
-    flight.done();
-    img.removeAttribute("src");
-    metrics.cancelled++;
-    // Its followers go back to the queue.
-    const set = followers.get(flight.src);
-    followers.delete(flight.src);
-    const r = viewport.getBoundingClientRect();
-    for (const follower of set ?? []) enqueue(follower, flight.src, r);
     pump();
   }
 
   function reprioritize(): void {
     const r = viewport.getBoundingClientRect();
-    for (const pending of queue) pending.distance = distanceOf(pending.img, r);
+    for (const request of queue) updateDistance(request, r);
     pump();
   }
 
@@ -157,22 +155,15 @@ export function createImageLoader(options: {
       queue.sort((a, b) => a.distance - b.distance);
     }
     while (queue.length > 0 && inFlight.size < metrics.concurrency) {
-      start(queue.shift() as Pending);
+      start(queue.shift() as ImageRequest);
     }
     publish();
   }
 
-  function start({ img, src, distance }: Pending): void {
-    // The source may have arrived, or set off, since the image was queued
-    // (a card's second drawing): no second fetch.
-    if (fetched.has(src)) {
-      show(img, src);
-      return;
-    }
-    if (inFlightFor(src)) {
-      follow(img, src);
-      return;
-    }
+  function start({ src, images, distance }: ImageRequest): void {
+    // The transport belongs to the source, not a tile that can unmount
+    // or be reused for another source while this request is in flight.
+    const img = new Image();
     let settled = false;
     // A stalled download is abandoned like one that left the scroller: the
     // slot and the connection both go free.
@@ -191,24 +182,28 @@ export function createImageLoader(options: {
     function finish(outcome: "loaded" | "failed"): void {
       if (settled) return;
       done();
-      inFlight.delete(img);
+      inFlight.delete(src);
+      requests.delete(src);
       if (outcome === "loaded") {
         metrics.loaded++;
         fetched.add(src);
-        img.classList.add("loaded");
       } else {
         metrics.failed++;
-        img.classList.add("failed");
       }
-      const set = followers.get(src);
-      followers.delete(src);
-      for (const follower of set ?? []) {
-        if (outcome === "loaded") show(follower, src);
-        else follower.classList.add("failed");
+      let reused = false;
+      for (const subscriber of images) {
+        subscriptions.delete(subscriber);
+        if (outcome === "loaded") show(subscriber, src, reused);
+        else subscriber.classList.add("failed");
+        reused = true;
       }
+      images.clear();
       pump();
     }
-    inFlight.set(img, { src, done });
+    inFlight.set(src, () => {
+      done();
+      img.removeAttribute("src");
+    });
     img.addEventListener("load", onLoad, { once: true });
     img.addEventListener("error", onError, { once: true });
     img.setAttribute("fetchpriority", distance === 0 ? "high" : "low");
