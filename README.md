@@ -45,8 +45,9 @@ pnpm run dev
   removes the simulated token delays, `?stream=fast-long` (or `?fast-long`)
   streams a long reply quickly, `?edge=pill` uses a floating loader pill
   instead of the in-flow slot, `?sticky=off` starts with the sticky day
-  header off, and `?follow=keep-start` starts in the bounded autoscroll
-  mode; the dialog's choices persist in the browser, a URL parameter wins
+  header off, `?follow=keep-start` starts in the bounded autoscroll
+  mode, and `?landing=end` opens a conversation at its end instead of on
+  its last prompt; the dialog's choices persist in the browser, a URL parameter wins
   for the session.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.

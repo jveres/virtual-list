@@ -439,9 +439,40 @@ async function chaos(page, label, seed, seconds) {
   return violations;
 }
 
+/** Where the last prompt sits relative to the viewport top, and where a
+ * landed conversation should put it (under the day pill when it is on). */
+async function promptLanding(page) {
+  return page.evaluate(() => {
+    const viewport = document.getElementById("viewport");
+    const rect = viewport.getBoundingClientRect();
+    // Slots are reused, so document order is not visual order: the last
+    // prompt is the lowest one on screen.
+    let last = null;
+    for (const prompt of viewport.querySelectorAll("article.message.user")) {
+      if (
+        !last ||
+        prompt.getBoundingClientRect().top > last.getBoundingClientRect().top
+      )
+        last = prompt;
+    }
+    const sticky = document.getElementById("sticky-toggle")?.checked ?? true;
+    return {
+      top: last ? last.getBoundingClientRect().top - rect.top : null,
+      expected: sticky ? 44 : 0,
+    };
+  });
+}
+
+function landingViolation(label, landing) {
+  if (landing.top === null) return `${label}: no prompt mounted after landing`;
+  if (Math.abs(landing.top - landing.expected) > 1)
+    return `${label}: last prompt at ${landing.top}, expected ${landing.expected}`;
+  return null;
+}
+
 /** Invariant G: an import landing mid-stream cancels the stream cleanly and
- * lands the new conversation at its end; the restore action brings the
- * built-in conversation back the same way. */
+ * lands the new conversation on its last prompt; the restore action brings
+ * the built-in conversation back the same way. */
 async function checkImportMidStream(page, label) {
   const violations = [];
   await clickIfVisible(page, "#scroll-bottom-btn");
@@ -453,8 +484,11 @@ async function checkImportMidStream(page, label) {
   let m = await metrics(page);
   if (m.streaming)
     violations.push(`${label} import: stream still running after import`);
-  if (Math.abs(m.gapToEnd) > 1)
-    violations.push(`${label} import: not at the end (gap ${m.gapToEnd})`);
+  const importLanding = landingViolation(
+    `${label} import`,
+    await promptLanding(page),
+  );
+  if (importLanding) violations.push(importLanding);
   if (!m.status.includes("/40"))
     violations.push(`${label} import: status "${m.status}"`);
   // Restore the built-in conversation through the settings dialog.
@@ -470,8 +504,11 @@ async function checkImportMidStream(page, label) {
     if (!m.status.includes("/104") && !m.status.includes("/102")) {
       violations.push(`${label} restore: status "${m.status}"`);
     }
-    if (Math.abs(m.gapToEnd) > 1)
-      violations.push(`${label} restore: not at the end (gap ${m.gapToEnd})`);
+    const restoreLanding = landingViolation(
+      `${label} restore`,
+      await promptLanding(page),
+    );
+    if (restoreLanding) violations.push(restoreLanding);
   }
   await page.keyboard.press("Escape");
   await page.waitForTimeout(200);

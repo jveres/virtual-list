@@ -223,6 +223,13 @@
       <dialog class="ai-settings-dialog" id="ai-settings-panel" tabindex="-1">
         <div class="ai-settings-dialog-title">General</div>
         <label class="ai-settings-field">
+          Conversation opens at
+          <select id="landing-mode">
+            <option value="prompt">The last prompt, pinned to the top</option>
+            <option value="end">The end</option>
+          </select>
+        </label>
+        <label class="ai-settings-field">
           Autoscroll
           <select id="autoscroll-mode">
             <option value="end">Follow to the end</option>

@@ -167,10 +167,13 @@ const demoParams = new URLSearchParams(location.search);
 // General options live in the settings dialog and persist in this browser;
 // a URL parameter wins for the session (the browser matrix drives them).
 const OPTIONS_KEY = "virtual-list:chat-options";
+/** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
+type LandingMode = "prompt" | "end";
 interface ChatOptions {
   edge: "slot" | "pill";
   sticky: boolean;
   follow: FollowMode;
+  landing: LandingMode;
 }
 function loadChatOptions(): ChatOptions {
   const stored: Partial<ChatOptions> = (() => {
@@ -183,6 +186,7 @@ function loadChatOptions(): ChatOptions {
   const edgeParam = demoParams.get("edge");
   const stickyParam = demoParams.get("sticky");
   const followParam = demoParams.get("follow");
+  const landingParam = demoParams.get("landing");
   return {
     edge:
       edgeParam === "pill" || edgeParam === "slot"
@@ -198,6 +202,12 @@ function loadChatOptions(): ChatOptions {
         : stored.follow === "keep-start"
           ? "keep-start"
           : "end",
+    landing:
+      landingParam === "prompt" || landingParam === "end"
+        ? landingParam
+        : stored.landing === "end"
+          ? "end"
+          : "prompt",
   };
 }
 function saveChatOptions(): void {
@@ -208,6 +218,7 @@ function saveChatOptions(): void {
         edge: edgeLoaderMode,
         sticky: stickyEnabled,
         follow: followMode,
+        landing: landingMode,
       }),
     );
   } catch {
@@ -218,6 +229,7 @@ const chatOptions = loadChatOptions();
 let edgeLoaderMode: "slot" | "pill" = chatOptions.edge;
 let stickyEnabled = chatOptions.sticky;
 let followMode: FollowMode = chatOptions.follow;
+let landingMode: LandingMode = chatOptions.landing;
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
@@ -230,6 +242,7 @@ const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
 const scrollBottomBtn = mustGet("scroll-bottom-btn", HTMLButtonElement);
 const edgeLoaderSelect = mustGet("edge-loader-mode", HTMLSelectElement);
 const autoscrollSelect = mustGet("autoscroll-mode", HTMLSelectElement);
+const landingSelect = mustGet("landing-mode", HTMLSelectElement);
 const windowStatus = mustGet("window-status");
 const virtualListStatus = mustGet("virtual-list-status");
 const composerMinHeight = Math.max(
@@ -1163,8 +1176,38 @@ function reloadConversation(): void {
   seedActiveConversation();
   setEdgeState("hidden");
   pushItems("end");
-  void virtualList?.scrollTo("end");
+  landConversation();
   syncMetrics();
+}
+
+/**
+ * Where a loaded conversation lands — at boot and after every reload (a
+ * provider switch, an import, a restore, a history clear). The default
+ * pins the last prompt to the viewport top with its reply below, the pin
+ * a send makes (I5: the reserve holds space under a short reply), under
+ * the day pill when it is on; the alternative, and a conversation without
+ * a prompt, land at the end.
+ */
+function landConversation(): void {
+  let key: string | null = null;
+  if (landingMode === "prompt") {
+    for (let i = transcript.length - 1; i >= 0 && key === null; i--) {
+      const message = transcript[i];
+      if (message?.role === "user") key = String(message.id);
+    }
+  }
+  if (key === null) {
+    void virtualList?.scrollTo("end");
+    return;
+  }
+  // The command settles held work before it resolves the key (a reload
+  // during a glide holds its snapshot until then), so the key needs no
+  // committed position here; a key outside the loaded window fails the
+  // command and leaves the end landing the snapshot made.
+  void virtualList?.scrollTo(key, {
+    align: "start",
+    offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+  });
 }
 
 // Switches the active version of a branched message: rewrites the active path
@@ -1977,26 +2020,8 @@ virtualList = createVirtualList<ChatRow>(viewport, {
   onReachStart: ({ signal }) => loadOlderMessages(signal),
   onDestroy: handleRowDestroy,
 });
-pinLastPrompt();
-
-/**
- * The initial landing: the last prompt at the viewport top with its reply
- * below (the pin a send makes, I5: the reserve holds space under a short
- * reply), where a returning reader resumes — not the bare end. A
- * conversation without a prompt lands at the end the runtime booted to.
- */
-function pinLastPrompt(): void {
-  let key: string | null = null;
-  for (let i = transcript.length - 1; i >= 0 && key === null; i--) {
-    const message = transcript[i];
-    if (message?.role === "user") key = String(message.id);
-  }
-  if (key === null || virtualList?.positionOf(key) === null) return;
-  void virtualList?.scrollTo(key, {
-    align: "start",
-    offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
-  });
-}
+// The runtime boots at the end; the conversation lands where the setting says.
+landConversation();
 
 // The sticky day header: a companion on the runtime's read queries.
 stickyHeaders = createStickyHeaders({
@@ -2147,6 +2172,11 @@ edgeLoaderSelect.addEventListener("change", () => {
 });
 syncEdgeLoaderMode();
 
+landingSelect.value = landingMode;
+landingSelect.addEventListener("change", () => {
+  landingMode = landingSelect.value === "end" ? "end" : "prompt";
+  saveChatOptions();
+});
 autoscrollSelect.value = followMode;
 autoscrollSelect.addEventListener("change", () => {
   followMode = autoscrollSelect.value === "keep-start" ? "keep-start" : "end";
