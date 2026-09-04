@@ -466,6 +466,32 @@ describe("I5 — pin-to-top reserve", () => {
     expect(geometry.totalSize).toBeCloseTo(total, 6);
   });
 
+  it("passes the pin to a row replacing the pinned one in place; another removal drops it", () => {
+    const { geometry, vp } = pinnedAtEnd();
+    const total = geometry.totalSize;
+    // A version switch: the pinned prompt and its reply are other rows now.
+    const switched = [...keysRange(0, 18), "m18b", "m19b"];
+    transact(geometry, vp, "auto", () => geometry.setKeys(switched));
+    expect(geometry.pinned).toBe("m18b");
+    expect(geometry.totalSize).toBeCloseTo(total, 6);
+    // The replacement's reply is taller, then the first version returns:
+    // the reserve regrows and the pinned position holds.
+    transact(geometry, vp, "auto", () => geometry.measure("m19b", 300));
+    expect(geometry.totalSize).toBeCloseTo(total, 6);
+    transact(geometry, vp, "auto", () => geometry.setKeys(keysRange(0, 20)));
+    expect(geometry.pinned).toBe("m18");
+    expect(geometry.totalSize).toBeCloseTo(total, 6);
+    expect(geometry.maxScrollTop(VIEWPORT_H)).toBeCloseTo(
+      geometry.offsetOf("m18"),
+      6,
+    );
+    // A removal that shifts the rows before it is not a replacement.
+    transact(geometry, vp, "auto", () =>
+      geometry.setKeys([...keysRange(0, 17), "x", "m19"]),
+    );
+    expect(geometry.pinned).toBeNull();
+  });
+
   it("adjusts the reserve when content above the pinned key changes", () => {
     const { geometry, vp } = pinnedAtEnd();
     transact(geometry, vp, "viewport", () => geometry.measure("m3", 400));

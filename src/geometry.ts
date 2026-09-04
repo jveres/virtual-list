@@ -256,6 +256,21 @@ export class Geometry {
       sizes[index] = this.heightOf(keys[index] as string);
     }
     const tree = new FenwickTree(sizes);
+    // A pinned row replaced in place (a version switch, an edit) passes
+    // its pin to the row that took its place — a new key at its index,
+    // everything before it unchanged — so the reserve keeps that position
+    // at the top (I5). A removal (a surviving row shifted up into the
+    // index) drops the pin.
+    let pinned = this.pinnedKey;
+    if (pinned !== null && !indexByKey.has(pinned)) {
+      const index = this.indexByKey.get(pinned) ?? -1;
+      const replacement = index >= 0 ? keys[index] : undefined;
+      const inPlace =
+        replacement !== undefined &&
+        !this.indexByKey.has(replacement) &&
+        this.keys.slice(0, index).every((key, i) => keys[i] === key);
+      pinned = inPlace ? (replacement as string) : null;
+    }
 
     this.keys = keys;
     this.indexByKey = indexByKey;
@@ -263,10 +278,8 @@ export class Geometry {
     for (const key of [...this.heightByKey.keys()]) {
       if (!indexByKey.has(key)) this.heightByKey.delete(key);
     }
-    if (this.pinnedKey !== null && !indexByKey.has(this.pinnedKey)) {
-      this.pinnedKey = null;
-      this.pinnedInsetPx = 0;
-    }
+    this.pinnedKey = pinned;
+    if (pinned === null) this.pinnedInsetPx = 0;
   }
 
   /**

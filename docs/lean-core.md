@@ -156,7 +156,10 @@ The definition of correct, referenced by number throughout the code:
   observed; a failed transaction discards only what it queued.
 - **I5** — a pinned key can always be scrolled to the viewport top: the
   reserve makes up the shortfall, is consumed by growth, regrown by
-  shrinkage, and never collapses out from under the viewport. A viewport
+  shrinkage, and never collapses out from under the viewport. A pinned row
+  replaced in place (a version switch, an edit: a new key at its index,
+  everything before it unchanged) passes the pin to its replacement; a
+  removal of the pinned key drops the pin. A viewport
   height change while the viewport stands on the pin (a window resize, a
   device rotation) re-resolves to the pin: the row stays at the top and the
   reserve is sized to the new height. The engine clamps the position and
