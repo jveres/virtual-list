@@ -111,6 +111,7 @@ const list = createVirtualList(viewport, {
 });
 
 list.setItems(items, { anchor: "auto" }); // | "viewport" | "end" | "none"
+list.updateItem(key, nextItem); // same key, same anchor options as setItems
 await list.scrollTo(key, { align: "start", behavior: "smooth", duration, offset });
 await list.scrollTo("end", { behavior: "smooth" });
 list.remeasure(key, { anchor: "viewport" });
@@ -127,6 +128,22 @@ list.dispose();
   During a scroll the snapshot waits for the settle, except, under
   `"live"`, what needs no scroll write: same-key updates, and structural
   changes confined below the anchor (an appended message, a version switch).
+- `updateItem(key, item, { anchor? })` replaces one item's data. The key must
+  stay the same; unknown keys are ignored. Without a pending snapshot, it
+  prepares only that item and keeps the existing key order. If a snapshot
+  is already held, it merges the update through snapshot preparation to
+  preserve the pending order and anchor policy.
+- With `height(item)`, heights must be finite and positive. The runtime
+  keeps data and heights for every item, but renders only the overscan
+  window. Leaving that window calls `onUnmount` and `onDestroy`; re-entry
+  calls `render` without an existing element, then `onMount`. Keep state
+  that must survive scrolling in item data. Unknown-height rows retain
+  their measured elements as before.
+- For viewport-scoped row styles, pass `measurementContainer`: an element
+  outside the scroll surface with the same typography, CSS variables, and
+  ancestor classes. The hidden measurement root inherits from that element.
+  The default is `document.body`; width matching alone does not reproduce
+  styles scoped to a viewport ancestor.
 - `scrollTo` with `align: "start"` on a key pins it to the viewport top and
   reserves the shortfall below (a chat's send flow); `offset` lands it
   below a floating header. A smooth command is interrupted by genuine user
@@ -143,6 +160,12 @@ list.dispose();
 
 `demos/shared/sticky-headers.ts` is a companion that floats the current
 section header over the viewport using only `positionOf`/`elementOf`.
+
+Rendering failures clean up newly created elements and preserve internal
+ownership. In-place render rollback is best effort: the runtime cannot undo
+arbitrary DOM mutations or external side effects. For stronger isolation,
+return a fresh element instead of mutating `existing`. Failed initialization
+removes the runtime's DOM, observers, and listeners before rethrowing.
 
 ## Validation
 

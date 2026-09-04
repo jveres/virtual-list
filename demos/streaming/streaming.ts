@@ -57,11 +57,12 @@ import {
 // The demo is the runtime's API pressure test: the full streaming chat —
 // send flow with pin-to-top, end-follow through streams, scrollback loading,
 // version branches, live tool panels — hosted on the runtime's public
-// surface (setItems / scrollTo / remeasure / setEdgeSlot / positionOf /
+// surface (setItems / updateItem / scrollTo / remeasure / setEdgeSlot / positionOf /
 // elementOf / state) with no escape hatch into its internals.
 //
 // The message data is immutable-by-replacement: every change clones the
-// message object and pushes a fresh snapshot through setItems. The one
+// message object and sends it through updateItem. Structural changes use
+// setItems. The one
 // in-place exception is a tool panel's open state, which the runtime never
 // needs to know about (it is excluded from the panel signature). The runtime's
 // keyed renderer re-renders exactly the changed rows (render(item, existing)),
@@ -753,17 +754,23 @@ function pushItems(anchor?: AnchorPolicy): number {
 
 // The single mutation path: clones the message (the runtime re-renders rows
 // whose item identity changed), writes the clone back into the tree,
-// transcript, and window, and pushes the new snapshot.
+// transcript, and window, and updates only that runtime row.
 function updateMessage(id: number, mutate: (message: Message) => void): void {
   const node = tree.get(id);
   if (!node?.message) return;
+  const previousDay = dayOf(node.message);
   const next = { ...node.message };
   mutate(next);
   node.message = next;
   const index = transcriptIndexById.get(id);
   if (index !== undefined) transcript[index] = next;
   htmlCache.delete(String(id));
-  pushItems();
+  if (dayOf(next) !== previousDay) {
+    pushItems();
+  } else if (index !== undefined && index >= loadedStart) {
+    messages[index - loadedStart] = next;
+    virtualList?.updateItem(rowKey(next), next);
+  }
 }
 
 // --- Scrollback loading (an in-flow edge slot by default, a pill overlay) ---

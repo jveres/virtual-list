@@ -3268,6 +3268,45 @@ describe("host-named anchor", () => {
 });
 
 describe("mount hooks", () => {
+  it("cleans up a failed initial render", () => {
+    const disconnect = vi.spyOn(
+      ControlledResizeObserver.prototype,
+      "disconnect",
+    );
+    const before = document.body.childElementCount;
+    expect(() => mount(range(0, 3), { throwOn: "msg 1" })).toThrow(
+      "render failed",
+    );
+    // Only the caller-owned viewport remains; the canvas and measurer are gone.
+    expect(document.body.childElementCount).toBe(before + 1);
+    expect(document.body.lastElementChild?.childElementCount).toBe(0);
+    expect(disconnect).toHaveBeenCalledTimes(2);
+    expect(roInstances.every((record) => record.observed.size === 0)).toBe(
+      true,
+    );
+    disconnect.mockRestore();
+  });
+  it("reports both sides of a mounted same-height promotion", () => {
+    const events: string[] = [];
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      onMount: (el) => events.push(`mount ${el.textContent}`),
+      onUnmount: (el) => events.push(`unmount ${el.textContent}`),
+      onDestroy: (el) => events.push(`destroy ${el.textContent}`),
+    });
+    h.userScroll(3000);
+    events.length = 0;
+    h.list.setItems(
+      initial.map((m) => (m.id === 32 ? message(32, "updated") : m)),
+    );
+    expect(events).toEqual([
+      "unmount msg 32",
+      "mount updated",
+      "destroy msg 32",
+    ]);
+    h.list.dispose();
+  });
+
   it("report each element entering and leaving the scroller, unmount before destroy", () => {
     const events: string[] = [];
     const h = mount(range(0, 50), {
@@ -3296,7 +3335,129 @@ describe("mount hooks", () => {
   });
 });
 
+describe("targeted item updates", () => {
+  it("evaluates only the changed declared item and preserves the latest snapshot", () => {
+    const height = vi.fn(() => ROW_H);
+    const h = mount(range(0, 10_000), { boot: "start", itemHeight: height });
+    height.mockClear();
+    h.list.updateItem("m5000", message(5000, "changed"));
+    expect(height).toHaveBeenCalledTimes(1);
+    expect(h.list.elementOf("m5000")).toBeNull();
+    h.list.setEdgeSlot("start", null);
+    void h.list.scrollTo("m5000");
+    expect(h.rowElement("changed").textContent).toBe("changed");
+    h.list.dispose();
+  });
+
+  it.each(["live", "same-height", "freeze"] as const)(
+    "merges multiple updates with a held prepend in %s mode",
+    (scrollingUpdates) => {
+      const initial = range(0, 50);
+      const h = mount(initial, { scrollingUpdates });
+      h.userScroll(3000);
+      h.list.setItems([...range(-5, 0), ...initial], { anchor: "viewport" });
+      h.list.updateItem("m32", message(32, "first"));
+      h.list.updateItem("m33", message(33, "second"));
+      h.settle();
+      expect(h.list.state.count).toBe(55);
+      expect(h.viewport.scrollTop).toBe(3500);
+      expect(h.rowElement("first").textContent).toBe("first");
+      expect(h.rowElement("second").textContent).toBe("second");
+      h.list.dispose();
+    },
+  );
+
+  it("ignores unknown keys and rejects identity changes", () => {
+    const h = mount(range(0, 10));
+    h.list.updateItem("missing", message(20));
+    expect(() => h.list.updateItem("m5", message(6))).toThrow(/cannot change/);
+    expect(h.list.state.count).toBe(10);
+    h.list.dispose();
+  });
+
+  it("preserves the viewport for a measured update above it", () => {
+    const h = mount(range(0, 50));
+    void h.list.scrollTo("m20");
+    h.heights.set(3, 200);
+    h.list.updateItem("m3", message(3, "tall"), { anchor: "viewport" });
+    expect(h.viewport.scrollTop).toBe(2100);
+    expect(h.list.positionOf("m3")?.height).toBe(200);
+    h.list.dispose();
+  });
+});
+
 describe("declared heights", () => {
+  it("keeps mounted slots synchronized when declarations change without new item identities", () => {
+    let height = ROW_H;
+    const initial = range(0, 20);
+    const h = mount(initial, { boot: "start", itemHeight: () => height });
+    const row = h.rowElement("msg 0");
+    height = 150;
+    h.list.setItems(initial);
+    expect(h.list.positionOf("m0")?.height).toBe(150);
+    expect(h.slotOf(row).style.height).toBe("150px");
+    h.list.dispose();
+  });
+  it("renders only the window and releases declared DOM outside it", () => {
+    const renders: number[] = [];
+    const h = mount(range(0, 10_000), {
+      boot: "start",
+      itemHeight: () => ROW_H,
+      onRender: (m) => renders.push(m.id),
+    });
+    expect(renders.length).toBe(h.list.state.end - h.list.state.start);
+    expect(renders.length).toBeLessThan(20);
+    expect(h.list.positionOf("m9999")).toEqual({ top: 999900, height: ROW_H });
+    const first = h.rowElement("msg 0");
+    void h.list.scrollTo("m5000");
+    expect(h.destroyedElements).toContain(first);
+    expect(h.list.elementOf("m0")).toBeNull();
+    void h.list.scrollTo("start");
+    expect(h.rowElement("msg 0")).not.toBe(first);
+    h.list.dispose();
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+  });
+
+  it.each([NaN, Infinity, 0, -1])(
+    "rejects declared height %s before rendering",
+    (height) => {
+      const render = vi.fn();
+      expect(() =>
+        mount(range(0, 3), { itemHeight: () => height, onRender: render }),
+      ).toThrow(/height must be finite/);
+      expect(render).not.toHaveBeenCalled();
+    },
+  );
+
+  it("preserves geometry and data after an invalid declared update", () => {
+    const initial = range(0, 30);
+    const h = mount(initial, {
+      itemHeight: (m) => (m.body === "invalid" ? NaN : ROW_H),
+    });
+    expect(() => h.list.updateItem("m29", message(29, "invalid"))).toThrow(
+      /height must be finite/,
+    );
+    expect(h.list.positionOf("m29")?.height).toBe(ROW_H);
+    expect(h.rowElement("msg 29").textContent).toBe("msg 29");
+    h.list.setEdgeSlot("start", null);
+    expect(h.list.positionOf("m29")?.height).toBe(ROW_H);
+    h.list.dispose();
+  });
+
+  it("commits a held update after its declared row leaves the window", () => {
+    const h = mount(range(0, 100), {
+      boot: "start",
+      itemHeight: (m) => (m.body === "tall" ? 200 : ROW_H),
+    });
+    h.userScroll(200);
+    h.list.updateItem("m5", message(5, "tall"));
+    h.userScroll(5000);
+    h.settle();
+    expect(h.list.positionOf("m5")?.height).toBe(200);
+    void h.list.scrollTo("m5");
+    expect(h.rowElement("tall").textContent).toBe("tall");
+    h.list.dispose();
+  });
   it("uses the declared height without measuring, and renders a mid-phase change in place at the settle", () => {
     const renders: { id: number; existing: boolean }[] = [];
     const measured = new Set<number>();
@@ -3310,13 +3471,14 @@ describe("declared heights", () => {
     expect(measured.size).toBe(0);
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
 
-    // Idle: in place, height from the declaration.
+    // An offscreen update changes geometry without creating DOM.
+    const renderCount = renders.length;
     const tall3 = initial.map((m) =>
       m.id === 3 ? { ...m, body: "tall 3" } : m,
     );
     h.list.setItems(tall3);
     expect(h.list.positionOf("m3")?.height).toBe(300);
-    expect(renders.at(-1)).toEqual({ id: 3, existing: true });
+    expect(renders.length).toBe(renderCount);
 
     // Mid-gesture: held, then rendered in place at the settle — the
     // mounted element is offered, no fresh element.
@@ -3324,6 +3486,7 @@ describe("declared heights", () => {
     h.userScroll(1000);
     h.userScroll(1200);
     const mountedBefore = h.rowElement("msg 12");
+    renders.length = 0;
     h.list.setItems(
       tall3.map((m) => (m.id === 12 ? { ...m, body: "tall 12" } : m)),
     );

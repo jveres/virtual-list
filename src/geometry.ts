@@ -379,6 +379,7 @@ export class Geometry {
     // replacements preserve the viewport even at the end.
     if (!capture.atEnd) return "anchor";
     const oldKeys = capture.oldKeys;
+    if (oldKeys === this.keys) return "end";
     const endCompatible =
       this.keys.length >= oldKeys.length &&
       oldKeys.every((key, index) => this.keys[index] === key);

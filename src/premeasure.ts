@@ -16,6 +16,8 @@
 
 interface ItemMeasurerConfig {
   viewport: HTMLElement;
+  /** Host-provided ancestor with the same inherited and scoped row styles. */
+  container?: HTMLElement;
   /** Class names applied to the measurement root so item CSS that keys off
    * the canvas (e.g. `.chat-canvas .message`) matches during measurement.
    * (Tests only; the runtime does not forward one.) */
@@ -84,6 +86,7 @@ function createMeasurementRoot(
   viewport: HTMLElement,
   canvasClassName: string | undefined,
   viewportWidth: (() => number) | undefined,
+  container: HTMLElement,
 ): HTMLDivElement {
   const measureRoot = document.createElement("div");
   addClassNames(measureRoot, canvasClassName);
@@ -97,16 +100,22 @@ function createMeasurementRoot(
     pointerEvents: "none",
   });
   syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
-  document.body.appendChild(measureRoot);
+  container.appendChild(measureRoot);
   return measureRoot;
 }
 
 export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
-  const { viewport, canvasClassName, viewportWidth } = config;
+  const {
+    viewport,
+    canvasClassName,
+    viewportWidth,
+    container = document.body,
+  } = config;
   const measureRoot = createMeasurementRoot(
     viewport,
     canvasClassName,
     viewportWidth,
+    container,
   );
 
   let disposed = false;

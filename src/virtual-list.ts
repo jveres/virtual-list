@@ -120,8 +120,16 @@ export interface VirtualListOptions<T> {
    * then rendered in place at the settle — `existing` is the mounted
    * element — inside the commit that adjusts the scroll for it, instead
    * of fresh off-scroller and swapped in.
+   * DOM exists only in the overscan window: leaving it destroys the
+   * element, and re-entry renders fresh. Keep persistent state in item data.
    */
   height?: (item: T) => number;
+  /**
+   * Ancestor for detached measurement, outside the scrolling surface.
+   * Give it the same inherited typography, CSS variables, and ancestor
+   * classes as the viewport. Defaults to document.body.
+   */
+  measurementContainer?: HTMLElement;
   /**
    * Where the list boots: `"end"` (default; a chat opens at its latest
    * message, following armed) or `"start"` (a gallery opens at its first
@@ -260,6 +268,11 @@ export type RemeasureOptions = {
 export interface VirtualList<T> {
   setItems(items: readonly T[], options?: { anchor?: AnchorRequest }): void;
   /**
+   * Replace one item's data without changing its key. Prepares only this
+   * item unless a held snapshot must be merged. Unknown keys are ignored.
+   */
+  updateItem(key: string, item: T, options?: { anchor?: AnchorRequest }): void;
+  /**
    * Resolves true when the command landed on its target AND the target is
    * still under the viewport once the command's scroll phase has settled
    * and held work has committed; false when interrupted (user gesture,
@@ -393,6 +406,8 @@ interface Row<T> {
   destroyed: boolean;
 }
 
+type DeclaredItem<T> = { item: T; height: number };
+
 interface Prepared<T> {
   keys: readonly string[];
   /** Rows built and premeasured off-scroller for new or replaced keys. */
@@ -402,6 +417,9 @@ interface Prepared<T> {
   target: ExplicitAnchor | null;
   /** Declared-height items that changed mid-phase: rendered in place at the commit. */
   deferred: Map<string, T>;
+  /** Geometry and data for declared rows, independent of their mounted DOM. */
+  declaredItems: Map<string, DeclaredItem<T>> | null;
+  partial: boolean;
 }
 
 type Transaction = { run: () => void; discard?: () => void };
@@ -430,16 +448,19 @@ export function createVirtualList<T>(
   geometry.setAnchorExclusion((key) => {
     if (isSlotKey(key)) return true;
     if (anchorable === undefined) return false;
-    const row = rows.get(key);
-    return row !== undefined && !anchorable(row.item);
+    const entry = declaredItems.get(key) ?? rows.get(key);
+    return entry !== undefined && !anchorable(entry.item);
   });
   const rows = new Map<string, Row<T>>();
+  let declaredItems = new Map<string, DeclaredItem<T>>();
   const edgeSlots: Record<Edge, EdgeSlot | null> = {
     start: ownEdgeSlot(options.edgeSlots?.start),
     end: ownEdgeSlot(options.edgeSlots?.end),
   };
   /** The last snapshot handed in — what a slot change re-applies. */
-  let lastItems: readonly T[] = [...options.items];
+  let lastItems: T[] = [...options.items];
+  let lastIndexByKey = new Map<string, number>();
+  let committedKeys: readonly string[] = [];
   const mountedRows = new Set<Row<T>>();
   /** Committed rows whose size may differ from their committed height. */
   const dirtyRows = new Set<Row<T>>();
@@ -473,6 +494,7 @@ export function createVirtualList<T>(
   // read per measurement.
   const measurer: ItemMeasurer = createItemMeasurer({
     viewport,
+    container: options.measurementContainer,
     viewportWidth: () => lastViewportWidth,
   });
 
@@ -694,6 +716,14 @@ export function createVirtualList<T>(
     return retain(key, item, positionRowElement(element), height);
   }
 
+  function declaredHeight(item: T): number {
+    const height = declared?.(item);
+    if (height === undefined || !Number.isFinite(height) || height <= 0) {
+      throw new RangeError(`item height must be finite and > 0, got ${height}`);
+    }
+    return quantizeHeight(height);
+  }
+
   /** A slot row: the host's element at the declared height, no measurement. */
   function retainEdgeSlot(edge: Edge, slot: EdgeSlot): Row<T> {
     const row = retainDeclared(
@@ -745,7 +775,7 @@ export function createVirtualList<T>(
   /** Unmounted rows (fresh or retained) are measured detached, all in one layout. */
   function measureDetached(detached: readonly Row<T>[]): number[] {
     if (detached.length === 0) return [];
-    if (declared) return detached.map((row) => declared(row.item));
+    if (declared) return detached.map((row) => declaredHeight(row.item));
     try {
       return measurer.measureMany(detached.map((row) => row.element));
     } finally {
@@ -759,7 +789,7 @@ export function createVirtualList<T>(
   }
 
   function measureInPlace(row: Row<T>): number {
-    if (declared) return declared(row.item);
+    if (declared) return declaredHeight(row.item);
     const height = row.element.getBoundingClientRect().height;
     // A mounted row that reads 0 is hidden (display: none, a collapsed
     // ancestor), not resized: its committed height stands.
@@ -939,12 +969,15 @@ export function createVirtualList<T>(
       anchor,
       target: null,
       deferred: new Map(),
+      declaredItems: null,
+      partial: false,
     };
   }
 
   function prepare(
     next: readonly T[],
     requested: AnchorRequest | undefined,
+    partial = false,
   ): { prepared: Prepared<T>; teardownFailures: unknown[] } {
     // An omitted anchor INHERITS the pending snapshot's policy: a held page
     // load that asked for "viewport" must not be turned into "auto" (and
@@ -963,6 +996,7 @@ export function createVirtualList<T>(
     const deferred = new Map<string, T>();
     const itemKeys = next.map(keyOf);
     const itemByKey = new Map<string, T>();
+    const nextDeclared = declared ? new Map<string, DeclaredItem<T>>() : null;
     for (let index = 0; index < next.length; index++) {
       const key = itemKeys[index] as string;
       if (isSlotKey(key)) {
@@ -970,15 +1004,21 @@ export function createVirtualList<T>(
       }
       if (itemByKey.has(key)) throw new Error(`duplicate key "${key}"`);
       itemByKey.set(key, next[index] as T);
+      if (nextDeclared) {
+        const item = next[index] as T;
+        nextDeclared.set(key, { item, height: declaredHeight(item) });
+      }
     }
     // Edge slots bracket the items in the key order.
     const startSlot = edgeSlots.start;
     const endSlot = edgeSlots.end;
-    const keys: string[] = [
-      ...(startSlot ? [slotKey("start", startSlot.key)] : []),
-      ...itemKeys,
-      ...(endSlot ? [slotKey("end", endSlot.key)] : []),
-    ];
+    const keys: readonly string[] = partial
+      ? committedKeys
+      : [
+          ...(startSlot ? [slotKey("start", startSlot.key)] : []),
+          ...itemKeys,
+          ...(endSlot ? [slotKey("end", endSlot.key)] : []),
+        ];
 
     // Phase 1 — render and measure into local structures only. Nothing in
     // `rows` or `pending` is mutated until every host call has succeeded.
@@ -1048,7 +1088,12 @@ export function createVirtualList<T>(
       }
       if (declared) {
         // Declared: the height is the item's, never measured.
-        const row = retainDeclared(key, item, element, declared(item));
+        const row = retainDeclared(
+          key,
+          item,
+          element,
+          nextDeclared?.get(key)?.height ?? declaredHeight(item),
+        );
         built.push(row);
         return row;
       }
@@ -1153,7 +1198,7 @@ export function createVirtualList<T>(
     };
 
     try {
-      for (const key of keys) {
+      for (const key of partial ? itemKeys : keys) {
         if (isSlotKey(key)) {
           prepareSlot(key);
           if (disposed) throw new DisposedDuringPreparation();
@@ -1166,7 +1211,8 @@ export function createVirtualList<T>(
         } else {
           const committed = rows.get(key);
           if (committed === undefined) {
-            newRows.set(key, retainFresh(key, item, render(item)));
+            if (!declared)
+              newRows.set(key, retainFresh(key, item, render(item)));
           } else if (
             committed.renderUnknown ||
             committed.renderedItem !== item
@@ -1233,7 +1279,15 @@ export function createVirtualList<T>(
       return { prepared: emptyPrepared(keys, anchor), teardownFailures };
     }
     return {
-      prepared: { keys, newRows, anchor, target, deferred },
+      prepared: {
+        keys,
+        newRows,
+        anchor,
+        target,
+        deferred,
+        declaredItems: nextDeclared,
+        partial,
+      },
       teardownFailures,
     };
   }
@@ -1253,7 +1307,9 @@ export function createVirtualList<T>(
       if (disposed || row.destroyed) break;
       const displaced = row.element;
       const displacedItem = row.item;
-      if (row.mounted) rowObserver.unobserve(displaced);
+      const wasMounted = row.mounted;
+      if (wasMounted) unmountRow(row);
+      if (disposed) break;
       fresh.element.remove();
       displaced.replaceWith(fresh.element);
       row.element = fresh.element;
@@ -1261,7 +1317,7 @@ export function createVirtualList<T>(
       row.renderedItem = fresh.item;
       row.renderUnknown = false;
       fresh.destroyed = true;
-      if (row.mounted) observeRow(row);
+      if (wasMounted) mountRow(row);
       try {
         options.onDestroy?.(displaced, displacedItem);
       } catch (error) {
@@ -1273,6 +1329,7 @@ export function createVirtualList<T>(
 
   /** The prepared key order is the committed one: no structural change. */
   function sameKeysAsCommitted(keys: readonly string[]): boolean {
+    if (keys === committedKeys) return true;
     if (keys.length !== geometry.count) return false;
     for (let index = 0; index < keys.length; index++) {
       if (geometry.keyAt(index) !== keys[index]) return false;
@@ -1421,6 +1478,8 @@ export function createVirtualList<T>(
               rendered = renderInto(row, item);
             } catch (error) {
               teardownFailures.push(error);
+              const old = declaredItems.get(key);
+              if (old) applying.declaredItems?.set(key, old);
               continue;
             }
             if (disposed) {
@@ -1435,12 +1494,22 @@ export function createVirtualList<T>(
             }
             if (rendered === row.element) {
               row.item = item;
-              commitHeight(row, declared(item));
+              commitHeight(
+                row,
+                applying.declaredItems?.get(key)?.height ??
+                  declaredHeight(item),
+              );
             } else {
               row.renderedItem = previouslyRendered;
               applying.newRows.set(
                 key,
-                retainDeclared(key, item, rendered, declared(item)),
+                retainDeclared(
+                  key,
+                  item,
+                  rendered,
+                  applying.declaredItems?.get(key)?.height ??
+                    declaredHeight(item),
+                ),
               );
             }
           }
@@ -1467,7 +1536,24 @@ export function createVirtualList<T>(
         }
         teardownFailures.push(...destroyAll(doomed));
         if (disposed) return;
-        if (keysChanged) geometry.setKeys(applying.keys);
+        if (keysChanged) {
+          geometry.setKeys(applying.keys);
+          committedKeys = applying.keys;
+        }
+        if (applying.declaredItems) {
+          for (const [key, entry] of applying.declaredItems) {
+            const row = rows.get(key);
+            if (row && row.item === entry.item) {
+              commitHeight(row, entry.height);
+            } else if (declaredItems.get(key)?.height !== entry.height) {
+              geometry.measure(key, entry.height);
+            }
+          }
+          if (applying.partial) {
+            for (const [key, entry] of applying.declaredItems)
+              declaredItems.set(key, entry);
+          } else declaredItems = applying.declaredItems;
+        }
         // Latest heights, exactly once. A row prepared in this very
         // transaction was measured moments ago; one that waited for a
         // settle (dirty) is measured again — a detached image may have
@@ -1633,11 +1719,28 @@ export function createVirtualList<T>(
     // not skip its successor; avoid allocating an array on every scroll.
     for (const row of mountedRows) {
       const index = geometry.indexOf(row.key);
-      if (index < range.start || index >= range.end) unmountRow(row);
+      if (index < range.start || index >= range.end) {
+        if (declared && !row.edge) {
+          rows.delete(row.key);
+          deferTeardown(destroyAll([row]));
+        } else unmountRow(row);
+      }
     }
     for (let index = range.start; index < range.end; index++) {
       const key = geometry.keyAt(index);
-      const row = key === undefined ? undefined : rows.get(key);
+      let row = key === undefined ? undefined : rows.get(key);
+      if (!row && key !== undefined) {
+        const entry = declaredItems.get(key);
+        if (entry) {
+          const element = render(entry.item);
+          if (disposed) {
+            options.onDestroy?.(element, entry.item);
+            return range;
+          }
+          row = retainDeclared(key, entry.item, element, entry.height);
+          rows.set(key, row);
+        }
+      }
       if (!row) continue;
       const entering = !row.mounted;
       if (entering) mountRow(row);
@@ -1926,62 +2029,100 @@ export function createVirtualList<T>(
     applyItems(snapshot, anchor);
   }
 
-  function applyItems(
-    snapshot: readonly T[],
-    anchor: AnchorRequest | undefined,
-  ): void {
+  function applyItems(snapshot: T[], anchor: AnchorRequest | undefined): void {
     if (disposed) return;
-    lastItems = snapshot;
     // Always prepared now (off-scroller, inside the reentrancy guard since
     // render() is a host callback); committed now when idle, or mid-phase
     // when the change needs no scroll write ("live"), else at the settle.
     guarded(() => {
       const { prepared, teardownFailures } = prepare(snapshot, anchor);
+      if (!disposed) {
+        lastItems = snapshot;
+        lastIndexByKey = new Map(
+          prepared.keys
+            .filter((key) => !isSlotKey(key))
+            .map((key, index) => [key, index]),
+        );
+      }
       // Hand-off happens regardless of supersession teardown failures;
       // they are deferred to the outermost guard, which surfaces them only
       // after the snapshot is pending or committed AND queued work drained.
       deferTeardown(teardownFailures);
-      if (disposed) return;
-      if (idle()) {
-        // A click-driven remeasure may be waiting for its post-activation
-        // frame. Any snapshot that happens to arrive first must preserve
-        // that newer viewport intent too; the measurement frame still owns
-        // and later consumes the policy.
-        commit(prepared, remeasurePolicy);
-        return;
-      }
-      if (
-        prepared.newRows.size === 0 &&
-        prepared.deferred.size === 0 &&
-        sameKeysAsCommitted(prepared.keys)
-      ) {
-        // No structural change and no retained replacement: the snapshot
-        // was fully applied — promoted, rendered in place ("live"; those
-        // rows wait in dirtyRows, not as a snapshot), or unchanged — and it
-        // supersedes whatever did wait.
-        pending = null;
-      } else if (
-        liveUpdates &&
-        prepared.anchor !== "end" &&
-        confinedBelowAnchor(prepared)
-      ) {
-        // "live": a structural change that leaves everything above the
-        // anchor untouched needs no scroll write (the anchor keeps its
-        // coordinate by construction) — commit it now, mid-phase: a
-        // version switch, an appended message. Holding it for a settle
-        // that momentum can postpone by seconds reads as a dead click.
-        commit(prepared, "none", "never", "keep");
-        return;
-      } else {
-        // These rows will wait: their heights are re-read at the settle
-        // (edge slots keep their declared height).
-        for (const row of prepared.newRows.values()) {
-          if (!row.edge) row.dirty = true;
-        }
-        pending = prepared;
-      }
-      if (!liveCommit()) publish();
+      applyPrepared(prepared);
     });
+  }
+
+  function updateItem(
+    key: string,
+    item: T,
+    updateOptions: { anchor?: AnchorRequest } = {},
+  ): void {
+    if (disposed) return;
+    const anchor = updateOptions.anchor;
+    if (enqueueDuringTransaction(() => updateItem(key, item, { anchor })))
+      return;
+    const index = lastIndexByKey.get(key);
+    if (index === undefined) return;
+    if (keyOf(item) !== key)
+      throw new Error("updateItem cannot change an item's key");
+    // A structural snapshot already waiting owns the complete next order.
+    // Merge through its normal preparation path, preserving its anchor.
+    if (pending !== null) {
+      const snapshot = [...lastItems];
+      snapshot[index] = item;
+      applyItems(snapshot, anchor);
+      return;
+    }
+    guarded(() => {
+      const { prepared, teardownFailures } = prepare([item], anchor, true);
+      if (!disposed) lastItems[index] = item;
+      deferTeardown(teardownFailures);
+      applyPrepared(prepared);
+    });
+  }
+
+  function applyPrepared(prepared: Prepared<T>): void {
+    if (disposed) return;
+    if (idle()) {
+      // A click-driven remeasure may be waiting for its post-activation
+      // frame. Any snapshot that happens to arrive first must preserve
+      // that newer viewport intent too; the measurement frame still owns
+      // and later consumes the policy.
+      commit(prepared, remeasurePolicy);
+      return;
+    }
+    if (
+      prepared.newRows.size === 0 &&
+      prepared.deferred.size === 0 &&
+      prepared.declaredItems === null &&
+      sameKeysAsCommitted(prepared.keys)
+    ) {
+      // No structural change and no retained replacement: the snapshot
+      // was fully applied — promoted, rendered in place ("live"; those
+      // rows wait in dirtyRows, not as a snapshot), or unchanged — and it
+      // supersedes whatever did wait.
+      pending = null;
+    } else if (
+      liveUpdates &&
+      prepared.anchor !== "end" &&
+      confinedBelowAnchor(prepared)
+    ) {
+      // "live": a structural change that leaves everything above the
+      // anchor untouched needs no scroll write (the anchor keeps its
+      // coordinate by construction) — commit it now, mid-phase: a
+      // version switch, an appended message. Holding it for a settle
+      // that momentum can postpone by seconds reads as a dead click.
+      commit(prepared, "none", "never", "keep");
+      return;
+    } else {
+      // These rows will wait: their heights are re-read at the settle
+      // (edge slots keep their declared height).
+      for (const row of prepared.newRows.values()) {
+        if (!row.edge) row.dirty = true;
+      }
+      pending = prepared;
+    }
+    if (!liveCommit()) publish();
   }
 
   /**
@@ -1995,10 +2136,31 @@ export function createVirtualList<T>(
     const anchor = geometry.anchorAt(viewportState());
     if (anchor === null) return true;
     const anchorIndex = geometry.indexOf(anchor.key);
+    if (prepared.partial) {
+      for (const key of prepared.newRows.keys()) {
+        if (geometry.indexOf(key) < anchorIndex) return false;
+      }
+      for (const [key, entry] of prepared.declaredItems ?? []) {
+        if (
+          geometry.indexOf(key) < anchorIndex &&
+          geometry.heightOf(key) !== entry.height
+        )
+          return false;
+      }
+      for (const row of dirtyRows) {
+        if (geometry.indexOf(row.key) < anchorIndex) return false;
+      }
+      return true;
+    }
     for (let index = 0; index < anchorIndex; index++) {
       const key = geometry.keyAt(index);
       if (key === undefined || prepared.keys[index] !== key) return false;
       if (prepared.newRows.has(key)) return false;
+      if (
+        prepared.declaredItems?.get(key)?.height !==
+        declaredItems.get(key)?.height
+      )
+        return false;
     }
     // The anchor row itself may change in place — re-rendered, replaced by
     // another row at its index, or removed: its offset is unchanged, and the
@@ -2347,6 +2509,7 @@ export function createVirtualList<T>(
     // mid-commit cannot double-destroy).
     const doomed = [...rows.values()];
     rows.clear();
+    declaredItems.clear();
     const pendingRows = pending ? [...pending.newRows.values()] : [];
     pending = null;
     const committingRows = committing ? [...committing.newRows.values()] : [];
@@ -2358,9 +2521,31 @@ export function createVirtualList<T>(
 
   // --- Boot -----------------------------------------------------------------
   // "none" keeps the initial position, the start.
-  commit(
-    prepare(lastItems, options.boot === "start" ? "none" : "end").prepared,
-  );
+  try {
+    guarded(() => {
+      const { prepared, teardownFailures } = prepare(
+        lastItems,
+        options.boot === "start" ? "none" : "end",
+      );
+      deferTeardown(teardownFailures);
+      lastIndexByKey = new Map(
+        prepared.keys
+          .filter((key) => !isSlotKey(key))
+          .map((key, index) => [key, index]),
+      );
+      commit(prepared);
+    });
+  } catch (error) {
+    try {
+      dispose();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, ...failuresOf(cleanupError)],
+        "initialization and cleanup failed",
+      );
+    }
+    throw error;
+  }
   booting = false;
 
   function setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void {
@@ -2383,6 +2568,7 @@ export function createVirtualList<T>(
 
   return {
     setItems,
+    updateItem,
     scrollTo,
     remeasure,
     get state(): VirtualListState {

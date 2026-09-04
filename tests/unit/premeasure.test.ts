@@ -22,6 +22,22 @@ afterEach(() => {
 });
 
 describe("item measurer", () => {
+  it("measures under the supplied styling context and removes only its own root", () => {
+    const viewport = makeViewport();
+    const context = document.createElement("section");
+    context.className = "chat-context";
+    document.body.appendChild(context);
+    const measurer = createItemMeasurer({ viewport, container: context });
+    const element = document.createElement("div");
+    element.getBoundingClientRect = () => {
+      expect(element.closest(".chat-context")).toBe(context);
+      return { height: 72 } as DOMRect;
+    };
+    expect(measurer.measureMany([element])).toEqual([72]);
+    measurer.dispose();
+    expect(context.isConnected).toBe(true);
+    expect(context.childElementCount).toBe(0);
+  });
   it("measures in a hidden width-synced root and returns the element detached", () => {
     const viewport = makeViewport(640);
     const measurer = createItemMeasurer({

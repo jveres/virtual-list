@@ -211,7 +211,8 @@ The definition of correct, referenced by number throughout the code:
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a
   missing key falls back to the captured anchor) —, `scrollTo(target, { align?, behavior?,
-  duration?, offset? })`, `remeasure(key, { anchor? })`,
+  duration?, offset? })`, `updateItem(key, item, { anchor? })`,
+  `remeasure(key, { anchor? })`,
   `setEdgeSlot(edge, slot | null)`, `positionOf(key)`, `elementOf(key)`,
   `state`, `dispose()`; options add `edgeSlots`. An
   edge slot is a fixed-height host row the runtime keeps at an edge of the
@@ -285,7 +286,20 @@ The definition of correct, referenced by number throughout the code:
   settle with the mounted element. Declared heights: with `height(item)`
   given, an item's geometry is its declared height on the device grid,
   never premeasured, never observed, and unchanged by a viewport width
-  change (the host re-flows); `remeasure` is inert.
+  change (the host re-flows); `remeasure` is inert. Declared heights must
+  be finite and positive. Declared rows keep data and geometry independently
+  of DOM: only the overscan window renders, and leaving it destroys the
+  element after its unmount hook. Re-entry renders a fresh element. Store
+  persistent row state in item data.
+  `updateItem` prepares one unchanged key without rebuilding the key order;
+  when a snapshot is already pending, it merges through snapshot preparation
+  to preserve that snapshot's order and anchor. Unknown keys are ignored.
+  `measurementContainer` supplies an ancestor outside the scroll surface
+  with equivalent row styles for detached measurement; it defaults to
+  `document.body`.
+  Preparation preserves internal ownership and cleans up fresh elements on
+  failure. Rollback of in-place host rendering is best effort, because the
+  runtime cannot reverse arbitrary DOM mutations or external side effects.
 - v2 addition (lab-prototyped): the reach callbacks receive a context with
   an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
   runtime aborts only on conditions it knows objectively: the user reached
