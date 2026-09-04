@@ -170,7 +170,7 @@ const OPTIONS_KEY = "virtual-list:chat-options";
 /** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
 type LandingMode = "prompt" | "end";
 type CursorMode = "bar" | "none";
-type AnimationMode = "none" | "fade" | "rise";
+type AnimationMode = "none" | "fade" | "fall";
 interface ChatOptions {
   edge: "slot" | "pill";
   sticky: boolean;
@@ -222,10 +222,10 @@ function loadChatOptions(): ChatOptions {
           : "bar",
     animation:
       animationParam === "fade" ||
-      animationParam === "rise" ||
+      animationParam === "fall" ||
       animationParam === "none"
         ? animationParam
-        : stored.animation === "fade" || stored.animation === "rise"
+        : stored.animation === "fade" || stored.animation === "fall"
           ? stored.animation
           : "none",
   };
@@ -2209,7 +2209,7 @@ cursorSelect.addEventListener("change", () => {
 animationSelect.value = animationMode;
 animationSelect.addEventListener("change", () => {
   const value = animationSelect.value;
-  animationMode = value === "fade" || value === "rise" ? value : "none";
+  animationMode = value === "fade" || value === "fall" ? value : "none";
   saveChatOptions();
   syncStreamingViewerOptions();
 });

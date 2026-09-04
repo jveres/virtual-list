@@ -48,7 +48,7 @@ pnpm run dev
   header off, `?follow=keep-start` starts in the bounded autoscroll
   mode, `?landing=end` opens a conversation at its end instead of on its
   last prompt, `?cursor=none` streams without a cursor, and
-  `?animation=fade` or `?animation=rise` eases streamed content in; the
+  `?animation=fade` or `?animation=fall` eases streamed content in; the
   dialog's choices persist in the browser, a URL parameter wins for the
   session.
 
