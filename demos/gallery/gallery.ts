@@ -93,28 +93,34 @@ function render(item: GalleryItem, existing?: HTMLElement): HTMLElement {
 }
 
 /**
- * One tile per photo, kept across rows, bands, re-flows, and remounts: a
- * photo shown once keeps its element and its decoded image wherever it
- * lands next, so a re-flow or a scroll back never shows it gray again.
- * The pool is bounded; the tiles least recently placed and no longer on
- * screen go first.
+ * One tile per photo (and per drawing of a card crossing band edges), kept
+ * across rows, bands, re-flows, and remounts: a photo shown once keeps its
+ * element and its decoded image wherever it lands next, so a re-flow or a
+ * scroll back never shows it gray again. A tile is moved only once its
+ * element has died (the runtime's destroy hook orphans it): the runtime
+ * renders a held update fresh, off-screen, while the old element stays
+ * mounted for the rest of the gesture, and a tile taken from that element
+ * left a hole on screen. A tile still held by another element is cloned
+ * instead — its cached image shows at once. The pool is bounded; orphaned
+ * tiles least recently placed go first.
  */
 const tiles = new Map<string, HTMLElement>();
 const TILE_POOL_MAX = 900;
 
-/** A card crossing band edges is drawn once per band it crosses: each drawing (part) is its own tile. */
-function tileFor(p: Photo, part = 0): HTMLElement {
+function tileFor(p: Photo, part: number, into: HTMLElement): HTMLElement {
   const key = `${p.id}:${part}`;
   let tile = tiles.get(key);
   if (tile) {
     tiles.delete(key);
+    const holder = tile.parentElement;
+    if (holder !== null && holder !== into) tile = cloneTile(tile, p);
   } else {
     tile = tileElement(p);
   }
   tiles.set(key, tile);
   if (tiles.size > TILE_POOL_MAX) {
     for (const [old, element] of tiles) {
-      if (element.isConnected) continue;
+      if (element.parentElement !== null) continue;
       tiles.delete(old);
       const img = element.querySelector("img");
       if (img) nearViewport.unobserve(img);
@@ -124,14 +130,35 @@ function tileFor(p: Photo, part = 0): HTMLElement {
   return tile;
 }
 
+/** A tile's twin for another element: the same source, shown at once when the image is already decoded. */
+function cloneTile(tile: HTMLElement, p: Photo): HTMLElement {
+  const twin = tileElement(p);
+  const source = tile.querySelector("img");
+  const img = twin.querySelector("img") as HTMLImageElement;
+  if (source?.getAttribute("src")) {
+    nearViewport.unobserve(img);
+    img.src = source.src;
+    if (img.complete && img.naturalWidth > 0) img.classList.add("loaded");
+  }
+  return twin;
+}
+
+/** Orphans a dead element's tiles for reuse. */
+function releaseTiles(element: HTMLElement): void {
+  for (const tile of element.querySelectorAll<HTMLElement>(".tile")) {
+    tile.remove();
+  }
+}
+
 /** A photo's tile at a size: the placeholder box, its image fading in over it. */
 function tileAt(
+  into: HTMLElement,
   p: Photo,
   width: number,
   height: number,
   part = 0,
 ): HTMLElement {
-  const tile = tileFor(p, part);
+  const tile = tileFor(p, part, into);
   tile.style.width = `${width}px`;
   tile.style.height = `${height}px`;
   return tile;
@@ -143,7 +170,7 @@ function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
   el.style.height = `${row.height + GAP}px`;
   el.replaceChildren(
     ...row.photos.map((p) => {
-      const tile = tileAt(p, p.width, row.height);
+      const tile = tileAt(el, p, p.width, row.height);
       tile.style.left = "";
       tile.style.top = "";
       return tile;
@@ -158,7 +185,7 @@ function renderBand(band: Band, existing?: HTMLElement): HTMLElement {
   el.style.height = `${band.height}px`;
   el.replaceChildren(
     ...band.cards.map((card) => {
-      const tile = tileAt(card, card.width, card.height, card.part);
+      const tile = tileAt(el, card, card.width, card.height, card.part);
       tile.style.left = `${card.left}px`;
       tile.style.top = `${card.top - band.start}px`;
       return tile;
@@ -394,6 +421,7 @@ list = createVirtualList<GalleryItem>(viewport, {
   scrollingUpdates: "same-height",
   edgeSlots: { end: loaderSlot },
   onReachEnd: ({ signal }) => loadMore(signal),
+  onDestroy: releaseTiles,
 });
 // A gallery starts at its first photo, not at the end.
 void list.scrollTo("start");
