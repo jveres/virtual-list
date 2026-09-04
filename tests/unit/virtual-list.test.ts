@@ -1945,13 +1945,18 @@ describe("v2 runtime — commits and slots", () => {
     vi.advanceTimersByTime(2_000);
     expect(h.viewport.scrollTop).toBe(50 * ROW_H + 200 - VIEWPORT_H);
 
-    // Hidden, then visible: the growth that arrives in the first frames
-    // back was not watched — it lands at once.
+    // Hidden: growth lands at once — a glide started now would only play
+    // on return, the whole background growth as one slide.
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
       get: () => "hidden",
     });
     document.dispatchEvent(new Event("visibilitychange"));
+    h.heights.set(49, 600);
+    fireResize(0, last, 600);
+    expect(h.viewport.scrollTop).toBe(50 * ROW_H + 500 - VIEWPORT_H);
+    // Visible again: the growth that arrives in the first frames back was
+    // not watched either — it lands at once.
     Object.defineProperty(document, "visibilityState", {
       configurable: true,
       get: () => "visible",

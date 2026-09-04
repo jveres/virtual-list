@@ -845,16 +845,20 @@ export function createVirtualList<T>(
   // return the glide would resume writing under a runtime that believes it
   // is idle — every commit then lands under a moving glide. Cancel it; the
   // command resolves false (interrupted), like any other interruption.
-  // On return, what grew while hidden lands at once: rendering (and the
-  // measurements that drive a follow) was paused, so the growth arrives in
-  // the first frames back — nobody watched it, and a glide would replay
-  // it. Follows within the catch-up window land by write.
+  // Nobody watches a hidden document: a follow while it is hidden lands
+  // by write (a glide started then would only play on return — the whole
+  // background growth replayed as one slide), and so does one within the
+  // catch-up window after it becomes visible, when what still arrives is
+  // growth whose measurement was paused. The return cancels any glide left
+  // over (a command issued while hidden) and catches a follower up at once.
   const onVisibilityChange = (): void => {
     if (document.visibilityState === "hidden" && glide !== null) {
       glide.cancel(); // Its completion callback guards itself.
     }
     if (document.visibilityState === "visible") {
       catchUpUntil = performance.now() + RESUME_CATCH_UP_MS;
+      glide?.cancel();
+      if (smoothFollowArmed && !disposed) followIfBehindEnd();
     }
   };
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -2058,9 +2062,11 @@ export function createVirtualList<T>(
     startFollowGlide();
   }
 
-  /** Within the catch-up window after the document became visible again. */
+  /** Hidden, or within the catch-up window after the document became visible again. */
   function catchingUp(): boolean {
-    return performance.now() < catchUpUntil;
+    return (
+      document.visibilityState === "hidden" || performance.now() < catchUpUntil
+    );
   }
 
   function setFollowMode(mode: FollowMode, inset = 0): void {
