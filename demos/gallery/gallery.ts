@@ -171,12 +171,20 @@ function photoElement(p: Photo): HTMLImageElement {
   const img = document.createElement("img");
   img.className = "photo";
   img.alt = `Photo ${p.id}`;
-  img.decoding = "async";
+  img.dataset.id = String(p.id);
+  const cached = loadedPhotos.has(p.id);
+  // A cached photo decodes with the frame that first paints its element:
+  // "async" lets the browser paint the frame without it, a gray blink on
+  // every re-created tile (Safari does). A photo still to arrive decodes
+  // off the main thread.
+  img.decoding = cached ? "sync" : "async";
   img.addEventListener(
     "load",
     () => {
       loadedPhotos.add(p.id);
-      img.classList.add("loaded");
+      // Every drawing of the photo (a card crossing a band edge is two)
+      // shows together: one half ahead of the other reads as a cut.
+      for (const part of drawingsOf(p.id)) part.classList.add("loaded");
     },
     { once: true },
   );
@@ -184,8 +192,8 @@ function photoElement(p: Photo): HTMLImageElement {
     once: true,
   });
   img.dataset.src = `https://picsum.photos/seed/vl-${p.id}/${SOURCE_WIDTH}/${Math.round(SOURCE_WIDTH / p.aspect)}`;
-  if (loadedPhotos.has(p.id)) {
-    // Cached: no fade, the image paints as soon as the element does.
+  if (cached) {
+    // No fade: the image paints with the element.
     img.classList.add("loaded");
     reveal(img);
   } else {
@@ -197,8 +205,23 @@ function photoElement(p: Photo): HTMLImageElement {
   return img;
 }
 
-/** Gives an image its source; once. */
+/** The mounted drawings of a photo. */
+function drawingsOf(id: number): NodeListOf<HTMLImageElement> {
+  return viewport.querySelectorAll<HTMLImageElement>(
+    `img.photo[data-id="${id}"]`,
+  );
+}
+
+/** Gives an image its source, and its photo's other drawings theirs; once each. */
 function reveal(img: HTMLImageElement): void {
+  if (!img.dataset.src) return;
+  const id = Number(img.dataset.id);
+  const parts = img.isConnected ? [...drawingsOf(id)] : [img];
+  if (!parts.includes(img)) parts.push(img);
+  for (const part of parts) revealOne(part);
+}
+
+function revealOne(img: HTMLImageElement): void {
   const src = img.dataset.src;
   if (!src) return;
   delete img.dataset.src;
