@@ -310,6 +310,13 @@ function snapToDevicePixel(value: number): number {
   return Math.round(value * ratio) / ratio;
 }
 const AT_EDGE_EPSILON_PX = 1;
+/**
+ * After the document becomes visible again, follows land by write for this
+ * long: the growth of a hidden document arrives in the first frames back
+ * (rendering and measurement were paused) and through a host's throttled
+ * render right after, and nobody watched it grow.
+ */
+const RESUME_CATCH_UP_MS = 300;
 const FOLLOW_LANDING_MS = 320;
 /** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
 const MIN_OVERSCAN_PX = 300;
@@ -430,6 +437,8 @@ export function createVirtualList<T>(
   // destination in flight, else the pre-resize position; the engine's
   // clamp has moved the viewport off the pin by the settle.
   let resizeHeld: "pin" | "viewport" | null = null;
+  // The end of the catch-up window after the document became visible.
+  let catchUpUntil = 0;
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
   const measurer: ItemMeasurer = createItemMeasurer({
@@ -836,9 +845,16 @@ export function createVirtualList<T>(
   // return the glide would resume writing under a runtime that believes it
   // is idle — every commit then lands under a moving glide. Cancel it; the
   // command resolves false (interrupted), like any other interruption.
+  // On return, what grew while hidden lands at once: rendering (and the
+  // measurements that drive a follow) was paused, so the growth arrives in
+  // the first frames back — nobody watched it, and a glide would replay
+  // it. Follows within the catch-up window land by write.
   const onVisibilityChange = (): void => {
     if (document.visibilityState === "hidden" && glide !== null) {
       glide.cancel(); // Its completion callback guards itself.
+    }
+    if (document.visibilityState === "visible") {
+      catchUpUntil = performance.now() + RESUME_CATCH_UP_MS;
     }
   };
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1352,6 +1368,7 @@ export function createVirtualList<T>(
         : snapToDevicePixel(result.scrollTop);
       const smoothFollow =
         !booting &&
+        !catchingUp() &&
         options.followBehavior === "smooth" &&
         result.mode === "end" &&
         // A command's takeover settles the phase it interrupts, and the
@@ -2032,7 +2049,18 @@ export function createVirtualList<T>(
       followMode === "end"
         ? Math.abs(delta) > AT_EDGE_EPSILON_PX
         : delta > AT_EDGE_EPSILON_PX;
-    if (behind) startFollowGlide();
+    if (!behind) return;
+    if (catchingUp()) {
+      writeScrollTop(snapToDevicePixel(followTarget(current)));
+      reconcileAndPublish();
+      return;
+    }
+    startFollowGlide();
+  }
+
+  /** Within the catch-up window after the document became visible again. */
+  function catchingUp(): boolean {
+    return performance.now() < catchUpUntil;
   }
 
   function setFollowMode(mode: FollowMode, inset = 0): void {

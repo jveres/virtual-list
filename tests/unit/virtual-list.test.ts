@@ -1932,6 +1932,45 @@ describe("v2 runtime — commits and slots", () => {
     });
   });
 
+  it("growth landing right after the document becomes visible again follows by write, not by glide", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { followBehavior: "smooth" });
+    void h.list.scrollTo("end");
+    const last = h.rowElement("msg 49");
+
+    // Control: watched growth at the end glides.
+    h.heights.set(49, 300);
+    fireResize(0, last, 300);
+    expect(h.viewport.scrollTop).toBeLessThan(50 * ROW_H + 200 - VIEWPORT_H);
+    vi.advanceTimersByTime(2_000);
+    expect(h.viewport.scrollTop).toBe(50 * ROW_H + 200 - VIEWPORT_H);
+
+    // Hidden, then visible: the growth that arrives in the first frames
+    // back was not watched — it lands at once.
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "hidden",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: () => "visible",
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    vi.advanceTimersByTime(48);
+    h.heights.set(49, 900);
+    fireResize(0, last, 900);
+    expect(h.viewport.scrollTop).toBe(50 * ROW_H + 800 - VIEWPORT_H);
+
+    // The window closes: later growth glides again.
+    vi.advanceTimersByTime(400);
+    h.heights.set(49, 1_500);
+    fireResize(0, last, 1_500);
+    expect(h.viewport.scrollTop).toBeLessThan(50 * ROW_H + 1_400 - VIEWPORT_H);
+    vi.advanceTimersByTime(2_000);
+    expect(h.viewport.scrollTop).toBe(50 * ROW_H + 1_400 - VIEWPORT_H);
+  });
+
   it("an explicit smooth duration sets the glide's pace", () => {
     const h = mount(range(0, 50));
     void h.list.scrollTo("m40"); // 400px short of the end: one landing leg.

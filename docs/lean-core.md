@@ -212,6 +212,9 @@ The definition of correct, referenced by number throughout the code:
   committed positions. `offset` lands a keyed target below such a header;
   an `align: "start"` pin includes that inset in its reserve, so the landing
   remains at the logical end and streaming auto-follow stays engaged.
+  A document that becomes visible again catches up by write for a short
+  window (300ms): its growth arrived while rendering and measurement were
+  paused, nobody watched it, and a glide would replay it.
   Set `followBehavior: "smooth"` to animate automatic end-follow with a
   live-target glide as content grows. The default, `"instant"`, preserves
   the atomic-write behavior. User input interrupts either behavior. While the

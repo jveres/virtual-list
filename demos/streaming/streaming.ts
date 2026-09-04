@@ -1498,17 +1498,45 @@ async function streamResponse(
     return;
   }
 
+  // Tokens are due on a wall-clock timeline, like a network stream that
+  // keeps arriving while the tab is in the background: a throttled timer
+  // wakes late and the overdue tokens land at once, and a return to the
+  // tab flushes them right away.
   const delayRange = reply.tokenDelayMs;
+  let due = performance.now();
   for (const token of tokenize(reply.markdown)) {
     if (abort.cancelled) return;
     updateMessage(messageId, (message) => {
       message.markdown += token;
     });
-    await wait(
-      delayRange.min + Math.random() * (delayRange.max - delayRange.min),
-      abort,
-    );
+    due += delayRange.min + Math.random() * (delayRange.max - delayRange.min);
+    await waitUntil(due, abort);
   }
+}
+
+/** Resolves at `due` (a performance.now() time), or on cancel; a return to the tab resolves an overdue wait at once. */
+function waitUntil(due: number, abort: StreamAbort): Promise<void> {
+  const remaining = due - performance.now();
+  if (remaining <= 0 || abort.cancelled) return Promise.resolve();
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      window.clearTimeout(timer);
+      abort.onCancel.delete(finish);
+      document.removeEventListener("visibilitychange", onVisible);
+      resolve();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && performance.now() >= due)
+        finish();
+    };
+    const timer = window.setTimeout(finish, remaining);
+    abort.onCancel.add(finish);
+    document.addEventListener("visibilitychange", onVisible);
+    if (abort.cancelled) finish();
+  });
 }
 
 // --- OpenAI streaming -------------------------------------------------------
