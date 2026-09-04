@@ -639,3 +639,30 @@ describe("randomized against the oracle", () => {
     }
   });
 });
+
+describe("host-named anchor", () => {
+  it("puts the named key's top at the named offset; a missing key falls back to the captured anchor", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 40));
+    const xs = Array.from({ length: 40 }, (_, i) => `x${i}`);
+    const vp = viewport(geometry.offsetOf("m10") + 40);
+    const capture = geometry.capture(vp, "viewport", {
+      key: "x3",
+      offset: -25,
+    });
+    geometry.setKeys(xs);
+    expect(geometry.resolve(capture).scrollTop).toBe(
+      geometry.offsetOf("x3") + 25,
+    );
+
+    const missing = geometry.capture(
+      viewport(geometry.offsetOf("x4") + 10),
+      "viewport",
+      { key: "gone", offset: 0 },
+    );
+    geometry.setKeys(["y0", ...xs]);
+    expect(geometry.resolve(missing).scrollTop).toBe(
+      geometry.offsetOf("x4") + 10,
+    );
+  });
+});

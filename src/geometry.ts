@@ -27,6 +27,16 @@ import { FenwickTree } from "./fenwick";
 
 export type AnchorPolicy = "auto" | "viewport" | "end" | "none";
 /**
+ * A host-named anchor: after the commit, `key`'s top sits `offset` pixels
+ * below the viewport top (negative: above it). A host that re-flows its
+ * items — new keys for the same content — names where the old point went.
+ * A key absent from the new items falls back to the captured anchor.
+ */
+export interface ExplicitAnchor {
+  key: string;
+  offset: number;
+}
+/**
  * The runtime's own resolution intents on top of the host policies: "pin"
  * puts the pinned key back at the viewport top (a viewport size change
  * under a pin the viewport stands on or glides onto, and the rows grown
@@ -52,6 +62,7 @@ export interface Commit {
 interface Capture {
   readonly viewport: GeometryViewport;
   readonly policy: CapturePolicy;
+  readonly target: ExplicitAnchor | null;
   readonly atEnd: boolean;
   readonly oldKeys: readonly string[];
   readonly anchor: {
@@ -213,11 +224,16 @@ export class Geometry {
   }
 
   /** Open a transaction: resolve anchor intent on the current geometry. */
-  capture(viewport: GeometryViewport, policy: CapturePolicy = "auto"): Capture {
+  capture(
+    viewport: GeometryViewport,
+    policy: CapturePolicy = "auto",
+    target: ExplicitAnchor | null = null,
+  ): Capture {
     const anchor = this.anchorAt(viewport);
     return {
       viewport: { ...viewport },
       policy,
+      target,
       atEnd:
         this.maxScrollTop(viewport.height) - viewport.scrollTop <=
         AT_END_EPSILON,
@@ -370,6 +386,11 @@ export class Geometry {
   }
 
   private anchorTarget(capture: Capture): number | null {
+    // A host-named anchor, when its key exists.
+    const target = capture.target;
+    if (target !== null && this.indexByKey.has(target.key)) {
+      return this.offsetOf(target.key) - target.offset;
+    }
     const anchor = capture.anchor;
     if (anchor === null) return null;
 

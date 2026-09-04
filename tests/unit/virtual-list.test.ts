@@ -120,6 +120,9 @@ function mount(
     anchorable?: (m: Msg) => boolean;
     followMode?: VirtualListOptions<Msg>["followMode"];
     followInset?: number;
+    itemHeight?: (m: Msg) => number;
+    onMount?: (element: HTMLElement, m: Msg) => void;
+    onUnmount?: (element: HTMLElement, m: Msg) => void;
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
     /** Reports how many fresh peers share the detached root at each read. */
@@ -200,6 +203,9 @@ function mount(
     anchorable: hooks.anchorable,
     followMode: hooks.followMode,
     followInset: hooks.followInset,
+    height: hooks.itemHeight,
+    onMount: hooks.onMount,
+    onUnmount: hooks.onUnmount,
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
@@ -3238,5 +3244,95 @@ describe("v2 runtime — reach signals", () => {
     expect(start?.edge).toBe("start");
     void h.list.scrollTo("end"); // No onReachEnd — the abort still happens.
     expect(start?.signal.aborted).toBe(true);
+  });
+});
+
+describe("host-named anchor", () => {
+  it("lands the named key at the named offset, and falls back when the key is gone", () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    void h.list.scrollTo("m20");
+    // A re-flow: every key changes; the host names where the old point went.
+    const reflowed = initial.map((m) => ({ ...m, id: m.id + 1000 }));
+    h.list.setItems(reflowed, { anchor: { key: "m1023", offset: -30 } });
+    expect(h.viewport.scrollTop).toBe(23 * ROW_H + 30);
+    // The named key does not exist: the captured viewport anchor applies.
+    const before = h.viewport.scrollTop;
+    h.list.setItems([...range(-5, 0), ...reflowed], {
+      anchor: { key: "nope", offset: 0 },
+    });
+    expect(h.viewport.scrollTop).toBe(before + 5 * ROW_H);
+  });
+});
+
+describe("mount hooks", () => {
+  it("report each element entering and leaving the scroller, unmount before destroy", () => {
+    const events: string[] = [];
+    const h = mount(range(0, 50), {
+      onMount: (_el, m) => events.push(`mount m${m.id}`),
+      onUnmount: (_el, m) => events.push(`unmount m${m.id}`),
+      onDestroy: (el) => events.push(`destroy ${el.textContent}`),
+    });
+    expect(events.filter((e) => e.startsWith("mount")).length).toBe(
+      h.list.state.end - h.list.state.start,
+    );
+    // The boot lands at the end: a jump to the start unmounts the tail and
+    // mounts the head.
+    events.length = 0;
+    void h.list.scrollTo("m5");
+    expect(
+      events.some((e) => e === "unmount m49"),
+      events.join(","),
+    ).toBe(true);
+    expect(events.some((e) => e === "mount m5")).toBe(true);
+    events.length = 0;
+    h.list.setItems(range(0, 8)); // m8.. removed while mounted
+    const unmountAt = events.indexOf("unmount m9");
+    const destroyAt = events.indexOf("destroy msg 9");
+    expect(unmountAt).toBeGreaterThanOrEqual(0);
+    expect(destroyAt).toBeGreaterThan(unmountAt);
+  });
+});
+
+describe("declared heights", () => {
+  it("uses the declared height without measuring, and renders a mid-phase change in place at the settle", () => {
+    const renders: { id: number; existing: boolean }[] = [];
+    const measured = new Set<number>();
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      itemHeight: (m) => (m.body.includes("tall") ? 300 : ROW_H),
+      onMeasure: (m) => measured.add(m.id),
+      onRender: (m, existing) =>
+        renders.push({ id: m.id, existing: existing !== undefined }),
+    });
+    expect(measured.size).toBe(0);
+    expect(h.list.state.totalSize).toBe(50 * ROW_H);
+
+    // Idle: in place, height from the declaration.
+    const tall3 = initial.map((m) =>
+      m.id === 3 ? { ...m, body: "tall 3" } : m,
+    );
+    h.list.setItems(tall3);
+    expect(h.list.positionOf("m3")?.height).toBe(300);
+    expect(renders.at(-1)).toEqual({ id: 3, existing: true });
+
+    // Mid-gesture: held, then rendered in place at the settle — the
+    // mounted element is offered, no fresh element.
+    renders.length = 0;
+    h.userScroll(1000);
+    h.userScroll(1200);
+    const mountedBefore = h.rowElement("msg 12");
+    h.list.setItems(
+      tall3.map((m) => (m.id === 12 ? { ...m, body: "tall 12" } : m)),
+    );
+    expect(h.list.state.held).toBe(true);
+    expect(renders.length).toBe(0);
+    h.settle();
+    vi.advanceTimersByTime(2_000);
+    expect(h.list.state.held).toBe(false);
+    expect(renders).toEqual([{ id: 12, existing: true }]);
+    expect(h.rowElement("tall 12")).toBe(mountedBefore);
+    expect(h.list.positionOf("m12")?.height).toBe(300);
+    expect(measured.size).toBe(0);
   });
 });

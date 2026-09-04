@@ -154,6 +154,13 @@ The definition of correct, referenced by number throughout the code:
 - **I4** — one logical update is one transaction; API calls from host
   callbacks queue behind it and run against the state those callbacks
   observed; a failed transaction discards only what it queued.
+- **Declared heights** — with `height(item)` given, an item's geometry is
+  its declared height on the device grid: never premeasured, never
+  observed. A committed item that changes during a gesture is rendered in
+  place at the settle, into the mounted element, inside the commit that
+  adjusts the scroll for it — no fresh off-scroller element, no swap. The
+  hooks `onMount`/`onUnmount` report an element joining or leaving the
+  scroller's DOM (unmount precedes destroy).
 - **I5** — a pinned key can always be scrolled to the viewport top: the
   reserve makes up the shortfall, is consumed by growth, regrown by
   shrinkage, and never collapses out from under the viewport. A pinned row
@@ -198,7 +205,10 @@ The definition of correct, referenced by number throughout the code:
   `createVirtualList(viewport, { items, key, render, overscanPx?,
   onState?, onReachStart/End?, onDestroy?, settleStrategy?,
   scrollingUpdates?, followBehavior? })`,
-  `setItems(items, { anchor? })`, `scrollTo(target, { align?, behavior?,
+  `setItems(items, { anchor? })` — a policy, or a host-named anchor
+  `{ key, offset }`: after the commit the key's top sits `offset` pixels
+  below the viewport top (a re-flow names where the old point went; a
+  missing key falls back to the captured anchor) —, `scrollTo(target, { align?, behavior?,
   duration?, offset? })`, `remeasure(key, { anchor? })`,
   `setEdgeSlot(edge, slot | null)`, `positionOf(key)`, `elementOf(key)`,
   `state`, `dispose()`; options add `edgeSlots`. An

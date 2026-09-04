@@ -1,6 +1,7 @@
 import {
   type AnchorPolicy,
   type CapturePolicy,
+  type ExplicitAnchor,
   Geometry,
   type GeometryViewport,
 } from "./geometry";
@@ -18,7 +19,9 @@ import {
   type VirtualListScrollSettleStrategy,
 } from "./scroll-settle";
 
-export type { AnchorPolicy } from "./geometry";
+export type { AnchorPolicy, ExplicitAnchor } from "./geometry";
+/** How a snapshot resolves the viewport: a policy, or a host-named anchor. */
+export type AnchorRequest = AnchorPolicy | ExplicitAnchor;
 
 // The v2 runtime, built on the two preserved primitives — the browser-
 // adaptive scroll-settle controller and detached premeasurement — under
@@ -108,6 +111,16 @@ export interface VirtualListOptions<T> {
    * settle.
    */
   render: (item: T, existing?: HTMLElement) => HTMLElement;
+  /**
+   * Declared heights: the host knows every item's height (a photo row
+   * from its aspect ratios, a fixed-height card). Such items are never
+   * premeasured or observed; the declared height, on the device grid, is
+   * their geometry. A committed item that changes during a gesture is
+   * then rendered in place at the settle — `existing` is the mounted
+   * element — inside the commit that adjusts the scroll for it, instead
+   * of fresh off-scroller and swapped in.
+   */
+  height?: (item: T) => number;
   overscanPx?: number;
   /**
    * Called whenever a state field changes, and after every commit even
@@ -117,6 +130,10 @@ export interface VirtualListOptions<T> {
   onState?: (state: VirtualListState) => void;
   onReachStart?: (context: ReachContext) => void;
   onReachEnd?: (context: ReachContext) => void;
+  /** The element joined the scroller's DOM (an image can start loading). */
+  onMount?: (element: HTMLElement, item: T) => void;
+  /** The element left the scroller's DOM (a load can be abandoned); before onDestroy when it dies. */
+  onUnmount?: (element: HTMLElement, item: T) => void;
   /**
    * The runtime is done with this element forever — its key was removed,
    * it was superseded by a replacement render, its prepared snapshot was
@@ -233,7 +250,7 @@ export type RemeasureOptions = {
 };
 
 export interface VirtualList<T> {
-  setItems(items: readonly T[], options?: { anchor?: AnchorPolicy }): void;
+  setItems(items: readonly T[], options?: { anchor?: AnchorRequest }): void;
   /**
    * Resolves true when the command landed on its target AND the target is
    * still under the viewport once the command's scroll phase has settled
@@ -373,6 +390,10 @@ interface Prepared<T> {
   /** Rows built and premeasured off-scroller for new or replaced keys. */
   newRows: Map<string, Row<T>>;
   anchor: AnchorPolicy;
+  /** A host-named anchor, resolved under the "viewport" policy. */
+  target: ExplicitAnchor | null;
+  /** Declared-height items that changed mid-phase: rendered in place at the commit. */
+  deferred: Map<string, T>;
 }
 
 type Transaction = { run: () => void; discard?: () => void };
@@ -689,6 +710,10 @@ export function createVirtualList<T>(
   /** Unmounted rows (fresh or retained) are measured detached, all in one layout. */
   function measureDetached(detached: readonly Row<T>[]): number[] {
     if (detached.length === 0) return [];
+    if (options.height) {
+      const declared = options.height;
+      return detached.map((row) => declared(row.item));
+    }
     try {
       return measurer.measureMany(detached.map((row) => row.element));
     } finally {
@@ -702,6 +727,7 @@ export function createVirtualList<T>(
   }
 
   function measureInPlace(row: Row<T>): number {
+    if (options.height) return options.height(row.item);
     const height = row.element.getBoundingClientRect().height;
     // A mounted row that reads 0 is hidden (display: none, a collapsed
     // ancestor), not resized: its committed height stands.
@@ -722,7 +748,7 @@ export function createVirtualList<T>(
   const keyByElement = new WeakMap<HTMLElement, string>();
 
   function observeRow(row: Row<T>): void {
-    if (row.edge) return; // Declared height; the box clips.
+    if (row.edge || options.height) return; // Declared height; the box clips.
     keyByElement.set(row.element, row.key);
     if (!inMeasurementDelivery) {
       rowObserver.observe(row.element);
@@ -868,18 +894,34 @@ export function createVirtualList<T>(
     keys: readonly string[],
     anchor: AnchorPolicy,
   ): Prepared<T> {
-    return { keys, newRows: new Map(), anchor };
+    return {
+      keys,
+      newRows: new Map(),
+      anchor,
+      target: null,
+      deferred: new Map(),
+    };
   }
 
   function prepare(
     next: readonly T[],
-    explicitAnchor: AnchorPolicy | undefined,
+    requested: AnchorRequest | undefined,
   ): { prepared: Prepared<T>; teardownFailures: unknown[] } {
     // An omitted anchor INHERITS the pending snapshot's policy: a held page
     // load that asked for "viewport" must not be turned into "auto" (and
     // an end-follow) by an unrelated same-key update landing before
-    // settle. Only an explicit anchor replaces it.
-    const anchor: AnchorPolicy = explicitAnchor ?? pending?.anchor ?? "auto";
+    // settle. Only an explicit anchor replaces it. A host-named anchor is
+    // the "viewport" policy with a named target.
+    const named = typeof requested === "object" ? requested : null;
+    const anchor: AnchorPolicy =
+      typeof requested === "string"
+        ? requested
+        : named !== null
+          ? "viewport"
+          : (pending?.anchor ?? "auto");
+    const target: ExplicitAnchor | null =
+      named ?? (requested === undefined ? (pending?.target ?? null) : null);
+    const deferred = new Map<string, T>();
     const itemKeys = next.map(keyOf);
     const itemByKey = new Map<string, T>();
     for (let index = 0; index < next.length; index++) {
@@ -965,6 +1007,12 @@ export function createVirtualList<T>(
         }
         throw new DisposedDuringPreparation();
       }
+      if (options.height) {
+        // Declared: the height is the item's, never measured.
+        const row = retain(key, item, element, options.height(item));
+        built.push(row);
+        return row;
+      }
       // The provisional height is never observable: phase 1 owns this row
       // until every fresh element has been measured below.
       const row = retain(key, item, element, 1);
@@ -1029,8 +1077,14 @@ export function createVirtualList<T>(
       }
       // A scroll phase is active: committed elements are frozen — content
       // as much as geometry, mounted or not (an unmounted row may mount
-      // mid-phase at its committed height). The update is rendered FRESH
-      // and premeasured off-scroller. Under "same-height", an equal
+      // mid-phase at its committed height). A declared-height item is
+      // rendered in place at the settle, inside the commit. Otherwise the
+      // update is rendered FRESH and premeasured off-scroller.
+      if (options.height) {
+        deferred.set(key, item);
+        return;
+      }
+      // Under "same-height", an equal
       // whole-pixel height on a clean committed row is PROMOTED — swapped
       // into the committed slot in phase 2 with geometry untouched, so
       // streaming keeps flowing under a scroll until a wrap changes the
@@ -1147,7 +1201,10 @@ export function createVirtualList<T>(
       teardownFailures.push(...destroyAll(built));
       return { prepared: emptyPrepared(keys, anchor), teardownFailures };
     }
-    return { prepared: { keys, newRows, anchor }, teardownFailures };
+    return {
+      prepared: { keys, newRows, anchor, target, deferred },
+      teardownFailures,
+    };
   }
 
   /**
@@ -1307,10 +1364,44 @@ export function createVirtualList<T>(
     try {
       const policy = policyOverride ?? applying?.anchor ?? "auto";
       const before = viewportState();
-      const capture = geometry.capture(before, policy);
+      const capture = geometry.capture(
+        before,
+        policy,
+        policy === "viewport" ? (applying?.target ?? null) : null,
+      );
       const toMeasure = new Set<Row<T>>();
 
       if (applying) {
+        // Declared-height items that changed mid-phase: rendered in place
+        // now, into the mounted element, inside this commit; a render that
+        // returns another element is a replacement like any other.
+        for (const [key, item] of applying.deferred) {
+          const row = rows.get(key);
+          if (!row || row.destroyed || applying.newRows.has(key)) continue;
+          row.renderedItem = item;
+          let rendered: HTMLElement;
+          try {
+            rendered = render(item, row.element);
+          } catch (error) {
+            row.renderUnknown = true;
+            throw error;
+          }
+          row.renderUnknown = false;
+          row.item = item;
+          if (rendered === row.element) {
+            commitHeight(row, (options.height as (item: T) => number)(item));
+          } else {
+            applying.newRows.set(
+              key,
+              retain(
+                key,
+                item,
+                rendered,
+                (options.height as (item: T) => number)(item),
+              ),
+            );
+          }
+        }
         // Keys and rows: drop removed, swap replaced, adopt new. A row is
         // removed from the map BEFORE its destruction so a host disposing
         // from onDestroy can never destroy it twice. A same-key snapshot
@@ -1452,12 +1543,14 @@ export function createVirtualList<T>(
     mountedRows.add(row);
     canvas.appendChild(row.slot);
     observeRow(row);
+    if (!row.edge) options.onMount?.(row.element, row.item);
   }
 
   function unmountRow(row: Row<T>): void {
     row.mounted = false;
     mountedRows.delete(row);
     rowObserver.unobserve(row.element);
+    if (!row.edge) options.onUnmount?.(row.element, row.item);
     row.slot.remove();
   }
 
@@ -1766,7 +1859,7 @@ export function createVirtualList<T>(
   // --- Data -----------------------------------------------------------------
   function setItems(
     next: readonly T[],
-    setOptions: { anchor?: AnchorPolicy } = {},
+    setOptions: { anchor?: AnchorRequest } = {},
   ): void {
     if (disposed) return;
     const snapshot = [...next];
@@ -1777,7 +1870,7 @@ export function createVirtualList<T>(
 
   function applyItems(
     snapshot: readonly T[],
-    anchor: AnchorPolicy | undefined,
+    anchor: AnchorRequest | undefined,
   ): void {
     if (disposed) return;
     lastItems = snapshot;
@@ -1799,7 +1892,11 @@ export function createVirtualList<T>(
         commit(prepared, remeasurePolicy);
         return;
       }
-      if (prepared.newRows.size === 0 && sameKeysAsCommitted(prepared.keys)) {
+      if (
+        prepared.newRows.size === 0 &&
+        prepared.deferred.size === 0 &&
+        sameKeysAsCommitted(prepared.keys)
+      ) {
         // No structural change and no retained replacement: the snapshot
         // was fully applied — promoted, rendered in place ("live"; those
         // rows wait in dirtyRows, not as a snapshot), or unchanged — and it
