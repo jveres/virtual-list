@@ -154,13 +154,6 @@ The definition of correct, referenced by number throughout the code:
 - **I4** — one logical update is one transaction; API calls from host
   callbacks queue behind it and run against the state those callbacks
   observed; a failed transaction discards only what it queued.
-- **Declared heights** — with `height(item)` given, an item's geometry is
-  its declared height on the device grid: never premeasured, never
-  observed. A committed item that changes during a gesture is rendered in
-  place at the settle, into the mounted element, inside the commit that
-  adjusts the scroll for it — no fresh off-scroller element, no swap. The
-  hooks `onMount`/`onUnmount` report an element joining or leaving the
-  scroller's DOM (unmount precedes destroy).
 - **I5** — a pinned key can always be scrolled to the viewport top: the
   reserve makes up the shortfall, is consumed by growth, regrown by
   shrinkage, and never collapses out from under the viewport. A pinned row
@@ -202,9 +195,9 @@ The definition of correct, referenced by number throughout the code:
   default lands in 600ms and bounds a trip by 1400ms; follow legs land in
   320ms.
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
-  `createVirtualList(viewport, { items, key, render, overscanPx?,
-  onState?, onReachStart/End?, onDestroy?, settleStrategy?,
-  scrollingUpdates?, followBehavior? })`,
+  `createVirtualList(viewport, { items, key, render, height?, overscanPx?,
+  onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
+  settleStrategy?, scrollingUpdates?, followBehavior? })`,
   `setItems(items, { anchor? })` — a policy, or a host-named anchor
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a
@@ -268,16 +261,22 @@ The definition of correct, referenced by number throughout the code:
   waiting for settle). Changes from the v1 shape: `estimateSize` is gone — every
   key is premeasured before it commits, so heights are never estimated
   (hosts window their data; the chat demo hands the runtime a modest
-  loaded window); `onUnmount` became `onDestroy(element, item)` — with
-  retained nodes, leaving the DOM is not the end of an element's life;
-  destruction (key removed, replacement committed, pending snapshot
-  superseded, dispose) is, exactly once. `render(item, existing)` may
-  mutate `existing` in place or return a replacement, which is
-  premeasured off-scroller and swapped in at commit; `existing` is offered
-  when mutating it is safe (idle, an off-scroller pending replacement, or
-  in `"live"` mode) — under `"same-height"` and `"freeze"` a committed
-  row's phase-time update is rendered fresh and promoted or swapped at
-  settle.
+  loaded window); v1's `onUnmount` became `onDestroy(element, item)` —
+  with retained nodes, leaving the DOM is not the end of an element's
+  life; destruction (key removed, replacement committed, pending snapshot
+  superseded, dispose) is, exactly once — and v2's `onMount`/`onUnmount`
+  report an element joining or leaving the scroller's DOM (unmount
+  precedes destroy). `render(item, existing)` may mutate `existing` in
+  place or return a replacement, which is premeasured off-scroller and
+  swapped in at commit; `existing` is offered when mutating it is safe
+  (idle, an off-scroller pending replacement, or in `"live"` mode) —
+  under `"same-height"` and `"freeze"` a committed row's phase-time
+  update is rendered fresh and promoted or swapped at settle, unless
+  heights are declared (below), when it is rendered in place at the
+  settle with the mounted element. Declared heights: with `height(item)`
+  given, an item's geometry is its declared height on the device grid,
+  never premeasured, never observed, and unchanged by a viewport width
+  change (the host re-flows); `remeasure` is inert.
 - v2 addition (lab-prototyped): the reach callbacks receive a context with
   an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
   runtime aborts only on conditions it knows objectively: the user reached

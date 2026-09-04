@@ -94,7 +94,6 @@ function saveOptions(): void {
 let width = 0;
 let loaded = 0;
 let loading = false;
-let list: VirtualList<GalleryItem> | undefined;
 let items: GalleryItem[] = [];
 
 // --- Images ------------------------------------------------------------------
@@ -113,13 +112,13 @@ function sourceOf(p: Photo): string {
   return `https://picsum.photos/seed/vl-${p.id}/${SOURCE_WIDTH}/${Math.round(SOURCE_WIDTH / p.aspect)}`;
 }
 
-function mounted(element: HTMLElement): void {
+function queueImages(element: HTMLElement): void {
   for (const img of element.querySelectorAll<HTMLImageElement>("img.photo")) {
     images.add(img, img.dataset.src as string);
   }
 }
 
-function unmounted(element: HTMLElement): void {
+function dropImages(element: HTMLElement): void {
   for (const img of element.querySelectorAll<HTMLImageElement>("img.photo")) {
     images.remove(img);
   }
@@ -132,6 +131,7 @@ const loaderSlot = { key: "more", height: LOADER_HEIGHT, render: renderLoader };
 function renderLoader(): HTMLElement {
   const el = document.createElement("div");
   el.className = "loader";
+  el.style.height = `${LOADER_HEIGHT}px`;
   el.setAttribute("role", "status");
   const spinner = document.createElement("span");
   spinner.className = "boundary-spinner";
@@ -182,7 +182,7 @@ function tileAt(
     held.delete(id);
   } else {
     tile = tileElement(p, id);
-    if (el.isConnected) mounted(tile);
+    if (el.isConnected) queueImages(tile);
   }
   tile.style.width = `${width}px`;
   tile.style.height = `${height}px`;
@@ -191,7 +191,7 @@ function tileAt(
 
 function dropUnused(el: HTMLElement, held: Map<string, HTMLElement>): void {
   if (!el.isConnected) return;
-  for (const tile of held.values()) unmounted(tile);
+  for (const tile of held.values()) dropImages(tile);
 }
 
 function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
@@ -254,7 +254,7 @@ function build(): GalleryItem[] {
     return justify(photos, width, ROW_HEIGHTS[size], GAP, loaded >= TOTAL);
   }
   const { cards, height } = masonry(photos, width, columns(), GAP);
-  return slice(cards, height, BAND_HEIGHT, 0);
+  return slice(cards, height, BAND_HEIGHT);
 }
 
 /** Items equal to their previous version keep their object: the runtime re-renders nothing for them. */
@@ -278,7 +278,7 @@ function signature(item: GalleryItem): string {
 /** A page appended below: everything above is unchanged, the runtime keeps the viewport. */
 function appendPage(): void {
   items = reconcile(build(), items);
-  list?.setItems(items, { anchor: "viewport" });
+  list.setItems(items, { anchor: "viewport" });
   syncStatus();
 }
 
@@ -291,7 +291,7 @@ function appendPage(): void {
 function reflow(): void {
   const point = pointUnderViewportTop();
   items = reconcile(build(), items);
-  list?.setItems(items, { anchor: point ? anchorFor(point) : "viewport" });
+  list.setItems(items, { anchor: point ? anchorFor(point) : "viewport" });
   syncStatus();
 }
 
@@ -301,34 +301,47 @@ interface Point {
   fraction: number;
 }
 
-/** The photo under the viewport top and how far into it the top falls (items start at 0; the only slot is at the end). */
+/**
+ * The photo under the viewport top and how far into it the top falls. The
+ * item under the top comes from the runtime's committed geometry (on the
+ * device grid; a sum of declared heights would drift on a fractional
+ * ratio); the gallery adds only the photo and the fraction.
+ */
 function pointUnderViewportTop(): Point | null {
   const scrollTop = viewport.scrollTop;
-  let top = 0;
-  for (const item of items) {
-    const height = heightOf(item);
-    if (scrollTop < top + height) {
-      const offset = scrollTop - top;
-      if (item.kind === "row") {
-        const first = item.photos[0];
-        return first
-          ? { photo: first.id, fraction: Math.min(1, offset / item.height) }
-          : null;
-      }
-      const y = item.start + offset;
-      const card =
-        item.cards.find((c) => c.top <= y && y < c.top + c.height) ??
-        item.cards[0];
-      return card
-        ? {
-            photo: card.id,
-            fraction: Math.min(1, Math.max(0, (y - card.top) / card.height)),
-          }
-        : null;
+  // Items are ordered: binary-search the committed positions.
+  let low = 0;
+  let high = items.length - 1;
+  let found: { item: GalleryItem; offset: number } | null = null;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const item = items[mid] as GalleryItem;
+    const position = list.positionOf(item.key);
+    if (!position) return null;
+    if (scrollTop < position.top) high = mid - 1;
+    else if (scrollTop >= position.top + position.height) low = mid + 1;
+    else {
+      found = { item, offset: scrollTop - position.top };
+      break;
     }
-    top += height;
   }
-  return null;
+  if (!found) return null;
+  const { item, offset } = found;
+  if (item.kind === "row") {
+    const first = item.photos[0];
+    return first
+      ? { photo: first.id, fraction: Math.min(1, offset / item.height) }
+      : null;
+  }
+  const y = item.start + offset;
+  const card =
+    item.cards.find((c) => c.top <= y && y < c.top + c.height) ?? item.cards[0];
+  return card
+    ? {
+        photo: card.id,
+        fraction: Math.min(1, Math.max(0, (y - card.top) / card.height)),
+      }
+    : null;
 }
 
 /** The new item holding the point, and the offset of its top from the viewport top that keeps the point there. */
@@ -362,7 +375,7 @@ function loadMore(signal: AbortSignal): void {
   const timer = window.setTimeout(() => {
     loading = false;
     loaded = Math.min(TOTAL, loaded + PAGE);
-    if (loaded >= TOTAL) list?.setEdgeSlot("end", null);
+    if (loaded >= TOTAL) list.setEdgeSlot("end", null);
     appendPage();
   }, LOAD_DELAY_MS);
   signal.addEventListener("abort", () => {
@@ -401,24 +414,31 @@ function contentWidth(): number {
   return Math.min(viewport.clientWidth, CONTENT_WIDTH);
 }
 
+// The stylesheet's sizes come from these constants.
+const stage = viewport.parentElement as HTMLElement;
+stage.style.setProperty("--content-width", `${CONTENT_WIDTH}px`);
+stage.style.setProperty("--gap", `${GAP}px`);
 width = contentWidth();
 loaded = PAGE;
 items = build();
-list = createVirtualList<GalleryItem>(viewport, {
-  items,
-  key: (item) => item.key,
-  render,
-  height: heightOf,
-  overscanPx: 600,
-  // A page that lands mid-gesture waits for the settle, whole: no photos
-  // appear under a moving finger or an overscroll bounce.
-  scrollingUpdates: "freeze",
-  edgeSlots: { end: loaderSlot },
-  onReachEnd: ({ signal }) => loadMore(signal),
-  onMount: mounted,
-  onUnmount: unmounted,
-  onState: () => images.reprioritize(),
-});
+const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
+  viewport,
+  {
+    items,
+    key: (item) => item.key,
+    render,
+    height: heightOf,
+    overscanPx: 600,
+    // A page that lands mid-gesture waits for the settle, whole: no photos
+    // appear under a moving finger or an overscroll bounce.
+    scrollingUpdates: "freeze",
+    edgeSlots: { end: loaderSlot },
+    onReachEnd: ({ signal }) => loadMore(signal),
+    onMount: queueImages,
+    onUnmount: dropImages,
+    onState: () => images.reprioritize(),
+  },
+);
 // A gallery starts at its first photo, not at the end.
 void list.scrollTo("start");
 syncStatus();

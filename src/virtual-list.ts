@@ -108,7 +108,8 @@ export interface VirtualListOptions<T> {
    * in "live" mode. In the other modes a committed row's phase-time update
    * is rendered fresh (no `existing`), premeasured, and either promoted
    * into the committed slot at once (height unchanged) or swapped in at
-   * settle.
+   * settle — unless heights are declared (`height`), when it is rendered
+   * in place at the settle with the mounted element as `existing`.
    */
   render: (item: T, existing?: HTMLElement) => HTMLElement;
   /**
@@ -132,7 +133,7 @@ export interface VirtualListOptions<T> {
   onReachEnd?: (context: ReachContext) => void;
   /** The element joined the scroller's DOM (an image can start loading). */
   onMount?: (element: HTMLElement, item: T) => void;
-  /** The element left the scroller's DOM (a load can be abandoned); before onDestroy when it dies. */
+  /** The element is leaving the scroller's DOM (a load can be abandoned); before onDestroy when it dies. */
   onUnmount?: (element: HTMLElement, item: T) => void;
   /**
    * The runtime is done with this element forever — its key was removed,
@@ -408,6 +409,7 @@ export function createVirtualList<T>(
 ): VirtualList<T> {
   const { key: keyOf, render } = options;
   const scrollingUpdates: ScrollingUpdates = options.scrollingUpdates ?? "live";
+  const declared = options.height;
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
   const overscanPx =
@@ -656,15 +658,41 @@ export function createVirtualList<T>(
     if (!row.edge) options.onDestroy?.(row.element, row.item);
   }
 
+  /**
+   * Render `item` into a row's element with the provisional bookkeeping a
+   * throwing host needs: `renderedItem` is advanced first, and a throw
+   * marks the render unknown (mutated-then-thrown is indistinguishable) —
+   * the caller decides what a replacement element means for the row.
+   */
+  function renderInto(row: Row<T>, item: T): HTMLElement {
+    row.renderedItem = item;
+    let rendered: HTMLElement;
+    try {
+      rendered = render(item, row.element);
+    } catch (error) {
+      row.renderUnknown = true;
+      throw error;
+    }
+    row.renderUnknown = false;
+    return rendered;
+  }
+
+  /** A row at its declared height, never measured: positioned the way the measurer positions every other row. */
+  function retainDeclared(
+    key: string,
+    item: T,
+    element: HTMLElement,
+    height: number,
+  ): Row<T> {
+    return retain(key, item, positionRowElement(element), height);
+  }
+
   /** A slot row: the host's element at the declared height, no measurement. */
   function retainEdgeSlot(edge: Edge, slot: EdgeSlot): Row<T> {
-    // Never measured, so positioned here the way the measurer positions
-    // every other row.
-    const element = positionRowElement(slot.render());
-    const row = retain(
+    const row = retainDeclared(
       slotKey(edge, slot.key),
       undefined as T,
-      element,
+      slot.render(),
       slot.height,
     );
     row.edge = edge;
@@ -710,10 +738,7 @@ export function createVirtualList<T>(
   /** Unmounted rows (fresh or retained) are measured detached, all in one layout. */
   function measureDetached(detached: readonly Row<T>[]): number[] {
     if (detached.length === 0) return [];
-    if (options.height) {
-      const declared = options.height;
-      return detached.map((row) => declared(row.item));
-    }
+    if (declared) return detached.map((row) => declared(row.item));
     try {
       return measurer.measureMany(detached.map((row) => row.element));
     } finally {
@@ -727,7 +752,7 @@ export function createVirtualList<T>(
   }
 
   function measureInPlace(row: Row<T>): number {
-    if (options.height) return options.height(row.item);
+    if (declared) return declared(row.item);
     const height = row.element.getBoundingClientRect().height;
     // A mounted row that reads 0 is hidden (display: none, a collapsed
     // ancestor), not resized: its committed height stands.
@@ -748,7 +773,7 @@ export function createVirtualList<T>(
   const keyByElement = new WeakMap<HTMLElement, string>();
 
   function observeRow(row: Row<T>): void {
-    if (row.edge || options.height) return; // Declared height; the box clips.
+    if (row.edge || declared) return; // Declared height; the box clips.
     keyByElement.set(row.element, row.key);
     if (!inMeasurementDelivery) {
       rowObserver.observe(row.element);
@@ -829,9 +854,10 @@ export function createVirtualList<T>(
     // The observer's first delivery, and any later size-neutral one, is
     // not a resize: nothing to commit.
     if (!widthChanged && !heightChanged) return;
-    if (widthChanged) {
+    if (widthChanged && !declared) {
       // Pending rows need no marking: a retained row that waits for a
       // settle is dirty by construction and re-measured at its commit.
+      // Declared heights do not change with the width; the host re-flows.
       for (const row of rows.values()) markDirty(row);
     }
     const pinTop = geometry.pinTop;
@@ -884,7 +910,7 @@ export function createVirtualList<T>(
     if (document.visibilityState === "visible") {
       catchUpUntil = performance.now() + RESUME_CATCH_UP_MS;
       glide?.cancel();
-      if (smoothFollowArmed && !disposed) followIfBehindEnd();
+      if (smoothFollowArmed && !disposed) guarded(() => followIfBehindEnd());
     }
   };
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1007,9 +1033,9 @@ export function createVirtualList<T>(
         }
         throw new DisposedDuringPreparation();
       }
-      if (options.height) {
+      if (declared) {
         // Declared: the height is the item's, never measured.
-        const row = retain(key, item, element, options.height(item));
+        const row = retainDeclared(key, item, element, declared(item));
         built.push(row);
         return row;
       }
@@ -1024,16 +1050,8 @@ export function createVirtualList<T>(
     const renderInPlaceOrReplace = (row: Row<T>, item: T): Row<T> | null => {
       touched.push({ row, item });
       const previouslyRendered = row.renderedItem;
-      row.renderedItem = item; // Provisional: rollback restores on failure.
-      let rendered: HTMLElement;
-      try {
-        rendered = render(item, row.element);
-      } catch (error) {
-        row.renderUnknown = true; // Mutated-then-thrown is indistinguishable.
-        throw error;
-      }
+      const rendered = renderInto(row, item); // Rollback restores on a throw.
       if (rendered === row.element) {
-        row.renderUnknown = false;
         inPlace.push({ row, item });
         return null;
       }
@@ -1080,7 +1098,7 @@ export function createVirtualList<T>(
       // mid-phase at its committed height). A declared-height item is
       // rendered in place at the settle, inside the commit. Otherwise the
       // update is rendered FRESH and premeasured off-scroller.
-      if (options.height) {
+      if (declared) {
         deferred.set(key, item);
         return;
       }
@@ -1374,32 +1392,33 @@ export function createVirtualList<T>(
       if (applying) {
         // Declared-height items that changed mid-phase: rendered in place
         // now, into the mounted element, inside this commit; a render that
-        // returns another element is a replacement like any other.
-        for (const [key, item] of applying.deferred) {
-          const row = rows.get(key);
-          if (!row || row.destroyed || applying.newRows.has(key)) continue;
-          row.renderedItem = item;
-          let rendered: HTMLElement;
-          try {
-            rendered = render(item, row.element);
-          } catch (error) {
-            row.renderUnknown = true;
-            throw error;
-          }
-          row.renderUnknown = false;
-          row.item = item;
-          if (rendered === row.element) {
-            commitHeight(row, (options.height as (item: T) => number)(item));
-          } else {
-            applying.newRows.set(
-              key,
-              retain(
+        // returns another element is a replacement like any other. A
+        // throwing render leaves its row unknown and dirty (the next
+        // preparation re-renders it) and the commit completes; the error
+        // surfaces with the teardown failures.
+        if (declared) {
+          for (const [key, item] of applying.deferred) {
+            const row = rows.get(key);
+            if (!row || row.destroyed) continue;
+            const previouslyRendered = row.renderedItem;
+            let rendered: HTMLElement;
+            try {
+              rendered = renderInto(row, item);
+            } catch (error) {
+              markDirty(row);
+              teardownFailures.push(error);
+              continue;
+            }
+            if (rendered === row.element) {
+              row.item = item;
+              commitHeight(row, declared(item));
+            } else {
+              row.renderedItem = previouslyRendered;
+              applying.newRows.set(
                 key,
-                item,
-                rendered,
-                (options.height as (item: T) => number)(item),
-              ),
-            );
+                retainDeclared(key, item, rendered, declared(item)),
+              );
+            }
           }
         }
         // Keys and rows: drop removed, swap replaced, adopt new. A row is
@@ -1543,15 +1562,28 @@ export function createVirtualList<T>(
     mountedRows.add(row);
     canvas.appendChild(row.slot);
     observeRow(row);
-    if (!row.edge) options.onMount?.(row.element, row.item);
+    if (!row.edge) hostHook(options.onMount, row);
   }
 
   function unmountRow(row: Row<T>): void {
     row.mounted = false;
     mountedRows.delete(row);
     rowObserver.unobserve(row.element);
-    if (!row.edge) options.onUnmount?.(row.element, row.item);
+    if (!row.edge) hostHook(options.onUnmount, row);
     row.slot.remove();
+  }
+
+  /** A mount hook is the host's: its throw is deferred like a teardown's, the window still completes. */
+  function hostHook(
+    hook: ((element: HTMLElement, item: T) => void) | undefined,
+    row: Row<T>,
+  ): void {
+    if (!hook) return;
+    try {
+      hook(row.element, row.item);
+    } catch (error) {
+      deferTeardown([error]);
+    }
   }
 
   let lastReconcile = { scrollTop: Number.NaN, height: Number.NaN, epoch: -1 };
@@ -1571,11 +1603,6 @@ export function createVirtualList<T>(
       return lastRange;
     }
     const geometryChanged = lastReconcile.epoch !== geometryEpoch;
-    lastReconcile = {
-      scrollTop: vp.scrollTop,
-      height: vp.height,
-      epoch: geometryEpoch,
-    };
     const range = geometry.window(vp, overscanPx);
     lastRange = range;
     // Deleting the current entry while iterating a Set is defined and does
@@ -1594,6 +1621,13 @@ export function createVirtualList<T>(
       // only for rows entering the window or after a geometry commit.
       if (entering || geometryChanged) placeRow(row);
     }
+    // Memoized only once the window is complete: a host hook that threw
+    // and was deferred must not leave the rest unmounted behind a memo.
+    lastReconcile = {
+      scrollTop: vp.scrollTop,
+      height: vp.height,
+      epoch: geometryEpoch,
+    };
     return range;
   }
 
@@ -2114,7 +2148,6 @@ export function createVirtualList<T>(
     };
   }
 
-  /** Start a follow glide when the viewport is not already at the end. */
   /**
    * Where automatic follow goes from `current`, the end at most. Under
    * "keep-start" the last row's top (less the inset) is the far limit, and
@@ -2254,7 +2287,8 @@ export function createVirtualList<T>(
     key: string,
     remeasureOptions: RemeasureOptions = {},
   ): void {
-    if (disposed) return;
+    // A declared height is the item's: nothing to measure.
+    if (disposed || declared) return;
     const anchor = remeasureOptions.anchor ?? "viewport";
     if (enqueueDuringTransaction(() => remeasure(key, { anchor }))) return;
     guarded(() => scheduleRemeasure(key, anchor));

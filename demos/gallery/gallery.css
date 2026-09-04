@@ -1,7 +1,7 @@
 /* The gallery: one scroller, justified rows or masonry bands as items. */
 
+/* --content-width and --gap are set by the script from its constants. */
 .stage {
-  --content-width: 1080px;
   position: relative;
   display: flex;
   justify-content: center;
@@ -24,8 +24,8 @@
 /* A justified row: photos side by side, the gap below belongs to the row. */
 .photo-row {
   display: flex;
-  gap: 6px;
-  padding-bottom: 6px;
+  gap: var(--gap);
+  padding-bottom: var(--gap);
   max-width: var(--content-width);
   margin: 0 auto;
 }
@@ -75,13 +75,12 @@
   );
 }
 
-/* The end loader: the chat's spinner and label. */
+/* The end loader: the chat's spinner and label; its height is the slot's. */
 .loader {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 10px;
-  height: 56px;
   color: var(--fg-dim);
   font-size: 12px;
 }

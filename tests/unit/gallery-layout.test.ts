@@ -73,7 +73,7 @@ describe("masonry", () => {
 
   it("slices into bands that cover the grid, each card in every band it crosses", () => {
     const { cards, height } = masonry(photos(60), 900, 4, 6);
-    const bands = slice(cards, height, 400, 0);
+    const bands = slice(cards, height, 400);
     expect(bands[0]?.start).toBe(0);
     let y = 0;
     for (const band of bands) {

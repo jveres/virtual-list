@@ -136,9 +136,8 @@ export function masonry(
 }
 
 /**
- * Slices the masonry grid into bands: [0, origin) when the origin is not
- * zero, then bands of `bandHeight` from the origin, the last one ending at
- * the grid's height. A card crossing an edge belongs to every band it
+ * Slices the masonry grid into bands of `bandHeight`, the last one ending
+ * at the grid's height. A card crossing an edge belongs to every band it
  * intersects (drawn in each, offset and clipped), so the seam is invisible.
  * Bands are keyed by their start, which appends never change.
  */
@@ -146,13 +145,10 @@ export function slice(
   cards: readonly Card[],
   height: number,
   bandHeight: number,
-  origin: number,
 ): Band[] {
   const bands: Band[] = [];
   const edges: number[] = [0];
-  for (let y = origin > 0 ? origin : bandHeight; y < height; y += bandHeight) {
-    edges.push(y);
-  }
+  for (let y = bandHeight; y < height; y += bandHeight) edges.push(y);
   edges.push(height);
   // Cards sorted by top: each band scans from the first card that can
   // still intersect it. A card's part counts up through the bands it
