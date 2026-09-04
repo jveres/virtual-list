@@ -40,16 +40,16 @@
   margin: 0 auto;
 }
 
-.band .tile {
-  position: absolute;
-}
-
 /* A photo's box: the placeholder, then the image fading in over it. */
 .tile {
   flex: none;
   overflow: hidden;
   border-radius: 4px;
   background: color-mix(in srgb, var(--fg-dim) 12%, transparent);
+}
+
+.band .tile {
+  position: absolute;
 }
 
 .photo {
