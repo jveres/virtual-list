@@ -1956,14 +1956,62 @@ initAISettingsPanel({
   },
 });
 
-scrollTopBtn.addEventListener("click", () => {
+/**
+ * The key of the user message before or after the viewport top: the
+ * nearest one whose committed top lies above it (previous) or below it
+ * (next), among the loaded rows. A jump lands it at the top, under the
+ * day pill when it is on.
+ */
+function neighbourPrompt(direction: "previous" | "next"): string | null {
+  const scrollTop = viewport.scrollTop;
+  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  let best: { key: string; top: number } | null = null;
+  for (const message of transcript) {
+    if (message.role !== "user") continue;
+    const key = String(message.id);
+    const position = virtualList?.positionOf(key);
+    if (!position) continue;
+    // Where the viewport top would sit with this message landed.
+    const landing = position.top - inset;
+    const beyond =
+      direction === "previous"
+        ? landing < scrollTop - 1
+        : landing > scrollTop + 1;
+    if (!beyond) continue;
+    const nearer =
+      best === null ||
+      (direction === "previous" ? landing > best.top : landing < best.top);
+    if (nearer) best = { key, top: landing };
+  }
+  return best?.key ?? null;
+}
+
+function jumpToPrompt(direction: "previous" | "next"): boolean {
+  const key = neighbourPrompt(direction);
+  if (key === null) return false;
+  void virtualList?.scrollTo(key, {
+    align: "start",
+    behavior: "smooth",
+    offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+  });
+  return true;
+}
+
+/** A modifier click (⌘ on a Mac, Ctrl elsewhere) steps by prompt instead of jumping to the edge. */
+function stepsByPrompt(event: MouseEvent): boolean {
+  return event.metaKey || event.ctrlKey;
+}
+
+scrollTopBtn.addEventListener("click", (event) => {
+  if (stepsByPrompt(event) && jumpToPrompt("previous")) return;
   // Targets the currently committed snapshot only. If older history loads
   // while the glide runs, the prepend commits — without movement — when
   // the phase settles; another press continues from there.
   void virtualList?.scrollTo("start", { behavior: "smooth" });
 });
 
-scrollBottomBtn.addEventListener("click", () => {
+scrollBottomBtn.addEventListener("click", (event) => {
+  if (stepsByPrompt(event) && jumpToPrompt("next")) return;
   // Landing at the end re-engages end-follow, so a click during a stream
   // resumes following (the runtime's follow state, not demo bookkeeping).
   void virtualList?.scrollTo("end", { behavior: "smooth" });
