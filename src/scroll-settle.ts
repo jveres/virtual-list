@@ -1,3 +1,9 @@
+import {
+  ChromiumWheelPolicy,
+  FirefoxWheelPolicy,
+  type ScrollBoundary,
+} from "./wheel-policy";
+
 /**
  * The scroll-settle state machine: per-engine heuristics for classifying
  * scrolls as user gestures vs. the library's own programmatic writes, and for
@@ -7,7 +13,7 @@
  * Engines disagree on when (and whether) `scrollend` fires relative to wheel
  * momentum, so each strategy encodes one engine's observed sequencing:
  * chromium's wheel-idle window and boundary-scrollend suppression, firefox's
- * two-window edge release, safari's rubber-band quiet windows, and a
+ * candidate edge release, safari's rubber-band quiet windows, and a
  * plain scrollend+cooldown "default" (explicit opt-in only; an unknown
  * engine falls to the Firefox contract). The controller owns the viewport's
  * scroll/scrollend/wheel/pointer/touch listeners and all gesture state; the
@@ -29,11 +35,11 @@
  *   window constants): a scrollend at a protected edge is a *candidate*
  *   release. Post-scrollend wheel input classifies it: energy growth past
  *   the predecessor, a direction reversal, or any line/page-delta notch
- *   CONTESTS it (the scrollend was a mid-momentum/mid-hold pause), while
+ *   invalidates it (the scrollend was a mid-momentum/mid-hold pause), while
  *   a decaying pixel-mode tail is trailing momentum markers that merely
  *   postpone. Uncontested candidates settle after the short confirmation
- *   window; contested ones require the full stability window of wheel
- *   silence. Applying while the engine gesture is alive is unfixable,
+ *   window; invalidated ones require a subsequent scrollend, never just
+ *   wheel silence. Applying while the engine gesture is alive is unfixable,
  *   verified empirically: besides the visible flash, Firefox's async
  *   scroll machinery keeps the pre-apply scroll-limit snapshot for the
  *   remainder of the gesture — the next scroll bounces against that
@@ -68,39 +74,6 @@ const WHEEL_INPUT_IDLE_MS = SCROLL_SETTLE_COOLDOWN_MS;
 // are gone (or motionless, which is indistinguishable). Long enough to
 // outlast the gaps in a decaying momentum-wheel tail.
 const CHROMIUM_QUIET_SETTLE_MS = 450;
-// Firefox publishes range growth to APZ asynchronously after the main-thread
-// commit. A rapid re-grab can otherwise join the pre-growth overscroll state
-// and bounce at a ghost edge. There is no content-visible APZ acknowledgement,
-// so keep a quiet window from the latest DOM wheel signal. This is a race
-// buffer, not an engine transaction constant.
-//
-// V2 DEVIATION (two windows instead of main's one; lab-verified traces):
-// a pending Firefox edge release is CONTESTED when post-scrollend wheel
-// input adds energy (grows past its predecessor beyond the marker band),
-// reverses direction, or comes from a line/page-delta device — that
-// scrollend was a mid-momentum/mid-hold pause, not the release (main
-// honored it on this single 1600ms timer, which committed under actively
-// held fingers). A decaying pixel-mode tail merely postpones. An
-// uncontested scrollend is a clean release signature and settles after
-// the short confirmation window (450ms after the last wheel; main's 1600ms
-// made every normal edge load wait ~1.5s). A contested one falls back to
-// the full stability window from the last wheel: active motion keeps
-// pushing it and a decaying tail at a pinned edge (which emits no second
-// scrollend) still recovers instead of hanging. Accepted trade-off: a
-// hold that pauses into an uncontested scrollend and stays still is
-// observably identical to a release and commits after the short window.
-const FIREFOX_EDGE_RELEASE_CONFIRM_MS = 450;
-const FIREFOX_EDGE_STABILITY_QUIET_MS = 1600;
-// Post-scrollend PIXEL-mode wheels that do not add energy are trailing
-// momentum-end markers (a release whose scrollend landed inside the
-// decaying tail), not a continuing gesture — they postpone the short
-// confirm window but do not contest the release. A momentum tail decays
-// (…6,5,5,4,3,2,1); a continuing gesture adds energy (3 → 4 → 7 in the
-// mid-hold lab trace). A delta growing more than a pixel past its
-// predecessor (with this floor), a DIRECTION REVERSAL (new intent), or any
-// non-pixel delta (line/page wheel notches are discrete deliberate input —
-// such devices have no momentum tails) contests.
-const FIREFOX_TRAILING_MARKER_MAX_DELTA = 2;
 // Safari settles near an edge only after this much scroll-event silence: the
 // rubber-band bounce decays through event gaps longer than the settle
 // cooldown, and a settle commit inside the tail performs the
@@ -128,8 +101,6 @@ export type VirtualListScrollSettleStrategy =
   | "chromium-wheel"
   | "firefox-wheel"
   | "safari-wheel";
-
-type ScrollBoundary = "top" | "bottom";
 
 /**
  * Engine detection, by rendering engine rather than by browser brand:
@@ -210,30 +181,14 @@ export function createScrollSettleController(
   const programmaticScrollTops: number[] = [];
   let nativeScrollEndPending = false;
   let wheelPendingNativeScrollEndTop: number | null = null;
-  let pendingFirefoxEdgeRelease = false;
-  // Wheel input arrived after the pending edge scrollend: it was a pause,
-  // not the release. Contested releases use the full stability window.
-  let firefoxEdgeReleaseContested = false;
-  // Signed pixel-mode delta of the previous wheel, for the decay/reversal
-  // classification; non-pixel wheels reset it (units are incompatible).
-  let lastFirefoxWheelDelta = 0;
-  let lastFirefoxWheelInputAt = Number.NEGATIVE_INFINITY;
-  // Whether this phase has seen wheel input: the Firefox edge release and
-  // its windows are wheel-gesture contracts. A programmatic glide's own
-  // trailing scrollend (Firefox fires one per write) must settle on the
-  // plain cooldown, never "at once" through a window measured from a wheel
-  // that never came.
-  let wheelInputThisPhase = false;
-  let firefoxProtectedEdge: ScrollBoundary | null = null;
+  const firefox =
+    strategy === "firefox-wheel" ? new FirefoxWheelPolicy() : null;
+  const chromium =
+    strategy === "chromium-wheel" ? new ChromiumWheelPolicy() : null;
   let settleFrame = 0;
-  let firefoxEdgeCommitFrame = 0;
   let settleTimer = 0;
   let wheelInputActive = false;
   let wheelInputTimer = 0;
-  let chromiumEdgeWheelActive: ScrollBoundary | null = null;
-  let chromiumWheelSawNativeScrollEnd = false;
-  let chromiumWheelAwaitingFinalScrollEnd = false;
-  let chromiumEdgeWheelSuppressed = false;
   let chromiumQuietSettleTimer = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
@@ -295,7 +250,7 @@ export function createScrollSettleController(
     lastScrollSampleHeight = clientHeight;
     const input = moved && !programmaticScroll && !layoutClamp;
     if (strategy === "firefox-wheel" && input) {
-      firefoxProtectedEdge ??= loadableBoundaryAtNativeEdge();
+      firefox?.protect(loadableBoundaryAtNativeEdge());
     }
     if (!scrollPhaseActive && input) {
       if (!handleScrollPhaseStart()) return;
@@ -342,15 +297,12 @@ export function createScrollSettleController(
   }
 
   function cancelFirefoxEdgeCommitFrame(): boolean {
-    if (!firefoxEdgeCommitFrame) return false;
-    cancelAnimationFrame(firefoxEdgeCommitFrame);
-    firefoxEdgeCommitFrame = 0;
-    return true;
+    return firefox?.cancelCommit() ?? false;
   }
 
   function cancelFirefoxEdgeCommitForInput(): void {
     if (!cancelFirefoxEdgeCommitFrame()) return;
-    // Input after the entire stability window is a new gesture, not a trailing
+    // Input after the confirmation window is a new gesture, not a trailing
     // momentum marker. Require this gesture's own scrollend before growth.
     cancelPendingScrollPhaseEnd();
   }
@@ -389,7 +341,7 @@ export function createScrollSettleController(
   }
 
   function hasActiveChromiumEdgeWheel(): boolean {
-    return chromiumEdgeWheelActive !== null;
+    return chromium?.edge != null;
   }
 
   /**
@@ -425,7 +377,7 @@ export function createScrollSettleController(
 
   function hasProtectedFirefoxEdge(): boolean {
     return (
-      firefoxProtectedEdge !== null || loadableBoundaryAtNativeEdge() !== null
+      firefox?.protectedEdge != null || loadableBoundaryAtNativeEdge() !== null
     );
   }
 
@@ -434,7 +386,7 @@ export function createScrollSettleController(
       !hasActiveTouchOrPointerInput() &&
       !hasActiveWheelInput() &&
       !hasActiveChromiumEdgeWheel() &&
-      !chromiumWheelAwaitingFinalScrollEnd &&
+      !chromium?.awaitingEnd &&
       !isRubberBandOverscrolled() &&
       // Safari bounce tails deliver scroll events at gaps longer than the
       // settle cooldown; wait for genuine event silence near an edge so the
@@ -476,16 +428,13 @@ export function createScrollSettleController(
 
   function resetScrollSettleState(): void {
     wheelInputActive = false;
-    chromiumEdgeWheelActive = null;
-    chromiumWheelSawNativeScrollEnd = false;
-    chromiumWheelAwaitingFinalScrollEnd = false;
-    chromiumEdgeWheelSuppressed = false;
-    firefoxProtectedEdge = null;
+    chromium?.reset();
+    firefox?.resetProtection();
   }
 
   function cancelPendingScrollPhaseEnd(): void {
     clearPendingNativeScrollEnd();
-    chromiumWheelSawNativeScrollEnd = false;
+    chromium?.cancelPendingEnd();
     cancelSettleTimer();
     cancelSettleFrame();
   }
@@ -519,8 +468,8 @@ export function createScrollSettleController(
       if (
         (usesWheelScrollEndFallback() && hasActiveWheelInput()) ||
         hasActiveChromiumEdgeWheel() ||
-        chromiumWheelAwaitingFinalScrollEnd ||
-        chromiumEdgeWheelSuppressed
+        chromium?.awaitingEnd ||
+        chromium?.suppressed
       ) {
         return;
       }
@@ -535,12 +484,11 @@ export function createScrollSettleController(
   }
 
   // Commit Firefox edge growth atomically in a render opportunity after the
-  // stability window. This keeps the list geometry and its render in one
+  // confirmation window. This keeps the list geometry and its render in one
   // main-thread pass; it is not an acknowledgement from Firefox's APZ thread.
   function scheduleFirefoxEdgeCommit(): void {
-    if (firefoxEdgeCommitFrame || host.isDisposed()) return;
-    firefoxEdgeCommitFrame = requestAnimationFrame(() => {
-      firefoxEdgeCommitFrame = 0;
+    if (host.isDisposed()) return;
+    firefox?.scheduleCommit(() => {
       if (
         host.isDisposed() ||
         !hasPendingFirefoxEdgeRelease() ||
@@ -577,37 +525,30 @@ export function createScrollSettleController(
     cancelFirefoxEdgeCommitFrame();
     nativeScrollEndPending = true;
     wheelPendingNativeScrollEndTop = options.scrollTop ?? null;
-    pendingFirefoxEdgeRelease = options.firefoxEdge === true;
-    firefoxEdgeReleaseContested = false;
+    firefox?.setRelease(options.firefoxEdge === true);
   }
 
   function clearPendingNativeScrollEnd(): void {
     cancelFirefoxEdgeCommitFrame();
     nativeScrollEndPending = false;
     wheelPendingNativeScrollEndTop = null;
-    pendingFirefoxEdgeRelease = false;
-    firefoxEdgeReleaseContested = false;
+    firefox?.setRelease(false);
   }
 
   // Preserve the policy chosen when the native scrollend was observed. In
   // particular, pinned scroll events and neutral wheel jitter must not turn a
-  // Firefox edge stability wait into the generic short cooldown.
+  // Firefox edge confirmation wait into the generic short cooldown.
   function schedulePendingNativeScrollEnd(): void {
     if (host.isDisposed() || !nativeScrollEndPending) return;
-    const firefoxEdgeWindowMs = firefoxEdgeReleaseContested
-      ? FIREFOX_EDGE_STABILITY_QUIET_MS
-      : FIREFOX_EDGE_RELEASE_CONFIRM_MS;
-    const delayMs = hasPendingFirefoxEdgeRelease()
-      ? Math.max(
-          0,
-          firefoxEdgeWindowMs - (performance.now() - lastFirefoxWheelInputAt),
-        )
-      : SCROLL_SETTLE_COOLDOWN_MS;
+    const delayMs =
+      hasPendingFirefoxEdgeRelease() && firefox
+        ? firefox.releaseDelay(performance.now())
+        : SCROLL_SETTLE_COOLDOWN_MS;
     scheduleSettleCooldown(delayMs);
   }
 
   function hasPendingFirefoxEdgeRelease(): boolean {
-    return nativeScrollEndPending && pendingFirefoxEdgeRelease;
+    return nativeScrollEndPending && firefox?.hasRelease === true;
   }
 
   /** A release with no recorded position: settle after the cooldown. */
@@ -678,12 +619,8 @@ export function createScrollSettleController(
 
   function scheduleChromiumEdgeSettleFallback(boundary: ScrollBoundary): void {
     scheduleChromiumQuietSettle(
-      () => chromiumEdgeWheelSuppressed && chromiumEdgeWheelActive === boundary,
-      () => {
-        chromiumWheelAwaitingFinalScrollEnd = false;
-        chromiumEdgeWheelSuppressed = false;
-        chromiumEdgeWheelActive = null;
-      },
+      () => chromium?.suppressed === true && chromium.edge === boundary,
+      () => chromium?.releaseEdge(),
     );
   }
 
@@ -705,12 +642,12 @@ export function createScrollSettleController(
         return;
       }
       if (
-        wheelInputThisPhase &&
+        firefox?.inputThisPhase &&
         (hasPendingFirefoxEdgeRelease() || hasProtectedFirefoxEdge())
       ) {
         // This may be the release — or a scrollend that slipped into a
         // momentum-wheel gap mid-hold. Honor it only after the confirmation
-        // window (the full stability window once contested). Preserve an
+        // window, unless renewed input invalidates it. Preserve an
         // already-classified edge release even if spinner chrome has since
         // grown the native scroll range.
         markPendingWheelScrollEnd(true);
@@ -722,11 +659,7 @@ export function createScrollSettleController(
 
     setPendingNativeScrollEnd();
     if (strategy === "chromium-wheel" && scrollPhaseActive) {
-      chromiumWheelSawNativeScrollEnd = true;
-      if (!hasActiveWheelInput() && chromiumWheelAwaitingFinalScrollEnd) {
-        chromiumWheelAwaitingFinalScrollEnd = false;
-        chromiumEdgeWheelActive = null;
-      }
+      chromium?.scrollEnd(hasActiveWheelInput());
     }
     schedulePendingNativeScrollEnd();
   }
@@ -746,11 +679,9 @@ export function createScrollSettleController(
     if (!wasActive) {
       clearPendingNativeScrollEnd();
       scrollPhaseMoved = false;
-      wheelInputThisPhase = false;
+      firefox?.beginPhase();
       resetScrollSample();
-      chromiumWheelSawNativeScrollEnd = false;
-      chromiumWheelAwaitingFinalScrollEnd = false;
-      chromiumEdgeWheelSuppressed = false;
+      chromium?.beginPhase();
       cancelChromiumQuietSettleTimer();
       host.onGestureStarted();
       if (host.isDisposed()) return false;
@@ -758,7 +689,7 @@ export function createScrollSettleController(
       // Fresh input invalidates an earlier release. Safari can deliver the
       // reversing wheel/touch input before its first scroll event; keeping
       // the old scrollend would let it settle in that gap. Firefox alone
-      // retains an edge release because its contested/decaying-tail state
+      // retains an edge release because its renewed-input/decaying-tail state
       // machine classifies post-scrollend wheels explicitly.
       cancelPendingScrollPhaseEnd();
     }
@@ -778,27 +709,19 @@ export function createScrollSettleController(
   }
 
   function handleChromiumWheelInput(event: WheelEvent): void {
-    if (strategy !== "chromium-wheel") return;
+    if (!chromium) return;
     const outwardBoundary = boundaryForOutwardWheel(event);
-    chromiumWheelAwaitingFinalScrollEnd = false;
     cancelChromiumQuietSettleTimer();
-    if (outwardBoundary) {
-      chromiumEdgeWheelSuppressed = true;
+    chromium.wheel(outwardBoundary);
+    if (outwardBoundary || nativeScrollEndPending)
       clearPendingNativeScrollEnd();
-      chromiumWheelAwaitingFinalScrollEnd = true;
-    } else if (nativeScrollEndPending) {
-      clearPendingNativeScrollEnd();
-    }
-    chromiumEdgeWheelActive = outwardBoundary;
     armWheelIdle(() => {
-      if (outwardBoundary) {
-        chromiumWheelAwaitingFinalScrollEnd = true;
+      const action = chromium.idle(outwardBoundary);
+      if (action === "edge" && outwardBoundary) {
         clearPendingNativeScrollEnd();
         scheduleChromiumEdgeSettleFallback(outwardBoundary);
-      } else if (chromiumWheelSawNativeScrollEnd) {
+      } else if (action === "release") {
         setPendingNativeScrollEnd();
-        chromiumWheelAwaitingFinalScrollEnd = false;
-        chromiumEdgeWheelSuppressed = false;
       } else {
         scheduleChromiumStallFallback();
       }
@@ -816,10 +739,8 @@ export function createScrollSettleController(
         // no settle and no idle notification here, in either branch.
         if (nativeScrollEndPending) {
           // A scrollend already fired and wheels followed it — either
-          // trailing momentum-end markers after a real release, or the
-          // gesture continuing past a momentum-gap scrollend. Re-arm the
-          // window (confirmation, or the full stability window once
-          // contested); only wheel silence settles.
+          // trailing momentum-end markers after a real release. Re-arm
+          // confirmation; renewed input would have invalidated the release.
           schedulePendingNativeScrollEnd();
           return;
         }
@@ -855,55 +776,31 @@ export function createScrollSettleController(
   function handleWheel(event: WheelEvent): void {
     if (host.isDisposed()) return;
     if (usesWheelScrollEndFallback()) {
-      if (strategy === "firefox-wheel") {
-        lastFirefoxWheelInputAt = performance.now();
-        wheelInputThisPhase = true;
-      }
+      firefox?.recordInput(performance.now());
       const outwardBoundary = boundaryForOutwardWheel(event);
       if (
-        strategy === "firefox-wheel" &&
+        firefox &&
         outwardBoundary !== null &&
         host.canLoadAtBoundary(outwardBoundary)
       ) {
-        firefoxProtectedEdge ??= outwardBoundary;
+        firefox.protect(outwardBoundary);
       }
       if (event.deltaY !== 0) cancelFirefoxEdgeCommitForInput();
-      // V2 DEVIATION (see the window constants): wheel input after an edge
-      // scrollend that ADDS ENERGY proves the gesture continued past it —
-      // that scrollend was a mid-momentum/mid-hold pause, not the release.
-      // Mark the pending release CONTESTED: it may only settle after the
-      // full stability window of wheel silence, never the short
-      // release-confirm window. Decaying trailing markers (small, not
-      // growing) are a release whose scrollend landed inside the momentum
-      // tail; they merely postpone the confirm window. (Dropping contested
-      // releases entirely was tried and hangs: a decaying tail at a pinned
-      // edge emits no second scrollend.)
-      if (event.deltaY !== 0) {
-        const pixelMode = event.deltaMode === WheelEvent.DOM_DELTA_PIXEL;
-        if (hasPendingFirefoxEdgeRelease()) {
-          const magnitude = Math.abs(event.deltaY);
-          const reversed =
-            lastFirefoxWheelDelta !== 0 &&
-            Math.sign(event.deltaY) !== Math.sign(lastFirefoxWheelDelta);
-          const addsEnergy =
-            magnitude >
-            Math.max(
-              FIREFOX_TRAILING_MARKER_MAX_DELTA,
-              Math.abs(lastFirefoxWheelDelta) + 1,
-            );
-          if (!pixelMode || reversed || addsEnergy) {
-            firefoxEdgeReleaseContested = true;
-          }
-        }
-        if (strategy === "firefox-wheel") {
-          lastFirefoxWheelDelta = pixelMode ? event.deltaY : 0;
-        }
+      if (
+        firefox?.observeDelta(
+          event.deltaY,
+          event.deltaMode === WheelEvent.DOM_DELTA_PIXEL,
+        )
+      ) {
+        // A re-grab owns a new release. Cancel the shared pending flag and
+        // all its scheduled checks as well as the policy's candidate.
+        cancelPendingScrollPhaseEnd();
       }
       if (!handleScrollPhaseStart()) return;
       // An outward wheel at a loadable edge moves nothing, yet it is a
       // gesture in intent: its phase must settle like one that moved.
       if (outwardBoundary) scrollPhaseMoved = true;
-      handleWheelInputSettle(firefoxProtectedEdge);
+      handleWheelInputSettle(firefox?.protectedEdge ?? null);
       return;
     }
 
@@ -952,7 +849,7 @@ export function createScrollSettleController(
       !nativeScrollEndPending &&
       scrollEventsSinceTouchStart === 0 &&
       !isRubberBandOverscrolled() &&
-      firefoxProtectedEdge === null
+      firefox?.protectedEdge == null
     ) {
       // Through the cooldown, never on the spot: a final clamp scroll can
       // still trail the touchend, and it must extend the release.

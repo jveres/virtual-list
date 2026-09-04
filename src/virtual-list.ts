@@ -1,3 +1,4 @@
+import { FollowController, type FollowMode } from "./follow";
 import {
   type AnchorPolicy,
   type CapturePolicy,
@@ -6,12 +7,12 @@ import {
   type GeometryViewport,
 } from "./geometry";
 import { type Glide, type GlideHost, glidePace, startGlide } from "./glide";
-
 import {
   createItemMeasurer,
   type ItemMeasurer,
   positionRowElement,
 } from "./premeasure";
+import { type Edge, type ReachContext, ReachController } from "./reach";
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,
@@ -19,7 +20,9 @@ import {
   type VirtualListScrollSettleStrategy,
 } from "./scroll-settle";
 
+export type { FollowMode } from "./follow";
 export type { AnchorPolicy, ExplicitAnchor } from "./geometry";
+export type { Edge, ReachContext } from "./reach";
 /** How a snapshot resolves the viewport: a policy, or a host-named anchor. */
 export type AnchorRequest = AnchorPolicy | ExplicitAnchor;
 
@@ -66,19 +69,7 @@ export type AnchorRequest = AnchorPolicy | ExplicitAnchor;
 // occur here because geometry never changes under a live scroll — except
 // what "live" commits below the anchor by explicit product choice.
 
-export interface ReachContext {
-  /**
-   * Aborted when the runtime objectively knows the load is no longer
-   * wanted: the user reached the OPPOSITE edge, or the list was disposed.
-   * Every reach at an edge gets its own signal; all of them abort together.
-   * Wire fetches to it; ignore it to keep a scrollback fetch alive.
-   */
-  signal: AbortSignal;
-}
-
 export type ScrollingUpdates = "freeze" | "same-height" | "live";
-
-export type Edge = "start" | "end";
 
 /**
  * A fixed-height row the runtime keeps at an edge of the scroll surface — a
@@ -207,8 +198,6 @@ export interface VirtualListOptions<T> {
   followInset?: number;
 }
 
-export type FollowMode = "end" | "keep-start";
-
 export interface VirtualListState {
   count: number;
   start: number;
@@ -305,9 +294,6 @@ export interface VirtualList<T> {
   dispose(): void;
 }
 
-const EDGE_ENTER_PX = 800;
-const EDGE_EXIT_PX = 1200;
-
 /** Float noise a measurement may carry (100.0000001 is 100, not 101). */
 const HEIGHT_NOISE = 1e-6;
 
@@ -348,13 +334,6 @@ function snapToDevicePixel(value: number): number {
   return Math.round(value * ratio) / ratio;
 }
 const AT_EDGE_EPSILON_PX = 1;
-/**
- * After the document becomes visible again, follows land by write for this
- * long: the growth of a hidden document arrives in the first frames back
- * (rendering and measurement were paused) and through a host's throttled
- * render right after, and nobody watched it grow.
- */
-const RESUME_CATCH_UP_MS = 300;
 const FOLLOW_LANDING_MS = 320;
 /** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
 const MIN_OVERSCAN_PX = 300;
@@ -488,8 +467,6 @@ export function createVirtualList<T>(
   // destination in flight, else the pre-resize position; the engine's
   // clamp has moved the viewport off the pin by the settle.
   let resizeHeld: "pin" | "viewport" | null = null;
-  // The end of the catch-up window after the document became visible.
-  let catchUpUntil = 0;
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
   const measurer: ItemMeasurer = createItemMeasurer({
@@ -513,10 +490,23 @@ export function createVirtualList<T>(
   let followGlide = false;
   // The in-flight command glide's destination is an align:"start" pin.
   let glideToPin = false;
-  let followMode: FollowMode = options.followMode ?? "end";
-  let followInset = Math.max(0, options.followInset ?? 0);
-  /** Smooth end-follow survives the quiet gap between consecutive glide legs. */
-  let smoothFollowArmed = false;
+  const followController = new FollowController(
+    {
+      maxScrollTop: () => geometry.maxScrollTop(viewport.clientHeight),
+      lastItemTop: () => {
+        let index = geometry.count - 1;
+        while (index >= 0 && isSlotKey(geometry.keyAt(index) as string))
+          index -= 1;
+        return index < 0
+          ? null
+          : geometry.offsetOf(geometry.keyAt(index) as string);
+      },
+      hidden: () => document.visibilityState === "hidden",
+      now: () => performance.now(),
+    },
+    options.followMode,
+    options.followInset,
+  );
   /**
    * A host-driven measurement owns the next measurement commit's anchor.
    * Registering this before the DOM changes prevents ResizeObserver from
@@ -539,12 +529,10 @@ export function createVirtualList<T>(
   // Replaced by the boot commit's publish before the list is handed out.
   let lastState: VirtualListState = EMPTY_STATE;
   let lastPublishedEpoch = -1;
-  let reachStartArmed = true;
-  let reachEndArmed = true;
-  const reachAborts: Record<Edge, Set<AbortController>> = {
-    start: new Set(),
-    end: new Set(),
-  };
+  const reach = new ReachController({
+    start: options.onReachStart,
+    end: options.onReachEnd,
+  });
 
   function viewportState(): GeometryViewport {
     return { scrollTop: viewport.scrollTop, height: viewport.clientHeight };
@@ -951,9 +939,9 @@ export function createVirtualList<T>(
       glide.cancel(); // Its completion callback guards itself.
     }
     if (document.visibilityState === "visible") {
-      catchUpUntil = performance.now() + RESUME_CATCH_UP_MS;
+      followController.resume();
       glide?.cancel();
-      if (smoothFollowArmed && !disposed) followIfBehindEnd();
+      if (followController.armed && !disposed) followIfBehindEnd();
     }
   };
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1409,7 +1397,7 @@ export function createVirtualList<T>(
       // can make the browser clamp scrollTop. Re-read after the canvas write
       // and reconcile that real position before this frame paints.
       reconcileAndPublish();
-      if (smoothFollowArmed) followIfBehindEnd();
+      if (followController.armed) followIfBehindEnd();
       published = true;
     });
     return published;
@@ -1585,14 +1573,14 @@ export function createVirtualList<T>(
       const derivedFollow =
         !booting && result.mode === "end" && policy === "auto";
       const target = derivedFollow
-        ? followTarget(
+        ? followController.target(
             snapToDevicePixel(before.scrollTop),
             snapToDevicePixel(result.scrollTop),
           )
         : snapToDevicePixel(result.scrollTop);
       const smoothFollow =
         !booting &&
-        !catchingUp() &&
+        !followController.catchingUp &&
         options.followBehavior === "smooth" &&
         result.mode === "end" &&
         // A command's takeover settles the phase it interrupts, and the
@@ -1615,11 +1603,7 @@ export function createVirtualList<T>(
         follow === "derive" &&
         !takingOver
       ) {
-        smoothFollowArmed =
-          (policy === "auto" || policy === "end") &&
-          (geometry.maxScrollTop(viewport.clientHeight) - target <=
-            AT_EDGE_EPSILON_PX ||
-            atFollowLimit(target));
+        followController.resolveCommit(policy, target);
       }
       // A mid-phase commit never writes: its target equals the position by
       // construction, except where the engine holds the viewport outside
@@ -1639,7 +1623,7 @@ export function createVirtualList<T>(
       // uncovered the end, a live append landed in the gap between two
       // follow legs — catches up (a glide is a phase of its own, never a
       // write into a gesture; genuine input already cleared the intent).
-      else if (follow === "keep" && smoothFollowArmed) followIfBehindEnd();
+      else if (follow === "keep" && followController.armed) followIfBehindEnd();
     } finally {
       deferTeardown(teardownFailures);
     }
@@ -1759,24 +1743,6 @@ export function createVirtualList<T>(
   }
 
   // --- Events ---------------------------------------------------------------
-  function abortEdge(edge: Edge): void {
-    for (const abort of reachAborts[edge]) abort.abort();
-    reachAborts[edge].clear();
-  }
-
-  function fireReach(edge: Edge): void {
-    // Reaching one edge aborts EVERY started operation at the other — the
-    // user's intent moved on — whether or not this edge has a callback.
-    abortEdge(edge === "start" ? "end" : "start");
-    const callback =
-      edge === "start" ? options.onReachStart : options.onReachEnd;
-    if (!callback) return;
-    // Only abortEdge aborts these, and it clears the whole set as it does.
-    const abort = new AbortController();
-    reachAborts[edge].add(abort);
-    callback({ signal: abort.signal });
-  }
-
   function publish(
     vp: GeometryViewport = viewportState(),
     reconciledRange?: { start: number; end: number },
@@ -1817,7 +1783,7 @@ export function createVirtualList<T>(
       lastState.end !== end ||
       lastState.atStart !== atStart ||
       lastState.atEnd !== atEnd ||
-      lastState.following !== smoothFollowArmed ||
+      lastState.following !== followController.armed ||
       lastState.totalSize !== totalSize ||
       lastState.held !== held
     ) {
@@ -1828,7 +1794,7 @@ export function createVirtualList<T>(
         end,
         atStart,
         atEnd,
-        following: smoothFollowArmed,
+        following: followController.armed,
         totalSize,
         held,
       };
@@ -1836,22 +1802,7 @@ export function createVirtualList<T>(
     }
     if (disposed) return;
 
-    // Proximity signals with entry/exit hysteresis (I3).
-    const startDistance = vp.scrollTop;
-    const endDistance = maxTop - vp.scrollTop;
-    if (startDistance <= EDGE_ENTER_PX && reachStartArmed) {
-      reachStartArmed = false;
-      fireReach("start");
-    } else if (startDistance > EDGE_EXIT_PX) {
-      reachStartArmed = true;
-    }
-    if (disposed) return;
-    if (endDistance <= EDGE_ENTER_PX && reachEndArmed) {
-      reachEndArmed = false;
-      fireReach("end");
-    } else if (endDistance > EDGE_EXIT_PX) {
-      reachEndArmed = true;
-    }
+    reach.update(vp.scrollTop, maxTop);
   }
 
   /** Window reconciliation plus ("live") what commits without a write. */
@@ -1891,15 +1842,12 @@ export function createVirtualList<T>(
     isDisposed: () => disposed,
     // Edge protection arms where the host can actually grow the list.
     canLoadAtBoundary: (boundary) =>
-      boundary === "top"
-        ? options.onReachStart !== undefined
-        : options.onReachEnd !== undefined,
+      reach.canLoad(boundary === "top" ? "start" : "end"),
     // Genuine user input: an in-flight glide is cancelled, and a landed
     // command still parked for its settle resolves interrupted NOW — the
     // user owns the viewport from here, whatever the settle later finds.
     cancelActiveSmoothScroll: () => {
-      const wasFollowing = smoothFollowArmed;
-      smoothFollowArmed = false;
+      const wasFollowing = followController.stop();
       // Input that stops a glide onto the pin short (a tap, a scrollbar
       // press) owns the viewport where it stopped; no scroll event follows
       // to say so.
@@ -1950,18 +1898,16 @@ export function createVirtualList<T>(
       // A scheduled interaction owns the next frame/settle. Do not infer a
       // fresh end-follow intent in the gap after cancelling its old glide.
       if (options.followBehavior === "smooth" && !remeasureOwnsNextCommit()) {
-        const following =
-          !takingOver &&
-          (lastState.atEnd ||
-            endCommand ||
-            followGlide ||
-            atFollowLimit(viewport.scrollTop));
-        if (smoothFollowArmed !== following) {
-          smoothFollowArmed = following;
-          publish();
-        }
+        const changed = followController.resolveSettle({
+          takingOver,
+          atEnd: lastState.atEnd,
+          endCommand,
+          gliding: followGlide,
+          position: viewport.scrollTop,
+        });
+        if (changed) publish();
         // Following but not there: the end moved during the phase.
-        if (following) followIfBehindEnd();
+        if (followController.armed) followIfBehindEnd();
       }
     },
     onGestureReset: () => {},
@@ -2249,7 +2195,7 @@ export function createVirtualList<T>(
     scrollOptions: ScrollOptions,
     done: (completed: boolean) => void,
   ): void {
-    smoothFollowArmed = false;
+    followController.stop();
     const keyed = target !== "start" && target !== "end";
     const below = Math.max(0, scrollOptions.offset ?? 0);
     // A newer command supersedes the previous one whatever its state: a
@@ -2284,7 +2230,7 @@ export function createVirtualList<T>(
       }
       // An instant command to the end has no settle to arm following at.
       if (target === "end" && options.followBehavior === "smooth") {
-        smoothFollowArmed = true;
+        followController.start();
       }
       reconcileAndPublish();
       done(!disposed && landedOn(target, below));
@@ -2334,47 +2280,16 @@ export function createVirtualList<T>(
     };
   }
 
-  /**
-   * Where automatic follow goes from `current`, the end at most. Under
-   * "keep-start" the last row's top (less the inset) is the far limit, and
-   * a viewport already past it stays where it is: follow never moves
-   * backwards, and never past the start of what the user is reading.
-   */
-  function followTarget(current: number, end?: number): number {
-    const max = end ?? geometry.maxScrollTop(viewport.clientHeight);
-    if (followMode === "end") return max;
-    let index = geometry.count - 1;
-    while (index >= 0 && isSlotKey(geometry.keyAt(index) as string)) index -= 1;
-    if (index < 0) return max;
-    const limit = Math.max(
-      0,
-      geometry.offsetOf(geometry.keyAt(index) as string) - followInset,
-    );
-    return Math.min(max, Math.max(current, limit));
-  }
-
-  /** Under "keep-start", standing where the follow stopped is following. */
-  function atFollowLimit(position: number): boolean {
-    if (followMode === "end") return false;
-    const limit = followTarget(0);
-    return Math.abs(limit - position) <= AT_EDGE_EPSILON_PX;
-  }
-
   function followIfBehindEnd(): void {
     // The same band as atEnd: a viewport within a pixel of the end is
     // there, and never starts a glide phase to move under a pixel.
     const current = viewport.scrollTop;
-    const delta = followTarget(current) - current;
-    const behind =
-      followMode === "end"
-        ? Math.abs(delta) > AT_EDGE_EPSILON_PX
-        : delta > AT_EDGE_EPSILON_PX;
-    if (!behind) return;
-    if (catchingUp()) {
+    if (!followController.needsMotion(current)) return;
+    if (followController.catchingUp) {
       // A write and its reconcile are a transaction (I4): a host acting
       // from a mount hook or onState is queued, never re-entered.
       guarded(() => {
-        writeScrollTop(snapToDevicePixel(followTarget(current)));
+        writeScrollTop(snapToDevicePixel(followController.target(current)));
         reconcileAndPublish();
       });
       return;
@@ -2382,19 +2297,11 @@ export function createVirtualList<T>(
     startFollowGlide();
   }
 
-  /** Hidden, or within the catch-up window after the document became visible again. */
-  function catchingUp(): boolean {
-    return (
-      document.visibilityState === "hidden" || performance.now() < catchUpUntil
-    );
-  }
-
   function setFollowMode(mode: FollowMode, inset = 0): void {
     if (disposed) return;
-    followMode = mode;
-    followInset = Math.max(0, inset);
+    followController.setMode(mode, inset);
     // Widening the follow while it is engaged catches up at once.
-    if (smoothFollowArmed && idle()) followIfBehindEnd();
+    if (followController.armed && idle()) followIfBehindEnd();
   }
 
   /** Automatic end-follow: one glide whose destination tracks live growth. */
@@ -2402,7 +2309,7 @@ export function createVirtualList<T>(
     if (disposed || glide !== null) return;
     controller.beginProgrammaticGesture();
     glide = startGlide(
-      glideHost(() => followTarget(viewport.scrollTop)),
+      glideHost(() => followController.target(viewport.scrollTop)),
       // Follow legs are short and frequent: a quicker landing than a
       // command's, so the end keeps up with the stream.
       glidePace(viewport.clientHeight, FOLLOW_LANDING_MS),
@@ -2458,8 +2365,8 @@ export function createVirtualList<T>(
 
     if (anchor === "viewport") {
       const automaticPhase =
-        controller.isScrollPhaseActive() && smoothFollowArmed;
-      smoothFollowArmed = false;
+        controller.isScrollPhaseActive() && followController.armed;
+      followController.stop();
       if (followGlide) glide?.cancel();
       // End only the programmatic phase we just cancelled. Genuine input
       // clears the follow intent in cancelActiveSmoothScroll before this
@@ -2493,8 +2400,7 @@ export function createVirtualList<T>(
     for (const scope of liveScopes) discardScope(scope);
     glide?.cancel();
     settleParked(() => false);
-    abortEdge("start");
-    abortEdge("end");
+    reach.dispose();
     controller.dispose();
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (observeFlushFrame !== 0) cancelAnimationFrame(observeFlushFrame);

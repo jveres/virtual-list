@@ -77,10 +77,18 @@ Everything under `src/`:
 - `geometry.ts` + `fenwick.ts` — the pure keyed geometry kernel: capture →
   mutate → resolve transactions, anchor policies, the pin-to-top reserve.
 - `premeasure.ts` — the detached measurer, width-synced to the viewport.
+- `follow.ts` — chat follow intent, reply-start limits, and catch-up policy
+  after visibility changes. It reads geometry through a small host interface;
+  the runtime owns glides and scroll writes.
+- `reach.ts` — edge-load hysteresis and cancellation. Disposal during a reach
+  or abort callback prevents further loads from starting.
 - `scroll-settle.ts` — the settle controller: gesture classification,
   programmatic-write matching, per-engine settle strategies (`chromium-wheel`,
   `firefox-wheel`, `safari-wheel`, and the plain `default`), chosen by engine
   from the user agent; an unknown engine gets the Firefox contract.
+- `wheel-policy.ts` — Firefox release classification and Chromium wheel
+  suppression state. Only the selected engine's policy is instantiated;
+  shared input listeners and settle scheduling remain in the controller.
 - `glide.ts` — the programmatic smooth scroll: a fixed landing leg (the last
   viewport of travel, always the same time and ease-out) after a distance-
   derived approach, so a one-viewport hop and a jump across the list arrive

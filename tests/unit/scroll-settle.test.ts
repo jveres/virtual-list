@@ -14,9 +14,8 @@ import {
 // Firefox lab traces among them — replayed with fake timers. jsdom performs
 // no real scrolling; the harness mocks viewport geometry and replays the
 // event order each engine actually emits. These pin the externally
-// observable contract, including the two v2 Firefox deviations (the
-// two-window edge release with contested candidates, and Firefox alone
-// retaining a pending release across fresh input).
+// observable contract, including Firefox's release confirmation and
+// invalidation on renewed input while preserving decaying momentum tails.
 
 const VIEWPORT_HEIGHT = 300;
 const CONTENT_HEIGHT = 5000;
@@ -226,6 +225,22 @@ describe("default strategy", () => {
 });
 
 describe("firefox edge sequences (trace replay)", () => {
+  it("does not commit an old release after renewed input is held still", () => {
+    const harness = mount("firefox-wheel");
+    firefoxEdgeReleasePreamble(harness);
+    for (const delta of [-3, -4, -7]) {
+      vi.advanceTimersByTime(16);
+      harness.wheel(delta);
+    }
+    // The user re-grabbed the bouncing edge, then held without more motion.
+    // Silence must not turn the previous gesture's scrollend into permission.
+    vi.advanceTimersByTime(10_000);
+    expect(harness.settled()).toBe(0);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(500);
+    expect(harness.settled()).toBe(1);
+  });
   it("settles an uncontested release ~450ms after the last wheel", () => {
     const harness = mount("firefox-wheel");
     firefoxEdgeReleasePreamble(harness); // Last wheel t+32; now t+182.
@@ -236,7 +251,7 @@ describe("firefox edge sequences (trace replay)", () => {
     expect(harness.settled()).toBe(1);
   });
 
-  it("contests a release when post-scrollend wheels add energy (3→4→7)", () => {
+  it("invalidates a release when post-scrollend wheels add energy (3→4→7)", () => {
     const harness = mount("firefox-wheel");
     firefoxEdgeReleasePreamble(harness); // Now t+182.
 
@@ -246,11 +261,14 @@ describe("firefox edge sequences (trace replay)", () => {
     vi.advanceTimersByTime(16);
     harness.wheel(-4);
     vi.advanceTimersByTime(16);
-    harness.wheel(-7); // Adds energy: contested. Last wheel at t+222.
+    harness.wheel(-7); // Renewed input invalidates the old release.
 
     vi.advanceTimersByTime(1500); // t+1722 — inside the stability window.
     expect(harness.settled()).toBe(0);
-    vi.advanceTimersByTime(200); // t+1922 — past t+1822.
+    vi.advanceTimersByTime(10_000);
+    expect(harness.settled()).toBe(0);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(500);
     expect(harness.settled()).toBe(1);
   });
 
@@ -270,7 +288,7 @@ describe("firefox edge sequences (trace replay)", () => {
     expect(harness.settled()).toBe(1);
   });
 
-  it("contests on a line/page-delta wheel regardless of magnitude", () => {
+  it("invalidates on a line/page-delta wheel regardless of magnitude", () => {
     const harness = mount("firefox-wheel");
     firefoxEdgeReleasePreamble(harness);
 
@@ -279,11 +297,14 @@ describe("firefox edge sequences (trace replay)", () => {
 
     vi.advanceTimersByTime(600); // Far past the confirm window.
     expect(harness.settled()).toBe(0);
-    vi.advanceTimersByTime(1300); // Past the stability window.
+    vi.advanceTimersByTime(10_000);
+    expect(harness.settled()).toBe(0);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(500);
     expect(harness.settled()).toBe(1);
   });
 
-  it("contests on a direction reversal regardless of magnitude", () => {
+  it("invalidates on a direction reversal regardless of magnitude", () => {
     const harness = mount("firefox-wheel");
     firefoxEdgeReleasePreamble(harness); // Predecessor delta -8.
 
@@ -292,7 +313,10 @@ describe("firefox edge sequences (trace replay)", () => {
 
     vi.advanceTimersByTime(600);
     expect(harness.settled()).toBe(0);
-    vi.advanceTimersByTime(1300);
+    vi.advanceTimersByTime(10_000);
+    expect(harness.settled()).toBe(0);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(500);
     expect(harness.settled()).toBe(1);
   });
 
@@ -387,7 +411,7 @@ describe("firefox edge sequences (trace replay)", () => {
 });
 
 describe("firefox delta-mode coverage", () => {
-  it("contests on a page-delta wheel regardless of magnitude", () => {
+  it("invalidates a release on a page-delta wheel regardless of magnitude", () => {
     const harness = mount("firefox-wheel");
     firefoxEdgeReleasePreamble(harness);
 
@@ -396,7 +420,10 @@ describe("firefox delta-mode coverage", () => {
 
     vi.advanceTimersByTime(600);
     expect(harness.settled()).toBe(0);
-    vi.advanceTimersByTime(1300);
+    vi.advanceTimersByTime(10000);
+    expect(harness.settled()).toBe(0);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(500);
     expect(harness.settled()).toBe(1);
   });
 

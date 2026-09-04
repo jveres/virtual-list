@@ -12,7 +12,7 @@ as preserved primitives, with the smaller API built around them.
 
 1. **Cross-browser scrollend detection** — the scroll-settle controller:
    per-engine heuristics (Chromium wheel-idle windows and single-scrollend
-   sequences, Firefox edge stability windows against APZ ghost ends, Safari
+   sequences, Firefox edge release confirmation against APZ ghost ends, Safari
    rubber-band tails, a scrollend+cooldown "default" that is explicit
    opt-in only — detection goes by engine, WebKit without a Safari token
    included, and an unknown engine gets the Firefox contract) yielding the best
@@ -20,8 +20,8 @@ as preserved primitives, with the smaller API built around them.
    are safe — strong evidence, not proof, on wheel engines that expose no
    fingers-down state (the accepted trade-off below). Ported from `main`
    (`src/scroll-settle.ts`) and refined under lab traces: the unchanged
-   portions match `main`; the Firefox deviations (the two-window edge
-   release, and Firefox alone retaining a pending release across fresh
+   portions match `main`; the Firefox deviations (candidate edge
+   release, and Firefox alone retaining it across decaying momentum
    input) are flagged in-source and documented here. Its engine knowledge
    is empirically verified and is not re-derived.
 2. **Chunk premeasurement** — items are built and measured OFF-scroller
@@ -102,24 +102,26 @@ choice with its trade-off stated above.
 
 Settles during active input or motion are defects, always. The v2
 Firefox deviation (in the preserved controller, flagged in-source) is a
-two-window design: a pending edge release is CONTESTED when a
+candidate-release design: a pending edge release is invalidated when a
 post-scrollend wheel adds energy (grows more than a pixel past its
 predecessor, with a 2px floor), reverses direction (new intent), or arrives from a
 line/page-delta device (discrete notches are deliberate input; momentum
 tails exist only on pixel-delta devices) — such a scrollend was a
 mid-momentum/mid-hold pause, not the release (`main` honored it on a
 single 1600ms timer and committed under actively-held fingers). A
-decaying pixel-mode tail merely postpones the short window. Uncontested
-releases settle after a 450ms confirmation window (main's 1600ms made
-every normal edge load wait ~1.5s); contested ones require the full
-1600ms of wheel silence, so nothing hangs and nothing settles while
-input continues.
+decaying pixel-mode tail merely postpones the 450ms confirmation window.
+Renewed input cancels the candidate and its scheduled checks. The controller
+then requires a subsequent `scrollend`; wheel silence alone cannot settle
+the protected edge. If Firefox omits that event, updates remain held until
+a later gesture settles. This replaces the former 1600ms silence fallback,
+which could commit during a motionless re-grab.
 
 THE ACCEPTED TRADE-OFF (latency versus certainty, chosen deliberately):
 wheel engines expose no fingers-down state, so an uncontested scrollend
 is strong evidence of release, not proof — a hold that pauses into a
 quiet scrollend and stays still is observably identical to a release
-and can commit under resting fingers after ~450ms (contested: 1600ms).
+and can commit under resting fingers after ~450ms if no renewed input is
+detectable.
 Retaining the long window universally would restore main's ~1.5s edge
 latency on every normal flick; the fast path was chosen. Standing lab
 watch items: the APZ re-grab race after fast commits (a ghost-edge
@@ -130,7 +132,7 @@ Safari invalidates a pending release as soon as fresh wheel, touch, or
 pointer input resumes. Safari can report reversal input before the first
 scroll event in the new direction; retaining the old `scrollend` would let
 held work commit in that gap. Firefox alone preserves a pending edge release
-because its contested-release classifier explicitly distinguishes continued
+because its release classifier explicitly distinguishes renewed
 wheel input from a decaying momentum tail. Direct touch and scrollbar
 re-grabs invalidate the pending release on every engine.
 
@@ -201,6 +203,13 @@ The definition of correct, referenced by number throughout the code:
   approach cap (a trip from the far end takes at most twice it); the
   default lands in 600ms and bounds a trip by 1400ms; follow legs land in
   320ms.
+- Runtime policy boundaries: `follow.ts` owns follow intent, destination
+  limits, and visibility catch-up; `reach.ts` owns edge-load hysteresis and
+  cancellation. Neither writes DOM or starts a glide. `wheel-policy.ts`
+  owns Firefox's candidate-release state and Chromium's early-scrollend
+  suppression. Only the selected engine's policy exists. Shared listeners,
+  scroll sampling, and settle scheduling remain in `scroll-settle.ts`.
+  These boundaries preserve the public API and existing timing windows.
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
   `createVirtualList(viewport, { items, key, render, height?, boot?, overscanPx?,
   onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
