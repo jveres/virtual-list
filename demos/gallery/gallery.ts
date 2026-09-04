@@ -11,7 +11,7 @@ import {
   slice,
 } from "./layout.js";
 
-// The gallery lab: two layouts of the same photos on the v2 runtime.
+// The gallery: two layouts of the same photos on the v2 runtime.
 //
 // - Rows: a justified row is the item. Its height follows from its photos'
 //   aspect ratios and the width, so its geometry is exact before an image
@@ -29,9 +29,10 @@ import {
 //   keeps its offset within the band), and the runtime resolves the
 //   snapshot as any anchored one. No scroll is written by the lab.
 // - Rows and bands keep their object while unchanged, so the runtime
-//   re-renders nothing for them; a re-render reuses the images it has, by
-//   photo, so a photo never reloads. Sources are set only when a photo
-//   nears the viewport; a failed provider leaves a flat tile in the box.
+//   re-renders nothing for them; a tile is one per photo, pooled across
+//   rows, bands, re-flows, and remounts, so a photo shown once never turns
+//   gray again. Sources are set only when a photo nears the viewport; a
+//   failed provider leaves a flat tile in the box.
 
 type Layout = "rows" | "masonry";
 type Size = "s" | "m" | "l";
@@ -75,7 +76,13 @@ const inheritedBandKeys = new Map<number, string>();
 function renderLoader(): HTMLElement {
   const el = document.createElement("div");
   el.className = "loader";
-  el.textContent = "Loading more photos";
+  el.setAttribute("role", "status");
+  const spinner = document.createElement("span");
+  spinner.className = "boundary-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.textContent = "Loading more photos";
+  el.append(spinner, label);
   return el;
 }
 
@@ -85,23 +92,46 @@ function render(item: GalleryItem, existing?: HTMLElement): HTMLElement {
     : renderBand(item, existing);
 }
 
-/** The tiles an element already holds, by photo: a re-render keeps them, so a photo never reloads. */
-function existingTiles(el: HTMLElement): Map<number, HTMLElement> {
-  const held = new Map<number, HTMLElement>();
-  for (const tile of el.querySelectorAll<HTMLElement>(".tile")) {
-    held.set(Number(tile.dataset.id), tile);
+/**
+ * One tile per photo, kept across rows, bands, re-flows, and remounts: a
+ * photo shown once keeps its element and its decoded image wherever it
+ * lands next, so a re-flow or a scroll back never shows it gray again.
+ * The pool is bounded; the tiles least recently placed and no longer on
+ * screen go first.
+ */
+const tiles = new Map<string, HTMLElement>();
+const TILE_POOL_MAX = 900;
+
+/** A card crossing band edges is drawn once per band it crosses: each drawing (part) is its own tile. */
+function tileFor(p: Photo, part = 0): HTMLElement {
+  const key = `${p.id}:${part}`;
+  let tile = tiles.get(key);
+  if (tile) {
+    tiles.delete(key);
+  } else {
+    tile = tileElement(p);
   }
-  return held;
+  tiles.set(key, tile);
+  if (tiles.size > TILE_POOL_MAX) {
+    for (const [old, element] of tiles) {
+      if (element.isConnected) continue;
+      tiles.delete(old);
+      const img = element.querySelector("img");
+      if (img) nearViewport.unobserve(img);
+      break;
+    }
+  }
+  return tile;
 }
 
 /** A photo's tile at a size: the placeholder box, its image fading in over it. */
 function tileAt(
-  held: Map<number, HTMLElement>,
   p: Photo,
   width: number,
   height: number,
+  part = 0,
 ): HTMLElement {
-  const tile = held.get(p.id) ?? tileElement(p);
+  const tile = tileFor(p, part);
   tile.style.width = `${width}px`;
   tile.style.height = `${height}px`;
   return tile;
@@ -109,12 +139,11 @@ function tileAt(
 
 function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
   const el = existing ?? document.createElement("div");
-  const held = existingTiles(el);
   el.className = "photo-row";
   el.style.height = `${row.height + GAP}px`;
   el.replaceChildren(
     ...row.photos.map((p) => {
-      const tile = tileAt(held, p, p.width, row.height);
+      const tile = tileAt(p, p.width, row.height);
       tile.style.left = "";
       tile.style.top = "";
       return tile;
@@ -125,12 +154,11 @@ function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
 
 function renderBand(band: Band, existing?: HTMLElement): HTMLElement {
   const el = existing ?? document.createElement("div");
-  const held = existingTiles(el);
   el.className = "band";
   el.style.height = `${band.height}px`;
   el.replaceChildren(
     ...band.cards.map((card) => {
-      const tile = tileAt(held, card, card.width, card.height);
+      const tile = tileAt(card, card.width, card.height, card.part);
       tile.style.left = `${card.left}px`;
       tile.style.top = `${card.top - band.start}px`;
       return tile;
@@ -175,6 +203,8 @@ const nearViewport = new IntersectionObserver(
       const src = img.dataset.src;
       if (!src) continue;
       img.src = src;
+      // Already decoded (a cached image): shown at first paint, no fade.
+      if (img.complete && img.naturalWidth > 0) img.classList.add("loaded");
       // A provider that never answers leaves a flat tile in the photo's
       // exact box; a late answer still paints over it.
       const stall = window.setTimeout(

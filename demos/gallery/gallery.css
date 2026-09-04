@@ -1,4 +1,4 @@
-/* The gallery lab: one scroller, justified rows or masonry bands as items. */
+/* The gallery: one scroller, justified rows or masonry bands as items. */
 
 .stage {
   position: relative;
@@ -69,12 +69,31 @@
   );
 }
 
+/* The end loader: the chat's spinner and label. */
 .loader {
-  display: grid;
-  place-items: center;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   height: 56px;
   color: var(--fg-dim);
   font-size: 12px;
+}
+
+.boundary-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: boundary-spin 0.8s linear infinite;
+}
+
+@keyframes boundary-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 header .choices {

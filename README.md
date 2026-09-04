@@ -49,7 +49,7 @@ pnpm run dev
   persists in the browser; URL parameters are for test and debug flags
   only.
 
-- `/demos/gallery/index.html` — the gallery lab: the same photos as
+- `/demos/gallery/index.html` — the gallery: the same photos as
   justified rows or as masonry bands, each the virtualized item. Geometry
   is exact before any image loads; a width, size, or layout change is
   anchored through the runtime's key anchor (the row or band that holds

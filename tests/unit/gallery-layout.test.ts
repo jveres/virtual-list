@@ -87,13 +87,17 @@ describe("masonry", () => {
     }
     expect(y).toBe(height);
     for (const card of cards) {
-      const holders = bands.filter((b) => b.cards.includes(card));
+      const drawings = bands.flatMap((b) =>
+        b.cards.filter((c) => c.id === card.id),
+      );
       const crossed = Math.max(
         1,
         Math.ceil((card.top + card.height) / 400) - Math.floor(card.top / 400),
       );
-      expect(holders.length).toBeGreaterThanOrEqual(1);
-      expect(holders.length).toBeLessThanOrEqual(crossed);
+      expect(drawings.length).toBeGreaterThanOrEqual(1);
+      expect(drawings.length).toBeLessThanOrEqual(crossed);
+      // Each drawing of a card is its own part, counted from its top band.
+      expect(drawings.map((d) => d.part)).toEqual(drawings.map((_, i) => i));
     }
   });
 

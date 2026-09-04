@@ -20,6 +20,11 @@ export interface Card extends Photo {
   height: number;
 }
 
+/** A card as one band holds it: `part` counts the bands it crosses, from the one holding its top. */
+export interface BandCard extends Card {
+  part: number;
+}
+
 export interface JustifiedRow {
   kind: "row";
   key: string;
@@ -34,7 +39,7 @@ export interface Band {
   /** Layout y of the slice's top. */
   start: number;
   height: number;
-  cards: Card[];
+  cards: BandCard[];
 }
 
 export type GalleryItem = JustifiedRow | Band;
@@ -150,16 +155,21 @@ export function slice(
   }
   edges.push(height);
   // Cards sorted by top: each band scans from the first card that can
-  // still intersect it.
+  // still intersect it. A card's part counts up through the bands it
+  // crosses, so each drawing of it is its own element.
   const sorted = [...cards].sort((a, b) => a.top - b.top);
+  const parts = new Map<number, number>();
   for (let i = 0; i + 1 < edges.length; i++) {
     const start = edges[i] as number;
     const end = edges[i + 1] as number;
     if (end <= start) continue;
-    const inBand: Card[] = [];
+    const inBand: BandCard[] = [];
     for (const card of sorted) {
       if (card.top >= end) break;
-      if (card.top + card.height > start) inBand.push(card);
+      if (card.top + card.height <= start) continue;
+      const part = parts.get(card.id) ?? 0;
+      parts.set(card.id, part + 1);
+      inBand.push({ ...card, part });
     }
     bands.push({
       kind: "band",
