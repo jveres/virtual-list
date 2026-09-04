@@ -77,6 +77,9 @@ Everything under `src/`:
 - `geometry.ts` + `fenwick.ts` — the pure keyed geometry kernel: capture →
   mutate → resolve transactions, anchor policies, the pin-to-top reserve.
 - `premeasure.ts` — the detached measurer, width-synced to the viewport.
+- `snapshot.ts` — DOM-independent key validation, anchor inheritance,
+  superseded-row selection, and merging targeted patches into held snapshots.
+  Rendering, rollback, measurement, and commit scheduling stay in the runtime.
 - `follow.ts` — chat follow intent, reply-start limits, and catch-up policy
   after visibility changes. It reads geometry through a small host interface;
   the runtime owns glides and scroll writes.

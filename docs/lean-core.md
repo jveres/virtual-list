@@ -210,6 +210,13 @@ The definition of correct, referenced by number throughout the code:
   suppression. Only the selected engine's policy exists. Shared listeners,
   scroll sampling, and settle scheduling remain in `scroll-settle.ts`.
   These boundaries preserve the public API and existing timing windows.
+- Snapshot bookkeeping: `snapshot.ts` validates and indexes item keys,
+  resolves inherited anchor intent, identifies superseded rows, and merges
+  successful targeted patches. It does not render, measure, destroy, or
+  schedule anything. The runtime owns those effects and transfers snapshot
+  ownership only after rendering and measurement succeed. This is the first
+  separation of the preparation pipeline, not a replacement of its rollback
+  or commit machinery.
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
   `createVirtualList(viewport, { items, key, render, height?, boot?, overscanPx?,
   onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,

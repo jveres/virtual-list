@@ -2,7 +2,6 @@ import { FollowController, type FollowMode } from "./follow";
 import {
   type AnchorPolicy,
   type CapturePolicy,
-  type ExplicitAnchor,
   Geometry,
   type GeometryViewport,
 } from "./geometry";
@@ -19,12 +18,23 @@ import {
   type ScrollSettleController,
   type VirtualListScrollSettleStrategy,
 } from "./scroll-settle";
+import {
+  type AnchorRequest,
+  createPrepared,
+  type DeclaredItem,
+  indexItems,
+  isSlotKey,
+  mergePrepared,
+  type PreparedSnapshot,
+  slotKey,
+  supersededRows,
+} from "./snapshot";
 
 export type { FollowMode } from "./follow";
 export type { AnchorPolicy, ExplicitAnchor } from "./geometry";
 export type { Edge, ReachContext } from "./reach";
 /** How a snapshot resolves the viewport: a policy, or a host-named anchor. */
-export type AnchorRequest = AnchorPolicy | ExplicitAnchor;
+export type { AnchorRequest } from "./snapshot";
 
 // The v2 runtime, built on the two preserved primitives — the browser-
 // adaptive scroll-settle controller and detached premeasurement — under
@@ -213,15 +223,6 @@ export interface VirtualListState {
 
 export type ScrollTarget = string | "start" | "end";
 
-/** Edge slot keys live in a namespace no host key can collide with. */
-const SLOT_KEY_PREFIX = "\u0000edge:";
-function slotKey(edge: Edge, key: string): string {
-  return `${SLOT_KEY_PREFIX}${edge}:${key}`;
-}
-function isSlotKey(key: string): boolean {
-  return key.startsWith(SLOT_KEY_PREFIX);
-}
-
 function ownEdgeSlot(slot: EdgeSlot | null | undefined): EdgeSlot | null {
   if (slot == null) return null;
   if (!Number.isFinite(slot.height) || slot.height <= 0) {
@@ -385,21 +386,7 @@ interface Row<T> {
   destroyed: boolean;
 }
 
-type DeclaredItem<T> = { item: T; height: number };
-
-interface Prepared<T> {
-  keys: readonly string[];
-  /** Rows built and premeasured off-scroller for new or replaced keys. */
-  newRows: Map<string, Row<T>>;
-  anchor: AnchorPolicy;
-  /** A host-named anchor, resolved under the "viewport" policy. */
-  target: ExplicitAnchor | null;
-  /** Declared-height items that changed mid-phase: rendered in place at the commit. */
-  deferred: Map<string, T>;
-  /** Geometry and data for declared rows, independent of their mounted DOM. */
-  declaredItems: Map<string, DeclaredItem<T>> | null;
-  partial: boolean;
-}
+type Prepared<T> = PreparedSnapshot<T, Row<T>>;
 
 type Transaction = { run: () => void; discard?: () => void };
 type Scope = Transaction[];
@@ -947,56 +934,17 @@ export function createVirtualList<T>(
   document.addEventListener("visibilitychange", onVisibilityChange);
 
   // --- Preparation (off-scroller, failure-atomic) ---------------------------
-  function emptyPrepared(
-    keys: readonly string[],
-    anchor: AnchorPolicy,
-  ): Prepared<T> {
-    return {
-      keys,
-      newRows: new Map(),
-      anchor,
-      target: null,
-      deferred: new Map(),
-      declaredItems: null,
-      partial: false,
-    };
-  }
-
   function prepare(
     next: readonly T[],
     requested: AnchorRequest | undefined,
     partial = false,
   ): { prepared: Prepared<T>; teardownFailures: unknown[] } {
-    // An omitted anchor INHERITS the pending snapshot's policy: a held page
-    // load that asked for "viewport" must not be turned into "auto" (and
-    // an end-follow) by an unrelated same-key update landing before
-    // settle. Only an explicit anchor replaces it. A host-named anchor is
-    // the "viewport" policy with a named target.
-    const named = typeof requested === "object" ? requested : null;
-    const anchor: AnchorPolicy =
-      typeof requested === "string"
-        ? requested
-        : named !== null
-          ? "viewport"
-          : (pending?.anchor ?? "auto");
-    const target: ExplicitAnchor | null =
-      named ?? (requested === undefined ? (pending?.target ?? null) : null);
-    const deferred = new Map<string, T>();
-    const itemKeys = next.map(keyOf);
-    const itemByKey = new Map<string, T>();
-    const nextDeclared = declared ? new Map<string, DeclaredItem<T>>() : null;
-    for (let index = 0; index < next.length; index++) {
-      const key = itemKeys[index] as string;
-      if (isSlotKey(key)) {
-        throw new Error(`item key "${key}" uses the reserved edge-slot prefix`);
-      }
-      if (itemByKey.has(key)) throw new Error(`duplicate key "${key}"`);
-      itemByKey.set(key, next[index] as T);
-      if (nextDeclared) {
-        const item = next[index] as T;
-        nextDeclared.set(key, { item, height: declaredHeight(item) });
-      }
-    }
+    const previous = pending;
+    const {
+      itemKeys,
+      itemByKey,
+      declaredItems: nextDeclared,
+    } = indexItems(next, keyOf, declared ? declaredHeight : null);
     // Edge slots bracket the items in the key order.
     const startSlot = edgeSlots.start;
     const endSlot = edgeSlots.end;
@@ -1014,8 +962,14 @@ export function createVirtualList<T>(
     // later failure they are rolled back by re-rendering the row's own
     // item, and a row whose rollback fails stays marked so the next
     // preparation re-renders it regardless of item identity.
-    const previous = pending;
-    const newRows = new Map<string, Row<T>>();
+    const prepared = createPrepared<T, Row<T>>(
+      keys,
+      requested,
+      previous,
+      partial,
+    );
+    prepared.declaredItems = nextDeclared;
+    const { newRows, deferred, anchor } = prepared;
     const built: Row<T>[] = [];
     const inPlace: { row: Row<T>; item: T }[] = [];
     /** Equal-height phase-time updates: swapped into committed slots in phase 2. */
@@ -1234,7 +1188,7 @@ export function createVirtualList<T>(
       const failures = [...disposeFailures, ...rollBack()];
       if (error instanceof DisposedDuringPreparation) {
         return {
-          prepared: emptyPrepared(keys, anchor),
+          prepared: createPrepared<T, Row<T>>(keys, anchor),
           teardownFailures: failures,
         };
       }
@@ -1256,49 +1210,26 @@ export function createVirtualList<T>(
     }
     const teardownFailures: unknown[] = [];
     if (previous) {
-      const candidates = partial
-        ? itemKeys.flatMap((key) => {
-            const row = previous.newRows.get(key);
-            return row ? [[key, row] as const] : [];
-          })
-        : [...previous.newRows];
-      const superseded = candidates
-        .filter(([key]) => !adopted.has(key))
-        .map(([, row]) => row);
-      teardownFailures.push(...destroyAll(superseded));
+      teardownFailures.push(
+        ...destroyAll(
+          supersededRows(
+            previous.newRows,
+            adopted,
+            partial ? itemKeys : undefined,
+          ),
+        ),
+      );
     }
     teardownFailures.push(...applyPromotions(promotions));
     if (disposed) {
       teardownFailures.push(...destroyAll(built));
-      return { prepared: emptyPrepared(keys, anchor), teardownFailures };
-    }
-    if (partial && previous) {
-      // Preparation succeeded: advance only the touched keys in the held
-      // snapshot. Its order and untouched rows remain owned by that snapshot.
-      // Do not copy its maps or mutate them before rollback is no longer needed.
-      for (const key of itemKeys) {
-        previous.newRows.delete(key);
-        previous.deferred.delete(key);
-      }
-      for (const [key, row] of newRows) previous.newRows.set(key, row);
-      for (const [key, item] of deferred) previous.deferred.set(key, item);
-      for (const [key, entry] of nextDeclared ?? [])
-        previous.declaredItems?.set(key, entry);
       return {
-        prepared: { ...previous, anchor, target },
+        prepared: createPrepared<T, Row<T>>(keys, anchor),
         teardownFailures,
       };
     }
     return {
-      prepared: {
-        keys,
-        newRows,
-        anchor,
-        target,
-        deferred,
-        declaredItems: nextDeclared,
-        partial,
-      },
+      prepared: mergePrepared(previous, prepared, itemKeys),
       teardownFailures,
     };
   }
