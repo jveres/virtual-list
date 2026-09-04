@@ -11,8 +11,6 @@ export interface LoaderMetrics {
   inFlight: number;
   /** The deepest the queue has been: a warm cache drains it before a frame can show it. */
   peakQueued: number;
-  /** The most downloads in flight at once. */
-  peakInFlight: number;
   /** Arrived since the loader was created. */
   loaded: number;
   /** Errored or stalled. */
@@ -54,7 +52,6 @@ export function createImageLoader(options: {
     queued: 0,
     inFlight: 0,
     peakQueued: 0,
-    peakInFlight: 0,
     loaded: 0,
     failed: 0,
     cancelled: 0,
@@ -197,7 +194,6 @@ export function createImageLoader(options: {
       pump();
     }
     inFlight.set(img, { src, done });
-    metrics.peakInFlight = Math.max(metrics.peakInFlight, inFlight.size);
     img.addEventListener("load", onLoad, { once: true });
     img.addEventListener("error", onError, { once: true });
     img.setAttribute("fetchpriority", distance === 0 ? "high" : "low");
