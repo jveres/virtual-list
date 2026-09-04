@@ -100,6 +100,7 @@ needs explicit remount/state semantics; silently evicting current measured
 rows would change behavior. Eviction alone also does not remove initial
 premeasurement cost when exact heights are required.
 
-Profile a representative markdown conversation and take heap snapshots before
-choosing that policy. The remaining commit-function cleanup is a readability
-task, not a demonstrated performance bottleneck in this fixture.
+The [markdown history profile](markdown-profile.md) adds generated rich-content
+startup measurements and Chromium heap snapshots to inform that policy.
+The remaining commit-function cleanup is a readability task, not a demonstrated
+performance bottleneck in this fixture.
