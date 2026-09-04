@@ -51,6 +51,10 @@ import {
  *   pauses into an UNCONTESTED scrollend and stays still is observably
  *   identical to a release and will apply after the short window — the
  *   documented latency-versus-certainty trade-off.
+ *   Before any wheel/touch/scrollbar input, scroll-only startup movement
+ *   can instead be browser history restoration (Firefox sends no scrollend
+ *   for it). That initial movement may settle through the quiet fallback;
+ *   the first real input cancels that fallback and restores edge protection.
  * - **Safari**: rubber-bands past the scroll range, and any scrollTop write
  *   during native motion kills the momentum animation. The contract is:
  *   never settle while rubber-banded or while any motion — even sub-pixel —
@@ -169,6 +173,9 @@ export function createScrollSettleController(
 
   let scrollPhaseActive = false;
   let scrollPhaseMoved = false;
+  // Lifetime flag, not phase state: after the first input, never mistake
+  // a later silent hold or momentum tail for startup scroll restoration.
+  let awaitingInitialInput = true;
   let lastScrollSampleTop = viewport.scrollTop;
   let lastScrollSampleAt = performance.now();
   let lastScrollSampleHeight = viewport.clientHeight;
@@ -414,7 +421,11 @@ export function createScrollSettleController(
       // held fingers, which visibly flashes — and the rest of the gesture
       // routes to the overscroll effect, so the user can't even scroll into
       // the newly applied content until release.
-      !(strategy === "firefox-wheel" && hasProtectedFirefoxEdge())
+      !(
+        strategy === "firefox-wheel" &&
+        !awaitingInitialInput &&
+        hasProtectedFirefoxEdge()
+      )
     );
   }
 
@@ -773,8 +784,17 @@ export function createScrollSettleController(
     });
   }
 
+  function observeInitialInput(): void {
+    if (!awaitingInitialInput) return;
+    awaitingInitialInput = false;
+    // A restoration fallback may already have armed its cooldown. It is
+    // not evidence of release for the gesture taking over now.
+    if (firefox) cancelPendingScrollPhaseEnd();
+  }
+
   function handleWheel(event: WheelEvent): void {
     if (host.isDisposed()) return;
+    observeInitialInput();
     if (usesWheelScrollEndFallback()) {
       firefox?.recordInput(performance.now());
       const outwardBoundary = boundaryForOutwardWheel(event);
@@ -822,6 +842,7 @@ export function createScrollSettleController(
   }
 
   function handleTouchScrollStart(): void {
+    observeInitialInput();
     touchInputActive = true;
     scrollEventsSinceTouchStart = 0;
     cancelPendingReleaseForDirectInput();
@@ -829,6 +850,7 @@ export function createScrollSettleController(
   }
 
   function handleTouchScrollMove(): void {
+    observeInitialInput();
     cancelPendingReleaseForDirectInput();
     handleScrollPhaseStart();
   }
@@ -885,6 +907,7 @@ export function createScrollSettleController(
       return;
     }
     activePointers.add(event.pointerId);
+    observeInitialInput();
     cancelPendingReleaseForDirectInput();
     handleScrollPhaseStart();
   }

@@ -58,6 +58,7 @@ function photo(id: number): Photo {
 }
 
 const viewport = mustGet("viewport");
+viewport.scrollTop = 0;
 const status = mustGet("status");
 const loaderMetrics = mustGet("loader-metrics");
 const concurrencySelect = mustGet("concurrency", HTMLSelectElement);
@@ -368,18 +369,20 @@ function syncStatus(): void {
 }
 
 function loadMore(signal: AbortSignal): void {
-  if (loading || loaded >= TOTAL) return;
+  if (loading || loaded >= TOTAL || signal.aborted) return;
   loading = true;
   const timer = window.setTimeout(() => {
+    signal.removeEventListener("abort", cancel);
     loading = false;
     loaded = Math.min(TOTAL, loaded + PAGE);
     if (loaded >= TOTAL) list.setEdgeSlot("end", null);
     appendPage();
   }, LOAD_DELAY_MS);
-  signal.addEventListener("abort", () => {
+  function cancel(): void {
     window.clearTimeout(timer);
     loading = false;
-  });
+  }
+  signal.addEventListener("abort", cancel, { once: true });
 }
 
 // --- Boot --------------------------------------------------------------------

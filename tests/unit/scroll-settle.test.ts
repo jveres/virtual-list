@@ -159,6 +159,78 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+describe("Firefox startup scroll restoration", () => {
+  it("should settle a restored bottom position without wheel input or scrollend", () => {
+    const h = mount("firefox-wheel", { canLoadBottom: true });
+
+    h.scrollTo(CONTENT_HEIGHT - VIEWPORT_HEIGHT);
+    vi.advanceTimersByTime(500);
+
+    expect(h.settled()).toBe(1);
+    expect(h.controller.isScrollPhaseActive()).toBe(false);
+  });
+
+  it("should wait for restoration movement to stop before settling", () => {
+    const h = mount("firefox-wheel", { canLoadBottom: true });
+    h.scrollTo(4500);
+    vi.advanceTimersByTime(200);
+
+    h.scrollTo(CONTENT_HEIGHT - VIEWPORT_HEIGHT);
+    vi.advanceTimersByTime(200);
+
+    expect(h.settled()).toBe(0);
+    vi.advanceTimersByTime(100);
+    expect(h.settled()).toBe(1);
+  });
+
+  it("should cancel a restoration cooldown when the first wheel takes over", () => {
+    const h = mount("firefox-wheel", { canLoadBottom: true });
+    h.scrollTo(CONTENT_HEIGHT - VIEWPORT_HEIGHT);
+    vi.advanceTimersByTime(200);
+
+    h.wheel(20);
+    vi.advanceTimersByTime(5000);
+
+    expect(h.settled()).toBe(0);
+    expect(h.controller.isScrollPhaseActive()).toBe(true);
+    h.scrollEnd();
+    vi.advanceTimersByTime(500);
+    expect(h.settled()).toBe(1);
+  });
+
+  it("should preserve edge protection for subsequent gestures after restoration settles", () => {
+    const h = mount("firefox-wheel", { canLoadBottom: true });
+    h.scrollTo(CONTENT_HEIGHT - VIEWPORT_HEIGHT);
+    vi.advanceTimersByTime(500);
+    expect(h.settled()).toBe(1);
+
+    h.wheel(20);
+    vi.advanceTimersByTime(5000);
+
+    expect(h.settled()).toBe(1);
+    expect(h.controller.isScrollPhaseActive()).toBe(true);
+    h.scrollEnd();
+    vi.advanceTimersByTime(500);
+    expect(h.settled()).toBe(2);
+  });
+
+  it("should cancel a restoration cooldown when touch input takes over", () => {
+    const h = mount("firefox-wheel", { canLoadBottom: true });
+    h.scrollTo(CONTENT_HEIGHT - VIEWPORT_HEIGHT);
+    vi.advanceTimersByTime(200);
+
+    h.touchStart();
+    vi.advanceTimersByTime(5000);
+    h.touchEnd();
+    vi.advanceTimersByTime(5000);
+
+    expect(h.settled()).toBe(0);
+    h.scrollEnd();
+    vi.advanceTimersByTime(500);
+    expect(h.settled()).toBe(1);
+  });
+});
+
 describe("detectScrollSettleStrategy", () => {
   const CHROME =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
