@@ -169,11 +169,15 @@ const demoParams = new URLSearchParams(location.search);
 const OPTIONS_KEY = "virtual-list:chat-options";
 /** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
 type LandingMode = "prompt" | "end";
+type CursorMode = "bar" | "none";
+type AnimationMode = "none" | "fade" | "rise";
 interface ChatOptions {
   edge: "slot" | "pill";
   sticky: boolean;
   follow: FollowMode;
   landing: LandingMode;
+  cursor: CursorMode;
+  animation: AnimationMode;
 }
 function loadChatOptions(): ChatOptions {
   const stored: Partial<ChatOptions> = (() => {
@@ -187,6 +191,8 @@ function loadChatOptions(): ChatOptions {
   const stickyParam = demoParams.get("sticky");
   const followParam = demoParams.get("follow");
   const landingParam = demoParams.get("landing");
+  const cursorParam = demoParams.get("cursor");
+  const animationParam = demoParams.get("animation");
   return {
     edge:
       edgeParam === "pill" || edgeParam === "slot"
@@ -208,6 +214,20 @@ function loadChatOptions(): ChatOptions {
         : stored.landing === "end"
           ? "end"
           : "prompt",
+    cursor:
+      cursorParam === "none" || cursorParam === "bar"
+        ? cursorParam
+        : stored.cursor === "none"
+          ? "none"
+          : "bar",
+    animation:
+      animationParam === "fade" ||
+      animationParam === "rise" ||
+      animationParam === "none"
+        ? animationParam
+        : stored.animation === "fade" || stored.animation === "rise"
+          ? stored.animation
+          : "none",
   };
 }
 function saveChatOptions(): void {
@@ -219,6 +239,8 @@ function saveChatOptions(): void {
         sticky: stickyEnabled,
         follow: followMode,
         landing: landingMode,
+        cursor: cursorMode,
+        animation: animationMode,
       }),
     );
   } catch {
@@ -230,6 +252,8 @@ let edgeLoaderMode: "slot" | "pill" = chatOptions.edge;
 let stickyEnabled = chatOptions.sticky;
 let followMode: FollowMode = chatOptions.follow;
 let landingMode: LandingMode = chatOptions.landing;
+let cursorMode: CursorMode = chatOptions.cursor;
+let animationMode: AnimationMode = chatOptions.animation;
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
@@ -243,6 +267,8 @@ const scrollBottomBtn = mustGet("scroll-bottom-btn", HTMLButtonElement);
 const edgeLoaderSelect = mustGet("edge-loader-mode", HTMLSelectElement);
 const autoscrollSelect = mustGet("autoscroll-mode", HTMLSelectElement);
 const landingSelect = mustGet("landing-mode", HTMLSelectElement);
+const cursorSelect = mustGet("cursor-mode", HTMLSelectElement);
+const animationSelect = mustGet("animation-mode", HTMLSelectElement);
 const windowStatus = mustGet("window-status");
 const virtualListStatus = mustGet("virtual-list-status");
 const composerMinHeight = Math.max(
@@ -1351,6 +1377,8 @@ function buildStreamingRow(message: Message): HTMLElement {
     // The viewer root rarely holds focus inside the list (the composer does),
     // so keep a solid block cursor instead of dimming to a hollow frame.
     unfocusedCursorStyle: "block",
+    cursor: cursorMode,
+    streamingAnimation: animationMode,
   });
   streamingViewers.set(row, handle);
   return row;
@@ -2172,6 +2200,27 @@ edgeLoaderSelect.addEventListener("change", () => {
 });
 syncEdgeLoaderMode();
 
+cursorSelect.value = cursorMode;
+cursorSelect.addEventListener("change", () => {
+  cursorMode = cursorSelect.value === "none" ? "none" : "bar";
+  saveChatOptions();
+  syncStreamingViewerOptions();
+});
+animationSelect.value = animationMode;
+animationSelect.addEventListener("change", () => {
+  const value = animationSelect.value;
+  animationMode = value === "fade" || value === "rise" ? value : "none";
+  saveChatOptions();
+  syncStreamingViewerOptions();
+});
+// A live reply takes a changed cursor or animation choice at once.
+function syncStreamingViewerOptions(): void {
+  for (const row of rowById.values()) {
+    streamingViewers
+      .get(row)
+      ?.update({ cursor: cursorMode, streamingAnimation: animationMode });
+  }
+}
 landingSelect.value = landingMode;
 landingSelect.addEventListener("change", () => {
   landingMode = landingSelect.value === "end" ? "end" : "prompt";
