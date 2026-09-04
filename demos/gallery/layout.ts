@@ -147,33 +147,27 @@ export function slice(
   bandHeight: number,
 ): Band[] {
   const bands: Band[] = [];
-  const edges: number[] = [0];
-  for (let y = bandHeight; y < height; y += bandHeight) edges.push(y);
-  edges.push(height);
-  // Cards sorted by top: each band scans from the first card that can
-  // still intersect it. A card's part counts up through the bands it
-  // crosses, so each drawing of it is its own element.
-  const sorted = [...cards].sort((a, b) => a.top - b.top);
-  const parts = new Map<number, number>();
-  for (let i = 0; i + 1 < edges.length; i++) {
-    const start = edges[i] as number;
-    const end = edges[i + 1] as number;
-    if (end <= start) continue;
-    const inBand: BandCard[] = [];
-    for (const card of sorted) {
-      if (card.top >= end) break;
-      if (card.top + card.height <= start) continue;
-      const part = parts.get(card.id) ?? 0;
-      parts.set(card.id, part + 1);
-      inBand.push({ ...card, part });
-    }
+  for (let start = 0; start < height; start += bandHeight) {
     bands.push({
       kind: "band",
       key: `b${start}`,
       start,
-      height: end - start,
-      cards: inBand,
+      height: Math.min(bandHeight, height - start),
+      cards: [],
     });
+  }
+  // Assign each card directly to its intersecting bands, preserving top
+  // order without rescanning all earlier cards for every band.
+  for (const card of [...cards].sort((a, b) => a.top - b.top)) {
+    const first = Math.max(0, Math.floor(card.top / bandHeight));
+    const last = Math.min(
+      bands.length - 1,
+      Math.ceil((card.top + card.height) / bandHeight) - 1,
+    );
+    for (let i = first; i <= last; i++) {
+      const band = bands[i] as Band;
+      band.cards.push({ ...card, part: i - first });
+    }
   }
   return bands;
 }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  type Card,
   justify,
   masonry,
   type Photo,
@@ -46,6 +47,104 @@ describe("justified rows", () => {
 });
 
 describe("masonry", () => {
+  it("should return no bands for an empty grid", () => {
+    expect(slice([], 0, 400)).toEqual([]);
+  });
+
+  it("should preserve boundary intersections, part numbers, and stable top order", () => {
+    const card = (id: number, top: number, height: number): Card => ({
+      id,
+      top,
+      height,
+      left: 0,
+      width: 100,
+      aspect: 100 / height,
+    });
+    const cards = [
+      card(3, 800, 50),
+      card(1, 0, 400),
+      card(2, 0, 850),
+      card(4, 400, 400),
+    ];
+    const original = cards.map((c) => ({ ...c }));
+
+    const bands = slice(cards, 850, 400);
+
+    expect(bands).toEqual([
+      {
+        kind: "band",
+        key: "b0",
+        start: 0,
+        height: 400,
+        cards: [
+          { ...cards[1], part: 0 },
+          { ...cards[2], part: 0 },
+        ],
+      },
+      {
+        kind: "band",
+        key: "b400",
+        start: 400,
+        height: 400,
+        cards: [
+          { ...cards[2], part: 1 },
+          { ...cards[3], part: 0 },
+        ],
+      },
+      {
+        kind: "band",
+        key: "b800",
+        start: 800,
+        height: 50,
+        cards: [
+          { ...cards[2], part: 2 },
+          { ...cards[0], part: 0 },
+        ],
+      },
+    ]);
+    expect(cards).toEqual(original);
+  });
+
+  it("should match geometric intersections across gallery sizes and columns", () => {
+    for (const count of [1, 120, 3000]) {
+      for (const columns of [2, 4, 6]) {
+        const { cards, height } = masonry(photos(count), 1080, columns, 6);
+        const bands = slice(cards, height, 480);
+        const parts = new Map<number, number>();
+
+        expect(bands).toHaveLength(Math.ceil(height / 480));
+        for (const band of bands) {
+          const expected = cards
+            .filter(
+              (card) =>
+                card.top < band.start + band.height &&
+                card.top + card.height > band.start,
+            )
+            .map((card) => {
+              const part = parts.get(card.id) ?? 0;
+              parts.set(card.id, part + 1);
+              return { ...card, part };
+            });
+          expect(band.cards).toEqual(expected);
+        }
+      }
+    }
+  });
+
+  it("should preserve completed bands behind all column tails on append", () => {
+    const before = masonry(photos(120), 1080, 5, 6);
+    const after = masonry(photos(240), 1080, 5, 6);
+    const firstNewTop = after.cards[120]?.top as number;
+    const stable = slice(before.cards, before.height, 480).filter(
+      (band) => band.start + band.height <= firstNewTop,
+    );
+
+    const bands = slice(after.cards, after.height, 480);
+
+    expect(stable.length).toBeGreaterThan(0);
+    expect(bands.slice(0, stable.length)).toEqual(stable);
+  });
+
   it("places every photo in a column without overlap and never moves a card on append", () => {
     const { cards, height } = masonry(photos(60), 900, 4, 6);
     expect(cards).toHaveLength(60);
