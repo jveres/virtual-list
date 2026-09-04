@@ -58,6 +58,16 @@ function photo(id: number): Photo {
 
 const viewport = mustGet("viewport");
 const status = mustGet("status");
+// TEMPORARY instrumentation (?debug-load): what happens around a load.
+const debugLoad = new URLSearchParams(location.search).has("debug-load");
+const t0 = performance.now();
+function log(tag: string, detail: unknown): void {
+  if (debugLoad)
+    console.log(
+      `[load] +${Math.round(performance.now() - t0)}ms ${tag}`,
+      JSON.stringify(detail),
+    );
+}
 const loaderSlot = { key: "more", height: LOADER_HEIGHT, render: renderLoader };
 
 let layout: Layout = "rows";
@@ -88,10 +98,30 @@ function renderLoader(): HTMLElement {
 }
 
 function render(item: GalleryItem, existing?: HTMLElement): HTMLElement {
-  return item.kind === "row"
-    ? renderRow(item, existing)
-    : renderBand(item, existing);
+  const before = existing ? existing.querySelectorAll(".tile").length : 0;
+  const el =
+    item.kind === "row"
+      ? renderRow(item, existing)
+      : renderBand(item, existing);
+  if (debugLoad) {
+    const ids = [...el.querySelectorAll<HTMLElement>(".tile")].map(
+      (t) => t.dataset.tile,
+    );
+    log("render", {
+      key: item.key,
+      existing: !!existing,
+      inDocument: existing?.isConnected ?? false,
+      tilesBefore: before,
+      tiles: ids.length,
+      cachedNow: ids.filter((id) => loadedPhotos.has(Number(id?.split(":")[0])))
+        .length,
+      created: createdThisRender,
+    });
+    createdThisRender = 0;
+  }
+  return el;
 }
+let createdThisRender = 0;
 
 /** The tiles an element already holds, by photo and part: a re-render keeps them. */
 function existingTiles(el: HTMLElement): Map<string, HTMLElement> {
@@ -117,7 +147,9 @@ function tileAt(
   part = 0,
 ): HTMLElement {
   const id = `${p.id}:${part}`;
-  const tile = held.get(id) ?? tileElement(p, id);
+  const kept = held.get(id);
+  if (!kept) createdThisRender++;
+  const tile = kept ?? tileElement(p, id);
   tile.style.width = `${width}px`;
   tile.style.height = `${height}px`;
   return tile;
@@ -161,7 +193,41 @@ function tileElement(p: Photo, id: string): HTMLElement {
   tile.dataset.tile = id;
   tile.dataset.id = String(p.id);
   tile.append(photoElement(p));
+  freshTwins.set(id, tile);
   return tile;
+}
+
+/**
+ * Tiles created for elements the runtime has prepared but not mounted,
+ * by tile id. The runtime renders an update fresh, off-screen, while the
+ * old element stays on screen, and destroys the old element just before
+ * mounting the new one: at that moment the old tiles move into the new
+ * element in place of their twins, so an image keeps loading or stays
+ * decoded instead of starting over. A twin the runtime has mounted is no
+ * longer fresh and leaves the registry at the next state publish.
+ */
+const freshTwins = new Map<string, HTMLElement>();
+
+function forgetMountedTwins(): void {
+  for (const [id, twin] of freshTwins) {
+    if (twin.isConnected) freshTwins.delete(id);
+  }
+}
+
+function transplantTiles(dead: HTMLElement): void {
+  let moved = 0;
+  for (const tile of dead.querySelectorAll<HTMLElement>(".tile")) {
+    const id = tile.dataset.tile as string;
+    const twin = freshTwins.get(id);
+    if (!twin || twin === tile || twin.isConnected) continue;
+    freshTwins.delete(id);
+    tile.style.cssText = twin.style.cssText;
+    const twinImg = twin.querySelector("img");
+    if (twinImg) nearViewport.unobserve(twinImg);
+    twin.replaceWith(tile);
+    moved++;
+  }
+  log("transplant", { moved, of: dead.querySelectorAll(".tile").length });
 }
 
 /** Photos whose image has loaded once: the browser has them, a new element shows them at once. */
@@ -181,6 +247,7 @@ function photoElement(p: Photo): HTMLImageElement {
   img.addEventListener(
     "load",
     () => {
+      log("img load", { id: p.id, wasCached: loadedPhotos.has(p.id) });
       loadedPhotos.add(p.id);
       // Every drawing of the photo (a card crossing a band edge is two)
       // shows together: one half ahead of the other reads as a cut.
@@ -224,6 +291,11 @@ function reveal(img: HTMLImageElement): void {
 function revealOne(img: HTMLImageElement): void {
   const src = img.dataset.src;
   if (!src) return;
+  log("reveal", {
+    id: img.dataset.id,
+    cached: loadedPhotos.has(Number(img.dataset.id)),
+    connected: img.isConnected,
+  });
   delete img.dataset.src;
   nearViewport.unobserve(img);
   img.src = src;
@@ -419,6 +491,7 @@ function loadMore(signal: AbortSignal): void {
     loading = false;
     loaded = Math.min(TOTAL, loaded + PAGE);
     if (loaded >= TOTAL) list?.setEdgeSlot("end", null);
+    log("append", { loaded });
     appendPage();
   }, LOAD_DELAY_MS);
   signal.addEventListener("abort", () => {
@@ -437,13 +510,28 @@ list = createVirtualList<GalleryItem>(viewport, {
   key: (item) => item.key,
   render,
   overscanPx: 600,
-  // A page that lands mid-gesture waits for the settle: no photos appear
-  // under a moving finger or an overscroll bounce. (The chat's "live" is
-  // for a reply that must keep rendering under a scroll.)
-  scrollingUpdates: "same-height",
+  // A page that lands mid-gesture waits for the settle, whole: no photos
+  // appear under a moving finger or an overscroll bounce, and no band is
+  // swapped early for keeping its height. ("same-height" is for streaming
+  // text; the chat's "live" for a reply that must keep rendering.)
+  scrollingUpdates: "freeze",
   edgeSlots: { end: loaderSlot },
-  onReachEnd: ({ signal }) => loadMore(signal),
-  onState: revealMountedNearViewport,
+  onReachEnd: ({ signal }) => {
+    log("reachEnd", {});
+    loadMore(signal);
+  },
+  onState: (state) => {
+    log("state", state);
+    forgetMountedTwins();
+    revealMountedNearViewport();
+  },
+  onDestroy: (element, item) => {
+    log("destroy", {
+      key: item.key,
+      tiles: element.querySelectorAll(".tile").length,
+    });
+    transplantTiles(element);
+  },
 });
 // A gallery starts at its first photo, not at the end.
 void list.scrollTo("start");
