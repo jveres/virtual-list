@@ -43,12 +43,11 @@ pnpm run dev
   provider (key stored in this browser only; tool panels are live there and
   canned under the simulated provider). `?stream=instant` (or `?instant`)
   removes the simulated token delays, `?stream=fast-long` (or `?fast-long`)
-  streams a long reply quickly, `?edge=pill` uses a floating loader pill
-  instead of the in-flow slot, `?sticky=off` starts with the sticky day
-  header off, `?follow=keep-start` starts in the bounded autoscroll
-  mode, `?landing=end` opens a conversation at its end instead of on its
-  last prompt, and `?cursor=none` streams without a cursor; the dialog's
-  choices persist in the browser, a URL parameter wins for the session.
+  streams a long reply quickly. Every product choice (the scrollback
+  loader, sticky day headers, autoscroll, where a conversation opens, the
+  streaming cursor) lives in the settings dialog's General section and
+  persists in the browser; URL parameters are for test and debug flags
+  only.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server

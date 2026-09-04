@@ -163,9 +163,11 @@ const EDGE_NO_MORE_HIDE_MS = 1400;
 // flashing loader.
 const EDGE_HIDE_LINGER_MS = 400;
 
+// Test and debug flags only (?instant, ?stream=, ?fast-long); every product
+// choice lives in the settings dialog and persists in this browser.
 const demoParams = new URLSearchParams(location.search);
-// General options live in the settings dialog and persist in this browser;
-// a URL parameter wins for the session (the browser matrix drives them).
+// General options live in the settings dialog and persist in this browser
+// (the browser matrix seeds the store before a load).
 const OPTIONS_KEY = "virtual-list:chat-options";
 /** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
 type LandingMode = "prompt" | "end";
@@ -185,38 +187,12 @@ function loadChatOptions(): ChatOptions {
       return {};
     }
   })();
-  const edgeParam = demoParams.get("edge");
-  const stickyParam = demoParams.get("sticky");
-  const followParam = demoParams.get("follow");
-  const landingParam = demoParams.get("landing");
-  const cursorParam = demoParams.get("cursor");
   return {
-    edge:
-      edgeParam === "pill" || edgeParam === "slot"
-        ? edgeParam
-        : stored.edge === "pill"
-          ? "pill"
-          : "slot",
-    sticky:
-      stickyParam !== null ? stickyParam !== "off" : stored.sticky !== false,
-    follow:
-      followParam === "keep-start" || followParam === "end"
-        ? followParam
-        : stored.follow === "keep-start"
-          ? "keep-start"
-          : "end",
-    landing:
-      landingParam === "prompt" || landingParam === "end"
-        ? landingParam
-        : stored.landing === "end"
-          ? "end"
-          : "prompt",
-    cursor:
-      cursorParam === "none" || cursorParam === "bar"
-        ? cursorParam
-        : stored.cursor === "none"
-          ? "none"
-          : "bar",
+    edge: stored.edge === "pill" ? "pill" : "slot",
+    sticky: stored.sticky !== false,
+    follow: stored.follow === "keep-start" ? "keep-start" : "end",
+    landing: stored.landing === "end" ? "end" : "prompt",
+    cursor: stored.cursor === "none" ? "none" : "bar",
   };
 }
 function saveChatOptions(): void {

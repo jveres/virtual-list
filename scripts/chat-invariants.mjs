@@ -574,11 +574,15 @@ async function checkKeepStart(page, label) {
 /** The scrollback invariant under the page's other loader and header modes. */
 async function checkModes(page, baseUrl) {
   const violations = [];
-  for (const [query, label] of [
-    ["?instant&edge=pill", "pill-loader"],
-    ["?instant&sticky=off", "sticky-off"],
+  for (const [options, label] of [
+    [{ edge: "pill" }, "pill-loader"],
+    [{ sticky: false }, "sticky-off"],
   ]) {
-    await page.goto(`${baseUrl}/demos/streaming/index.html${query}`);
+    // General options live in the settings store, not the URL.
+    await page.evaluate((next) => {
+      localStorage.setItem("virtual-list:chat-options", JSON.stringify(next));
+    }, options);
+    await page.goto(`${baseUrl}/demos/streaming/index.html?instant`);
     await page.waitForSelector("#viewport > div");
     await page.waitForTimeout(400);
     violations.push(...(await checkScrollback(page, label)));
