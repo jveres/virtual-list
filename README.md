@@ -49,6 +49,13 @@ pnpm run dev
   persists in the browser; URL parameters are for test and debug flags
   only.
 
+- `/demos/gallery/index.html` — the gallery lab: the same photos as
+  justified rows or as masonry bands, each the virtualized item. Geometry
+  is exact before any image loads; a width, size, or layout change is
+  anchored through the runtime's key anchor (the row or band that holds
+  the point under the viewport top inherits the anchor's key); paging at
+  the end never moves what is on screen.
+
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server
 (`/__lab/report`), which appends it to `browser-artifacts/device-*.log`, one

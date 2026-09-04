@@ -1,0 +1,179 @@
+// The gallery lab's layouts, as pure math: photos in, positioned items out.
+// Nothing here touches the DOM, so it is unit-tested directly.
+
+export interface Photo {
+  id: number;
+  /** width / height */
+  aspect: number;
+}
+
+/** A photo placed in a justified row. */
+export interface Placed extends Photo {
+  width: number;
+}
+
+/** A photo placed in the masonry grid, in layout coordinates. */
+export interface Card extends Photo {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+export interface JustifiedRow {
+  kind: "row";
+  key: string;
+  height: number;
+  photos: Placed[];
+}
+
+/** A horizontal slice of the masonry grid: the cards it intersects, positioned relative to its top. */
+export interface Band {
+  kind: "band";
+  key: string;
+  /** Layout y of the slice's top. */
+  start: number;
+  height: number;
+  cards: Card[];
+}
+
+export type GalleryItem = JustifiedRow | Band;
+
+/**
+ * Justified rows: photos join a row at the target height until it would
+ * overflow the width, then the row's height is set so its photos fill the
+ * width exactly. Photos that do not yet fill a row are held back unless
+ * the collection is complete, so a row on screen never changes when the
+ * next page arrives; a complete collection ends in a ragged row at the
+ * target height.
+ */
+export function justify(
+  photos: readonly Photo[],
+  width: number,
+  target: number,
+  gap: number,
+  complete: boolean,
+): JustifiedRow[] {
+  const rows: JustifiedRow[] = [];
+  let current: Photo[] = [];
+  let aspectSum = 0;
+  const flush = (height: number, justified: boolean): void => {
+    if (current.length === 0) return;
+    const rounded = Math.round(height);
+    // Widths from rounded cumulative positions: a justified row fills the
+    // width exactly rather than drifting by a pixel per photo.
+    let used = 0;
+    let acc = 0;
+    const placed = current.map((p, i) => {
+      acc += p.aspect * rounded;
+      const last = i === current.length - 1;
+      const w =
+        justified && last
+          ? width - gap * (current.length - 1) - used
+          : Math.round(acc) - used;
+      used += w;
+      return { ...p, width: w };
+    });
+    rows.push({
+      kind: "row",
+      key: `r${current[0]?.id}`,
+      height: rounded,
+      photos: placed,
+    });
+    current = [];
+    aspectSum = 0;
+  };
+  for (const p of photos) {
+    current.push(p);
+    aspectSum += p.aspect;
+    const gaps = gap * (current.length - 1);
+    if (aspectSum * target >= width - gaps)
+      flush((width - gaps) / aspectSum, true);
+  }
+  if (complete) flush(target, false);
+  return rows;
+}
+
+/**
+ * Masonry: each photo goes to the shortest column. Appending never moves
+ * an earlier card, so a page load changes nothing on screen.
+ */
+export function masonry(
+  photos: readonly Photo[],
+  width: number,
+  columns: number,
+  gap: number,
+): { cards: Card[]; height: number } {
+  const lefts: number[] = [];
+  const widths: number[] = [];
+  const inner = width - gap * (columns - 1);
+  for (let c = 0; c < columns; c++) {
+    const left = Math.round((c * inner) / columns) + c * gap;
+    const right = Math.round(((c + 1) * inner) / columns) + c * gap;
+    lefts.push(left);
+    widths.push(right - left);
+  }
+  const bottoms = new Array<number>(columns).fill(0);
+  const cards: Card[] = [];
+  for (const p of photos) {
+    let c = 0;
+    for (let i = 1; i < columns; i++) {
+      if ((bottoms[i] as number) < (bottoms[c] as number)) c = i;
+    }
+    const w = widths[c] as number;
+    const h = Math.max(1, Math.round(w / p.aspect));
+    const top = bottoms[c] as number;
+    cards.push({ ...p, left: lefts[c] as number, top, width: w, height: h });
+    bottoms[c] = top + h + gap;
+  }
+  const height = Math.max(0, Math.max(...bottoms, 0) - gap);
+  return { cards, height };
+}
+
+/**
+ * Slices the masonry grid into bands: [0, origin) when the origin is not
+ * zero, then bands of `bandHeight` from the origin, the last one ending at
+ * the grid's height. A card crossing an edge belongs to every band it
+ * intersects (drawn in each, offset and clipped), so the seam is invisible.
+ * Bands are keyed by their start, which appends never change.
+ */
+export function slice(
+  cards: readonly Card[],
+  height: number,
+  bandHeight: number,
+  origin: number,
+): Band[] {
+  const bands: Band[] = [];
+  const edges: number[] = [0];
+  for (let y = origin > 0 ? origin : bandHeight; y < height; y += bandHeight) {
+    edges.push(y);
+  }
+  edges.push(height);
+  // Cards sorted by top: each band scans from the first card that can
+  // still intersect it.
+  const sorted = [...cards].sort((a, b) => a.top - b.top);
+  for (let i = 0; i + 1 < edges.length; i++) {
+    const start = edges[i] as number;
+    const end = edges[i + 1] as number;
+    if (end <= start) continue;
+    const inBand: Card[] = [];
+    for (const card of sorted) {
+      if (card.top >= end) break;
+      if (card.top + card.height > start) inBand.push(card);
+    }
+    bands.push({
+      kind: "band",
+      key: `b${start}`,
+      start,
+      height: end - start,
+      cards: inBand,
+    });
+  }
+  return bands;
+}
+
+/** The origin (in [0, bandHeight)) that puts a band edge at `y`. */
+export function originFor(y: number, bandHeight: number): number {
+  const m = y % bandHeight;
+  return m < 0 ? m + bandHeight : m;
+}

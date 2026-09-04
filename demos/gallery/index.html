@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1"
+    />
+    <title>virtual-list · gallery lab</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="../shared/lab.css" />
+    <link rel="stylesheet" href="./gallery.css" />
+  </head>
+  <body>
+    <header>
+      <h1 class="header-title">
+        <a href="/" title="Back to demos">virtual-list</a>
+        <span class="sep">·</span>gallery lab
+      </h1>
+      <div class="choices" role="group" aria-label="Layout">
+        <button type="button" data-layout="rows" class="active">Rows</button>
+        <button type="button" data-layout="masonry">Masonry</button>
+      </div>
+      <div class="choices" role="group" aria-label="Size">
+        <button type="button" data-size="s">S</button>
+        <button type="button" data-size="m" class="active">M</button>
+        <button type="button" data-size="l">L</button>
+      </div>
+      <span class="ua" id="status"></span>
+    </header>
+    <main>
+      <div class="stage">
+        <div id="viewport"></div>
+      </div>
+    </main>
+    <script type="module" src="./gallery.ts"></script>
+  </body>
+</html>
