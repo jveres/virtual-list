@@ -1977,6 +1977,26 @@ virtualList = createVirtualList<ChatRow>(viewport, {
   onReachStart: ({ signal }) => loadOlderMessages(signal),
   onDestroy: handleRowDestroy,
 });
+pinLastPrompt();
+
+/**
+ * The initial landing: the last prompt at the viewport top with its reply
+ * below (the pin a send makes, I5: the reserve holds space under a short
+ * reply), where a returning reader resumes — not the bare end. A
+ * conversation without a prompt lands at the end the runtime booted to.
+ */
+function pinLastPrompt(): void {
+  let key: string | null = null;
+  for (let i = transcript.length - 1; i >= 0 && key === null; i--) {
+    const message = transcript[i];
+    if (message?.role === "user") key = String(message.id);
+  }
+  if (key === null || virtualList?.positionOf(key) === null) return;
+  void virtualList?.scrollTo(key, {
+    align: "start",
+    offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+  });
+}
 
 // The sticky day header: a companion on the runtime's read queries.
 stickyHeaders = createStickyHeaders({
