@@ -47,12 +47,8 @@ pnpm run dev
   instead of the in-flow slot, `?sticky=off` starts with the sticky day
   header off, `?follow=keep-start` starts in the bounded autoscroll
   mode, `?landing=end` opens a conversation at its end instead of on its
-  last prompt, `?cursor=none` streams without a cursor, and
-  `?animation=fade|fall|fade-fall` eases streamed content in (with
-  `?animate=blocks` per inserted block instead of per arriving chunk of
-  text); the
-  dialog's choices persist in the browser, a URL parameter wins for the
-  session.
+  last prompt, and `?cursor=none` streams without a cursor; the dialog's
+  choices persist in the browser, a URL parameter wins for the session.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server
