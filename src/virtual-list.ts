@@ -867,6 +867,12 @@ export function createVirtualList<T>(
       // Declared heights do not change with the width; the host re-flows.
       for (const row of rows.values()) markDirty(row);
     }
+    // A width change ends a scroll phase: the layout the gesture was
+    // scrolling no longer exists (a rotation mid-fling). The takeover
+    // settles it — held work commits with its anchor, rows at the new
+    // width — and the scroll goes on in a new phase; waiting for the
+    // settle showed the old layout under the new width for its duration.
+    if (widthChanged) interruptNativeScroll();
     const pinTop = geometry.pinTop;
     // In flight, a glide's destination decides: a command onto the pin
     // stands on it in intent, one leaving it does not even while its first

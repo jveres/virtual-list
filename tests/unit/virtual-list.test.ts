@@ -2242,10 +2242,9 @@ describe("v2 runtime — commits and slots", () => {
     h.userScroll(3005); // Anchor m30, 5px into the row.
     for (let id = 0; id < 50; id += 1) h.heights.set(id, 100.308);
     width = 280;
+    // A width change ends the phase and commits at once, at the new width.
     fireResize(1, h.viewport, VIEWPORT_H);
-    expect(h.list.state.held).toBe(true);
-
-    h.settle();
+    expect(h.list.state.held).toBe(false);
     // Heights commit as whole pixels (100.308 → 101), so the anchor target
     // 30 * 101 + 5 = 3035 is integral by construction — nothing for WebKit
     // to floor. (The write itself is rounded as well, as a second guard.)
@@ -2339,9 +2338,10 @@ describe("v2 runtime — retained nodes", () => {
       throw new Error("remeasure failed");
     };
     width = 280;
-    fireResize(1, h.viewport, VIEWPORT_H); // Marks every retained row dirty.
-
-    expect(() => h.settle()).toThrow("remeasure failed");
+    // A width change ends the phase: every retained row is re-measured now.
+    expect(() => fireResize(1, h.viewport, VIEWPORT_H)).toThrow(
+      "remeasure failed",
+    );
     // measureMany detached all retained elements before one read threw.
     // Failure must not strip any of them from their owning slots.
     expect(slot0.firstElementChild).toBe(row0);
@@ -3409,5 +3409,27 @@ describe("boot position", () => {
     expect(atStart.list.state.atStart).toBe(true);
     expect(atStart.list.state.start).toBe(0);
     expect(Math.max(...mounts)).toBeLessThan(20);
+  });
+});
+
+describe("viewport width change", () => {
+  it("ends a scroll phase in flight: held work commits at once, at the new width", () => {
+    const initial = range(0, 50);
+    let width = 300;
+    const h = mount(initial, { width: () => width });
+    void h.list.scrollTo("m20");
+    h.userScroll(2000);
+    h.userScroll(2200);
+    // A structural change lands mid-gesture: held.
+    h.list.setItems([...range(-10, 0), ...initial]);
+    expect(h.list.state.held).toBe(true);
+    expect(h.list.state.count).toBe(50);
+    // The rotation: the width changes while the gesture is still going.
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    expect(h.list.state.held).toBe(false);
+    expect(h.list.state.count).toBe(60);
+    // The reading position survived the commit.
+    expect(h.viewport.scrollTop).toBe(2200 + 10 * ROW_H);
   });
 });

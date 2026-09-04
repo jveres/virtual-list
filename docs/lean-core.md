@@ -162,7 +162,11 @@ The definition of correct, referenced by number throughout the code:
   removal of the pinned key drops the pin. A viewport
   height change while the viewport stands on the pin (a window resize, a
   device rotation) re-resolves to the pin: the row stays at the top and the
-  reserve is sized to the new height. The engine clamps the position and
+  reserve is sized to the new height. A viewport WIDTH change ends a scroll
+  phase in flight (a rotation mid-fling): the layout the gesture was
+  scrolling no longer exists, so the takeover settles it — held work
+  commits with its anchor, rows measured at the new width — and the scroll
+  goes on in a new phase. The engine clamps the position and
   dispatches that scroll either before the resize is observed (a window
   resize) or in the frame after it (an in-page composer resize); the
   controller reads a scroll landing on the new maximum right after a
