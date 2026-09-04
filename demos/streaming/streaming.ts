@@ -170,7 +170,8 @@ const OPTIONS_KEY = "virtual-list:chat-options";
 /** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
 type LandingMode = "prompt" | "end";
 type CursorMode = "bar" | "none";
-type AnimationMode = "none" | "fade" | "fall";
+type AnimationMode = "none" | "fade" | "fall" | "fade-fall";
+type AnimationScope = "text" | "blocks";
 interface ChatOptions {
   edge: "slot" | "pill";
   sticky: boolean;
@@ -178,6 +179,7 @@ interface ChatOptions {
   landing: LandingMode;
   cursor: CursorMode;
   animation: AnimationMode;
+  animationScope: AnimationScope;
 }
 function loadChatOptions(): ChatOptions {
   const stored: Partial<ChatOptions> = (() => {
@@ -193,6 +195,7 @@ function loadChatOptions(): ChatOptions {
   const landingParam = demoParams.get("landing");
   const cursorParam = demoParams.get("cursor");
   const animationParam = demoParams.get("animation");
+  const scopeParam = demoParams.get("animate");
   return {
     edge:
       edgeParam === "pill" || edgeParam === "slot"
@@ -220,15 +223,26 @@ function loadChatOptions(): ChatOptions {
         : stored.cursor === "none"
           ? "none"
           : "bar",
-    animation:
-      animationParam === "fade" ||
-      animationParam === "fall" ||
-      animationParam === "none"
-        ? animationParam
-        : stored.animation === "fade" || stored.animation === "fall"
-          ? stored.animation
-          : "none",
+    animation: isAnimationMode(animationParam)
+      ? animationParam
+      : isAnimationMode(stored.animation)
+        ? stored.animation
+        : "none",
+    animationScope:
+      scopeParam === "blocks" || scopeParam === "text"
+        ? scopeParam
+        : stored.animationScope === "blocks"
+          ? "blocks"
+          : "text",
   };
+}
+function isAnimationMode(value: unknown): value is AnimationMode {
+  return (
+    value === "none" ||
+    value === "fade" ||
+    value === "fall" ||
+    value === "fade-fall"
+  );
 }
 function saveChatOptions(): void {
   try {
@@ -241,6 +255,7 @@ function saveChatOptions(): void {
         landing: landingMode,
         cursor: cursorMode,
         animation: animationMode,
+        animationScope,
       }),
     );
   } catch {
@@ -254,6 +269,7 @@ let followMode: FollowMode = chatOptions.follow;
 let landingMode: LandingMode = chatOptions.landing;
 let cursorMode: CursorMode = chatOptions.cursor;
 let animationMode: AnimationMode = chatOptions.animation;
+let animationScope: AnimationScope = chatOptions.animationScope;
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
@@ -269,6 +285,7 @@ const autoscrollSelect = mustGet("autoscroll-mode", HTMLSelectElement);
 const landingSelect = mustGet("landing-mode", HTMLSelectElement);
 const cursorSelect = mustGet("cursor-mode", HTMLSelectElement);
 const animationSelect = mustGet("animation-mode", HTMLSelectElement);
+const animationScopeSelect = mustGet("animation-scope", HTMLSelectElement);
 const windowStatus = mustGet("window-status");
 const virtualListStatus = mustGet("virtual-list-status");
 const composerMinHeight = Math.max(
@@ -1379,6 +1396,7 @@ function buildStreamingRow(message: Message): HTMLElement {
     unfocusedCursorStyle: "block",
     cursor: cursorMode,
     streamingAnimation: animationMode,
+    streamingAnimationScope: animationScope,
   });
   streamingViewers.set(row, handle);
   return row;
@@ -2209,16 +2227,24 @@ cursorSelect.addEventListener("change", () => {
 animationSelect.value = animationMode;
 animationSelect.addEventListener("change", () => {
   const value = animationSelect.value;
-  animationMode = value === "fade" || value === "fall" ? value : "none";
+  animationMode = isAnimationMode(value) ? value : "none";
+  saveChatOptions();
+  syncStreamingViewerOptions();
+});
+animationScopeSelect.value = animationScope;
+animationScopeSelect.addEventListener("change", () => {
+  animationScope = animationScopeSelect.value === "blocks" ? "blocks" : "text";
   saveChatOptions();
   syncStreamingViewerOptions();
 });
 // A live reply takes a changed cursor or animation choice at once.
 function syncStreamingViewerOptions(): void {
   for (const row of rowById.values()) {
-    streamingViewers
-      .get(row)
-      ?.update({ cursor: cursorMode, streamingAnimation: animationMode });
+    streamingViewers.get(row)?.update({
+      cursor: cursorMode,
+      streamingAnimation: animationMode,
+      streamingAnimationScope: animationScope,
+    });
   }
 }
 landingSelect.value = landingMode;
