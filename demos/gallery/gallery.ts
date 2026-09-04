@@ -70,8 +70,24 @@ function log(tag: string, detail: unknown): void {
 }
 const loaderSlot = { key: "more", height: LOADER_HEIGHT, render: renderLoader };
 
-let layout: Layout = "rows";
-let size: Size = "m";
+// Layout and size persist in this browser.
+const OPTIONS_KEY = "virtual-list:gallery-options";
+const stored = ((): { layout?: unknown; size?: unknown } => {
+  try {
+    return JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}");
+  } catch {
+    return {};
+  }
+})();
+let layout: Layout = stored.layout === "masonry" ? "masonry" : "rows";
+let size: Size = stored.size === "s" || stored.size === "l" ? stored.size : "m";
+function saveOptions(): void {
+  try {
+    localStorage.setItem(OPTIONS_KEY, JSON.stringify({ layout, size }));
+  } catch {
+    // Storage may be unavailable; the session keeps its choices.
+  }
+}
 let width = 0;
 let loaded = 0;
 let loading = false;
@@ -502,6 +518,14 @@ function loadMore(signal: AbortSignal): void {
 
 // --- Boot --------------------------------------------------------------------
 
+for (const button of document.querySelectorAll<HTMLButtonElement>(
+  "[data-size], [data-layout]",
+)) {
+  button.classList.toggle(
+    "active",
+    button.dataset.size === size || button.dataset.layout === layout,
+  );
+}
 width = viewport.clientWidth;
 loaded = PAGE;
 items = build();
@@ -556,6 +580,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>(
     )) {
       b.classList.toggle("active", b === button);
     }
+    saveOptions();
     reflow();
   });
 }
@@ -572,6 +597,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>(
     )) {
       b.classList.toggle("active", b === button);
     }
+    saveOptions();
     reflow();
   });
 }
