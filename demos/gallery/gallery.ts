@@ -106,7 +106,7 @@ const images = createImageLoader({
 });
 
 function showMetrics(m: Readonly<LoaderMetrics>): void {
-  loaderMetrics.textContent = `queue ${m.queued} · loading ${m.inFlight}/${m.concurrency} · loaded ${m.loaded} · reused ${m.reused} · cancelled ${m.cancelled} · failed ${m.failed}`;
+  loaderMetrics.textContent = `queue ${m.queued} (peak ${m.peakQueued}) · loading ${m.inFlight}/${m.concurrency} (peak ${m.peakInFlight}) · loaded ${m.loaded} · reused ${m.reused} · cancelled ${m.cancelled} · failed ${m.failed}`;
 }
 
 function sourceOf(p: Photo): string {

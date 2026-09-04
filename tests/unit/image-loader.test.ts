@@ -35,7 +35,12 @@ describe("image loader", () => {
       "u-near",
       null,
     ]);
-    expect(loader.metrics()).toMatchObject({ queued: 1, inFlight: 2 });
+    expect(loader.metrics()).toMatchObject({
+      queued: 1,
+      inFlight: 2,
+      peakQueued: 1,
+      peakInFlight: 2,
+    });
     near.dispatchEvent(new Event("load"));
     expect(below.getAttribute("src")).toBe("u-below");
     expect(loader.metrics()).toMatchObject({
