@@ -440,11 +440,15 @@ async function chaos(page, label, seed, seconds) {
 }
 
 /** Where the last prompt sits relative to the viewport top, and where a
- * landed conversation should put it (under the day pill when it is on). */
+ * landed conversation should put it (under the day pill when it is on) —
+ * unless its reply outgrows the viewport, when the landing is the end and
+ * the prompt sits above the top. */
 async function promptLanding(page) {
   return page.evaluate(() => {
     const viewport = document.getElementById("viewport");
     const rect = viewport.getBoundingClientRect();
+    const gapToEnd =
+      viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop;
     // Slots are reused, so document order is not visual order: the last
     // prompt is the lowest one on screen.
     let last = null;
@@ -459,14 +463,18 @@ async function promptLanding(page) {
     return {
       top: last ? last.getBoundingClientRect().top - rect.top : null,
       expected: sticky ? 44 : 0,
+      gapToEnd,
     };
   });
 }
 
 function landingViolation(label, landing) {
   if (landing.top === null) return `${label}: no prompt mounted after landing`;
-  if (Math.abs(landing.top - landing.expected) > 1)
-    return `${label}: last prompt at ${landing.top}, expected ${landing.expected}`;
+  const pinned = Math.abs(landing.top - landing.expected) <= 1;
+  const atEndWithPromptAbove =
+    Math.abs(landing.gapToEnd) <= 1 && landing.top < landing.expected;
+  if (!pinned && !atEndWithPromptAbove)
+    return `${label}: last prompt at ${landing.top}, expected ${landing.expected} (or the end with the prompt above; gap ${landing.gapToEnd})`;
   return null;
 }
 

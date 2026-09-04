@@ -1170,11 +1170,13 @@ function reloadConversation(): void {
 
 /**
  * Where a loaded conversation lands — at boot and after every reload (a
- * provider switch, an import, a restore, a history clear). The default
- * pins the last prompt to the viewport top with its reply below, the pin
- * a send makes (I5: the reserve holds space under a short reply), under
- * the day pill when it is on; the alternative, and a conversation without
- * a prompt, land at the end.
+ * provider switch, an import, a restore, a history clear). The default is
+ * the end of the last exchange as a finished stream leaves it: the last
+ * prompt pinned (I5: the reserve holds space under a short reply, so the
+ * end is the prompt at the top with its reply below), then the end — a
+ * reply taller than the viewport needs no reserve, and the end is its
+ * bottom, the prompt above. The alternative, and a conversation without
+ * a prompt, land at the bare end.
  */
 function landConversation(): void {
   let key: string | null = null;
@@ -1196,6 +1198,7 @@ function landConversation(): void {
     align: "start",
     offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
   });
+  void virtualList?.scrollTo("end");
 }
 
 // Switches the active version of a branched message: rewrites the active path
