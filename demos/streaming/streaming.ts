@@ -1154,17 +1154,14 @@ function seedActiveConversation(): void {
   refreshLoadedWindow();
 }
 
-// Swaps the rendered conversation after a provider change or a history clear:
-// cancel any live stream, rebuild the state, and land at the bottom of the
-// other conversation with one explicitly end-anchored snapshot.
+// Swaps the rendered conversation after a provider change, an import, a
+// restore, or a history clear: cancel any live stream, rebuild the state,
+// and present it exactly as the boot does.
 function reloadConversation(): void {
   if (streamAbort) cancelStream(streamAbort);
-  // The end command below cancels any in-flight glide so it cannot keep
-  // scrolling into the new conversation.
   seedActiveConversation();
   setEdgeState("hidden");
-  pushItems("end");
-  landConversation();
+  mountConversation();
   syncMetrics();
 }
 
@@ -1997,51 +1994,62 @@ if (getAISettings().provider === "openai") await prepareOpenAIConversation();
 seedActiveConversation();
 
 edgeSlotRequested = shouldMountEdgeSlot();
-virtualList = createVirtualList<ChatRow>(viewport, {
-  items: rowsForRuntime(),
-  key: rowKey,
-  anchorable: (row) => !isDayHeader(row),
-  render: (row, existing) => {
-    if (isDayHeader(row)) {
-      // A day row: static; a re-label (a new day arrived) updates in place.
-      if (existing) {
-        const pill = existing.querySelector<HTMLElement>(
-          ".section-header-pill",
-        );
-        if (pill) pill.textContent = row.label;
-        return existing;
+/**
+ * The one way a conversation is presented: a fresh runtime over the seeded
+ * transcript — the boot, and every reload (a provider switch, an import, a
+ * restore, a history clear) after disposing the previous one — landing
+ * where the setting says. Reloading through the live runtime instead left
+ * it carrying the old conversation's pin, follow intent, and held work.
+ */
+function mountConversation(): void {
+  virtualList?.dispose();
+  virtualList = createVirtualList<ChatRow>(viewport, {
+    items: rowsForRuntime(),
+    key: rowKey,
+    anchorable: (row) => !isDayHeader(row),
+    render: (row, existing) => {
+      if (isDayHeader(row)) {
+        // A day row: static; a re-label (a new day arrived) updates in place.
+        if (existing) {
+          const pill = existing.querySelector<HTMLElement>(
+            ".section-header-pill",
+          );
+          if (pill) pill.textContent = row.label;
+          return existing;
+        }
+        return buildSectionHeader(row.label);
       }
-      return buildSectionHeader(row.label);
-    }
-    if (existing) {
-      const updated = updateRow(existing, row);
-      if (updated) return updated;
-    }
-    return buildRow(row);
-  },
-  edgeSlots: { start: edgeSlotRequested ? edgeSlotSpec : null },
-  // The product choice for a chat: the streaming reply keeps rendering under
-  // a scroll (see the header). Structural changes above the anchor stay
-  // settle-gated; one below it (a version switch) applies at once.
-  scrollingUpdates: "live",
-  followBehavior: "smooth",
-  followMode,
-  followInset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
-  onState: (state) => {
-    // A deferred prepend committed: close out the load it belongs to.
-    if (pendingPrepend && state.count >= pendingPrepend.count) {
-      pendingPrepend.finish();
-    }
-    syncScrollButtons(state);
-    syncMetrics(state);
-    // Positions change only at commits: re-read them for the sticky header.
-    stickyHeaders?.refresh();
-  },
-  onReachStart: ({ signal }) => loadOlderMessages(signal),
-  onDestroy: handleRowDestroy,
-});
-// The runtime boots at the end; the conversation lands where the setting says.
-landConversation();
+      if (existing) {
+        const updated = updateRow(existing, row);
+        if (updated) return updated;
+      }
+      return buildRow(row);
+    },
+    edgeSlots: { start: edgeSlotRequested ? edgeSlotSpec : null },
+    // The product choice for a chat: the streaming reply keeps rendering under
+    // a scroll (see the header). Structural changes above the anchor stay
+    // settle-gated; one below it (a version switch) applies at once.
+    scrollingUpdates: "live",
+    followBehavior: "smooth",
+    followMode,
+    followInset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+    onState: (state) => {
+      // A deferred prepend committed: close out the load it belongs to.
+      if (pendingPrepend && state.count >= pendingPrepend.count) {
+        pendingPrepend.finish();
+      }
+      syncScrollButtons(state);
+      syncMetrics(state);
+      // Positions change only at commits: re-read them for the sticky header.
+      stickyHeaders?.refresh();
+    },
+    onReachStart: ({ signal }) => loadOlderMessages(signal),
+    onDestroy: handleRowDestroy,
+  });
+  landConversation();
+}
+
+mountConversation();
 
 // The sticky day header: a companion on the runtime's read queries.
 stickyHeaders = createStickyHeaders({
@@ -2096,7 +2104,21 @@ mustGet("download-btn", HTMLButtonElement).addEventListener(
 
 // Import replaces the conversation: the stored OpenAI history in this
 // browser, or the simulated transcript for this session.
+// One import at a time: a second file dropped while the first is being
+// read, confirmed, or having its languages loaded is ignored, never
+// interleaved with it.
+let importing = false;
 async function importTranscript(file: File): Promise<void> {
+  if (importing) return;
+  importing = true;
+  try {
+    await importTranscriptNow(file);
+  } finally {
+    importing = false;
+  }
+}
+
+async function importTranscriptNow(file: File): Promise<void> {
   const turns = parseTranscriptMarkdown(await file.text());
   if (turns.length === 0) {
     window.alert(`${file.name} holds no chat turns.`);
@@ -2279,7 +2301,7 @@ viewport.addEventListener(
     const row = summary?.closest<HTMLElement>("article.message");
     const key = row?.dataset.key;
     if (key !== undefined) {
-      virtualList.remeasure(key, { anchor: "viewport" });
+      virtualList?.remeasure(key, { anchor: "viewport" });
     }
   },
   { capture: true },
