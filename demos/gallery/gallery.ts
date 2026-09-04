@@ -40,6 +40,8 @@ type Size = "s" | "m" | "l";
 const ROW_HEIGHTS: Record<Size, number> = { s: 150, m: 210, l: 290 };
 const COLUMN_WIDTHS: Record<Size, number> = { s: 170, m: 240, l: 330 };
 const GAP = 6;
+/** The rows and bands are centred at this width; the scroller spans the page. */
+const CONTENT_WIDTH = 1080;
 const BAND_HEIGHT = 480;
 const PAGE = 120;
 const TOTAL = 3_000;
@@ -58,16 +60,6 @@ function photo(id: number): Photo {
 
 const viewport = mustGet("viewport");
 const status = mustGet("status");
-// TEMPORARY instrumentation (?debug-load): what happens around a load.
-const debugLoad = new URLSearchParams(location.search).has("debug-load");
-const t0 = performance.now();
-function log(tag: string, detail: unknown): void {
-  if (debugLoad)
-    console.log(
-      `[load] +${Math.round(performance.now() - t0)}ms ${tag}`,
-      JSON.stringify(detail),
-    );
-}
 const loaderSlot = { key: "more", height: LOADER_HEIGHT, render: renderLoader };
 
 // Layout and size persist in this browser.
@@ -114,30 +106,10 @@ function renderLoader(): HTMLElement {
 }
 
 function render(item: GalleryItem, existing?: HTMLElement): HTMLElement {
-  const before = existing ? existing.querySelectorAll(".tile").length : 0;
-  const el =
-    item.kind === "row"
-      ? renderRow(item, existing)
-      : renderBand(item, existing);
-  if (debugLoad) {
-    const ids = [...el.querySelectorAll<HTMLElement>(".tile")].map(
-      (t) => t.dataset.tile,
-    );
-    log("render", {
-      key: item.key,
-      existing: !!existing,
-      inDocument: existing?.isConnected ?? false,
-      tilesBefore: before,
-      tiles: ids.length,
-      cachedNow: ids.filter((id) => loadedPhotos.has(Number(id?.split(":")[0])))
-        .length,
-      created: createdThisRender,
-    });
-    createdThisRender = 0;
-  }
-  return el;
+  return item.kind === "row"
+    ? renderRow(item, existing)
+    : renderBand(item, existing);
 }
-let createdThisRender = 0;
 
 /** The tiles an element already holds, by photo and part: a re-render keeps them. */
 function existingTiles(el: HTMLElement): Map<string, HTMLElement> {
@@ -163,9 +135,7 @@ function tileAt(
   part = 0,
 ): HTMLElement {
   const id = `${p.id}:${part}`;
-  const kept = held.get(id);
-  if (!kept) createdThisRender++;
-  const tile = kept ?? tileElement(p, id);
+  const tile = held.get(id) ?? tileElement(p, id);
   tile.style.width = `${width}px`;
   tile.style.height = `${height}px`;
   return tile;
@@ -231,7 +201,6 @@ function forgetMountedTwins(): void {
 }
 
 function transplantTiles(dead: HTMLElement): void {
-  let moved = 0;
   for (const tile of dead.querySelectorAll<HTMLElement>(".tile")) {
     const id = tile.dataset.tile as string;
     const twin = freshTwins.get(id);
@@ -241,9 +210,7 @@ function transplantTiles(dead: HTMLElement): void {
     const twinImg = twin.querySelector("img");
     if (twinImg) nearViewport.unobserve(twinImg);
     twin.replaceWith(tile);
-    moved++;
   }
-  log("transplant", { moved, of: dead.querySelectorAll(".tile").length });
 }
 
 /** Photos whose image has loaded once: the browser has them, a new element shows them at once. */
@@ -263,7 +230,6 @@ function photoElement(p: Photo): HTMLImageElement {
   img.addEventListener(
     "load",
     () => {
-      log("img load", { id: p.id, wasCached: loadedPhotos.has(p.id) });
       loadedPhotos.add(p.id);
       // Every drawing of the photo (a card crossing a band edge is two)
       // shows together: one half ahead of the other reads as a cut.
@@ -307,11 +273,6 @@ function reveal(img: HTMLImageElement): void {
 function revealOne(img: HTMLImageElement): void {
   const src = img.dataset.src;
   if (!src) return;
-  log("reveal", {
-    id: img.dataset.id,
-    cached: loadedPhotos.has(Number(img.dataset.id)),
-    connected: img.isConnected,
-  });
   delete img.dataset.src;
   nearViewport.unobserve(img);
   img.src = src;
@@ -507,7 +468,6 @@ function loadMore(signal: AbortSignal): void {
     loading = false;
     loaded = Math.min(TOTAL, loaded + PAGE);
     if (loaded >= TOTAL) list?.setEdgeSlot("end", null);
-    log("append", { loaded });
     appendPage();
   }, LOAD_DELAY_MS);
   signal.addEventListener("abort", () => {
@@ -526,7 +486,11 @@ for (const button of document.querySelectorAll<HTMLButtonElement>(
     button.dataset.size === size || button.dataset.layout === layout,
   );
 }
-width = viewport.clientWidth;
+function contentWidth(): number {
+  return Math.min(viewport.clientWidth, CONTENT_WIDTH);
+}
+
+width = contentWidth();
 loaded = PAGE;
 items = build();
 list = createVirtualList<GalleryItem>(viewport, {
@@ -540,29 +504,19 @@ list = createVirtualList<GalleryItem>(viewport, {
   // text; the chat's "live" for a reply that must keep rendering.)
   scrollingUpdates: "freeze",
   edgeSlots: { end: loaderSlot },
-  onReachEnd: ({ signal }) => {
-    log("reachEnd", {});
-    loadMore(signal);
-  },
-  onState: (state) => {
-    log("state", state);
+  onReachEnd: ({ signal }) => loadMore(signal),
+  onState: () => {
     forgetMountedTwins();
     revealMountedNearViewport();
   },
-  onDestroy: (element, item) => {
-    log("destroy", {
-      key: item.key,
-      tiles: element.querySelectorAll(".tile").length,
-    });
-    transplantTiles(element);
-  },
+  onDestroy: transplantTiles,
 });
 // A gallery starts at its first photo, not at the end.
 void list.scrollTo("start");
 syncStatus();
 
 new ResizeObserver(() => {
-  const next = viewport.clientWidth;
+  const next = contentWidth();
   if (next === width || next === 0) return;
   width = next;
   reflow();
