@@ -1001,7 +1001,7 @@ export function createVirtualList<T>(
     const startSlot = edgeSlots.start;
     const endSlot = edgeSlots.end;
     const keys: readonly string[] = partial
-      ? committedKeys
+      ? (pending?.keys ?? committedKeys)
       : [
           ...(startSlot ? [slotKey("start", startSlot.key)] : []),
           ...itemKeys,
@@ -1256,7 +1256,13 @@ export function createVirtualList<T>(
     }
     const teardownFailures: unknown[] = [];
     if (previous) {
-      const superseded = [...previous.newRows]
+      const candidates = partial
+        ? itemKeys.flatMap((key) => {
+            const row = previous.newRows.get(key);
+            return row ? [[key, row] as const] : [];
+          })
+        : [...previous.newRows];
+      const superseded = candidates
         .filter(([key]) => !adopted.has(key))
         .map(([, row]) => row);
       teardownFailures.push(...destroyAll(superseded));
@@ -1265,6 +1271,23 @@ export function createVirtualList<T>(
     if (disposed) {
       teardownFailures.push(...destroyAll(built));
       return { prepared: emptyPrepared(keys, anchor), teardownFailures };
+    }
+    if (partial && previous) {
+      // Preparation succeeded: advance only the touched keys in the held
+      // snapshot. Its order and untouched rows remain owned by that snapshot.
+      // Do not copy its maps or mutate them before rollback is no longer needed.
+      for (const key of itemKeys) {
+        previous.newRows.delete(key);
+        previous.deferred.delete(key);
+      }
+      for (const [key, row] of newRows) previous.newRows.set(key, row);
+      for (const [key, item] of deferred) previous.deferred.set(key, item);
+      for (const [key, entry] of nextDeclared ?? [])
+        previous.declaredItems?.set(key, entry);
+      return {
+        prepared: { ...previous, anchor, target },
+        teardownFailures,
+      };
     }
     return {
       prepared: {
@@ -2011,23 +2034,15 @@ export function createVirtualList<T>(
     if (index === undefined) return;
     if (keyOf(item) !== key)
       throw new Error("updateItem cannot change an item's key");
-    // A structural snapshot already waiting owns the complete next order.
-    // Merge through its normal preparation path, preserving its anchor.
-    if (pending !== null) {
-      const snapshot = [...lastItems];
-      snapshot[index] = item;
-      applyItems(snapshot, anchor);
-      return;
-    }
     guarded(() => {
       const { prepared, teardownFailures } = prepare([item], anchor, true);
       if (!disposed) lastItems[index] = item;
       deferTeardown(teardownFailures);
-      applyPrepared(prepared);
+      applyPrepared(prepared, key);
     });
   }
 
-  function applyPrepared(prepared: Prepared<T>): void {
+  function applyPrepared(prepared: Prepared<T>, updatedKey?: string): void {
     if (disposed) return;
     if (idle()) {
       // A click-driven remeasure may be waiting for its post-activation
@@ -2063,7 +2078,17 @@ export function createVirtualList<T>(
     } else {
       // These rows will wait: their heights are re-read at the settle
       // (edge slots keep their declared height).
-      for (const row of prepared.newRows.values()) {
+      // Untouched pending rows are already dirty. A targeted update need
+      // not walk a potentially large held page just to mark them again.
+      const updatedRow =
+        updatedKey !== undefined ? prepared.newRows.get(updatedKey) : undefined;
+      const rowsToHold =
+        updatedKey !== undefined
+          ? updatedRow
+            ? [updatedRow]
+            : []
+          : prepared.newRows.values();
+      for (const row of rowsToHold) {
         if (!row.edge) row.dirty = true;
       }
       pending = prepared;

@@ -301,8 +301,12 @@ The definition of correct, referenced by number throughout the code:
   element after its unmount hook. Re-entry renders a fresh element. Store
   persistent row state in item data.
   `updateItem` prepares one unchanged key without rebuilding the key order;
-  when a snapshot is already pending, it merges through snapshot preparation
-  to preserve that snapshot's order and anchor. Unknown keys are ignored.
+  when a snapshot is already pending, successful preparation patches only
+  the touched key, preserving untouched rows, order, and the inherited anchor.
+  It does not copy the full item array or rebuild the key index. Unknown keys
+  are ignored. Live-commit eligibility checks and the eventual structural
+  commit can still inspect multiple rows; the targeted preparation is not a
+  constant-time guarantee for the entire update call.
   `measurementContainer` supplies an ancestor outside the scroll surface
   with equivalent row styles for detached measurement; it defaults to
   `document.body`.

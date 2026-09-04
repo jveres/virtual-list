@@ -137,10 +137,11 @@ list.dispose();
   `"live"`, what needs no scroll write: same-key updates, and structural
   changes confined below the anchor (an appended message, a version switch).
 - `updateItem(key, item, { anchor? })` replaces one item's data. The key must
-  stay the same; unknown keys are ignored. Without a pending snapshot, it
-  prepares only that item and keeps the existing key order. If a snapshot
-  is already held, it merges the update through snapshot preparation to
-  preserve the pending order and anchor policy.
+  stay the same; unknown keys are ignored. It prepares only that item,
+  including when a snapshot is held. After successful preparation, it patches
+  the held snapshot without copying its items or rebuilding its key order.
+  Untouched pending rows and the anchor policy are preserved; an explicit
+  anchor overrides the pending policy.
 - With `height(item)`, heights must be finite and positive. The runtime
   keeps data and heights for every item, but renders only the overscan
   window. Leaving that window calls `onUnmount` and `onDestroy`; re-entry

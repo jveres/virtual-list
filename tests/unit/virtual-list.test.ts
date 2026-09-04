@@ -3336,6 +3336,65 @@ describe("mount hooks", () => {
 });
 
 describe("targeted item updates", () => {
+  it("evaluates only the changed declaration while a large prepend is held", () => {
+    const height = vi.fn(() => ROW_H);
+    const initial = range(0, 10_000);
+    const h = mount(initial, {
+      boot: "start",
+      itemHeight: height,
+      scrollingUpdates: "freeze",
+    });
+    h.userScroll(3000);
+    h.list.setItems([...range(-10, 0), ...initial], { anchor: "viewport" });
+    height.mockClear();
+
+    h.list.updateItem("m32", message(32, "first"));
+    h.list.updateItem("m32", message(32, "latest"));
+    h.list.updateItem("m-5", message(-5, "new pending row"));
+
+    expect(height).toHaveBeenCalledTimes(3);
+    expect(h.list.state.count).toBe(10_000);
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+    expect(h.list.state.count).toBe(10_010);
+    expect(h.viewport.scrollTop).toBe(4000);
+    expect(h.rowElement("latest").textContent).toBe("latest");
+    void h.list.scrollTo("m-5");
+    expect(h.rowElement("new pending row").textContent).toBe("new pending row");
+    h.list.dispose();
+  });
+
+  it.each([false, true])(
+    "preserves untouched pending rows when an update fails (replacement=%s)",
+    (replaceOnRerender) => {
+      const initial = range(0, 50);
+      const h = mount(initial, {
+        scrollingUpdates: "freeze",
+        replaceOnRerender,
+        throwOn: "invalid",
+      });
+      h.userScroll(3000);
+      h.list.setItems([...range(-5, 0), ...initial], { anchor: "viewport" });
+      h.list.updateItem("m-3", message(-3, "first"));
+
+      expect(() => h.list.updateItem("m-3", message(-3, "invalid"))).toThrow(
+        "render failed: invalid",
+      );
+      h.list.updateItem("m-3", message(-3, "latest"));
+      h.settle();
+
+      expect(h.list.state.count).toBe(55);
+      expect(h.viewport.scrollTop).toBe(3500);
+      void h.list.scrollTo("m-3");
+      expect(h.rowElement("latest").textContent).toBe("latest");
+      expect(h.rowElement("msg -4").textContent).toBe("msg -4");
+      h.list.dispose();
+      expect(new Set(h.destroyedElements).size).toBe(
+        h.destroyedElements.length,
+      );
+    },
+  );
+
   it("evaluates only the changed declared item and preserves the latest snapshot", () => {
     const height = vi.fn(() => ROW_H);
     const h = mount(range(0, 10_000), { boot: "start", itemHeight: height });
@@ -3349,11 +3408,21 @@ describe("targeted item updates", () => {
     h.list.dispose();
   });
 
-  it.each(["live", "same-height", "freeze"] as const)(
-    "merges multiple updates with a held prepend in %s mode",
-    (scrollingUpdates) => {
+  it.each([
+    ["live", false],
+    ["same-height", false],
+    ["freeze", false],
+    ["live", true],
+    ["same-height", true],
+    ["freeze", true],
+  ] as const)(
+    "merges multiple updates with a held prepend in %s mode (declared=%s)",
+    (scrollingUpdates, declared) => {
       const initial = range(0, 50);
-      const h = mount(initial, { scrollingUpdates });
+      const h = mount(initial, {
+        scrollingUpdates,
+        itemHeight: declared ? () => ROW_H : undefined,
+      });
       h.userScroll(3000);
       h.list.setItems([...range(-5, 0), ...initial], { anchor: "viewport" });
       h.list.updateItem("m32", message(32, "first"));
@@ -3366,6 +3435,39 @@ describe("targeted item updates", () => {
       h.list.dispose();
     },
   );
+
+  it("allows an explicit anchor to override the held snapshot", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "freeze" });
+    h.userScroll(3000);
+    h.list.setItems([...range(-5, 0), ...initial], { anchor: "viewport" });
+
+    h.list.updateItem("m32", message(32, "changed"), { anchor: "end" });
+    h.settle();
+
+    expect(h.list.state.count).toBe(55);
+    expect(h.viewport.scrollTop).toBe(4900);
+    h.list.dispose();
+  });
+
+  it("supersedes a patched snapshot without resurrecting its removed rows", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { scrollingUpdates: "freeze" });
+    h.userScroll(3000);
+    h.list.setItems([...range(-5, 0), ...initial]);
+    h.list.updateItem("m-3", message(-3, "discarded"));
+
+    h.list.setItems(initial);
+    h.list.updateItem("m-3", message(-3, "must stay removed"));
+    h.list.updateItem("m32", message(32, "kept"));
+    h.settle();
+
+    expect(h.list.state.count).toBe(50);
+    expect(h.list.positionOf("m-3")).toBeNull();
+    expect(h.rowElement("kept").textContent).toBe("kept");
+    h.list.dispose();
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+  });
 
   it("ignores unknown keys and rejects identity changes", () => {
     const h = mount(range(0, 10));
