@@ -3339,6 +3339,61 @@ describe("declared heights", () => {
   });
 });
 
+describe("declared heights — the other commit paths", () => {
+  it("a mid-gesture render that returns a replacement swaps it in at the declared height", () => {
+    const initial = range(0, 50);
+    const destroyed: string[] = [];
+    const h = mount(initial, {
+      itemHeight: (m) => (m.body.includes("tall") ? 300 : ROW_H),
+      replaceOnRerender: true,
+      onDestroy: (el) => destroyed.push(el.textContent ?? ""),
+    });
+    void h.list.scrollTo("m10");
+    h.userScroll(1000);
+    h.userScroll(1200);
+    const before = h.rowElement("msg 12");
+    h.list.setItems(
+      initial.map((m) => (m.id === 12 ? { ...m, body: "tall 12" } : m)),
+    );
+    expect(h.list.state.held).toBe(true);
+    h.settle();
+    vi.advanceTimersByTime(2_000);
+    const after = h.rowElement("tall 12");
+    expect(after).not.toBe(before);
+    expect(destroyed).toContain("msg 12");
+    expect(h.list.positionOf("m12")?.height).toBe(300);
+    expect(h.list.state.held).toBe(false);
+  });
+
+  it("a mid-gesture render that throws leaves the row unknown, the commit lands, and the next preparation re-renders it", () => {
+    const initial = range(0, 50);
+    const renders: { id: number; existing: boolean }[] = [];
+    const h = mount(initial, {
+      itemHeight: () => ROW_H,
+      throwOn: "boom 12",
+      onRender: (m, existing) =>
+        renders.push({ id: m.id, existing: existing !== undefined }),
+    });
+    void h.list.scrollTo("m10");
+    h.userScroll(1000);
+    h.userScroll(1200);
+    h.list.setItems(
+      initial.map((m) => (m.id === 12 ? { ...m, body: "boom 12" } : m)),
+    );
+    expect(() => {
+      h.settle();
+      vi.advanceTimersByTime(2_000);
+    }).toThrow(/render failed: boom 12/);
+    expect(h.list.state.held).toBe(false);
+    renders.length = 0;
+    h.list.setItems(
+      initial.map((m) => (m.id === 12 ? { ...m, body: "fine 12" } : m)),
+    );
+    expect(renders).toContainEqual({ id: 12, existing: true });
+    expect(h.rowElement("fine 12")).toBeTruthy();
+  });
+});
+
 describe("boot position", () => {
   it("boots at the end by default and at the start on request, mounting only that window", () => {
     const atEnd = mount(range(0, 50));

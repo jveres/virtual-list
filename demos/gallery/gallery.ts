@@ -201,10 +201,7 @@ function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
   el.style.height = `${row.height + GAP}px`;
   el.replaceChildren(
     ...row.photos.map((p) => {
-      const tile = tileAt(el, held, p, p.width, row.height);
-      tile.style.left = "";
-      tile.style.top = "";
-      return tile;
+      return tileAt(el, held, p, p.width, row.height);
     }),
   );
   dropUnused(el, held);
@@ -317,8 +314,9 @@ function pointUnderViewportTop(): Point | null {
     const mid = (low + high) >> 1;
     const item = items[mid] as GalleryItem;
     const position = list.positionOf(item.key);
-    if (!position) return null;
-    if (scrollTop < position.top) high = mid - 1;
+    // Not committed yet: a page appended while a gesture holds it. Appended
+    // keys are at the end, so the point is above.
+    if (!position || scrollTop < position.top) high = mid - 1;
     else if (scrollTop >= position.top + position.height) low = mid + 1;
     else {
       found = { item, offset: scrollTop - position.top };

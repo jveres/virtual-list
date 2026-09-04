@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createImageLoader } from "../../demos/gallery/image-loader";
 
 function viewportAt(top: number, height: number): HTMLElement {
@@ -32,11 +32,7 @@ describe("image loader", () => {
     loader.add(far, "u-far");
     loader.add(below, "u-below");
     loader.add(near, "u-near");
-    expect(loader.metrics()).toMatchObject({
-      queued: 3,
-      inFlight: 1,
-      peakQueued: 3,
-    });
+    expect(loader.metrics()).toMatchObject({ queued: 3, inFlight: 1 });
     first.dispatchEvent(new Event("load"));
     expect(near.getAttribute("src")).toBe("u-near");
     expect(below.getAttribute("src")).toBeNull();
@@ -47,6 +43,7 @@ describe("image loader", () => {
       loaded: 2,
       inFlight: 1,
       queued: 1,
+      peakQueued: 3,
     });
   });
 
@@ -134,5 +131,44 @@ describe("image loader", () => {
     expect(follower.getAttribute("src")).toBe("u-x");
     expect(gone.getAttribute("src")).toBeNull();
     expect(loader.metrics()).toMatchObject({ cancelled: 1, inFlight: 1 });
+  });
+
+  it("a stalled download is abandoned: the slot and its followers fail, the next image starts", () => {
+    vi.useFakeTimers();
+    try {
+      const loader = createImageLoader({
+        viewport: viewportAt(0, 600),
+        concurrency: 1,
+      });
+      const slow = imageAt(0);
+      const twin = imageAt(200);
+      const next = imageAt(300);
+      loader.add(slow, "u-slow");
+      loader.add(twin, "u-slow");
+      loader.add(next, "u-next");
+      vi.advanceTimersByTime(15_000);
+      expect(slow.getAttribute("src")).toBeNull();
+      expect(slow.classList.contains("failed")).toBe(true);
+      expect(twin.classList.contains("failed")).toBe(true);
+      expect(next.getAttribute("src")).toBe("u-next");
+      expect(loader.metrics()).toMatchObject({ failed: 1, inFlight: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("raising the concurrency starts more at once", () => {
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 1,
+    });
+    const a = imageAt(0);
+    const b = imageAt(100);
+    loader.add(a, "u-a");
+    loader.add(b, "u-b");
+    expect(b.getAttribute("src")).toBeNull();
+    loader.setConcurrency(2);
+    expect(b.getAttribute("src")).toBe("u-b");
+    expect(loader.metrics()).toMatchObject({ inFlight: 2, concurrency: 2 });
   });
 });

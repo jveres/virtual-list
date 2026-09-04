@@ -198,6 +198,8 @@ The definition of correct, referenced by number throughout the code:
   `createVirtualList(viewport, { items, key, render, height?, boot?, overscanPx?,
   onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
   settleStrategy?, scrollingUpdates?, followBehavior? })`,
+  `boot` chooses where the list opens: `"end"` (the default, following
+  armed) or `"start"` (the initial position, never follow intent).
   `setItems(items, { anchor? })` — a policy, or a host-named anchor
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a
@@ -248,7 +250,7 @@ The definition of correct, referenced by number throughout the code:
   last row's top (less `followInset`) reaches the viewport top, and never
   backwards, so a reply is read from its start and a viewport already past
   that point stays put; explicit commands and explicit `"end"` anchors
-  still reach the end, and boot lands at the end. `setFollowMode` changes
+  still reach the end, and boot lands at the end by default. `setFollowMode` changes
   the mode live; widening it while following catches up at once.
   `remeasure` is the intent-bearing path for a discrete host interaction
   such as opening a tool panel. It reads the mounted row on the next animation

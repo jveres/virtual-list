@@ -917,7 +917,7 @@ export function createVirtualList<T>(
     if (document.visibilityState === "visible") {
       catchUpUntil = performance.now() + RESUME_CATCH_UP_MS;
       glide?.cancel();
-      if (smoothFollowArmed && !disposed) guarded(() => followIfBehindEnd());
+      if (smoothFollowArmed && !disposed) followIfBehindEnd();
     }
   };
   document.addEventListener("visibilitychange", onVisibilityChange);
@@ -1400,9 +1400,11 @@ export function createVirtualList<T>(
         // Declared-height items that changed mid-phase: rendered in place
         // now, into the mounted element, inside this commit; a render that
         // returns another element is a replacement like any other. A
-        // throwing render leaves its row unknown and dirty (the next
-        // preparation re-renders it) and the commit completes; the error
-        // surfaces with the teardown failures.
+        // throwing render leaves its row unknown (the next preparation
+        // re-renders it) and the commit completes; the error surfaces with
+        // the teardown failures. A host disposing from the render ends the
+        // loop; a replacement it returned is torn down here, since it
+        // never joins the rows dispose destroys.
         if (declared) {
           for (const [key, item] of applying.deferred) {
             const row = rows.get(key);
@@ -1412,9 +1414,18 @@ export function createVirtualList<T>(
             try {
               rendered = renderInto(row, item);
             } catch (error) {
-              markDirty(row);
               teardownFailures.push(error);
               continue;
+            }
+            if (disposed) {
+              if (rendered !== row.element) {
+                try {
+                  options.onDestroy?.(rendered, item);
+                } catch (error) {
+                  teardownFailures.push(error);
+                }
+              }
+              break;
             }
             if (rendered === row.element) {
               row.item = item;
@@ -1628,8 +1639,8 @@ export function createVirtualList<T>(
       // only for rows entering the window or after a geometry commit.
       if (entering || geometryChanged) placeRow(row);
     }
-    // Memoized only once the window is complete: a host hook that threw
-    // and was deferred must not leave the rest unmounted behind a memo.
+    // Memoized only once the window is complete: nothing in the loop may
+    // leave a partial window behind a memo.
     lastReconcile = {
       scrollTop: vp.scrollTop,
       height: vp.height,
@@ -2192,8 +2203,12 @@ export function createVirtualList<T>(
         : delta > AT_EDGE_EPSILON_PX;
     if (!behind) return;
     if (catchingUp()) {
-      writeScrollTop(snapToDevicePixel(followTarget(current)));
-      reconcileAndPublish();
+      // A write and its reconcile are a transaction (I4): a host acting
+      // from a mount hook or onState is queued, never re-entered.
+      guarded(() => {
+        writeScrollTop(snapToDevicePixel(followTarget(current)));
+        reconcileAndPublish();
+      });
       return;
     }
     startFollowGlide();
