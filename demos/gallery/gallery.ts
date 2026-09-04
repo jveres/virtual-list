@@ -29,10 +29,11 @@ import {
 //   keeps its offset within the band), and the runtime resolves the
 //   snapshot as any anchored one. No scroll is written by the lab.
 // - Rows and bands keep their object while unchanged, so the runtime
-//   re-renders nothing for them; a tile is one per photo, pooled across
-//   rows, bands, re-flows, and remounts, so a photo shown once never turns
-//   gray again. Sources are set only when a photo nears the viewport; a
-//   failed provider leaves a flat tile in the box.
+//   re-renders nothing for them; a re-render keeps the tiles its element
+//   already holds. A photo that has loaded once shows at once from the
+//   browser's cache in any new element, without the fade. Sources are set
+//   when a photo nears the viewport (the observer while scrolling, a
+//   commit for what it mounted); a failed provider leaves a flat tile.
 
 type Layout = "rows" | "masonry";
 type Size = "s" | "m" | "l";
@@ -92,73 +93,31 @@ function render(item: GalleryItem, existing?: HTMLElement): HTMLElement {
     : renderBand(item, existing);
 }
 
+/** The tiles an element already holds, by photo and part: a re-render keeps them. */
+function existingTiles(el: HTMLElement): Map<string, HTMLElement> {
+  const held = new Map<string, HTMLElement>();
+  for (const tile of el.querySelectorAll<HTMLElement>(".tile")) {
+    held.set(tile.dataset.tile as string, tile);
+  }
+  return held;
+}
+
 /**
- * One tile per photo (and per drawing of a card crossing band edges), kept
- * across rows, bands, re-flows, and remounts: a photo shown once keeps its
- * element and its decoded image wherever it lands next, so a re-flow or a
- * scroll back never shows it gray again. A tile is moved only once its
- * element has died (the runtime's destroy hook orphans it): the runtime
- * renders a held update fresh, off-screen, while the old element stays
- * mounted for the rest of the gesture, and a tile taken from that element
- * left a hole on screen. A tile still held by another element is cloned
- * instead — its cached image shows at once. The pool is bounded; orphaned
- * tiles least recently placed go first.
+ * A photo's tile at a size: the placeholder box, its image over it. Tiles
+ * belong to their element — the runtime renders a held update fresh and
+ * off-screen while the old element stays on screen, so nothing may be
+ * taken from another element. A photo that has loaded once shows at once
+ * from the browser's cache, without the fade.
  */
-const tiles = new Map<string, HTMLElement>();
-const TILE_POOL_MAX = 900;
-
-function tileFor(p: Photo, part: number, into: HTMLElement): HTMLElement {
-  const key = `${p.id}:${part}`;
-  let tile = tiles.get(key);
-  if (tile) {
-    tiles.delete(key);
-    const holder = tile.parentElement;
-    if (holder !== null && holder !== into) tile = cloneTile(tile, p);
-  } else {
-    tile = tileElement(p);
-  }
-  tiles.set(key, tile);
-  if (tiles.size > TILE_POOL_MAX) {
-    for (const [old, element] of tiles) {
-      if (element.parentElement !== null) continue;
-      tiles.delete(old);
-      const img = element.querySelector("img");
-      if (img) nearViewport.unobserve(img);
-      break;
-    }
-  }
-  return tile;
-}
-
-/** A tile's twin for another element: the same source, shown at once when the image is already decoded. */
-function cloneTile(tile: HTMLElement, p: Photo): HTMLElement {
-  const twin = tileElement(p);
-  const source = tile.querySelector("img");
-  const img = twin.querySelector("img") as HTMLImageElement;
-  if (source?.getAttribute("src")) {
-    nearViewport.unobserve(img);
-    img.src = source.src;
-    if (img.complete && img.naturalWidth > 0) img.classList.add("loaded");
-  }
-  return twin;
-}
-
-/** Orphans a dead element's tiles for reuse. */
-function releaseTiles(element: HTMLElement): void {
-  for (const tile of element.querySelectorAll<HTMLElement>(".tile")) {
-    tile.remove();
-  }
-}
-
-/** A photo's tile at a size: the placeholder box, its image fading in over it. */
 function tileAt(
-  into: HTMLElement,
+  held: Map<string, HTMLElement>,
   p: Photo,
   width: number,
   height: number,
   part = 0,
 ): HTMLElement {
-  const tile = tileFor(p, part, into);
+  const id = `${p.id}:${part}`;
+  const tile = held.get(id) ?? tileElement(p, id);
   tile.style.width = `${width}px`;
   tile.style.height = `${height}px`;
   return tile;
@@ -166,11 +125,12 @@ function tileAt(
 
 function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
   const el = existing ?? document.createElement("div");
+  const held = existingTiles(el);
   el.className = "photo-row";
   el.style.height = `${row.height + GAP}px`;
   el.replaceChildren(
     ...row.photos.map((p) => {
-      const tile = tileAt(el, p, p.width, row.height);
+      const tile = tileAt(held, p, p.width, row.height);
       tile.style.left = "";
       tile.style.top = "";
       return tile;
@@ -181,11 +141,12 @@ function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
 
 function renderBand(band: Band, existing?: HTMLElement): HTMLElement {
   const el = existing ?? document.createElement("div");
+  const held = existingTiles(el);
   el.className = "band";
   el.style.height = `${band.height}px`;
   el.replaceChildren(
     ...band.cards.map((card) => {
-      const tile = tileAt(el, card, card.width, card.height, card.part);
+      const tile = tileAt(held, card, card.width, card.height, card.part);
       tile.style.left = `${card.left}px`;
       tile.style.top = `${card.top - band.start}px`;
       return tile;
@@ -194,57 +155,95 @@ function renderBand(band: Band, existing?: HTMLElement): HTMLElement {
   return el;
 }
 
-function tileElement(p: Photo): HTMLElement {
+function tileElement(p: Photo, id: string): HTMLElement {
   const tile = document.createElement("div");
   tile.className = "tile";
+  tile.dataset.tile = id;
   tile.dataset.id = String(p.id);
   tile.append(photoElement(p));
   return tile;
 }
+
+/** Photos whose image has loaded once: the browser has them, a new element shows them at once. */
+const loadedPhotos = new Set<number>();
 
 function photoElement(p: Photo): HTMLImageElement {
   const img = document.createElement("img");
   img.className = "photo";
   img.alt = `Photo ${p.id}`;
   img.decoding = "async";
-  img.addEventListener("load", () => img.classList.add("loaded"), {
-    once: true,
-  });
+  img.addEventListener(
+    "load",
+    () => {
+      loadedPhotos.add(p.id);
+      img.classList.add("loaded");
+    },
+    { once: true },
+  );
   img.addEventListener("error", () => img.classList.add("failed"), {
     once: true,
   });
-  // The source is set only once the photo nears the viewport: the runtime
-  // premeasures fresh items in a hidden root that the browser's own lazy
-  // loading counts as visible.
   img.dataset.src = `https://picsum.photos/seed/vl-${p.id}/${SOURCE_WIDTH}/${Math.round(SOURCE_WIDTH / p.aspect)}`;
-  nearViewport.observe(img);
+  if (loadedPhotos.has(p.id)) {
+    // Cached: no fade, the image paints as soon as the element does.
+    img.classList.add("loaded");
+    reveal(img);
+  } else {
+    // The source waits until the photo nears the viewport: the runtime
+    // premeasures fresh items in a hidden root that the browser's own lazy
+    // loading counts as visible.
+    nearViewport.observe(img);
+  }
   return img;
 }
 
+/** Gives an image its source; once. */
+function reveal(img: HTMLImageElement): void {
+  const src = img.dataset.src;
+  if (!src) return;
+  delete img.dataset.src;
+  nearViewport.unobserve(img);
+  img.src = src;
+  // A provider that never answers leaves a flat tile in the photo's exact
+  // box; a late answer still paints over it.
+  const stall = window.setTimeout(() => img.classList.add("failed"), STALL_MS);
+  img.addEventListener("load", () => window.clearTimeout(stall), {
+    once: true,
+  });
+}
+
+// Photos near the viewport get their source two ways. The observer covers
+// scrolling. A commit covers what the runtime just mounted or swapped in:
+// an element rendered fresh off-screen for a held update arrives with its
+// tiles observed while detached, which Safari does not re-evaluate.
 const nearViewport = new IntersectionObserver(
   (entries) => {
     for (const entry of entries) {
-      if (!entry.isIntersecting) continue;
-      const img = entry.target as HTMLImageElement;
-      nearViewport.unobserve(img);
-      const src = img.dataset.src;
-      if (!src) continue;
-      img.src = src;
-      // Already decoded (a cached image): shown at first paint, no fade.
-      if (img.complete && img.naturalWidth > 0) img.classList.add("loaded");
-      // A provider that never answers leaves a flat tile in the photo's
-      // exact box; a late answer still paints over it.
-      const stall = window.setTimeout(
-        () => img.classList.add("failed"),
-        STALL_MS,
-      );
-      img.addEventListener("load", () => window.clearTimeout(stall), {
-        once: true,
-      });
+      if (entry.isIntersecting) reveal(entry.target as HTMLImageElement);
     }
   },
   { root: viewport, rootMargin: "50% 0px" },
 );
+
+function revealMountedNearViewport(): void {
+  if (revealFrame) return;
+  revealFrame = requestAnimationFrame(() => {
+    revealFrame = 0;
+    revealNearViewportNow();
+  });
+}
+let revealFrame = 0;
+
+function revealNearViewportNow(): void {
+  const r = viewport.getBoundingClientRect();
+  const margin = r.height / 2;
+  for (const img of viewport.querySelectorAll<HTMLImageElement>(
+    "img.photo[data-src]",
+  )) {
+    const b = img.getBoundingClientRect();
+    if (b.bottom >= r.top - margin && b.top <= r.bottom + margin) reveal(img);
+  }
+}
 
 // --- Layout ------------------------------------------------------------------
 
@@ -421,7 +420,7 @@ list = createVirtualList<GalleryItem>(viewport, {
   scrollingUpdates: "same-height",
   edgeSlots: { end: loaderSlot },
   onReachEnd: ({ signal }) => loadMore(signal),
-  onDestroy: releaseTiles,
+  onState: revealMountedNearViewport,
 });
 // A gallery starts at its first photo, not at the end.
 void list.scrollTo("start");
