@@ -79,7 +79,10 @@ Everything under `src/`:
 - `premeasure.ts` — the detached measurer, width-synced to the viewport.
 - `snapshot.ts` — DOM-independent key validation, anchor inheritance,
   superseded-row selection, and merging targeted patches into held snapshots.
-  Rendering, rollback, measurement, and commit scheduling stay in the runtime.
+  The runtime coordinates DOM effects, measurement, and commit scheduling.
+- `render-state.ts` — provisional render state and the preparation rollback
+  journal. The runtime owns fresh elements, measurement, and final adoption;
+  the journal accepts successful in-place updates or restores touched rows.
 - `follow.ts` — chat follow intent, reply-start limits, and catch-up policy
   after visibility changes. It reads geometry through a small host interface;
   the runtime owns glides and scroll writes.

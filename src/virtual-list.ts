@@ -12,6 +12,7 @@ import {
   positionRowElement,
 } from "./premeasure";
 import { type Edge, type ReachContext, ReachController } from "./reach";
+import { RenderJournal, renderInto as renderRowInto } from "./render-state";
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,
@@ -669,16 +670,7 @@ export function createVirtualList<T>(
    * the caller decides what a replacement element means for the row.
    */
   function renderInto(row: Row<T>, item: T): HTMLElement {
-    row.renderedItem = item;
-    let rendered: HTMLElement;
-    try {
-      rendered = render(item, row.element);
-    } catch (error) {
-      row.renderUnknown = true;
-      throw error;
-    }
-    row.renderUnknown = false;
-    return rendered;
+    return renderRowInto(row, item, render);
   }
 
   /** A row at its declared height, never measured: positioned the way the measurer positions every other row. */
@@ -971,7 +963,11 @@ export function createVirtualList<T>(
     prepared.declaredItems = nextDeclared;
     const { newRows, deferred, anchor } = prepared;
     const built: Row<T>[] = [];
-    const inPlace: { row: Row<T>; item: T }[] = [];
+    const journal = new RenderJournal<T, Row<T>>(
+      render,
+      markDirty,
+      (element, item) => options.onDestroy?.(element, item),
+    );
     /** Equal-height phase-time updates: swapped into committed slots in phase 2. */
     const promotions: { row: Row<T>; fresh: Row<T> }[] = [];
     const promotionCandidates: { row: Row<T>; fresh: Row<T> }[] = [];
@@ -980,39 +976,6 @@ export function createVirtualList<T>(
     const adopted = new Set<string>();
     /** Teardown failures of what a mid-preparation dispose destroyed. */
     const disposeFailures: unknown[] = [];
-
-    // Every in-place candidate is recorded BEFORE its render is invoked:
-    // the host may mutate the element and then throw, and rollback must
-    // see that row. A fresh element the host returns is owned (destroyed
-    // on any bail-out) from the moment it exists.
-    const touched: { row: Row<T>; item: T }[] = [];
-
-    const rollBack = (): unknown[] => {
-      const failures = destroyAll(built);
-      for (const { row } of touched) {
-        if (row.destroyed) continue;
-        try {
-          const back = render(row.item, row.element);
-          if (back === row.element) {
-            row.renderedItem = row.item;
-            row.renderUnknown = false;
-          } else {
-            // The host handed back a fresh element we will never adopt;
-            // the old element's state is whatever the failed render left.
-            row.renderUnknown = true;
-            try {
-              options.onDestroy?.(back, row.item);
-            } catch (teardownError) {
-              failures.push(teardownError);
-            }
-          }
-        } catch {
-          row.renderUnknown = true; // Re-rendered next time, whatever the item.
-        }
-        markDirty(row); // The DOM may have changed either way; re-measure.
-      }
-      return failures;
-    };
 
     /** Retain a fresh render for the preparation's single measurement pass. */
     const retainFresh = (
@@ -1048,16 +1011,10 @@ export function createVirtualList<T>(
     };
 
     const renderInPlaceOrReplace = (row: Row<T>, item: T): Row<T> | null => {
-      touched.push({ row, item });
-      const previouslyRendered = row.renderedItem;
-      const rendered = renderInto(row, item); // Rollback restores on a throw.
-      if (rendered === row.element) {
-        inPlace.push({ row, item });
-        return null;
-      }
-      // A replacement: the old element's DOM was not advanced.
-      row.renderedItem = previouslyRendered;
-      return retainFresh(row.key, item, rendered);
+      const rendered = journal.renderRow(row, item);
+      return rendered === row.element
+        ? null
+        : retainFresh(row.key, item, rendered);
     };
 
     /** A key with a prepared-but-uncommitted row: adopt or advance it. */
@@ -1185,7 +1142,11 @@ export function createVirtualList<T>(
     } catch (error) {
       // DOM restoration and local cleanup complete first; teardown
       // failures then surface together with the original error.
-      const failures = [...disposeFailures, ...rollBack()];
+      const failures = [
+        ...disposeFailures,
+        ...destroyAll(built),
+        ...journal.rollback(),
+      ];
       if (error instanceof DisposedDuringPreparation) {
         return {
           prepared: createPrepared<T, Row<T>>(keys, anchor),
@@ -1204,10 +1165,7 @@ export function createVirtualList<T>(
     // of elements displaced by promotions; a host disposing from one of
     // them must not leak what was built here, so preparation keeps cleanup
     // ownership until the hand-off returns.
-    for (const entry of inPlace) {
-      entry.row.item = entry.item;
-      markDirty(entry.row);
-    }
+    journal.accept();
     const teardownFailures: unknown[] = [];
     if (previous) {
       teardownFailures.push(
@@ -1382,6 +1340,62 @@ export function createVirtualList<T>(
     });
   }
 
+  // Declared-height items that changed mid-phase: rendered in place
+  // now, into the mounted element, inside this commit; a render that
+  // returns another element is a replacement like any other. A
+  // throwing render leaves its row unknown (the next preparation
+  // re-renders it) and the commit completes; the error surfaces with
+  // the teardown failures. A host disposing from the render ends the
+  // loop; a replacement it returned is torn down here, since it
+  // never joins the rows dispose destroys.
+  function applyDeferredDeclared(
+    applying: Prepared<T>,
+    teardownFailures: unknown[],
+  ): void {
+    for (const [key, item] of applying.deferred) {
+      const row = rows.get(key);
+      if (!row || row.destroyed) continue;
+      const previouslyRendered = row.renderedItem;
+      let rendered: HTMLElement;
+      try {
+        rendered = renderInto(row, item);
+      } catch (error) {
+        teardownFailures.push(error);
+        const old = declaredItems.get(key);
+        if (old) applying.declaredItems?.set(key, old);
+        continue;
+      }
+      if (disposed) {
+        if (rendered !== row.element) {
+          try {
+            options.onDestroy?.(rendered, item);
+          } catch (error) {
+            teardownFailures.push(error);
+          }
+        }
+        break;
+      }
+      if (rendered === row.element) {
+        row.item = item;
+        commitHeight(
+          row,
+          applying.declaredItems?.get(key)?.height ?? declaredHeight(item),
+        );
+      } else {
+        row.renderedItem = previouslyRendered;
+        applying.newRows.set(
+          key,
+          retainDeclared(
+            key,
+            item,
+            rendered,
+            applying.declaredItems?.get(key)?.height ?? declaredHeight(item),
+          ),
+        );
+      }
+    }
+  }
+
   function commitBody(
     applying: Prepared<T> | null,
     policyOverride: CapturePolicy | undefined,
@@ -1402,60 +1416,7 @@ export function createVirtualList<T>(
       const toMeasure = new Set<Row<T>>();
 
       if (applying) {
-        // Declared-height items that changed mid-phase: rendered in place
-        // now, into the mounted element, inside this commit; a render that
-        // returns another element is a replacement like any other. A
-        // throwing render leaves its row unknown (the next preparation
-        // re-renders it) and the commit completes; the error surfaces with
-        // the teardown failures. A host disposing from the render ends the
-        // loop; a replacement it returned is torn down here, since it
-        // never joins the rows dispose destroys.
-        if (declared) {
-          for (const [key, item] of applying.deferred) {
-            const row = rows.get(key);
-            if (!row || row.destroyed) continue;
-            const previouslyRendered = row.renderedItem;
-            let rendered: HTMLElement;
-            try {
-              rendered = renderInto(row, item);
-            } catch (error) {
-              teardownFailures.push(error);
-              const old = declaredItems.get(key);
-              if (old) applying.declaredItems?.set(key, old);
-              continue;
-            }
-            if (disposed) {
-              if (rendered !== row.element) {
-                try {
-                  options.onDestroy?.(rendered, item);
-                } catch (error) {
-                  teardownFailures.push(error);
-                }
-              }
-              break;
-            }
-            if (rendered === row.element) {
-              row.item = item;
-              commitHeight(
-                row,
-                applying.declaredItems?.get(key)?.height ??
-                  declaredHeight(item),
-              );
-            } else {
-              row.renderedItem = previouslyRendered;
-              applying.newRows.set(
-                key,
-                retainDeclared(
-                  key,
-                  item,
-                  rendered,
-                  applying.declaredItems?.get(key)?.height ??
-                    declaredHeight(item),
-                ),
-              );
-            }
-          }
-        }
+        if (declared) applyDeferredDeclared(applying, teardownFailures);
         // Keys and rows: drop removed, swap replaced, adopt new. A row is
         // removed from the map BEFORE its destruction so a host disposing
         // from onDestroy can never destroy it twice. A same-key snapshot

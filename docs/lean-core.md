@@ -214,9 +214,12 @@ The definition of correct, referenced by number throughout the code:
   resolves inherited anchor intent, identifies superseded rows, and merges
   successful targeted patches. It does not render, measure, destroy, or
   schedule anything. The runtime owns those effects and transfers snapshot
-  ownership only after rendering and measurement succeed. This is the first
-  separation of the preparation pipeline, not a replacement of its rollback
-  or commit machinery.
+  ownership only after rendering and measurement succeed. `render-state.ts`
+  owns provisional render state and the rollback journal: touched rows are
+  registered before host rendering, successful changes are accepted only
+  after preparation succeeds, and failed restoration marks the render unknown.
+  Fresh-row ownership, measurement, promotion, and commit scheduling remain
+  in the runtime. Deferred declared-height rendering has its own commit phase.
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
   `createVirtualList(viewport, { items, key, render, height?, boot?, overscanPx?,
   onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
