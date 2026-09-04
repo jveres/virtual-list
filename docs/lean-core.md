@@ -188,9 +188,12 @@ The definition of correct, referenced by number throughout the code:
   floored engines, endpoint rebase). Two legs: the LANDING — the last
   viewport of travel, or the whole trip when shorter — always takes the
   same time on the same ease-out, so a one-viewport hop and a jump across
-  the list arrive identically; the APPROACH covers the rest as a burst
-  decaying into the landing's entry speed, its duration derived from the
-  distance and capped. A `scrollTo` `duration` is the landing time and the
+  the list arrive identically; the APPROACH covers the rest, braking at a
+  constant rate — the landing's own initial braking — down to the
+  landing's entry speed, so the hand-off is continuous in speed and in
+  deceleration (an asymptotic decay held a constant speed for its last
+  third and then braked hard: a stutter one viewport before the end); its
+  duration follows from the distance and is capped. A `scrollTo` `duration` is the landing time and the
   approach cap (a trip from the far end takes at most twice it); the
   default lands in 600ms and bounds a trip by 1400ms; follow legs land in
   320ms.

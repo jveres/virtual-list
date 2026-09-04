@@ -230,4 +230,31 @@ describe("glide", () => {
     expect(doneAt - t0).toBeLessThanOrEqual(1400 + 32);
     expect(doneAt - t0).toBeGreaterThanOrEqual(1200);
   });
+
+  it("a long trip never stops slowing down: the approach brakes straight into the landing", () => {
+    // Twenty viewports: an approach and the landing. Frame steps must fall
+    // monotonically from the first to the last — the seam between the legs
+    // is invisible (an asymptotic approach once held a constant speed for
+    // its last third, then the landing braked hard).
+    const host = harness(0, 14_000, false);
+    const writes: number[] = [];
+    const write = host.write;
+    host.write = (top) => {
+      write(top);
+      writes.push(top);
+    };
+    startGlide(host, glidePace(700), () => {});
+    vi.advanceTimersByTime(3_000);
+    expect(host.top).toBe(14_000);
+    const steps = writes.slice(1).map((top, i) => top - (writes[i] as number));
+    // The first frame starts the clock; from the second on, each step is no
+    // larger than the one before it (a pixel of slack for rounding).
+    for (let i = 2; i < steps.length; i++) {
+      expect(
+        steps[i],
+        `frame ${i}: ${steps.slice(i - 3, i + 1).join(",")}`,
+      ).toBeLessThanOrEqual((steps[i - 1] as number) + 1);
+    }
+    expect(steps[1]).toBeGreaterThan(steps[steps.length - 2] as number);
+  });
 });
