@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   justify,
   masonry,
-  originFor,
   type Photo,
   slice,
 } from "../../demos/gallery/layout";
@@ -99,13 +98,5 @@ describe("masonry", () => {
       // Each drawing of a card is its own part, counted from its top band.
       expect(drawings.map((d) => d.part)).toEqual(drawings.map((_, i) => i));
     }
-  });
-
-  it("an origin puts a band edge at the asked point", () => {
-    const { cards, height } = masonry(photos(60), 900, 4, 6);
-    const origin = originFor(1234, 400);
-    const bands = slice(cards, height, 400, origin);
-    expect(bands.some((b) => b.start === 1234)).toBe(true);
-    expect(originFor(-30, 400)).toBe(370);
   });
 });

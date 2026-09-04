@@ -50,11 +50,16 @@ pnpm run dev
   only.
 
 - `/demos/gallery/index.html` — the gallery: the same photos as
-  justified rows or as masonry bands, each the virtualized item. Geometry
-  is exact before any image loads; a width, size, or layout change is
-  anchored through the runtime's key anchor (the row or band that holds
-  the point under the viewport top inherits the anchor's key); paging at
-  the end never moves what is on screen.
+  justified rows or as masonry bands, each the virtualized item with a
+  declared height (`height`), so the runtime never measures and a band
+  that changes during a gesture is rendered in place at the settle. A
+  width, size, or layout change names its anchor (`anchor: { key,
+  offset }`): the item now holding the point under the viewport top, at
+  the offset that keeps it there. Images load through a loader fed by the
+  mount hooks — nearest first, under a concurrency limit chosen in the
+  header, abandoned when their element leaves the scroller — and the
+  header shows its metrics. Paging at the end never moves what is on
+  screen.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server

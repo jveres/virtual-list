@@ -124,3 +124,25 @@ header .choices button.active {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+header .concurrency {
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+header .concurrency select {
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+}
+
+#loader-metrics {
+  margin-left: 12px;
+  font-variant-numeric: tabular-nums;
+}

@@ -181,9 +181,3 @@ export function slice(
   }
   return bands;
 }
-
-/** The origin (in [0, bandHeight)) that puts a band edge at `y`. */
-export function originFor(y: number, bandHeight: number): number {
-  const m = y % bandHeight;
-  return m < 0 ? m + bandHeight : m;
-}
