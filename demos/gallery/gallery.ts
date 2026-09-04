@@ -428,6 +428,8 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     key: (item) => item.key,
     render,
     height: heightOf,
+    // A gallery starts at its first photo, not at the end.
+    boot: "start",
     overscanPx: 600,
     // A page that lands mid-gesture waits for the settle, whole: no photos
     // appear under a moving finger or an overscroll bounce.
@@ -439,8 +441,6 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     onState: () => images.reprioritize(),
   },
 );
-// A gallery starts at its first photo, not at the end.
-void list.scrollTo("start");
 syncStatus();
 
 new ResizeObserver(() => {

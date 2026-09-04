@@ -121,6 +121,7 @@ function mount(
     followMode?: VirtualListOptions<Msg>["followMode"];
     followInset?: number;
     itemHeight?: (m: Msg) => number;
+    boot?: "start" | "end";
     onMount?: (element: HTMLElement, m: Msg) => void;
     onUnmount?: (element: HTMLElement, m: Msg) => void;
     /** Runs at the start of every render (probe hook). */
@@ -204,6 +205,7 @@ function mount(
     followMode: hooks.followMode,
     followInset: hooks.followInset,
     height: hooks.itemHeight,
+    boot: hooks.boot,
     onMount: hooks.onMount,
     onUnmount: hooks.onUnmount,
     render: (m, existing) => {
@@ -3334,5 +3336,23 @@ describe("declared heights", () => {
     expect(h.rowElement("tall 12")).toBe(mountedBefore);
     expect(h.list.positionOf("m12")?.height).toBe(300);
     expect(measured.size).toBe(0);
+  });
+});
+
+describe("boot position", () => {
+  it("boots at the end by default and at the start on request, mounting only that window", () => {
+    const atEnd = mount(range(0, 50));
+    expect(atEnd.viewport.scrollTop).toBe(50 * ROW_H - VIEWPORT_H);
+    expect(atEnd.list.state.atEnd).toBe(true);
+
+    const mounts: number[] = [];
+    const atStart = mount(range(0, 50), {
+      boot: "start",
+      onMount: (_el, m) => mounts.push(m.id),
+    });
+    expect(atStart.viewport.scrollTop).toBe(0);
+    expect(atStart.list.state.atStart).toBe(true);
+    expect(atStart.list.state.start).toBe(0);
+    expect(Math.max(...mounts)).toBeLessThan(20);
   });
 });

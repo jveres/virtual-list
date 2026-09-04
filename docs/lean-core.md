@@ -195,7 +195,7 @@ The definition of correct, referenced by number throughout the code:
   default lands in 600ms and bounds a trip by 1400ms; follow legs land in
   320ms.
 - The API, as built in the v2 runtime (`src/virtual-list.ts`):
-  `createVirtualList(viewport, { items, key, render, height?, overscanPx?,
+  `createVirtualList(viewport, { items, key, render, height?, boot?, overscanPx?,
   onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
   settleStrategy?, scrollingUpdates?, followBehavior? })`,
   `setItems(items, { anchor? })` — a policy, or a host-named anchor

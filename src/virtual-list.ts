@@ -122,6 +122,13 @@ export interface VirtualListOptions<T> {
    * of fresh off-scroller and swapped in.
    */
   height?: (item: T) => number;
+  /**
+   * Where the list boots: `"end"` (default; a chat opens at its latest
+   * message, following armed) or `"start"` (a gallery opens at its first
+   * photo). Booting at the end and then commanding the start would mount,
+   * and abandon, a window of rows for nothing.
+   */
+  boot?: "start" | "end";
   overscanPx?: number;
   /**
    * Called whenever a state field changes, and after every commit even
@@ -2329,7 +2336,10 @@ export function createVirtualList<T>(
   }
 
   // --- Boot -----------------------------------------------------------------
-  commit(prepare(lastItems, "end").prepared);
+  // "none" keeps the initial position, the start.
+  commit(
+    prepare(lastItems, options.boot === "start" ? "none" : "end").prepared,
+  );
   booting = false;
 
   function setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void {
