@@ -9,6 +9,10 @@ import {
   type ReachContext,
   type VirtualList,
 } from "../../src/virtual-list.js";
+import {
+  createPhotoPreview,
+  type PhotoPreviewItem,
+} from "../shared/photo-preview.js";
 import { mustGet } from "../shared/utils.js";
 import { createImageLoader, type LoaderMetrics } from "./image-loader.js";
 import {
@@ -84,6 +88,17 @@ function photo(id: number): Photo {
 }
 
 const viewport = mustGet("viewport");
+const photoPreview = createPhotoPreview<PhotoPreviewItem>({
+  viewport,
+  thumbnailUrl: (p) =>
+    `https://picsum.photos/seed/vl-${p.id}/${SOURCE_WIDTH}/${Math.round(SOURCE_WIDTH * p.aspectRatio)}`,
+  previewUrl: (p, width) =>
+    `https://picsum.photos/seed/vl-${p.id}/${width}/${Math.round(width * p.aspectRatio)}`,
+});
+window.addEventListener("pagehide", () => photoPreview.dispose());
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) location.reload();
+});
 viewport.scrollTop = 0;
 const status = mustGet("status");
 const loaderMetrics = mustGet("loader-metrics");
@@ -309,6 +324,7 @@ function syncTiles(
     if (added && el.isConnected) queueImages(tile);
   }
   for (const tile of unused.values()) {
+    photoPreview.unbind(tile);
     if (el.isConnected) dropImages(tile);
     tile.remove();
   }
@@ -358,11 +374,18 @@ function tileElement(p: Photo, id: string): HTMLElement {
   tile.dataset.tile = id;
   tile.dataset.id = String(p.id);
   const img = document.createElement("img");
-  img.className = "photo";
+  img.className = "photo photo-preview-image";
+  img.draggable = false;
   img.alt = `Photo ${p.id}`;
   img.decoding = "async";
   img.dataset.src = sourceOf(p);
   tile.append(img);
+  photoPreview.bind(tile, {
+    id: p.id,
+    aspectRatio: 1 / p.aspect,
+    width: SOURCE_WIDTH,
+    height: Math.round(SOURCE_WIDTH / p.aspect),
+  });
   return tile;
 }
 
@@ -627,6 +650,10 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     onReachEnd: (context) => loadMore("end", context),
     onMount: queueImages,
     onUnmount: dropImages,
+    onDestroy: (element) => {
+      for (const tile of element.querySelectorAll<HTMLElement>(".tile"))
+        photoPreview.unbind(tile);
+    },
     onState: (_state, viewport) => {
       imageViewport = viewport;
       flushImages();

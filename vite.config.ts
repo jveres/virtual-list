@@ -83,6 +83,8 @@ export default defineConfig({
           .pathname,
         gallery: new URL("demos/gallery/index.html", import.meta.url).pathname,
         feed: new URL("demos/feed/index.html", import.meta.url).pathname,
+        newspaper: new URL("demos/newspaper/index.html", import.meta.url)
+          .pathname,
       },
     },
   },
