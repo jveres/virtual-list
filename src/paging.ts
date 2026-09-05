@@ -49,6 +49,8 @@ export interface PagedWindow<T> {
   readonly loading: boolean;
   canLoad(edge: Edge): boolean;
   load(edge: Edge, context?: ReachContext): Promise<boolean>;
+  /** Edit retained source data here, not through the projected runtime rows. Keys must stay stable. */
+  updateItem(key: string, update: (item: T) => T): Promise<boolean>;
   /** Retry a protected, over-budget tail. Returns null without allocating when no work is needed. */
   reconcile(): Promise<boolean> | null;
   /** Cancels fetching AND fetched work waiting for settle. */
@@ -92,12 +94,15 @@ export function createPagedWindow<T, C, Row>(
   }
 
   async function apply(
-    candidate: Page<T, C>[],
+    propose: () => Page<T, C>[] | null,
     edge: Edge,
     signal: AbortSignal,
+    trim = true,
   ): Promise<boolean> {
     return options.list.updateWindow(({ protectedItems }) => {
       if (disposed || signal.aborted) return null;
+      const candidate = propose();
+      if (!candidate) return null;
       const protectedKeys = new Set(
         protectedItems.flatMap((row) => [...options.keysOf(row)]),
       );
@@ -105,7 +110,7 @@ export function createPagedWindow<T, C, Row>(
       let count = retained.reduce((sum, page) => sum + page.items.length, 0);
       const evicted: T[] = [];
       // Keep at least one page, even when a source returns a large page.
-      while (count > options.maxItems && retained.length > 1) {
+      while (trim && count > options.maxItems && retained.length > 1) {
         const page = edge === "start" ? retained[0] : retained.at(-1);
         if (
           !page ||
@@ -130,7 +135,7 @@ export function createPagedWindow<T, C, Row>(
         onCommit: () => {
           pages = retained;
           items = nextItems;
-          trimEdge = edge;
+          if (trim) trimEdge = edge;
           try {
             options.onChange?.(items, rows);
           } finally {
@@ -146,7 +151,6 @@ export function createPagedWindow<T, C, Row>(
     if (
       disposed ||
       (request && !request.signal.aborted) ||
-      trimming ||
       !next.available ||
       context?.signal.aborted
     ) {
@@ -186,20 +190,23 @@ export function createPagedWindow<T, C, Row>(
       });
       if (!result || disposed || active.signal.aborted || request !== active)
         return false;
-      const added = unique(result.items, new Set(items.map(options.key)));
-      const candidate = [...pages];
-      if (added.length) {
-        const page = { ...result, items: added };
-        if (edge === "start") candidate.unshift(page);
-        else candidate.push(page);
-      } else {
-        // Advance explicit availability/cursor without accumulating empty pages.
-        const index = edge === "start" ? 0 : candidate.length - 1;
-        const old = candidate[index];
-        if (old) candidate[index] = { ...old, [edge]: result[edge] };
-      }
       return await apply(
-        candidate,
+        () => {
+          // Merge at commit, after any queued trim or source edit has landed.
+          const added = unique(result.items, new Set(items.map(options.key)));
+          const candidate = [...pages];
+          if (added.length) {
+            const page = { ...result, items: added };
+            if (edge === "start") candidate.unshift(page);
+            else candidate.push(page);
+          } else {
+            // Advance explicit availability/cursor without accumulating empty pages.
+            const index = edge === "start" ? 0 : candidate.length - 1;
+            const old = candidate[index];
+            if (old) candidate[index] = { ...old, [edge]: result[edge] };
+          }
+          return candidate;
+        },
         edge === "start" ? "end" : "start",
         active.signal,
       );
@@ -226,7 +233,17 @@ export function createPagedWindow<T, C, Row>(
 
   async function trim(): Promise<boolean> {
     try {
-      return await apply(pages, trimEdge, lifetime.signal);
+      // A load owns its boundary until it commits. Its own opposite-edge trim
+      // supersedes this attempt, so fetching cannot skip a newly evicted page.
+      return await apply(
+        () => {
+          if (!request) return pages;
+          lastRange = "";
+          return null;
+        },
+        trimEdge,
+        lifetime.signal,
+      );
     } catch (error) {
       lastRange = "";
       throw error;
@@ -244,6 +261,31 @@ export function createPagedWindow<T, C, Row>(
     },
     canLoad: (edge) => !disposed && boundary(edge).available,
     load,
+    updateItem: (key, update) =>
+      apply(
+        () => {
+          let changed = false;
+          const candidate = pages.map((page) => {
+            const index = page.items.findIndex(
+              (item) => options.key(item) === key,
+            );
+            if (index < 0) return page;
+            const previous = page.items[index] as T;
+            const next = update(previous);
+            if (options.key(next) !== key)
+              throw new Error("updated item must keep its key");
+            if (next === previous) return page;
+            changed = true;
+            const nextItems = [...page.items];
+            nextItems[index] = next;
+            return { ...page, items: nextItems };
+          });
+          return changed ? candidate : null;
+        },
+        trimEdge,
+        lifetime.signal,
+        false,
+      ),
     reconcile,
     dispose: () => {
       disposed = true;

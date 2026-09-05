@@ -8,6 +8,7 @@ import {
   sameGalleryItem,
   slice,
 } from "../../demos/gallery/layout";
+import { createLayoutHistory } from "../../demos/gallery/layout-history";
 
 const ASPECTS = [0.67, 0.75, 1, 1.33, 1.5, 1.78];
 const photos = (n: number): Photo[] =>
@@ -22,7 +23,7 @@ describe("retained gallery layout continuity", () => {
     for (const ratio of [1, 1.25, 1.5, 2]) {
       const layouts = createGalleryLayouts(
         480,
-        (retained) => all.slice(0, retained[0]?.id ?? 0),
+        createLayoutHistory((id) => all[id] as Photo, 8),
         () => ratio,
       );
       const bands = layouts.masonry(all.slice(240), 981, 240, 6, false);
@@ -41,8 +42,9 @@ describe("retained gallery layout continuity", () => {
 
   it("should preserve row membership through trimming, resize and restoration", () => {
     const all = photos(720);
-    const layouts = createGalleryLayouts(480, (retained) =>
-      all.slice(0, retained[0]?.id ?? 0),
+    const layouts = createGalleryLayouts(
+      480,
+      createLayoutHistory((id) => all[id] as Photo, 8),
     );
     for (const width of [1080, 981, 800, 600, 400]) {
       const full = layouts.rows(all, width, 210, 6, true);
@@ -57,8 +59,9 @@ describe("retained gallery layout continuity", () => {
 
   it("should preserve masonry bands and fragments after prefix eviction at every density", () => {
     const all = photos(720);
-    const layouts = createGalleryLayouts(480, (retained) =>
-      all.slice(0, retained[0]?.id ?? 0),
+    const layouts = createGalleryLayouts(
+      480,
+      createLayoutHistory((id) => all[id] as Photo, 8),
     );
     for (const width of [1080, 981, 800, 600, 400]) {
       const full = layouts.masonry(all, width, 240, 6, true);

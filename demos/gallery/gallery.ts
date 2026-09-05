@@ -19,6 +19,7 @@ import {
   type Photo,
   sameGalleryItem,
 } from "./layout.js";
+import { createLayoutHistory } from "./layout-history.js";
 import { layoutDensity } from "./layout-manager.js";
 
 // The gallery: two layouts of the same photos on the v2 runtime.
@@ -52,18 +53,23 @@ const GAP = 6;
 /** The rows and bands are centred at this width; the scroller spans the page. */
 const CONTENT_WIDTH = 1080;
 const BAND_HEIGHT = 480;
-// This deterministic source can reconstruct a layout checkpoint without
-// keeping discarded photos or a full-history layout in memory.
-const layouts = createGalleryLayouts(
-  BAND_HEIGHT,
-  function* (retained) {
-    for (let id = 0; id < (retained[0]?.id ?? 0); id++) yield photo(id);
-  },
-  () => window.devicePixelRatio,
-);
 const PAGE = 120;
 const RETAIN = PAGE * 4;
 const TOTAL = 3_000;
+// Keep compact checkpoints for every responsive density, not discarded photos.
+const layouts = createGalleryLayouts(
+  BAND_HEIGHT,
+  createLayoutHistory(
+    photo,
+    layoutDensity(
+      CONTENT_WIDTH,
+      Math.min(...Object.values(ROW_HEIGHTS), ...Object.values(COLUMN_WIDTHS)),
+      2,
+    ),
+    PAGE,
+  ),
+  () => window.devicePixelRatio,
+);
 const LOAD_DELAY_MS = 500;
 const LOADER_HEIGHT = 56;
 const SOURCE_WIDTH = 640;

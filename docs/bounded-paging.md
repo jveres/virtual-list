@@ -16,6 +16,9 @@ Additions, removals, and optional edge-slot changes share the same geometry
 commit and anchor-preserving scroll write. The default anchor is `viewport`.
 Return `null` for no change. The promise resolves `true` after commit, or
 `false` for a no-op, cancellation, or disposal. Preparation errors reject it.
+Observer errors also reject it, but don't undo a completed commit: ownership
+bookkeeping and queued work finish before the error is reported. `onCommit`
+runs for the committed snapshot even if `onState` throws.
 Aborting the signal cancels work that hasn't started, including fetched data
 waiting for a gesture to settle. This API waits even in `live` mode.
 
@@ -51,6 +54,8 @@ Configure these adapters for your content:
 Pass the matching runtime `ReachContext` to `paging.load(edge, context)`.
 The companion handles `complete()` and cancellation. It serializes loads;
 concurrent requests return `false`. Handle rejected load promises in your UI.
+A pending trim doesn't block a load. The load supersedes that trim and merges
+against the latest retained pages at commit, then trims its opposite edge.
 Call `paging.reconcile()` from `onState` and after a load to retry a protected,
 over-budget tail. It returns `null` without allocating when no work is needed,
 or a promise for a scheduled attempt. Handle errors with
@@ -60,9 +65,23 @@ trim attempts.
 Call `paging.dispose()` before replacing the source and when disposing the
 list. It cancels outstanding fetches and queued commits, so late responses
 cannot enter the replacement source. Construct the replacement companion with
-the same initial data you submit to the list. Keep streaming edits in sync
-with the companion's source objects; an unrelated `list.setItems` does not
-update its page ownership.
+the same initial data you submit to the list.
+
+Update retained source items through `paging.updateItem(key, update)`:
+
+```ts
+await paging.updateItem(messageId, (message) => ({
+  ...message,
+  body: message.body + chunk,
+}));
+```
+
+The synchronous updater receives the latest committed item, must return an
+immutable replacement with the same key, and runs at the runtime's commit
+boundary. Queued edits and loads preserve each other's changes. Missing keys
+and unchanged object references resolve `false`; key changes reject. Edits
+don't evict pages. Don't edit projected rows through `list.updateItem` or
+replace them through `list.setItems`: those APIs don't update page ownership.
 
 ## Cursor and refresh semantics
 
@@ -85,8 +104,8 @@ your source/UI controls that policy.
 
 ## Gallery continuity and costs
 
-The gallery reconstructs prefix layout state from its deterministic photo
-generator. It retains only row-group state or per-column weights and counts,
+The gallery advances compact page checkpoints from its deterministic photo
+generator. It retains only row-group state and per-column weights and counts,
 not discarded photo arrays or a full-history layout. Surviving photos keep
 their original grouping and column ownership at each responsive density.
 The retained layout begins at a complete row or at the first retained masonry
@@ -101,11 +120,17 @@ Image priorities use committed row positions and each drawing's clipped
 offsets, not DOM bounds. Both layouts share this path; empty image batches and
 unchanged loader metrics avoid unnecessary allocation and DOM writes.
 
-Within a density, resizing reuses the cached plan. Replanning after a page or
-density change scans the deterministic prefix, so this implementation bounds
-memory but doesn't promise constant-time navigation through arbitrarily long
-history. A remote gallery needs source-owned layout checkpoints instead of
-replaying synthetic photos. Feed and chat adapters don't need this geometry
+Within a density, resizing reuses the cached plan. Checkpoints cover every
+supported density, so changing density doesn't replay the prefix. Forward
+paging advances only the newly discarded prefix; the cache holds at most 16
+checkpoints, not the full navigation history. Recent backward paging reuses
+those checkpoints. Revisiting older, evicted checkpoints reconstructs from
+the nearest cached predecessor or from the source origin. This fallback isn't
+constant-time. Recreate the history adapter if source aspects change.
+
+A remote gallery can supply `LayoutCheckpoint` with its page cursor through
+the shared layout manager's checkpoint provider. It doesn't need the indexed
+synthetic-history adapter. Feed and chat adapters don't need this geometry
 reconstruction.
 
 Run `node scripts/gallery-paging-regression.mjs` against a Vite server on port

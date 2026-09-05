@@ -1,5 +1,7 @@
 // The gallery lab's layouts, as pure math: photos in, positioned items out.
 // Nothing here touches the DOM, so it is unit-tested directly.
+
+import { assignColumn, type LayoutCheckpoint } from "./layout-history.js";
 import { createLayoutManager, layoutDensity } from "./layout-manager.js";
 
 export interface Photo {
@@ -113,16 +115,10 @@ function planRows(
   photos: readonly Photo[],
   density: number,
   complete: boolean,
-  prefix: Iterable<Photo> = [],
+  aspectSum = 0,
 ): RowGroup[] {
   const groups: RowGroup[] = [];
   let current: Photo[] = [];
-  let aspectSum = 0;
-  // Reconstruct only the open group, never retain discarded prefix data.
-  for (const p of prefix) {
-    aspectSum += p.aspect;
-    if (aspectSum >= density) aspectSum = 0;
-  }
   let clipped = aspectSum > 0;
   for (const p of photos) {
     current.push(p);
@@ -186,20 +182,14 @@ interface ColumnPlan {
 function planColumns(
   photos: readonly Photo[],
   columns: number,
-  prefix: Iterable<Photo> = [],
+  checkpoint?: LayoutCheckpoint,
 ): ColumnPlan {
-  const weights = new Array<number>(columns).fill(0);
-  const counts = new Array<number>(columns).fill(0);
-  function assign(photo: Photo): number {
-    let column = 0;
-    for (let i = 1; i < columns; i++) {
-      if ((weights[i] as number) < (weights[column] as number)) column = i;
-    }
-    weights[column] = (weights[column] as number) + 1 / photo.aspect;
-    counts[column] = (counts[column] as number) + 1;
-    return column;
-  }
-  for (const photo of prefix) assign(photo);
+  const weights = checkpoint
+    ? [...checkpoint.weights]
+    : new Array<number>(columns).fill(0);
+  const counts = checkpoint
+    ? [...checkpoint.counts]
+    : new Array<number>(columns).fill(0);
   const initialWeights = [...weights];
   const initialCounts = [...counts];
   return {
@@ -207,7 +197,7 @@ function planColumns(
     weights: initialWeights,
     counts: initialCounts,
     photos: photos.map((photo) => {
-      return { photo, column: assign(photo) };
+      return { photo, column: assignColumn(weights, counts, photo.aspect) };
     }),
   };
 }
@@ -247,19 +237,25 @@ function placeColumns(
 /** Both gallery layouts use the same planning/placement lifecycle. */
 export function createGalleryLayouts(
   bandHeight: number,
-  prefix: (photos: readonly Photo[]) => Iterable<Photo> = () => [],
+  checkpoint?: (photos: readonly Photo[], density: number) => LayoutCheckpoint,
   pixelRatio: () => number = () => 1,
 ) {
   return {
     rows: createLayoutManager({
       minimumDensity: 1,
       plan: (photos, density, complete) =>
-        planRows(photos, density, complete, prefix(photos)),
+        planRows(
+          photos,
+          density,
+          complete,
+          checkpoint?.(photos, density).rowAspect,
+        ),
       place: placeRows,
     }),
     masonry: createLayoutManager({
       minimumDensity: 2,
-      plan: (photos, density) => planColumns(photos, density, prefix(photos)),
+      plan: (photos, density) =>
+        planColumns(photos, density, checkpoint?.(photos, density)),
       place: (
         plan: ColumnPlan,
         width: number,

@@ -278,6 +278,62 @@ beforeEach(() => {
 });
 
 describe("settle-time window updates", () => {
+  it("should discard a held job if publishing its held state fails", async () => {
+    let fail = false;
+    const h = mount(range(0, 40), {
+      onState: () => {
+        if (fail) {
+          fail = false;
+          throw new Error("held observer failed");
+        }
+      },
+    });
+    h.userScroll(1000);
+    fail = true;
+    await expect(
+      h.list.updateWindow(() => ({ items: range(0, 80) })),
+    ).rejects.toThrow("held observer failed");
+    h.settle();
+    expect(h.list.state.count).toBe(40);
+    expect(h.list.state.held).toBe(false);
+    h.list.dispose();
+  });
+  it("should finish committed bookkeeping and queued work before reporting an observer failure", async () => {
+    let fail = false;
+    let committed = false;
+    const h = mount(range(0, 20), {
+      boot: "start",
+      itemHeight: () => ROW_H,
+      onState: () => {
+        if (!fail) return;
+        fail = false;
+        h.list.updateItem("m0", message(0, "queued edit"));
+        throw new Error("observer failed");
+      },
+    });
+    fail = true;
+    await expect(
+      h.list.updateWindow(() => ({
+        items: range(0, 40),
+        edgeSlots: {
+          end: {
+            key: "loader",
+            height: 50,
+            render: () => document.createElement("div"),
+          },
+        },
+        onCommit: () => {
+          committed = true;
+        },
+      })),
+    ).rejects.toThrow("observer failed");
+    expect(committed).toBe(true);
+    expect(h.list.state.count).toBe(40);
+    expect(h.rowElement("queued edit").textContent).toBe("queued edit");
+    h.list.setItems(range(0, 40));
+    expect(h.list.state.totalSize).toBe(4050);
+    h.list.dispose();
+  });
   it("should publish the viewport snapshot for geometry-based companions", () => {
     const viewports: { scrollTop: number; height: number }[] = [];
     const h = mount(range(0, 40), {
@@ -378,6 +434,182 @@ describe("bounded paging on the runtime", () => {
       end: { available: true, cursor: start + 20 },
     };
   }
+
+  it("should load during a held trim without restoring evicted data", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 20,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    await paging.load("end");
+    h.userScroll(3400);
+    const trim = paging.reconcile();
+    const complete = vi.fn();
+    const load = paging.load("end", {
+      signal: new AbortController().signal,
+      complete,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(complete).not.toHaveBeenCalled();
+    h.settle();
+    await expect(trim).resolves.toBe(false);
+    await expect(load).resolves.toBe(true);
+    expect(paging.items).toEqual(range(20, 60));
+    expect(h.list.positionOf("m0")).toBeNull();
+    expect(complete).toHaveBeenCalledTimes(1);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should retain source edits across queued paging commits", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    h.userScroll(100);
+    const edit = paging.updateItem("m1", (m) => ({ ...m, body: "edited" }));
+    const load = paging.load("end");
+    await vi.advanceTimersByTimeAsync(0);
+    const secondEdit = paging.updateItem("m1", (m) => ({
+      ...m,
+      body: `${m.body} again`,
+    }));
+    h.settle();
+    await expect(edit).resolves.toBe(true);
+    await expect(load).resolves.toBe(true);
+    await expect(secondEdit).resolves.toBe(true);
+    await paging.load("end");
+    expect(paging.items.find((m) => m.id === 1)).toEqual(
+      message(1, "edited again"),
+    );
+    expect(h.rowElement("edited again").textContent).toBe("edited again");
+    await expect(paging.updateItem("missing", (m) => m)).resolves.toBe(false);
+    await expect(
+      paging.updateItem("m1", (m) => ({ ...m, id: 2 })),
+    ).rejects.toThrow("keep its key");
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should not evict the fetching boundary when a reverse load supersedes trimming", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const cursors: number[] = [];
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 20,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => {
+        cursors.push(cursor);
+        return page(cursor);
+      },
+    });
+    await paging.load("start");
+    h.userScroll(100);
+    const trim = paging.reconcile();
+    const load = paging.load("end");
+    await vi.advanceTimersByTimeAsync(0);
+    h.settle();
+    await expect(trim).resolves.toBe(false);
+    await expect(load).resolves.toBe(true);
+    expect(cursors).toEqual([0, 40]);
+    expect(paging.items).toEqual(range(0, 60));
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should cancel a load started during trimming before it can commit", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 20,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    await paging.load("end");
+    h.userScroll(3400);
+    const trim = paging.reconcile();
+    const abort = new AbortController();
+    const complete = vi.fn();
+    const load = paging.load("end", { signal: abort.signal, complete });
+    await vi.advanceTimersByTimeAsync(0);
+    abort.abort();
+    await expect(load).resolves.toBe(false);
+    h.settle();
+    await expect(trim).resolves.toBe(true);
+    expect(paging.items).toEqual(range(20, 40));
+    expect(complete).toHaveBeenCalledTimes(1);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should keep paging cursors in sync when an observer throws after commit", async () => {
+    const initial = page(0);
+    let fail = false;
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+      onState: () => {
+        if (fail) {
+          fail = false;
+          throw new Error("observer failed");
+        }
+      },
+    });
+    const cursors: number[] = [];
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => {
+        cursors.push(cursor);
+        return page(cursor);
+      },
+    });
+    fail = true;
+    await expect(paging.load("end")).rejects.toThrow("observer failed");
+    expect(paging.items).toEqual(range(0, 40));
+    await paging.load("end");
+    expect(cursors).toEqual([20, 40]);
+    expect(paging.items).toEqual(range(0, 60));
+    paging.dispose();
+    h.list.dispose();
+  });
 
   it("should append and trim atomically, then restore the previous page", async () => {
     const initial = page(0);

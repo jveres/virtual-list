@@ -588,7 +588,7 @@ export function createVirtualList<T>(
     return true;
   }
 
-  // Host teardown failures raised by a COMMITTED operation are not
+  // Host observer/teardown failures raised by a COMMITTED operation are not
   // transaction failures: the state the host observed was fully reached.
   // They are deferred here and surfaced by the outermost guard only after
   // the queued work has drained — a scrollTo() issued from onState after a
@@ -597,6 +597,14 @@ export function createVirtualList<T>(
 
   function deferTeardown(failures: readonly unknown[]): void {
     deferredTeardown.push(...failures);
+  }
+
+  function notifyCommitted(notify: () => void): void {
+    try {
+      notify();
+    } catch (error) {
+      deferTeardown(failuresOf(error));
+    }
   }
 
   function takeDeferredTeardown(): unknown[] {
@@ -1757,11 +1765,11 @@ export function createVirtualList<T>(
         totalSize,
         held,
       };
-      options.onState?.(lastState, vp);
+      notifyCommitted(() => options.onState?.(lastState, vp));
     }
     if (disposed) return;
 
-    reach.update(vp.scrollTop, maxTop);
+    notifyCommitted(() => reach.update(vp.scrollTop, maxTop));
   }
 
   /** Window reconciliation plus ("live") what commits without a write. */
@@ -1981,7 +1989,7 @@ export function createVirtualList<T>(
               throw error;
             }
             if (disposed) return;
-            next.onCommit?.();
+            notifyCommitted(() => next.onCommit?.());
             applied = true;
           });
           resolve(applied);
@@ -1997,7 +2005,12 @@ export function createVirtualList<T>(
         if (idle()) run();
         else {
           windowUpdates.add(run);
-          guarded(publish);
+          try {
+            guarded(publish);
+          } catch (error) {
+            cleanup();
+            reject(error);
+          }
         }
       };
       cancelWindowUpdates.add(cancel);
