@@ -3,13 +3,12 @@ import { mustGet } from "../shared/utils.js";
 import { createImageLoader, type LoaderMetrics } from "./image-loader.js";
 import {
   type Band,
+  createGalleryLayouts,
   type GalleryItem,
   type JustifiedRow,
-  justify,
-  masonry,
   type Photo,
-  slice,
 } from "./layout.js";
+import { layoutDensity } from "./layout-manager.js";
 
 // The gallery: two layouts of the same photos on the v2 runtime.
 //
@@ -42,6 +41,7 @@ const GAP = 6;
 /** The rows and bands are centred at this width; the scroller spans the page. */
 const CONTENT_WIDTH = 1080;
 const BAND_HEIGHT = 480;
+const layouts = createGalleryLayouts(BAND_HEIGHT);
 const PAGE = 120;
 const TOTAL = 3_000;
 const LOAD_DELAY_MS = 500;
@@ -96,6 +96,7 @@ let width = 0;
 let loaded = 0;
 let loading = false;
 let items: GalleryItem[] = [];
+let photos: readonly Photo[] = [];
 let resizeAnchor: { point: Point; scrollTop: number } | null = null;
 
 // --- Images ------------------------------------------------------------------
@@ -244,16 +245,20 @@ function tileElement(p: Photo, id: string): HTMLElement {
 // --- Layout ------------------------------------------------------------------
 
 function columns(): number {
-  return Math.max(2, Math.round(width / COLUMN_WIDTHS[size]));
+  return layoutDensity(width, COLUMN_WIDTHS[size], 2);
 }
 
 function build(): GalleryItem[] {
-  const photos = Array.from({ length: loaded }, (_, i) => photo(i));
-  if (layout === "rows") {
-    return justify(photos, width, ROW_HEIGHTS[size], GAP, loaded >= TOTAL);
-  }
-  const { cards, height } = masonry(photos, width, columns(), GAP);
-  return slice(cards, height, BAND_HEIGHT);
+  // A stable snapshot lets the shared manager reuse grouping during resize.
+  if (photos.length !== loaded)
+    photos = Array.from({ length: loaded }, (_, i) => photo(i));
+  return layouts[layout](
+    photos,
+    width,
+    layout === "rows" ? ROW_HEIGHTS[size] : COLUMN_WIDTHS[size],
+    GAP,
+    loaded >= TOTAL,
+  );
 }
 
 /** Items equal to their previous version keep their object: the runtime re-renders nothing for them. */

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   type Card,
+  createGalleryLayouts,
   justify,
   masonry,
   type Photo,
@@ -15,6 +16,46 @@ const photos = (n: number): Photo[] =>
   }));
 
 describe("justified rows", () => {
+  it("should preserve row membership and scale smoothly within a density", () => {
+    const input = photos(240);
+    const layouts = createGalleryLayouts(480);
+    const wide = layouts.rows(input, 1000, 210, 6, false);
+    const narrow = layouts.rows(input, 980, 210, 6, false);
+    const middle = layouts.rows(input, 990, 210, 6, false);
+
+    expect(narrow.map((r) => r.photos.map((p) => p.id))).toEqual(
+      wide.map((r) => r.photos.map((p) => p.id)),
+    );
+    for (const [i, row] of middle.entries()) {
+      const a = wide[i];
+      const b = narrow[i];
+      if (!a || !b) throw new Error("row disappeared within a density");
+      expect(row.height).toBeCloseTo((a.height + b.height) / 2, 8);
+      expect(
+        row.photos.reduce((sum, p) => sum + p.width, 0) +
+          6 * (row.photos.length - 1),
+      ).toBeCloseTo(990, 8);
+      for (const p of row.photos)
+        expect(p.width / row.height).toBeCloseTo(p.aspect, 8);
+    }
+    expect(
+      layouts.rows(input, 944, 210, 6, false).map((r) => r.key),
+    ).not.toEqual(wide.map((r) => r.key));
+  });
+
+  it("should keep a completed ragged row inside a narrow viewport", () => {
+    const rows = justify([{ id: 1, aspect: 2 }], 150, 210, 6, true);
+
+    expect(rows).toEqual([
+      {
+        kind: "row",
+        key: "r1",
+        height: 75,
+        photos: [{ id: 1, aspect: 2, width: 150 }],
+      },
+    ]);
+  });
+
   it("fills the width exactly and holds back the incomplete tail while pages remain", () => {
     const rows = justify(photos(50), 900, 200, 6, false);
     expect(rows.length).toBeGreaterThan(3);
@@ -22,7 +63,7 @@ describe("justified rows", () => {
       const filled =
         row.photos.reduce((sum, p) => sum + p.width, 0) +
         6 * (row.photos.length - 1);
-      expect(filled).toBe(900);
+      expect(filled).toBeCloseTo(900, 8);
       expect(row.height).toBeLessThanOrEqual(200);
     }
     // A count whose last row is ragged: pending, that row is held back.

@@ -1,5 +1,6 @@
 // The gallery lab's layouts, as pure math: photos in, positioned items out.
 // Nothing here touches the DOM, so it is unit-tested directly.
+import { createLayoutManager, layoutDensity } from "./layout-manager.js";
 
 export interface Photo {
   id: number;
@@ -45,9 +46,8 @@ export interface Band {
 export type GalleryItem = JustifiedRow | Band;
 
 /**
- * Justified rows: photos join a row at the target height until it would
- * overflow the width, then the row's height is set so its photos fill the
- * width exactly. Photos that do not yet fill a row are held back unless
+ * Justified rows: aspect-ratio groups remain fixed within a responsive
+ * density. Each row scales to fill the width. Incomplete groups wait unless
  * the collection is complete, so a row on screen never changes when the
  * next page arrives; a complete collection ends in a ragged row at the
  * target height.
@@ -59,44 +59,54 @@ export function justify(
   gap: number,
   complete: boolean,
 ): JustifiedRow[] {
-  const rows: JustifiedRow[] = [];
+  const density = layoutDensity(width, target);
+  return placeRows(planRows(photos, density, complete), width, target, gap);
+}
+
+interface RowGroup {
+  photos: readonly Photo[];
+  aspectSum: number;
+  ragged: boolean;
+}
+
+function planRows(
+  photos: readonly Photo[],
+  density: number,
+  complete: boolean,
+): RowGroup[] {
+  const groups: RowGroup[] = [];
   let current: Photo[] = [];
   let aspectSum = 0;
-  const flush = (height: number, justified: boolean): void => {
-    if (current.length === 0) return;
-    const rounded = Math.round(height);
-    // Widths from rounded cumulative positions: a justified row fills the
-    // width exactly rather than drifting by a pixel per photo.
-    let used = 0;
-    let acc = 0;
-    const placed = current.map((p, i) => {
-      acc += p.aspect * rounded;
-      const last = i === current.length - 1;
-      const w =
-        justified && last
-          ? width - gap * (current.length - 1) - used
-          : Math.round(acc) - used;
-      used += w;
-      return { ...p, width: w };
-    });
-    rows.push({
-      kind: "row",
-      key: `r${current[0]?.id}`,
-      height: rounded,
-      photos: placed,
-    });
-    current = [];
-    aspectSum = 0;
-  };
   for (const p of photos) {
     current.push(p);
     aspectSum += p.aspect;
-    const gaps = gap * (current.length - 1);
-    if (aspectSum * target >= width - gaps)
-      flush((width - gaps) / aspectSum, true);
+    if (aspectSum >= density) {
+      groups.push({ photos: current, aspectSum, ragged: false });
+      current = [];
+      aspectSum = 0;
+    }
   }
-  if (complete) flush(target, false);
-  return rows;
+  if (complete && current.length)
+    groups.push({ photos: current, aspectSum, ragged: true });
+  return groups;
+}
+
+function placeRows(
+  groups: readonly RowGroup[],
+  width: number,
+  target: number,
+  gap: number,
+): JustifiedRow[] {
+  return groups.map(({ photos, aspectSum, ragged }) => {
+    const fitted = (width - gap * (photos.length - 1)) / aspectSum;
+    const height = ragged ? Math.min(target, fitted) : fitted;
+    return {
+      kind: "row",
+      key: `r${photos[0]?.id}`,
+      height,
+      photos: photos.map((p) => ({ ...p, width: p.aspect * height })),
+    };
+  });
 }
 
 /**
@@ -110,18 +120,42 @@ export function masonry(
   columns: number,
   gap: number,
 ): { cards: Card[]; height: number } {
+  return placeColumns(planColumns(photos, columns), width, gap);
+}
+
+interface ColumnPlan {
+  columns: number;
+  photos: { photo: Photo; column: number }[];
+}
+
+function planColumns(photos: readonly Photo[], columns: number): ColumnPlan {
+  const weights = new Array<number>(columns).fill(0);
+  return {
+    columns,
+    photos: photos.map((photo) => {
+      let column = 0;
+      for (let i = 1; i < columns; i++) {
+        if ((weights[i] as number) < (weights[column] as number)) column = i;
+      }
+      weights[column] = (weights[column] as number) + 1 / photo.aspect;
+      return { photo, column };
+    }),
+  };
+}
+
+function placeColumns(
+  plan: ColumnPlan,
+  width: number,
+  gap: number,
+): { cards: Card[]; height: number } {
+  const { columns } = plan;
   // Keep fractional geometry: distributing rounded pixels can make one
   // column grow as the viewport shrinks. Rounding each stacked height then
   // amplifies that one-pixel reversal into large jumps deep in the gallery.
   const columnWidth = (width - gap * (columns - 1)) / columns;
   const bottoms = new Array<number>(columns).fill(0);
-  const weights = new Array<number>(columns).fill(0);
   const cards: Card[] = [];
-  for (const p of photos) {
-    let c = 0;
-    for (let i = 1; i < columns; i++) {
-      if ((weights[i] as number) < (weights[c] as number)) c = i;
-    }
+  for (const { photo: p, column: c } of plan.photos) {
     const h = Math.max(1, columnWidth / p.aspect);
     const top = bottoms[c] as number;
     cards.push({
@@ -132,10 +166,33 @@ export function masonry(
       height: h,
     });
     bottoms[c] = top + h + gap;
-    weights[c] = (weights[c] as number) + 1 / p.aspect;
   }
   const height = Math.max(0, Math.max(...bottoms, 0) - gap);
   return { cards, height };
+}
+
+/** Both gallery layouts use the same planning/placement lifecycle. */
+export function createGalleryLayouts(bandHeight: number) {
+  return {
+    rows: createLayoutManager({
+      minimumDensity: 1,
+      plan: planRows,
+      place: placeRows,
+    }),
+    masonry: createLayoutManager({
+      minimumDensity: 2,
+      plan: planColumns,
+      place: (
+        plan: ColumnPlan,
+        width: number,
+        _target: number,
+        gap: number,
+      ) => {
+        const { cards, height } = placeColumns(plan, width, gap);
+        return slice(cards, height, bandHeight);
+      },
+    }),
+  };
 }
 
 /**

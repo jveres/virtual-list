@@ -5,7 +5,7 @@ import { firefox } from "playwright";
 const baseUrl = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4193";
 const browser = await firefox.launch({ headless: true });
 
-async function stableMasonryColumns(page) {
+async function stableLayoutGroups(page) {
   const seen = new Map();
   let previous = new Map();
   let previousWidth = 0;
@@ -34,16 +34,22 @@ async function stableMasonryColumns(page) {
       0,
       "cached photos must not fade again during reflow",
     );
-    const tiles = await page.locator(".band .tile").evaluateAll((tiles) =>
+    const tiles = await page.locator("#viewport .tile").evaluateAll((tiles) =>
       tiles.map((tile) => {
         const rect = tile.getBoundingClientRect();
         return {
           id: tile.dataset.id,
-          column: Math.round(
-            Number.parseFloat(tile.style.left) /
-              (tile.parentElement.clientWidth / 4),
-          ),
+          group: tile.parentElement.classList.contains("photo-row")
+            ? Array.from(
+                tile.parentElement.children,
+                (child) => child.dataset.id,
+              ).join(",")
+            : Math.round(
+                Number.parseFloat(tile.style.left) /
+                  (tile.parentElement.clientWidth / 4),
+              ),
           top: rect.top,
+          left: rect.left,
         };
       }),
     );
@@ -51,27 +57,28 @@ async function stableMasonryColumns(page) {
     for (const tile of tiles) {
       if (seen.has(tile.id)) {
         assert.equal(
-          tile.column,
+          tile.group,
           seen.get(tile.id),
-          `photo ${tile.id} changed column at ${width}px`,
+          `photo ${tile.id} changed group at ${width}px`,
         );
         comparisons++;
       }
-      seen.set(tile.id, tile.column);
+      seen.set(tile.id, tile.group);
       if (frame.has(tile.id)) {
         assert.ok(
-          Math.abs(tile.top - frame.get(tile.id)) <= 1,
+          Math.abs(tile.top - frame.get(tile.id).top) <= 1,
           `photo ${tile.id} has misaligned band fragments`,
         );
       }
-      frame.set(tile.id, tile.top);
+      frame.set(tile.id, { top: tile.top, left: tile.left });
     }
     if (Math.abs(width - previousWidth) === 1) {
-      for (const [id, top] of frame) {
+      for (const [id, point] of frame) {
         if (previous.has(id)) {
           assert.ok(
-            Math.abs(top - previous.get(id)) <= 8,
-            `photo ${id} jumped ${top - previous.get(id)}px during a one-pixel resize`,
+            Math.abs(point.top - previous.get(id).top) <= 8 &&
+              Math.abs(point.left - previous.get(id).left) <= 8,
+            `photo ${id} jumped during a one-pixel resize`,
           );
         }
       }
@@ -152,8 +159,8 @@ try {
       await page.locator("#viewport").evaluate((v) => {
         v.scrollTop = 4000;
       });
-      await stableMasonryColumns(page);
     }
+    await stableLayoutGroups(page);
     await roundTrip(page, `${layout}: after append`);
     await page.waitForTimeout(300);
     await roundTrip(page, `${layout}: after resize pause`);
