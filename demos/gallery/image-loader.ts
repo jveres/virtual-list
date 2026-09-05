@@ -99,8 +99,11 @@ export function createImageLoader(options: {
     const previous = subscriptions.get(img);
     if (previous?.src === src) return;
     if (previous) remove(img);
-    img.classList.remove("loaded", "failed");
+    img.classList.remove("loaded", "failed", "cached");
     if (fetched.has(src)) {
+      // Reflow creates new drawings of photos already seen. Do not replay
+      // their entrance transition as they move between rows or bands.
+      img.classList.add("cached");
       show(img, src);
       publish();
       return;

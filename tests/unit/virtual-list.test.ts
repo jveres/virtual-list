@@ -1755,6 +1755,52 @@ describe("v2 runtime — commits and slots", () => {
     expect(slot.style.height).toBe("300px");
   });
 
+  it("should immediately apply an interrupting snapshot while preserving its explicit anchor", () => {
+    const initial = range(0, 50);
+    const h = mount(initial, {
+      scrollingUpdates: "freeze",
+      itemHeight: () => ROW_H,
+    });
+    h.userScroll(3005);
+    h.list.setItems([...initial, message(50)], { anchor: "viewport" });
+    expect(h.list.state.held).toBe(true);
+
+    const replacement = range(100, 150);
+    h.list.setItems(replacement, {
+      anchor: { key: "m130", offset: -5 },
+      interrupt: true,
+    });
+
+    expect(h.list.state.held).toBe(false);
+    expect(h.list.state.count).toBe(50);
+    expect(h.viewport.scrollTop).toBe(3005);
+    expect(h.rowElement("msg 130").isConnected).toBe(true);
+    h.userScroll(3105);
+    h.list.setItems([...replacement, message(150)], { anchor: "viewport" });
+    expect(h.list.state.held).toBe(true);
+    expect(h.list.state.count).toBe(50);
+    h.settle();
+    expect(h.list.state.count).toBe(51);
+  });
+
+  it("should cancel an active smooth command when an interrupting snapshot arrives", async () => {
+    const initial = range(0, 50);
+    const h = mount(initial, { boot: "start", scrollingUpdates: "freeze" });
+    const glide = h.list.scrollTo("end", { behavior: "smooth" });
+    vi.advanceTimersByTime(32);
+
+    h.list.setItems(initial, {
+      anchor: { key: "m10", offset: -5 },
+      interrupt: true,
+    });
+
+    await expect(glide).resolves.toBe(false);
+    expect(h.viewport.scrollTop).toBe(1005);
+    expect(h.list.state.held).toBe(false);
+    vi.advanceTimersByTime(2000);
+    expect(h.viewport.scrollTop).toBe(1005);
+  });
+
   it('scrollingUpdates: "freeze" holds even an equal-height update until settle', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "freeze" });

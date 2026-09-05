@@ -100,8 +100,9 @@ export function justify(
 }
 
 /**
- * Masonry: each photo goes to the shortest column. Appending never moves
- * an earlier card, so a page load changes nothing on screen.
+ * Masonry: balance columns by aspect-ratio height, independently of pixel
+ * rounding and gaps. Resizing only changes placement, not column ownership,
+ * until the column count changes. Appending never moves an earlier card.
  */
 export function masonry(
   photos: readonly Photo[],
@@ -109,27 +110,29 @@ export function masonry(
   columns: number,
   gap: number,
 ): { cards: Card[]; height: number } {
-  const lefts: number[] = [];
-  const widths: number[] = [];
-  const inner = width - gap * (columns - 1);
-  for (let c = 0; c < columns; c++) {
-    const left = Math.round((c * inner) / columns) + c * gap;
-    const right = Math.round(((c + 1) * inner) / columns) + c * gap;
-    lefts.push(left);
-    widths.push(right - left);
-  }
+  // Keep fractional geometry: distributing rounded pixels can make one
+  // column grow as the viewport shrinks. Rounding each stacked height then
+  // amplifies that one-pixel reversal into large jumps deep in the gallery.
+  const columnWidth = (width - gap * (columns - 1)) / columns;
   const bottoms = new Array<number>(columns).fill(0);
+  const weights = new Array<number>(columns).fill(0);
   const cards: Card[] = [];
   for (const p of photos) {
     let c = 0;
     for (let i = 1; i < columns; i++) {
-      if ((bottoms[i] as number) < (bottoms[c] as number)) c = i;
+      if ((weights[i] as number) < (weights[c] as number)) c = i;
     }
-    const w = widths[c] as number;
-    const h = Math.max(1, Math.round(w / p.aspect));
+    const h = Math.max(1, columnWidth / p.aspect);
     const top = bottoms[c] as number;
-    cards.push({ ...p, left: lefts[c] as number, top, width: w, height: h });
+    cards.push({
+      ...p,
+      left: c * (columnWidth + gap),
+      top,
+      width: columnWidth,
+      height: h,
+    });
     bottoms[c] = top + h + gap;
+    weights[c] = (weights[c] as number) + 1 / p.aspect;
   }
   const height = Math.max(0, Math.max(...bottoms, 0) - gap);
   return { cards, height };

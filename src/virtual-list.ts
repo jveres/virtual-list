@@ -257,7 +257,14 @@ export type RemeasureOptions = {
 };
 
 export interface VirtualList<T> {
-  setItems(items: readonly T[], options?: { anchor?: AnchorRequest }): void;
+  setItems(
+    items: readonly T[],
+    options?: {
+      anchor?: AnchorRequest;
+      /** Explicit user action: stop scrolling and commit now instead of waiting for settle. */
+      interrupt?: boolean;
+    },
+  ): void;
   /**
    * Replace one item's data without changing its key. Prepares only this
    * item unless a held snapshot must be merged. Unknown keys are ignored.
@@ -1881,21 +1888,34 @@ export function createVirtualList<T>(
   // --- Data -----------------------------------------------------------------
   function setItems(
     next: readonly T[],
-    setOptions: { anchor?: AnchorRequest } = {},
+    setOptions: { anchor?: AnchorRequest; interrupt?: boolean } = {},
   ): void {
     if (disposed) return;
     const snapshot = [...next];
     const anchor = setOptions.anchor;
-    if (enqueueDuringTransaction(() => applyItems(snapshot, anchor))) return;
-    applyItems(snapshot, anchor);
+    const interrupt = setOptions.interrupt === true;
+    if (enqueueDuringTransaction(() => applyItems(snapshot, anchor, interrupt)))
+      return;
+    applyItems(snapshot, anchor, interrupt);
   }
 
-  function applyItems(snapshot: T[], anchor: AnchorRequest | undefined): void {
+  function applyItems(
+    snapshot: T[],
+    anchor: AnchorRequest | undefined,
+    interrupt: boolean,
+  ): void {
     if (disposed) return;
     // Always prepared now (off-scroller, inside the reentrancy guard since
     // render() is a host callback); committed now when idle, or mid-phase
     // when the change needs no scroll write ("live"), else at the settle.
     guarded(() => {
+      if (interrupt) {
+        followController.stop();
+        settleParked(() => false);
+        glide?.cancel();
+        interruptNativeScroll();
+        if (disposed) return;
+      }
       const { prepared, teardownFailures } = prepare(snapshot, anchor);
       if (!disposed) {
         lastItems = snapshot;

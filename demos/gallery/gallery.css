@@ -65,6 +65,11 @@
   opacity: 1;
 }
 
+/* Remounted photos are already present to the user, not new arrivals. */
+.photo.cached {
+  transition: none;
+}
+
 /* A photo the provider never delivered: its box, flat. */
 .photo.failed {
   opacity: 1;

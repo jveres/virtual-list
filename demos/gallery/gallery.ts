@@ -18,8 +18,8 @@ import {
 //   when the next page arrives.
 // - Masonry: a column grid sliced into fixed-height bands; the band is the
 //   item. A card crossing a band edge is drawn in both bands, offset and
-//   clipped, so the seam is invisible. Appending goes to the shortest
-//   columns and never moves an earlier card; the bands it reaches change
+//   clipped, so the seam is invisible. Aspect ratios balance columns
+//   independently of width. Appending never moves an earlier card; bands change
 //   in place. Bands are keyed by their start, which never changes.
 // - Every item declares its height (`height`), so the runtime never
 //   measures: a row's height follows from its photos' aspect ratios, a
@@ -96,6 +96,7 @@ let width = 0;
 let loaded = 0;
 let loading = false;
 let items: GalleryItem[] = [];
+let resizeAnchor: { point: Point; scrollTop: number } | null = null;
 
 // --- Images ------------------------------------------------------------------
 
@@ -286,10 +287,20 @@ function appendPage(): void {
  * now holds that point is named as the anchor, with the offset that keeps
  * the point where it was. The runtime resolves the rest.
  */
-function reflow(): void {
-  const point = pointUnderViewportTop();
+function reflow(interrupt = false): void {
+  // Re-grouping rows or columns can put a different photo first at the
+  // viewport top. Keep the original point across resizes, including pauses.
+  // A changed scroll position or an explicit control action starts afresh.
+  const point =
+    !interrupt && resizeAnchor?.scrollTop === viewport.scrollTop
+      ? resizeAnchor.point
+      : pointUnderViewportTop();
   items = reconcile(build(), items);
-  list.setItems(items, { anchor: point ? anchorFor(point) : "viewport" });
+  list.setItems(items, {
+    anchor: point ? anchorFor(point) : "viewport",
+    interrupt,
+  });
+  resizeAnchor = point ? { point, scrollTop: viewport.scrollTop } : null;
   syncStatus();
 }
 
@@ -464,7 +475,7 @@ for (const button of document.querySelectorAll<HTMLButtonElement>(
       b.classList.toggle("active", b === button);
     }
     saveOptions();
-    reflow();
+    reflow(true);
   });
 }
 
@@ -481,6 +492,6 @@ for (const button of document.querySelectorAll<HTMLButtonElement>(
       b.classList.toggle("active", b === button);
     }
     saveOptions();
-    reflow();
+    reflow(true);
   });
 }

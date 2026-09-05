@@ -112,6 +112,30 @@ describe("image loader", () => {
     });
   });
 
+  it("should skip the entrance fade only for already fetched sources", () => {
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 1,
+    });
+    const first = imageAt(0);
+    loader.add(first, "u-photo");
+    download("u-photo").dispatchEvent(new Event("load"));
+    const remounted = imageAt(100);
+
+    loader.add(remounted, "u-photo");
+
+    expect(first.classList.contains("cached")).toBe(false);
+    expect(remounted.classList.contains("cached")).toBe(true);
+    expect(remounted.classList.contains("loaded")).toBe(true);
+    expect(remounted.getAttribute("src")).toBe("u-photo");
+
+    loader.add(remounted, "u-new-photo");
+
+    expect(remounted.classList.contains("cached")).toBe(false);
+    expect(remounted.classList.contains("loaded")).toBe(false);
+    expect(remounted.getAttribute("src")).toBeNull();
+  });
+
   it("a second drawing of a source follows the fetch in flight, or the one it is queued behind", () => {
     const loader = createImageLoader({
       viewport: viewportAt(0, 600),
