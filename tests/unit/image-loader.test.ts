@@ -43,6 +43,47 @@ describe("image loader", () => {
     return img;
   }
 
+  it("should prioritize the entire batch before starting downloads", () => {
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 1,
+    });
+    const far = imageAt(2000);
+    const near = imageAt(100);
+
+    loader.update({
+      add: [
+        { img: far, src: "u-far" },
+        { img: near, src: "u-near" },
+      ],
+    });
+
+    expect(downloads.map((img) => img.getAttribute("src"))).toEqual(["u-near"]);
+    expect(loader.metrics()).toMatchObject({ inFlight: 1, queued: 1 });
+  });
+
+  it("should transfer an in-flight source between tiles without restarting it", () => {
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 1,
+    });
+    const old = imageAt(0);
+    const next = imageAt(200);
+    loader.add(old, "u-photo");
+
+    loader.update({ add: [{ img: next, src: "u-photo" }], remove: [old] });
+    download("u-photo").dispatchEvent(new Event("load"));
+
+    expect(downloads).toHaveLength(1);
+    expect(loader.metrics()).toMatchObject({
+      cancelled: 0,
+      loaded: 1,
+      inFlight: 0,
+    });
+    expect(next.getAttribute("src")).toBe("u-photo");
+    expect(old.getAttribute("src")).toBeNull();
+  });
+
   it("starts the nearest queued image first, and follows the queue as it drains", () => {
     const loader = createImageLoader({
       viewport: viewportAt(0, 600),

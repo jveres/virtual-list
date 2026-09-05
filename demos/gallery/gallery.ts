@@ -1,4 +1,8 @@
-import { createVirtualList, type VirtualList } from "../../src/virtual-list.js";
+import {
+  createVirtualList,
+  type ReachContext,
+  type VirtualList,
+} from "../../src/virtual-list.js";
 import { mustGet } from "../shared/utils.js";
 import { createImageLoader, type LoaderMetrics } from "./image-loader.js";
 import {
@@ -7,6 +11,7 @@ import {
   type GalleryItem,
   type JustifiedRow,
   type Photo,
+  sameGalleryItem,
 } from "./layout.js";
 import { layoutDensity } from "./layout-manager.js";
 
@@ -106,6 +111,19 @@ const images = createImageLoader({
   concurrency,
   onMetrics: showMetrics,
 });
+const pendingImages = new Set<HTMLImageElement>();
+const retiredImages = new Set<HTMLImageElement>();
+let imageFlushQueued = false;
+
+function scheduleImageFlush(): void {
+  if (imageFlushQueued) return;
+  imageFlushQueued = true;
+  queueMicrotask(() => {
+    imageFlushQueued = false;
+    // Normal commits flush in onState; disposal/failed renders may not publish.
+    if (pendingImages.size || retiredImages.size) flushImages();
+  });
+}
 
 function showMetrics(m: Readonly<LoaderMetrics>): void {
   loaderMetrics.textContent = `queue ${m.queued} (peak ${m.peakQueued}) · loading ${m.inFlight}/${m.concurrency} · loaded ${m.loaded} · reused ${m.reused} · cancelled ${m.cancelled} · failed ${m.failed}`;
@@ -117,14 +135,32 @@ function sourceOf(p: Photo): string {
 
 function queueImages(element: HTMLElement): void {
   for (const img of element.querySelectorAll<HTMLImageElement>("img.photo")) {
-    images.add(img, img.dataset.src as string);
+    pendingImages.add(img);
+    retiredImages.delete(img);
   }
+  scheduleImageFlush();
 }
 
 function dropImages(element: HTMLElement): void {
   for (const img of element.querySelectorAll<HTMLImageElement>("img.photo")) {
-    images.remove(img);
+    pendingImages.delete(img);
+    retiredImages.add(img);
   }
+  scheduleImageFlush();
+}
+
+function flushImages(): void {
+  // onState runs after row placement. Render/mount hooks only register intent,
+  // never measure a detached tile or a mounted row at its old position.
+  const batch = Array.from(pendingImages)
+    .filter((img) => img.isConnected)
+    .map((img) => ({ img, src: img.dataset.src as string }));
+  pendingImages.clear();
+  const removed = Array.from(retiredImages);
+  retiredImages.clear();
+  if (batch.length || removed.length)
+    images.update({ add: batch, remove: removed });
+  else images.reprioritize();
 }
 
 // --- Rendering ---------------------------------------------------------------
@@ -165,14 +201,8 @@ function existingTiles(el: HTMLElement): Map<string, HTMLElement> {
   return held;
 }
 
-/**
- * A photo's tile at a size: the placeholder box, its image over it. A tile
- * new to a mounted element joins the loader here (the mount hook covered
- * the element's tiles when the element mounted); one that leaves a mounted
- * element on re-render is dropped from it.
- */
+/** Reuse and size a tile; syncTiles owns DOM changes and image registration. */
 function tileAt(
-  el: HTMLElement,
   held: Map<string, HTMLElement>,
   p: Photo,
   width: number,
@@ -185,16 +215,28 @@ function tileAt(
     held.delete(id);
   } else {
     tile = tileElement(p, id);
-    if (el.isConnected) queueImages(tile);
   }
   tile.style.width = `${width}px`;
   tile.style.height = `${height}px`;
   return tile;
 }
 
-function dropUnused(el: HTMLElement, held: Map<string, HTMLElement>): void {
-  if (!el.isConnected) return;
-  for (const tile of held.values()) dropImages(tile);
+function syncTiles(
+  el: HTMLElement,
+  next: readonly HTMLElement[],
+  unused: Map<string, HTMLElement>,
+): void {
+  let cursor = el.firstElementChild;
+  for (const tile of next) {
+    const added = tile.parentElement !== el;
+    if (tile === cursor) cursor = cursor.nextElementSibling;
+    else el.insertBefore(tile, cursor);
+    if (added && el.isConnected) queueImages(tile);
+  }
+  for (const tile of unused.values()) {
+    if (el.isConnected) dropImages(tile);
+    tile.remove();
+  }
 }
 
 function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
@@ -202,12 +244,11 @@ function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
   const held = existingTiles(el);
   el.className = "photo-row";
   el.style.height = `${row.height + GAP}px`;
-  el.replaceChildren(
-    ...row.photos.map((p) => {
-      return tileAt(el, held, p, p.width, row.height);
-    }),
+  syncTiles(
+    el,
+    row.photos.map((p) => tileAt(held, p, p.width, row.height)),
+    held,
   );
-  dropUnused(el, held);
   return el;
 }
 
@@ -216,15 +257,16 @@ function renderBand(band: Band, existing?: HTMLElement): HTMLElement {
   const held = existingTiles(el);
   el.className = "band";
   el.style.height = `${band.height}px`;
-  el.replaceChildren(
-    ...band.cards.map((card) => {
-      const tile = tileAt(el, held, card, card.width, card.height, card.part);
+  syncTiles(
+    el,
+    band.cards.map((card) => {
+      const tile = tileAt(held, card, card.width, card.height, card.part);
       tile.style.left = `${card.left}px`;
       tile.style.top = `${card.top - band.start}px`;
       return tile;
     }),
+    held,
   );
-  dropUnused(el, held);
   return el;
 }
 
@@ -269,14 +311,8 @@ function reconcile(
   const byKey = new Map(previous.map((item) => [item.key, item]));
   return next.map((item) => {
     const old = byKey.get(item.key);
-    return old && signature(old) === signature(item) ? old : item;
+    return old && sameGalleryItem(old, item) ? old : item;
   });
-}
-
-function signature(item: GalleryItem): string {
-  return item.kind === "row"
-    ? `r${item.height}:${item.photos.map((p) => `${p.id}/${p.width}`).join(",")}`
-    : `b${item.start}/${item.height}:${item.cards.map((c) => `${c.id}@${c.left},${c.top},${c.width}`).join(",")}`;
 }
 
 /** A page appended below: everything above is unchanged, the runtime keeps the viewport. */
@@ -384,11 +420,15 @@ function syncStatus(): void {
   status.textContent = `${loaded.toLocaleString()} of ${TOTAL.toLocaleString()} photos · ${items.length.toLocaleString()} ${unit}`;
 }
 
-function loadMore(signal: AbortSignal): void {
-  if (loading || loaded >= TOTAL || signal.aborted) return;
+function loadMore({ signal, complete }: ReachContext): void {
+  if (loading || loaded >= TOTAL || signal.aborted) {
+    complete();
+    return;
+  }
   loading = true;
   const timer = window.setTimeout(() => {
     signal.removeEventListener("abort", cancel);
+    complete();
     loading = false;
     loaded = Math.min(TOTAL, loaded + PAGE);
     if (loaded >= TOTAL) list.setEdgeSlot("end", null);
@@ -396,6 +436,7 @@ function loadMore(signal: AbortSignal): void {
   }, LOAD_DELAY_MS);
   function cancel(): void {
     window.clearTimeout(timer);
+    complete();
     loading = false;
   }
   signal.addEventListener("abort", cancel, { once: true });
@@ -452,10 +493,10 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     // appear under a moving finger or an overscroll bounce.
     scrollingUpdates: "freeze",
     edgeSlots: { end: loaderSlot },
-    onReachEnd: ({ signal }) => loadMore(signal),
+    onReachEnd: loadMore,
     onMount: queueImages,
     onUnmount: dropImages,
-    onState: () => images.reprioritize(),
+    onState: flushImages,
   },
 );
 syncStatus();

@@ -695,12 +695,23 @@ function chunkCommitted(edge: "start" | "end"): void {
 }
 
 function startLoad(edge: "start" | "end", context: ReachContext): void {
-  if (!booted || !checkbox("auto-load").checked) return;
-  if (loading[edge] || waitingChunk[edge] || chunksLeft[edge] <= 0) return;
+  if (
+    !booted ||
+    !checkbox("auto-load").checked ||
+    loading[edge] ||
+    waitingChunk[edge] ||
+    chunksLeft[edge] <= 0 ||
+    context.signal.aborted
+  ) {
+    context.complete();
+    return;
+  }
   loading[edge] = true;
   showPill(edge === "start" ? "loading older…" : "loading newer…", edge);
   log(`load ${edge} start`);
   const timer = window.setTimeout(() => {
+    context.signal.removeEventListener("abort", cancel);
+    context.complete();
     loading[edge] = false;
     chunksLeft[edge] -= 1;
     const chunk = makeChunk(edge);
@@ -725,7 +736,8 @@ function startLoad(edge: "start" | "end", context: ReachContext): void {
     scheduleStatus();
   }, LOAD_LATENCY_MS);
   // What a real host does with fetch(url, { signal }).
-  context.signal.addEventListener("abort", () => {
+  function cancel(): void {
+    context.complete();
     if (!loading[edge]) return;
     window.clearTimeout(timer);
     loading[edge] = false;
@@ -733,7 +745,8 @@ function startLoad(edge: "start" | "end", context: ReachContext): void {
     log(`ABORT load ${edge} (signal)`, "warn");
     edgePill.hide();
     scheduleStatus();
-  });
+  }
+  context.signal.addEventListener("abort", cancel, { once: true });
 }
 
 function onState(state: VirtualListState): void {

@@ -3,6 +3,7 @@ import {
   createVirtualList,
   type EdgeSlot,
   type FollowMode,
+  type ReachContext,
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
@@ -920,6 +921,7 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
   const epoch = conversationEpoch;
   activeLoad = new Promise((resolve) => {
     const finish = () => {
+      signal.removeEventListener("abort", cancel);
       pendingPrepend = null;
       loadingTop = false;
       activeLoad = null;
@@ -959,11 +961,12 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
     // The runtime aborts a reach's signal when the user reaches the other
     // edge (or on dispose): the simulated fetch dies with it, exactly as a
     // real fetch(url, { signal }) would, and the loader state clears.
-    signal.addEventListener("abort", () => {
+    function cancel(): void {
       if (activeLoad === null) return;
       window.clearTimeout(timer);
       finish();
-    });
+    }
+    signal.addEventListener("abort", cancel, { once: true });
   });
   return activeLoad;
 }
@@ -972,13 +975,17 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
 // setItems, which the runtime defers while a scroll phase (gesture or
 // glide) is active and commits — anchored, without movement — when the
 // phase truly settles. The demo never orchestrates scroll phases.
-function loadOlderMessages(signal: AbortSignal): void {
-  if (activeLoad) return;
+function loadOlderMessages({ signal, complete }: ReachContext): void {
+  if (activeLoad) {
+    complete();
+    return;
+  }
   if (!canLoadOlderMessages()) {
+    complete();
     if (topBoundaryLoadSeen) setEdgeState("no-more");
     return;
   }
-  void loadOlderChunk(signal);
+  void loadOlderChunk(signal).finally(complete);
 }
 
 // --- Conversations ----------------------------------------------------------
@@ -2098,7 +2105,7 @@ function mountConversation(): void {
       // Positions change only at commits: re-read them for the sticky header.
       stickyHeaders?.refresh();
     },
-    onReachStart: ({ signal }) => loadOlderMessages(signal),
+    onReachStart: loadOlderMessages,
     onDestroy: handleRowDestroy,
   });
   landConversation();

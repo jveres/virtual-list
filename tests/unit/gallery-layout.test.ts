@@ -5,6 +5,7 @@ import {
   justify,
   masonry,
   type Photo,
+  sameGalleryItem,
   slice,
 } from "../../demos/gallery/layout";
 
@@ -14,6 +15,54 @@ const photos = (n: number): Photo[] =>
     id,
     aspect: ASPECTS[(id * 7) % ASPECTS.length] as number,
   }));
+
+describe("layout equality", () => {
+  it("should compare every rendered row field without depending on object identity", () => {
+    const row = justify(photos(10), 900, 210, 6, false)[0];
+    if (!row) throw new Error("missing row");
+    expect(sameGalleryItem(row, structuredClone(row))).toBe(true);
+    expect(sameGalleryItem(row, { ...row, key: "other" })).toBe(false);
+    expect(sameGalleryItem(row, { ...row, height: row.height + 1 })).toBe(
+      false,
+    );
+    expect(sameGalleryItem(row, { ...row, photos: row.photos.slice(1) })).toBe(
+      false,
+    );
+    for (const field of ["id", "aspect", "width"] as const) {
+      const changed = structuredClone(row);
+      const photo = changed.photos[0];
+      if (!photo) throw new Error("missing photo");
+      photo[field] += 1;
+      expect(sameGalleryItem(row, changed)).toBe(false);
+    }
+  });
+
+  it("should include band fragments and image aspects in equality", () => {
+    const grid = masonry(photos(10), 900, 4, 6);
+    const band = slice(grid.cards, grid.height, 480)[0];
+    if (!band) throw new Error("missing band");
+    expect(sameGalleryItem(band, structuredClone(band))).toBe(true);
+    expect(sameGalleryItem(band, { ...band, start: 1 })).toBe(false);
+    expect(sameGalleryItem(band, { ...band, cards: band.cards.slice(1) })).toBe(
+      false,
+    );
+    for (const field of [
+      "id",
+      "aspect",
+      "left",
+      "top",
+      "width",
+      "height",
+      "part",
+    ] as const) {
+      const changed = structuredClone(band);
+      const card = changed.cards[0];
+      if (!card) throw new Error("missing card");
+      card[field] += 1;
+      expect(sameGalleryItem(band, changed)).toBe(false);
+    }
+  });
+});
 
 describe("justified rows", () => {
   it("should preserve row membership and scale smoothly within a density", () => {

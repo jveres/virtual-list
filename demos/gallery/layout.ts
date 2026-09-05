@@ -45,6 +45,46 @@ export interface Band {
 
 export type GalleryItem = JustifiedRow | Band;
 
+/** Compare render inputs directly, stopping at the first changed field. */
+export function sameGalleryItem(a: GalleryItem, b: GalleryItem): boolean {
+  if (a === b) return true;
+  if (a.key !== b.key || a.height !== b.height) return false;
+  if (a.kind === "row" && b.kind === "row") {
+    return (
+      a.photos.length === b.photos.length &&
+      a.photos.every((p, i) => {
+        const next = b.photos[i];
+        return (
+          next !== undefined &&
+          p.id === next.id &&
+          p.aspect === next.aspect &&
+          p.width === next.width
+        );
+      })
+    );
+  }
+  if (a.kind === "band" && b.kind === "band") {
+    return (
+      a.start === b.start &&
+      a.cards.length === b.cards.length &&
+      a.cards.every((p, i) => {
+        const next = b.cards[i];
+        return (
+          next !== undefined &&
+          p.id === next.id &&
+          p.aspect === next.aspect &&
+          p.left === next.left &&
+          p.top === next.top &&
+          p.width === next.width &&
+          p.height === next.height &&
+          p.part === next.part
+        );
+      })
+    );
+  }
+  return false;
+}
+
 /**
  * Justified rows: aspect-ratio groups remain fixed within a responsive
  * density. Each row scales to fill the width. Incomplete groups wait unless

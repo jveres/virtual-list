@@ -15,6 +15,19 @@ async function stableLayoutGroups(page) {
     ...Array.from({ length: 20 }, (_, i) => 999 - i),
     1000,
   ]) {
+    await page.evaluate(() => {
+      const rows = new Set(document.querySelectorAll(".photo-row"));
+      window.__rowChildChanges = 0;
+      window.__rowObserver = new MutationObserver((records) => {
+        window.__rowChildChanges += records.filter(
+          (record) => record.type === "childList" && rows.has(record.target),
+        ).length;
+      });
+      window.__rowObserver.observe(document.querySelector("#viewport"), {
+        childList: true,
+        subtree: true,
+      });
+    });
     await page.setViewportSize({ width, height: 800 });
     await page.evaluate(
       () =>
@@ -22,6 +35,17 @@ async function stableLayoutGroups(page) {
           requestAnimationFrame(() => requestAnimationFrame(resolve)),
         ),
     );
+    const childChanges = await page.evaluate(() => {
+      window.__rowObserver.disconnect();
+      return window.__rowChildChanges;
+    });
+    if (Math.abs(width - previousWidth) === 1) {
+      assert.equal(
+        childChanges,
+        0,
+        "width-only row updates must preserve child nodes in place",
+      );
+    }
     const fadingCached = await page.locator(".photo.cached").evaluateAll(
       (images) =>
         images.filter((img) => {

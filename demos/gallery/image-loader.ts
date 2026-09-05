@@ -25,6 +25,11 @@ export interface LoaderMetrics {
 export interface ImageLoader {
   /** Queue an image for its source; one already fetched shows at once. */
   add(img: HTMLImageElement, src: string): void;
+  /** Apply subscription changes together, then measure priorities and start downloads once. */
+  update(changes: {
+    add?: readonly { img: HTMLImageElement; src: string }[];
+    remove?: readonly HTMLImageElement[];
+  }): void;
   /** Unsubscribe an image; abandon its request only when no images still need it. */
   remove(img: HTMLImageElement): void;
   /** The viewport moved: the queue's order follows it (one viewport read, one per queued image). */
@@ -95,10 +100,10 @@ export function createImageLoader(options: {
     }
   }
 
-  function add(img: HTMLImageElement, src: string): void {
+  function subscribe(img: HTMLImageElement, src: string): void {
     const previous = subscriptions.get(img);
     if (previous?.src === src) return;
-    if (previous) remove(img);
+    if (previous) unsubscribe(img);
     img.classList.remove("loaded", "failed", "cached");
     if (fetched.has(src)) {
       // Reflow creates new drawings of photos already seen. Do not replay
@@ -109,30 +114,37 @@ export function createImageLoader(options: {
       return;
     }
     img.removeAttribute("src");
-    const distance = distanceOf(img, viewport.getBoundingClientRect());
     let request = requests.get(src);
     if (!request) {
-      request = { src, images: new Set(), distance };
+      request = { src, images: new Set(), distance: Infinity };
       requests.set(src, request);
       queue.push(request);
       metrics.peakQueued = Math.max(metrics.peakQueued, queue.length);
     }
     request.images.add(img);
-    request.distance = Math.min(request.distance, distance);
     subscriptions.set(img, request);
-    pump();
   }
 
-  function remove(img: HTMLImageElement): void {
+  function update({
+    add = [],
+    remove = [],
+  }: {
+    add?: readonly { img: HTMLImageElement; src: string }[];
+    remove?: readonly HTMLImageElement[];
+  }): void {
+    // Subscribe replacements first: moving the last drawing of a source
+    // must not cancel and restart its transport between DOM owners.
+    for (const { img, src } of add) subscribe(img, src);
+    for (const img of remove) unsubscribe(img);
+    reprioritize();
+  }
+
+  function unsubscribe(img: HTMLImageElement): void {
     const request = subscriptions.get(img);
     if (!request) return;
     subscriptions.delete(img);
     request.images.delete(img);
-    if (request.images.size > 0) {
-      if (!inFlight.has(request.src)) {
-        updateDistance(request, viewport.getBoundingClientRect());
-      }
-    } else {
+    if (request.images.size === 0) {
       requests.delete(request.src);
       const cancel = inFlight.get(request.src);
       if (cancel) {
@@ -144,12 +156,13 @@ export function createImageLoader(options: {
         if (index >= 0) queue.splice(index, 1);
       }
     }
-    pump();
   }
 
   function reprioritize(): void {
-    const r = viewport.getBoundingClientRect();
-    for (const request of queue) updateDistance(request, r);
+    if (queue.length) {
+      const r = viewport.getBoundingClientRect();
+      for (const request of queue) updateDistance(request, r);
+    }
     pump();
   }
 
@@ -215,8 +228,9 @@ export function createImageLoader(options: {
   }
 
   return {
-    add,
-    remove,
+    add: (img, src) => update({ add: [{ img, src }] }),
+    update,
+    remove: (img) => update({ remove: [img] }),
     reprioritize,
     setConcurrency: (n) => {
       metrics.concurrency = Math.max(1, Math.floor(n));

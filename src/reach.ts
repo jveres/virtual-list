@@ -7,6 +7,8 @@ export interface ReachContext {
    * unwanted loads; ignore it to keep a scrollback fetch alive.
    */
   signal: AbortSignal;
+  /** Release this reach when its work finishes or is skipped. Idempotent; does not abort the signal. */
+  complete(): void;
 }
 
 type ReachOptions = {
@@ -53,7 +55,15 @@ export class ReachController {
       if (!callback || this.disposed) return;
       const abort = new AbortController();
       this.aborts[edge].add(abort);
-      callback({ signal: abort.signal });
+      const complete = () => {
+        this.aborts[edge].delete(abort);
+      };
+      try {
+        callback({ signal: abort.signal, complete });
+      } catch (error) {
+        complete();
+        throw error;
+      }
     } else if (distance > EXIT_PX) {
       this.armed[edge] = true;
     }
