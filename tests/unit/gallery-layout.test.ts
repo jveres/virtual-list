@@ -16,6 +16,103 @@ const photos = (n: number): Photo[] =>
     aspect: ASPECTS[(id * 7) % ASPECTS.length] as number,
   }));
 
+describe("retained gallery layout continuity", () => {
+  it("should align the shortened leading band with device-pixel runtime slots", () => {
+    const all = photos(600);
+    for (const ratio of [1, 1.25, 1.5, 2]) {
+      const layouts = createGalleryLayouts(
+        480,
+        (retained) => all.slice(0, retained[0]?.id ?? 0),
+        () => ratio,
+      );
+      const bands = layouts.masonry(all.slice(240), 981, 240, 6, false);
+      expect(bands[0]?.height).toBeGreaterThan(0);
+      expect(bands[0]?.height).toBeLessThan(480);
+      for (let i = 0; i < bands.length - 1; i++) {
+        const band = bands[i];
+        const next = bands[i + 1];
+        if (!band || !next) throw new Error("missing band");
+        const runtimeHeight = Math.ceil(band.height * ratio - 1e-6) / ratio;
+        expect(runtimeHeight).toBeCloseTo(band.height, 9);
+        expect(band.start + runtimeHeight).toBeCloseTo(next.start, 9);
+      }
+    }
+  });
+
+  it("should preserve row membership through trimming, resize and restoration", () => {
+    const all = photos(720);
+    const layouts = createGalleryLayouts(480, (retained) =>
+      all.slice(0, retained[0]?.id ?? 0),
+    );
+    for (const width of [1080, 981, 800, 600, 400]) {
+      const full = layouts.rows(all, width, 210, 6, true);
+      const retained = layouts.rows(all.slice(240), width, 210, 6, true);
+      expect(retained.length).toBeGreaterThan(0);
+      expect(retained).toEqual(
+        full.filter((row) => (row.photos[0]?.id ?? 0) >= 240),
+      );
+      expect(layouts.rows(all, width, 210, 6, true)).toEqual(full);
+    }
+  });
+
+  it("should preserve masonry bands and fragments after prefix eviction at every density", () => {
+    const all = photos(720);
+    const layouts = createGalleryLayouts(480, (retained) =>
+      all.slice(0, retained[0]?.id ?? 0),
+    );
+    for (const width of [1080, 981, 800, 600, 400]) {
+      const full = layouts.masonry(all, width, 240, 6, true);
+      const retained = layouts.masonry(all.slice(240), width, 240, 6, true);
+      expect(retained.length).toBeGreaterThan(0);
+      const expected = full.slice(
+        full.findIndex((band) => band.key === retained[0]?.key),
+      );
+      expect(retained.map((band) => band.key)).toEqual(
+        expected.map((band) => band.key),
+      );
+      for (let i = 0; i < retained.length; i++) {
+        const actual = retained[i];
+        const original = expected[i];
+        if (!actual || !original) throw new Error("missing band");
+        expect(actual.height).toBeCloseTo(
+          original.start + original.height - actual.start,
+          7,
+        );
+        const actualCards = [...actual.cards].sort((a, b) => a.id - b.id);
+        const originalCards = original.cards
+          .filter((card) => card.id >= 240)
+          .sort((a, b) => a.id - b.id);
+        expect(
+          actualCards.map((card) => [
+            card.id,
+            card.part,
+            card.left,
+            card.width,
+          ]),
+        ).toEqual(
+          originalCards.map((card) => [
+            card.id,
+            card.part,
+            card.left,
+            card.width,
+          ]),
+        );
+        for (let c = 0; c < actualCards.length; c++)
+          expect(actualCards[c]?.top).toBeCloseTo(
+            originalCards[c]?.top ?? -1,
+            7,
+          );
+      }
+      const tops = retained.flatMap((band) =>
+        band.cards.filter((card) => card.part === 0 && card.top >= band.start),
+      );
+      expect(tops.map((card) => card.id).sort((a, b) => a - b)).toEqual(
+        all.slice(240).map((photo) => photo.id),
+      );
+    }
+  });
+});
+
 describe("layout equality", () => {
   it("should compare every rendered row field without depending on object identity", () => {
     const row = justify(photos(10), 900, 210, 6, false)[0];

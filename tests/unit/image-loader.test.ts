@@ -43,6 +43,73 @@ describe("image loader", () => {
     return img;
   }
 
+  it("should prioritize supplied geometry without measuring the viewport or images", () => {
+    const viewport = viewportAt(0, 600);
+    const near = imageAt(100);
+    const middle = imageAt(900);
+    const far = imageAt(2000);
+    const distances = new Map([
+      [near, 0],
+      [middle, 300],
+      [far, 1400],
+    ]);
+    const bounds = vi.fn((): DOMRect => {
+      throw new Error("unexpected layout read");
+    });
+    viewport.getBoundingClientRect = bounds;
+    for (const img of [near, middle, far]) img.getBoundingClientRect = bounds;
+    const loader = createImageLoader({
+      viewport,
+      concurrency: 1,
+      distance: (img) => distances.get(img) ?? Infinity,
+    });
+
+    loader.update({
+      add: [
+        { img: far, src: "far" },
+        { img: middle, src: "middle" },
+        { img: near, src: "near" },
+      ],
+    });
+    expect(downloads.map((img) => img.getAttribute("src"))).toEqual(["near"]);
+    distances.set(far, 0);
+    loader.reprioritize();
+    download("near").dispatchEvent(new Event("load"));
+
+    expect(downloads.map((img) => img.getAttribute("src"))).toEqual([
+      "near",
+      "far",
+    ]);
+    expect(download("far").getAttribute("fetchpriority")).toBe("high");
+    expect(bounds).not.toHaveBeenCalled();
+  });
+
+  it("should forget evicted source hints without discarding retained ones", () => {
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 2,
+    });
+    loader.add(imageAt(0), "evicted");
+    loader.add(imageAt(100), "retained");
+    download("evicted").dispatchEvent(new Event("load"));
+    download("retained").dispatchEvent(new Event("load"));
+    loader.forget(["evicted"]);
+
+    const restored = imageAt(0);
+    const retained = imageAt(100);
+    loader.add(restored, "evicted");
+    loader.add(retained, "retained");
+
+    expect(restored.getAttribute("src")).toBeNull();
+    expect(retained.getAttribute("src")).toBe("retained");
+    expect(loader.metrics()).toMatchObject({ inFlight: 1, reused: 1 });
+    expect(downloads.map((img) => img.getAttribute("src"))).toEqual([
+      "evicted",
+      "retained",
+      "evicted",
+    ]);
+  });
+
   it("should prioritize the entire batch before starting downloads", () => {
     const loader = createImageLoader({
       viewport: viewportAt(0, 600),

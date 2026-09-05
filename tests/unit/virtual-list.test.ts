@@ -3,6 +3,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Geometry } from "../../src/geometry";
+import { createPagedWindow, type Page } from "../../src/paging";
 import type { VirtualListScrollSettleStrategy } from "../../src/scroll-settle";
 import {
   createVirtualList,
@@ -111,7 +112,7 @@ function mount(
   items: Msg[],
   hooks: {
     replaceOnRerender?: boolean;
-    onState?: (state: VirtualListState) => void;
+    onState?: VirtualListOptions<Msg>["onState"];
     onDestroy?: (element: HTMLElement) => void;
     scrollingUpdates?: ScrollingUpdates;
     followBehavior?: VirtualListOptions<Msg>["followBehavior"];
@@ -221,9 +222,9 @@ function mount(
       element.textContent = m.body;
       return stamp(element, m);
     },
-    onState: (state) => {
+    onState: (state, viewport) => {
       states.push(state);
-      hooks.onState?.(state);
+      hooks.onState?.(state, viewport);
     },
     onDestroy: (element) => {
       destroyed.push(Number(element.dataset.id));
@@ -274,6 +275,314 @@ beforeEach(() => {
   (globalThis as { ResizeObserver: unknown }).ResizeObserver =
     ControlledResizeObserver;
   vi.useFakeTimers();
+});
+
+describe("settle-time window updates", () => {
+  it("should publish the viewport snapshot for geometry-based companions", () => {
+    const viewports: { scrollTop: number; height: number }[] = [];
+    const h = mount(range(0, 40), {
+      boot: "start",
+      onState: (_state, viewport) => {
+        viewports.push({ ...viewport });
+      },
+    });
+    expect(viewports[0]).toEqual({ scrollTop: 0, height: VIEWPORT_H });
+    h.userScroll(2000);
+    expect(viewports.at(-1)).toEqual({ scrollTop: 2000, height: VIEWPORT_H });
+    h.list.dispose();
+  });
+  it("should settle an update queued by a render that subsequently fails", async () => {
+    let queued: Promise<boolean> | undefined;
+    const h = mount(range(0, 20), {
+      throwOn: "fail",
+      onRender: (m) => {
+        if (m.body === "fail")
+          queued = h.list.updateWindow(() => ({ items: [] }));
+      },
+    });
+    expect(() => h.list.setItems([message(80, "fail")])).toThrow(
+      "render failed",
+    );
+    await expect(queued).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    h.list.dispose();
+  });
+
+  it("should choose the protected window at commit, including overscan", async () => {
+    const h = mount(range(0, 80), { boot: "start", itemHeight: () => ROW_H });
+    h.userScroll(2000);
+    let protectedIds: number[] = [];
+    const applied = h.list.updateWindow(({ items, protectedItems }) => {
+      protectedIds = protectedItems.map((m) => m.id);
+      return {
+        items: items.slice(10),
+        onCommit: () => {
+          expect(h.list.positionOf("m10")).toEqual({ top: 0, height: ROW_H });
+        },
+      };
+    });
+    expect(protectedIds).toEqual([]);
+    expect(h.list.state.held).toBe(true);
+    h.userScroll(4000);
+    const { start, end } = h.list.state;
+    h.settle();
+    await expect(applied).resolves.toBe(true);
+    expect(protectedIds).toEqual(range(start, end).map((m) => m.id));
+    expect(start).toBeLessThan(40);
+    expect(end).toBeGreaterThan(46);
+    expect(h.viewport.scrollTop).toBe(3000);
+    h.list.dispose();
+  });
+
+  it("should cancel fetched work before it runs and clear held state", async () => {
+    const h = mount(range(0, 40));
+    h.userScroll(1000);
+    const abort = new AbortController();
+    const update = vi.fn(() => ({ items: range(0, 80) }));
+    const applied = h.list.updateWindow(update, abort.signal);
+    abort.abort();
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.held).toBe(false);
+    h.settle();
+    expect(update).not.toHaveBeenCalled();
+    expect(h.list.state.count).toBe(40);
+    h.list.dispose();
+  });
+
+  it("should settle cancelled jobs on disposal", async () => {
+    const h = mount(range(0, 40));
+    h.userScroll(1000);
+    const applied = h.list.updateWindow(() => ({ items: [] }));
+    h.list.dispose();
+    await expect(applied).resolves.toBe(false);
+  });
+
+  it("should reject failed preparation without changing the committed window", async () => {
+    const h = mount(range(0, 40), { throwOn: "fail" });
+    await expect(
+      h.list.updateWindow(() => ({ items: [message(80, "fail")] })),
+    ).rejects.toThrow("render failed");
+    expect(h.list.state.count).toBe(40);
+    h.list.dispose();
+  });
+});
+
+describe("bounded paging on the runtime", () => {
+  function page(start: number): Page<Msg, number> {
+    return {
+      items: range(start, start + 20),
+      start:
+        start > 0
+          ? { available: true, cursor: start - 20 }
+          : { available: false },
+      end: { available: true, cursor: start + 20 },
+    };
+  }
+
+  it("should append and trim atomically, then restore the previous page", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], {
+      itemHeight: () => ROW_H,
+      boot: "start",
+    });
+    const evicted: number[][] = [];
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 40,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+      onEvict: (items) => {
+        evicted.push(items.map((m) => m.id));
+      },
+    });
+    expect(paging.reconcile()).toBeNull();
+    await paging.load("end");
+    expect(paging.reconcile()).toBeNull();
+    h.userScroll(3400);
+    h.settle();
+    const published = h.states.length;
+    await paging.load("end");
+    expect(paging.items.map((m) => m.id)).toEqual(
+      range(20, 60).map((m) => m.id),
+    );
+    expect(h.states.slice(published).map((state) => state.count)).toEqual([40]);
+    expect(h.viewport.scrollTop).toBe(1400);
+    expect(evicted).toEqual([range(0, 20).map((m) => m.id)]);
+    expect(h.list.positionOf("m0")).toBeNull();
+
+    h.userScroll(0);
+    h.settle();
+    await paging.load("start");
+    expect(paging.items.map((m) => m.id)).toEqual(
+      range(0, 40).map((m) => m.id),
+    );
+    expect(h.viewport.scrollTop).toBe(2000);
+    expect(paging.canLoad("start")).toBe(false);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should temporarily exceed the budget and retry after protected content moves away", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], { boot: "start" });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 20,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    await paging.load("end");
+    expect(paging.items).toHaveLength(40);
+    h.userScroll(3400);
+    const trim = paging.reconcile();
+    expect(h.list.state.count).toBe(40);
+    h.settle();
+    await expect(trim).resolves.toBe(true);
+    expect(paging.items).toHaveLength(20);
+    expect(h.list.positionOf("m0")).toBeNull();
+    expect(h.destroyed).toEqual(
+      expect.arrayContaining(range(0, 20).map((m) => m.id)),
+    );
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should discard a loaded page when the source is disposed before settle", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items]);
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 40,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    h.userScroll(1000);
+    const loaded = paging.load("end");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.list.state.held).toBe(true);
+    paging.dispose();
+    h.settle();
+    await expect(loaded).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    h.list.dispose();
+  });
+
+  it("should advance opaque cursors through empty and overlapping pages without inferring exhaustion", async () => {
+    const initial: Page<Msg, string> = {
+      items: range(0, 20),
+      start: { available: false },
+      end: { available: true, cursor: "empty" },
+    };
+    const h = mount([...initial.items], { boot: "start" });
+    const cursors: string[] = [];
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 100,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }): Promise<Page<Msg, string>> => {
+        cursors.push(cursor);
+        return cursor === "empty"
+          ? {
+              items: [],
+              start: { available: false },
+              end: { available: true, cursor: "overlap" },
+            }
+          : {
+              items: [...range(10, 30), message(29)],
+              start: { available: false },
+              end: { available: false },
+            };
+      },
+    });
+    await paging.load("end");
+    expect(paging.canLoad("end")).toBe(true);
+    expect(paging.items).toHaveLength(20);
+    await paging.load("end");
+    expect(paging.items.map((m) => m.id)).toEqual(
+      range(0, 30).map((m) => m.id),
+    );
+    expect(cursors).toEqual(["empty", "overlap"]);
+    expect(paging.canLoad("end")).toBe(false);
+    expect(paging.canLoad("start")).toBe(false);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should cancel an uncooperative source promptly and accept an opposite load", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], { boot: "start" });
+    let finish: (result: Page<Msg, number>) => void = () => {
+      throw new Error("fetch not started");
+    };
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 40,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: ({ edge, cursor }) =>
+        edge === "start"
+          ? Promise.resolve(page(cursor))
+          : new Promise((resolve) => {
+              finish = resolve;
+            }),
+    });
+    const abort = new AbortController();
+    const complete = vi.fn();
+    const stale = paging.load("end", { signal: abort.signal, complete });
+    await vi.advanceTimersByTimeAsync(0);
+    abort.abort();
+    const opposite = paging.load("start");
+    await expect(stale).resolves.toBe(false);
+    await expect(opposite).resolves.toBe(true);
+    expect(complete).toHaveBeenCalledTimes(1);
+    finish(page(40));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(paging.items.map((m) => m.id)).toEqual(
+      range(0, 40).map((m) => m.id),
+    );
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should leave cursors and data unchanged after a failed fetch and allow retry", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items]);
+    let fail = true;
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 40,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => {
+        if (fail) throw new Error("offline");
+        return page(cursor);
+      },
+    });
+    await expect(paging.load("end")).rejects.toThrow("offline");
+    expect(paging.loading).toBe(false);
+    expect(paging.items).toEqual(initial.items);
+    fail = false;
+    await expect(paging.load("end")).resolves.toBe(true);
+    expect(paging.items).toHaveLength(40);
+    paging.dispose();
+    h.list.dispose();
+  });
 });
 
 afterEach(() => {

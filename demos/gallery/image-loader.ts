@@ -36,6 +36,8 @@ export interface ImageLoader {
   reprioritize(): void;
   setConcurrency(n: number): void;
   metrics(): Readonly<LoaderMetrics>;
+  /** Release fetched-source hints when the owning data page is evicted. */
+  forget(sources: Iterable<string>): void;
 }
 
 interface ImageRequest {
@@ -51,6 +53,8 @@ export function createImageLoader(options: {
   viewport: HTMLElement;
   concurrency: number;
   onMetrics?: (metrics: Readonly<LoaderMetrics>) => void;
+  /** Optional geometry-based distance; bypasses all DOM bounds reads. */
+  distance?: (img: HTMLImageElement) => number;
 }): ImageLoader {
   const { viewport } = options;
   const metrics: LoaderMetrics = {
@@ -93,10 +97,15 @@ export function createImageLoader(options: {
     img.src = src;
   }
 
-  function updateDistance(request: ImageRequest, r: DOMRect): void {
+  function updateDistance(request: ImageRequest, r: DOMRect | null): void {
     request.distance = Infinity;
     for (const img of request.images) {
-      request.distance = Math.min(request.distance, distanceOf(img, r));
+      const distance = options.distance
+        ? options.distance(img)
+        : r
+          ? distanceOf(img, r)
+          : Infinity;
+      request.distance = Math.min(request.distance, distance);
     }
   }
 
@@ -160,7 +169,7 @@ export function createImageLoader(options: {
 
   function reprioritize(): void {
     if (queue.length) {
-      const r = viewport.getBoundingClientRect();
+      const r = options.distance ? null : viewport.getBoundingClientRect();
       for (const request of queue) updateDistance(request, r);
     }
     pump();
@@ -237,6 +246,9 @@ export function createImageLoader(options: {
       pump();
     },
     metrics: current,
+    forget: (sources) => {
+      for (const src of sources) fetched.delete(src);
+    },
   };
 
   function current(): Readonly<LoaderMetrics> {

@@ -113,20 +113,28 @@ function planRows(
   photos: readonly Photo[],
   density: number,
   complete: boolean,
+  prefix: Iterable<Photo> = [],
 ): RowGroup[] {
   const groups: RowGroup[] = [];
   let current: Photo[] = [];
   let aspectSum = 0;
+  // Reconstruct only the open group, never retain discarded prefix data.
+  for (const p of prefix) {
+    aspectSum += p.aspect;
+    if (aspectSum >= density) aspectSum = 0;
+  }
+  let clipped = aspectSum > 0;
   for (const p of photos) {
     current.push(p);
     aspectSum += p.aspect;
     if (aspectSum >= density) {
-      groups.push({ photos: current, aspectSum, ragged: false });
+      if (!clipped) groups.push({ photos: current, aspectSum, ragged: false });
+      clipped = false;
       current = [];
       aspectSum = 0;
     }
   }
-  if (complete && current.length)
+  if (complete && current.length && !clipped)
     groups.push({ photos: current, aspectSum, ragged: true });
   return groups;
 }
@@ -160,25 +168,46 @@ export function masonry(
   columns: number,
   gap: number,
 ): { cards: Card[]; height: number } {
-  return placeColumns(planColumns(photos, columns), width, gap);
+  const { cards, height } = placeColumns(
+    planColumns(photos, columns),
+    width,
+    gap,
+  );
+  return { cards, height };
 }
 
 interface ColumnPlan {
   columns: number;
   photos: { photo: Photo; column: number }[];
+  weights?: number[];
+  counts?: number[];
 }
 
-function planColumns(photos: readonly Photo[], columns: number): ColumnPlan {
+function planColumns(
+  photos: readonly Photo[],
+  columns: number,
+  prefix: Iterable<Photo> = [],
+): ColumnPlan {
   const weights = new Array<number>(columns).fill(0);
+  const counts = new Array<number>(columns).fill(0);
+  function assign(photo: Photo): number {
+    let column = 0;
+    for (let i = 1; i < columns; i++) {
+      if ((weights[i] as number) < (weights[column] as number)) column = i;
+    }
+    weights[column] = (weights[column] as number) + 1 / photo.aspect;
+    counts[column] = (counts[column] as number) + 1;
+    return column;
+  }
+  for (const photo of prefix) assign(photo);
+  const initialWeights = [...weights];
+  const initialCounts = [...counts];
   return {
     columns,
+    weights: initialWeights,
+    counts: initialCounts,
     photos: photos.map((photo) => {
-      let column = 0;
-      for (let i = 1; i < columns; i++) {
-        if ((weights[i] as number) < (weights[column] as number)) column = i;
-      }
-      weights[column] = (weights[column] as number) + 1 / photo.aspect;
-      return { photo, column };
+      return { photo, column: assign(photo) };
     }),
   };
 }
@@ -193,7 +222,11 @@ function placeColumns(
   // column grow as the viewport shrinks. Rounding each stacked height then
   // amplifies that one-pixel reversal into large jumps deep in the gallery.
   const columnWidth = (width - gap * (columns - 1)) / columns;
-  const bottoms = new Array<number>(columns).fill(0);
+  const bottoms = Array.from(
+    { length: columns },
+    (_, c) =>
+      (plan.weights?.[c] ?? 0) * columnWidth + (plan.counts?.[c] ?? 0) * gap,
+  );
   const cards: Card[] = [];
   for (const { photo: p, column: c } of plan.photos) {
     const h = Math.max(1, columnWidth / p.aspect);
@@ -212,16 +245,21 @@ function placeColumns(
 }
 
 /** Both gallery layouts use the same planning/placement lifecycle. */
-export function createGalleryLayouts(bandHeight: number) {
+export function createGalleryLayouts(
+  bandHeight: number,
+  prefix: (photos: readonly Photo[]) => Iterable<Photo> = () => [],
+  pixelRatio: () => number = () => 1,
+) {
   return {
     rows: createLayoutManager({
       minimumDensity: 1,
-      plan: planRows,
+      plan: (photos, density, complete) =>
+        planRows(photos, density, complete, prefix(photos)),
       place: placeRows,
     }),
     masonry: createLayoutManager({
       minimumDensity: 2,
-      plan: planColumns,
+      plan: (photos, density) => planColumns(photos, density, prefix(photos)),
       place: (
         plan: ColumnPlan,
         width: number,
@@ -229,7 +267,15 @@ export function createGalleryLayouts(bandHeight: number) {
         gap: number,
       ) => {
         const { cards, height } = placeColumns(plan, width, gap);
-        return slice(cards, height, bandHeight);
+        // Keep every retained card's top. Only the first band is shortened;
+        // all later bands keep their absolute identity and boundaries.
+        return slice(
+          cards,
+          height,
+          bandHeight,
+          cards.length ? Math.min(...cards.map((card) => card.top)) : 0,
+          pixelRatio(),
+        );
       },
     }),
   };
@@ -245,28 +291,37 @@ export function slice(
   cards: readonly Card[],
   height: number,
   bandHeight: number,
+  from = 0,
+  pixelRatio = 1,
 ): Band[] {
+  // Runtime slots round heights up to device pixels. Align slicing to the
+  // same grid so a fractional leading band cannot leave a white seam.
+  bandHeight = Math.ceil(bandHeight * pixelRatio - 1e-6) / pixelRatio;
+  from = Math.floor(from * pixelRatio + 1e-6) / pixelRatio;
   const bands: Band[] = [];
-  for (let start = 0; start < height; start += bandHeight) {
+  const firstBand = Math.floor(from / bandHeight);
+  for (let index = firstBand; index * bandHeight < height; index++) {
+    const start = Math.max(from, index * bandHeight);
     bands.push({
       kind: "band",
-      key: `b${start}`,
+      key: `b${index * bandHeight}`,
       start,
-      height: Math.min(bandHeight, height - start),
+      height: Math.min((index + 1) * bandHeight, height) - start,
       cards: [],
     });
   }
   // Assign each card directly to its intersecting bands, preserving top
   // order without rescanning all earlier cards for every band.
   for (const card of [...cards].sort((a, b) => a.top - b.top)) {
-    const first = Math.max(0, Math.floor(card.top / bandHeight));
+    const origin = Math.floor(card.top / bandHeight);
+    const first = Math.max(0, origin - firstBand);
     const last = Math.min(
       bands.length - 1,
-      Math.ceil((card.top + card.height) / bandHeight) - 1,
+      Math.ceil((card.top + card.height) / bandHeight) - firstBand - 1,
     );
     for (let i = first; i <= last; i++) {
       const band = bands[i] as Band;
-      band.cards.push({ ...card, part: i - first });
+      band.cards.push({ ...card, part: i + firstBand - origin });
     }
   }
   return bands;

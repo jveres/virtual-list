@@ -58,8 +58,9 @@ pnpm run dev
   the offset that keeps it there. Images load through a loader fed by the
   mount hooks — nearest first, under a concurrency limit chosen in the
   header, abandoned when their element leaves the scroller — and the
-  header shows its metrics. Paging at the end never moves what is on
-  screen.
+  header shows its metrics. A soft 480-photo window trims distant pages and
+  restores them on backward scrolling. See [bounded paging](docs/bounded-paging.md)
+  for the reusable companion and layout-continuity contract.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server
@@ -88,6 +89,8 @@ Everything under `src/`:
   the runtime owns glides and scroll writes.
 - `reach.ts` — edge-load hysteresis and cancellation. Disposal during a reach
   or abort callback prevents further loads from starting.
+- `paging.ts` — bounded source pages, opaque edge cursors, deduplication,
+  cancellation, and protected-window trimming through `updateWindow`.
 - `scroll-settle.ts` — the settle controller: gesture classification,
   programmatic-write matching, per-engine settle strategies (`chromium-wheel`,
   `firefox-wheel`, `safari-wheel`, and the plain `default`), chosen by engine
@@ -148,6 +151,9 @@ list.dispose();
   the held snapshot without copying its items or rebuilding its key order.
   Untouched pending rows and the anchor policy are preserved; an explicit
   anchor overrides the pending policy.
+- `updateWindow(update, signal?)` evaluates an update at idle against the
+  current protected window, then commits additions and trimming together.
+  See [bounded paging](docs/bounded-paging.md) for its lifecycle and companion.
 - With `height(item)`, heights must be finite and positive. The runtime
   keeps data and heights for every item, but renders only the overscan
   window. Leaving that window calls `onUnmount` and `onDestroy`; re-entry

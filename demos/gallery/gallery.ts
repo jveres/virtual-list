@@ -1,5 +1,11 @@
 import {
+  createPagedWindow,
+  type Page,
+  type PagedWindow,
+} from "../../src/paging.js";
+import {
   createVirtualList,
+  type Edge,
   type ReachContext,
   type VirtualList,
 } from "../../src/virtual-list.js";
@@ -46,8 +52,17 @@ const GAP = 6;
 /** The rows and bands are centred at this width; the scroller spans the page. */
 const CONTENT_WIDTH = 1080;
 const BAND_HEIGHT = 480;
-const layouts = createGalleryLayouts(BAND_HEIGHT);
+// This deterministic source can reconstruct a layout checkpoint without
+// keeping discarded photos or a full-history layout in memory.
+const layouts = createGalleryLayouts(
+  BAND_HEIGHT,
+  function* (retained) {
+    for (let id = 0; id < (retained[0]?.id ?? 0); id++) yield photo(id);
+  },
+  () => window.devicePixelRatio,
+);
 const PAGE = 120;
+const RETAIN = PAGE * 4;
 const TOTAL = 3_000;
 const LOAD_DELAY_MS = 500;
 const LOADER_HEIGHT = 56;
@@ -99,17 +114,61 @@ function saveOptions(): void {
 
 let width = 0;
 let loaded = 0;
-let loading = false;
+let paging: PagedWindow<Photo> | null = null;
 let items: GalleryItem[] = [];
 let photos: readonly Photo[] = [];
 let resizeAnchor: { point: Point; scrollTop: number } | null = null;
 
 // --- Images ------------------------------------------------------------------
 
+const imagePlacements = new WeakMap<
+  HTMLImageElement,
+  { key: string; top: number; bottom: number }
+>();
+const imageRowTops = new Map<string, number>();
+let imagePositionOf: VirtualList<GalleryItem>["positionOf"] | null = null;
+let imageViewport: Readonly<{ scrollTop: number; height: number }> = {
+  scrollTop: 0,
+  height: 0,
+};
+let lastMetricsText = "";
+
+function imageDistance(img: HTMLImageElement): number {
+  const placement = imagePlacements.get(img);
+  if (!placement || !imagePositionOf) return Infinity;
+  let rowTop = imageRowTops.get(placement.key);
+  if (rowTop === undefined) {
+    const position = imagePositionOf(placement.key);
+    if (!position) return Infinity;
+    rowTop = position.top;
+    imageRowTops.set(placement.key, rowTop);
+  }
+  return Math.max(
+    0,
+    imageViewport.scrollTop - (rowTop + placement.bottom),
+    rowTop + placement.top - (imageViewport.scrollTop + imageViewport.height),
+  );
+}
+
+function placeImage(
+  tile: HTMLElement,
+  key: string,
+  top: number,
+  bottom: number,
+): HTMLElement {
+  imagePlacements.set(tile.firstElementChild as HTMLImageElement, {
+    key,
+    top,
+    bottom,
+  });
+  return tile;
+}
+
 const images = createImageLoader({
   viewport,
   concurrency,
   onMetrics: showMetrics,
+  distance: imageDistance,
 });
 const pendingImages = new Set<HTMLImageElement>();
 const retiredImages = new Set<HTMLImageElement>();
@@ -126,7 +185,10 @@ function scheduleImageFlush(): void {
 }
 
 function showMetrics(m: Readonly<LoaderMetrics>): void {
-  loaderMetrics.textContent = `queue ${m.queued} (peak ${m.peakQueued}) · loading ${m.inFlight}/${m.concurrency} · loaded ${m.loaded} · reused ${m.reused} · cancelled ${m.cancelled} · failed ${m.failed}`;
+  const text = `queue ${m.queued} (peak ${m.peakQueued}) · loading ${m.inFlight}/${m.concurrency} · loaded ${m.loaded} · reused ${m.reused} · cancelled ${m.cancelled} · failed ${m.failed}`;
+  if (text === lastMetricsText) return;
+  lastMetricsText = text;
+  loaderMetrics.textContent = text;
 }
 
 function sourceOf(p: Photo): string {
@@ -150,8 +212,15 @@ function dropImages(element: HTMLElement): void {
 }
 
 function flushImages(): void {
-  // onState runs after row placement. Render/mount hooks only register intent,
-  // never measure a detached tile or a mounted row at its old position.
+  // Boot publishes before createVirtualList returns its position lookup.
+  if (!imagePositionOf) return;
+  imageRowTops.clear();
+  if (pendingImages.size === 0 && retiredImages.size === 0) {
+    images.reprioritize();
+    return;
+  }
+  // onState supplies the viewport already read by the runtime. Priorities
+  // use committed positions, never a layout read after DOM mutations.
   const batch = Array.from(pendingImages)
     .filter((img) => img.isConnected)
     .map((img) => ({ img, src: img.dataset.src as string }));
@@ -246,7 +315,9 @@ function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
   el.style.height = `${row.height + GAP}px`;
   syncTiles(
     el,
-    row.photos.map((p) => tileAt(held, p, p.width, row.height)),
+    row.photos.map((p) =>
+      placeImage(tileAt(held, p, p.width, row.height), row.key, 0, row.height),
+    ),
     held,
   );
   return el;
@@ -263,7 +334,12 @@ function renderBand(band: Band, existing?: HTMLElement): HTMLElement {
       const tile = tileAt(held, card, card.width, card.height, card.part);
       tile.style.left = `${card.left}px`;
       tile.style.top = `${card.top - band.start}px`;
-      return tile;
+      return placeImage(
+        tile,
+        band.key,
+        Math.max(0, card.top - band.start),
+        Math.min(band.height, card.top - band.start + card.height),
+      );
     }),
     held,
   );
@@ -290,16 +366,13 @@ function columns(): number {
   return layoutDensity(width, COLUMN_WIDTHS[size], 2);
 }
 
-function build(): GalleryItem[] {
-  // A stable snapshot lets the shared manager reuse grouping during resize.
-  if (photos.length !== loaded)
-    photos = Array.from({ length: loaded }, (_, i) => photo(i));
+function build(retained = photos): GalleryItem[] {
   return layouts[layout](
-    photos,
+    retained,
     width,
     layout === "rows" ? ROW_HEIGHTS[size] : COLUMN_WIDTHS[size],
     GAP,
-    loaded >= TOTAL,
+    retained.at(-1)?.id === TOTAL - 1,
   );
 }
 
@@ -313,13 +386,6 @@ function reconcile(
     const old = byKey.get(item.key);
     return old && sameGalleryItem(old, item) ? old : item;
   });
-}
-
-/** A page appended below: everything above is unchanged, the runtime keeps the viewport. */
-function appendPage(): void {
-  items = reconcile(build(), items);
-  list.setItems(items, { anchor: "viewport" });
-  syncStatus();
 }
 
 /**
@@ -349,6 +415,8 @@ interface Point {
   photo: number;
   /** The fraction of the photo's height above the viewport top. */
   fraction: number;
+  /** Reading point's screen offset when the viewport top is in a loader/gap. */
+  viewportOffset: number;
 }
 
 /**
@@ -369,8 +437,11 @@ function pointUnderViewportTop(): Point | null {
     const position = list.positionOf(item.key);
     // Not committed yet: a page appended while a gesture holds it. Appended
     // keys are at the end, so the point is above.
-    if (!position || scrollTop < position.top) high = mid - 1;
-    else if (scrollTop >= position.top + position.height) low = mid + 1;
+    if (!position) high = mid - 1;
+    else if (scrollTop < position.top) {
+      found = { item, offset: scrollTop - position.top };
+      high = mid - 1;
+    } else if (scrollTop >= position.top + position.height) low = mid + 1;
     else {
       found = { item, offset: scrollTop - position.top };
       break;
@@ -381,33 +452,50 @@ function pointUnderViewportTop(): Point | null {
   if (item.kind === "row") {
     const first = item.photos[0];
     return first
-      ? { photo: first.id, fraction: Math.min(1, offset / item.height) }
+      ? {
+          photo: first.id,
+          fraction: Math.max(0, Math.min(1, offset / item.height)),
+          viewportOffset: Math.max(0, -offset),
+        }
       : null;
   }
   const y = item.start + offset;
   const card =
     item.cards.find((c) => c.top <= y && y < c.top + c.height) ?? item.cards[0];
+  const pointY = card
+    ? Math.max(item.start, card.top, Math.min(y, card.top + card.height))
+    : y;
   return card
     ? {
         photo: card.id,
-        fraction: Math.min(1, Math.max(0, (y - card.top) / card.height)),
+        fraction: Math.min(1, Math.max(0, (pointY - card.top) / card.height)),
+        viewportOffset: pointY - y,
       }
     : null;
 }
 
 /** The new item holding the point, and the offset of its top from the viewport top that keeps the point there. */
-function anchorFor(point: Point): { key: string; offset: number } | "viewport" {
-  for (const item of items) {
+function anchorFor(
+  point: Point,
+  nextItems: readonly GalleryItem[] = items,
+): { key: string; offset: number } | "viewport" {
+  for (const item of nextItems) {
     if (item.kind === "row") {
       if (item.photos.some((p) => p.id === point.photo)) {
-        return { key: item.key, offset: -point.fraction * item.height };
+        return {
+          key: item.key,
+          offset: point.viewportOffset - point.fraction * item.height,
+        };
       }
     } else {
       const card = item.cards.find((c) => c.id === point.photo);
       if (card) {
         const y = card.top + point.fraction * card.height;
         if (y >= item.start && y < item.start + item.height) {
-          return { key: item.key, offset: -(y - item.start) };
+          return {
+            key: item.key,
+            offset: point.viewportOffset - (y - item.start),
+          };
         }
       }
     }
@@ -417,29 +505,38 @@ function anchorFor(point: Point): { key: string; offset: number } | "viewport" {
 
 function syncStatus(): void {
   const unit = layout === "rows" ? "rows" : `bands · ${columns()} columns`;
-  status.textContent = `${loaded.toLocaleString()} of ${TOTAL.toLocaleString()} photos · ${items.length.toLocaleString()} ${unit}`;
+  status.textContent = `${loaded.toLocaleString()} of ${TOTAL.toLocaleString()} photos · ${photos.length} retained · ${items.length.toLocaleString()} ${unit}`;
 }
 
-function loadMore({ signal, complete }: ReachContext): void {
-  if (loading || loaded >= TOTAL || signal.aborted) {
-    complete();
-    return;
-  }
-  loading = true;
-  const timer = window.setTimeout(() => {
-    signal.removeEventListener("abort", cancel);
-    complete();
-    loading = false;
-    loaded = Math.min(TOTAL, loaded + PAGE);
-    if (loaded >= TOTAL) list.setEdgeSlot("end", null);
-    appendPage();
-  }, LOAD_DELAY_MS);
-  function cancel(): void {
-    window.clearTimeout(timer);
-    complete();
-    loading = false;
-  }
-  signal.addEventListener("abort", cancel, { once: true });
+function photoPage(start: number): Page<Photo, number> {
+  const end = Math.min(TOTAL, start + PAGE);
+  return {
+    items: Array.from({ length: end - start }, (_, i) => photo(start + i)),
+    start:
+      start > 0
+        ? { available: true, cursor: Math.max(0, start - PAGE) }
+        : { available: false },
+    end: end < TOTAL ? { available: true, cursor: end } : { available: false },
+  };
+}
+
+function reportLoadError(error: unknown): void {
+  console.error(error);
+  status.textContent = "Photo loading failed — scroll away and back to retry.";
+}
+
+function loadMore(edge: Edge, context: ReachContext): void {
+  // Boot can reach an edge before the paging companion has been constructed.
+  queueMicrotask(() => {
+    if (!paging) {
+      context.complete();
+      return;
+    }
+    void paging
+      .load(edge, context)
+      .then(() => paging?.reconcile())
+      .catch(reportLoadError);
+  });
 }
 
 // --- Boot --------------------------------------------------------------------
@@ -478,6 +575,8 @@ stage.style.setProperty("--content-width", `${CONTENT_WIDTH}px`);
 stage.style.setProperty("--gap", `${GAP}px`);
 width = contentWidth();
 loaded = PAGE;
+const initial = photoPage(0);
+photos = initial.items;
 items = build();
 const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
   viewport,
@@ -493,12 +592,64 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     // appear under a moving finger or an overscroll bounce.
     scrollingUpdates: "freeze",
     edgeSlots: { end: loaderSlot },
-    onReachEnd: loadMore,
+    onReachStart: (context) => loadMore("start", context),
+    onReachEnd: (context) => loadMore("end", context),
     onMount: queueImages,
     onUnmount: dropImages,
-    onState: flushImages,
+    onState: (_state, viewport) => {
+      imageViewport = viewport;
+      flushImages();
+      void paging?.reconcile()?.catch(reportLoadError);
+    },
   },
 );
+imagePositionOf = list.positionOf;
+flushImages();
+paging = createPagedWindow({
+  list,
+  initial,
+  maxItems: RETAIN,
+  key: (p) => String(p.id),
+  load: ({ cursor, signal }) =>
+    new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => {
+        signal.removeEventListener("abort", cancel);
+        const page = photoPage(cursor);
+        loaded = Math.max(loaded, cursor + page.items.length);
+        syncStatus();
+        resolve(page);
+      }, LOAD_DELAY_MS);
+      function cancel(): void {
+        window.clearTimeout(timer);
+        reject(signal.reason);
+      }
+      signal.addEventListener("abort", cancel, { once: true });
+    }),
+  project: (next) => reconcile(build(next), items),
+  anchor: (rows) => {
+    const point = pointUnderViewportTop();
+    return point ? anchorFor(point, rows) : "viewport";
+  },
+  keysOf: (item) => {
+    const content = item.kind === "row" ? item.photos : item.cards;
+    // Keep a guard page available before the reading window during reflow.
+    return content.flatMap((p) => [
+      String(p.id),
+      String(Math.max(0, p.id - PAGE)),
+    ]);
+  },
+  edgeSlots: ({ start, end }) => ({
+    start: start.available ? loaderSlot : null,
+    end: end.available ? loaderSlot : null,
+  }),
+  onChange: (next, rows) => {
+    photos = next;
+    items = [...rows];
+    resizeAnchor = null;
+    syncStatus();
+  },
+  onEvict: (evicted) => images.forget(evicted.map(sourceOf)),
+});
 syncStatus();
 
 new ResizeObserver(() => {

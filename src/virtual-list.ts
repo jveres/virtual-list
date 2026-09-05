@@ -32,7 +32,11 @@ import {
 } from "./snapshot";
 
 export type { FollowMode } from "./follow";
-export type { AnchorPolicy, ExplicitAnchor } from "./geometry";
+export type {
+  AnchorPolicy,
+  ExplicitAnchor,
+  GeometryViewport,
+} from "./geometry";
 export type { Edge, ReachContext } from "./reach";
 /** How a snapshot resolves the viewport: a policy, or a host-named anchor. */
 export type { AnchorRequest } from "./snapshot";
@@ -144,8 +148,13 @@ export interface VirtualListOptions<T> {
    * Called whenever a state field changes, and after every commit even
    * when none did — committed positions may have moved (a companion that
    * reads positionOf, like a sticky header, re-reads them here).
+   * The second argument is the viewport already read by the runtime, so
+   * companions need not force layout after the window's DOM mutations.
    */
-  onState?: (state: VirtualListState) => void;
+  onState?: (
+    state: VirtualListState,
+    viewport: Readonly<GeometryViewport>,
+  ) => void;
   onReachStart?: (context: ReachContext) => void;
   onReachEnd?: (context: ReachContext) => void;
   /** The element joined the scroller's DOM (an image can start loading). */
@@ -256,7 +265,32 @@ export type RemeasureOptions = {
   anchor?: AnchorPolicy;
 };
 
+export interface WindowUpdateContext<T> {
+  /** Latest submitted data, including any snapshot waiting for settle. */
+  items: readonly T[];
+  /** Committed visible/overscan items, plus an explicit or pinned anchor. */
+  protectedItems: readonly T[];
+}
+
+export interface WindowUpdate<T> {
+  items: readonly T[];
+  anchor?: AnchorRequest;
+  /** Replace both edge slots in the same geometry commit. */
+  edgeSlots?: { start?: EdgeSlot | null; end?: EdgeSlot | null };
+  /** Runs after geometry and the mounted window are consistent. */
+  onCommit?: () => void;
+}
+
 export interface VirtualList<T> {
+  /**
+   * Evaluate against the current window when idle, never during a gesture.
+   * Add and trim in the returned snapshot for one anchor-safe commit.
+   * Returning null is a no-op. Abort cancels work that has not started.
+   */
+  updateWindow(
+    update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
+    signal?: AbortSignal,
+  ): Promise<boolean>;
   setItems(
     items: readonly T[],
     options?: {
@@ -443,6 +477,8 @@ export function createVirtualList<T>(
 
   // --- Pending work (waits for the scroll phase to settle) ------------------
   let pending: Prepared<T> | null = null;
+  const windowUpdates = new Set<() => void>();
+  const cancelWindowUpdates = new Set<() => void>();
   /** The snapshot mid-commit: its not-yet-adopted rows are dispose()'s too. */
   let committing: Prepared<T> | null = null;
 
@@ -1692,7 +1728,8 @@ export function createVirtualList<T>(
     const atStart = vp.scrollTop <= AT_EDGE_EPSILON_PX;
     const atEnd = maxTop - vp.scrollTop <= AT_EDGE_EPSILON_PX;
     const totalSize = geometry.totalSize;
-    const held = pending !== null || dirtyRows.size > 0;
+    const held =
+      pending !== null || dirtyRows.size > 0 || windowUpdates.size > 0;
     // Most scroll events remain inside the same mounted range. Avoid a
     // short-lived public-state object unless a host-observable field
     // changed — or geometry did: a commit can move committed positions
@@ -1720,7 +1757,7 @@ export function createVirtualList<T>(
         totalSize,
         held,
       };
-      options.onState?.(lastState);
+      options.onState?.(lastState, vp);
     }
     if (disposed) return;
 
@@ -1786,6 +1823,7 @@ export function createVirtualList<T>(
     noSmoothScrollInFlight: () => glide === null,
     onGestureStarted: () => {},
     onGestureSettled: () => {
+      for (const run of [...windowUpdates]) run();
       // The phase reached idle: everything held commits, once — and only
       // then does a landed command learn whether it is still on target.
       const remeasureReady =
@@ -1886,6 +1924,94 @@ export function createVirtualList<T>(
   }
 
   // --- Data -----------------------------------------------------------------
+  function updateWindow(
+    update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    return new Promise((resolve, reject) => {
+      if (disposed || signal?.aborted) {
+        resolve(false);
+        return;
+      }
+      const cleanup = (): void => {
+        windowUpdates.delete(run);
+        cancelWindowUpdates.delete(cancel);
+        signal?.removeEventListener("abort", cancel);
+      };
+      const cancel = (): void => {
+        cleanup();
+        resolve(false);
+        if (!disposed && !enqueueDuringTransaction(() => guarded(publish)))
+          guarded(publish);
+      };
+      const run = (): void => {
+        if (disposed || signal?.aborted) {
+          cancel();
+          return;
+        }
+        if (!idle()) return;
+        cleanup();
+        try {
+          let applied = false;
+          guarded(() => {
+            const range = geometry.window(viewportState(), overscanPx);
+            const keys = new Set(committedKeys.slice(range.start, range.end));
+            if (geometry.pinned !== null) keys.add(geometry.pinned);
+            if (pending?.target) keys.add(pending.target.key);
+            const protectedItems: T[] = [];
+            for (const key of keys) {
+              if (isSlotKey(key)) continue;
+              const item = declaredItems.get(key)?.item ?? rows.get(key)?.item;
+              if (item !== undefined) protectedItems.push(item);
+            }
+            const next = update({ items: [...lastItems], protectedItems });
+            if (!next || disposed || signal?.aborted) return;
+            const slots = next.edgeSlots
+              ? {
+                  start: ownEdgeSlot(next.edgeSlots.start),
+                  end: ownEdgeSlot(next.edgeSlots.end),
+                }
+              : null;
+            const previousSlots = { ...edgeSlots };
+            if (slots) Object.assign(edgeSlots, slots);
+            try {
+              applyItems([...next.items], next.anchor ?? "viewport", false);
+            } catch (error) {
+              Object.assign(edgeSlots, previousSlots);
+              throw error;
+            }
+            if (disposed) return;
+            next.onCommit?.();
+            applied = true;
+          });
+          resolve(applied);
+        } catch (error) {
+          reject(error);
+        }
+      };
+      const schedule = (): void => {
+        if (disposed || signal?.aborted) {
+          cancel();
+          return;
+        }
+        if (idle()) run();
+        else {
+          windowUpdates.add(run);
+          guarded(publish);
+        }
+      };
+      cancelWindowUpdates.add(cancel);
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (
+        !enqueueDuringTransaction(schedule, () => {
+          cleanup();
+          resolve(false);
+        })
+      )
+        schedule();
+    });
+  }
+
   function setItems(
     next: readonly T[],
     setOptions: { anchor?: AnchorRequest; interrupt?: boolean } = {},
@@ -2331,6 +2457,7 @@ export function createVirtualList<T>(
   function dispose(): void {
     if (disposed) return;
     disposed = true;
+    for (const cancel of [...cancelWindowUpdates]) cancel();
     // Every queued command in EVERY live scope settles (false): the open
     // transaction's, and each parent scope still holding undrained
     // siblings behind the child that is disposing.
@@ -2410,6 +2537,7 @@ export function createVirtualList<T>(
   }
 
   return {
+    updateWindow,
     setItems,
     updateItem,
     scrollTo,
