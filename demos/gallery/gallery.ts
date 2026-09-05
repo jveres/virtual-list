@@ -125,96 +125,6 @@ let items: GalleryItem[] = [];
 let photos: readonly Photo[] = [];
 let resizeAnchor: { point: Point; scrollTop: number } | null = null;
 
-// Temporary, opt-in diagnostics: no UI, element bounds, or polling while idle.
-const tracing = new URLSearchParams(location.search).get("trace") === "1";
-const traceStarted = performance.now();
-let traceCommit = 0;
-let tracePoint: Point | null = null;
-let traceFrame = 0;
-function trace(event: string, detail: unknown = null): void {
-  if (!tracing) return;
-  // Stringify now: DevTools otherwise shows mutable objects at inspection time.
-  console.log(
-    `[gallery +${Math.round(performance.now() - traceStarted)}ms] ${event} ${JSON.stringify(detail)}`,
-  );
-}
-
-function tracePosition(
-  event: string,
-  point: Point | null,
-  commit: number,
-): void {
-  const anchor = point ? anchorFor(point) : "viewport";
-  const position =
-    typeof anchor === "object" ? list.positionOf(anchor.key) : null;
-  const top = viewport.scrollTop;
-  trace(event, {
-    commit,
-    top,
-    anchor,
-    error:
-      position && typeof anchor === "object"
-        ? position.top - top - anchor.offset
-        : null,
-    total: list.state.totalSize,
-    held: list.state.held,
-    first: photos[0]?.id,
-    last: photos.at(-1)?.id,
-  });
-}
-
-if (tracing) {
-  trace("INIT", {
-    userAgent: navigator.userAgent,
-    dpr: devicePixelRatio,
-    layout,
-    size,
-    loaderHeight: LOADER_HEIGHT,
-  });
-  viewport.addEventListener(
-    "wheel",
-    (event) =>
-      trace("wheel", {
-        dy: event.deltaY,
-        mode: event.deltaMode,
-        top: viewport.scrollTop,
-      }),
-    { passive: true },
-  );
-  for (const event of [
-    "scroll",
-    "scrollend",
-    "pointerdown",
-    "pointerup",
-    "touchstart",
-    "touchend",
-    "touchcancel",
-  ]) {
-    viewport.addEventListener(
-      event,
-      () => trace(event, { top: viewport.scrollTop }),
-      { passive: true },
-    );
-  }
-  // Browser-supplied sizes distinguish changing chrome from a scrollbar
-  // consuming viewport space, without calling layout-measuring DOM getters.
-  const resizeTrace = new ResizeObserver((entries) => {
-    for (const entry of entries) {
-      const border = entry.borderBoxSize[0];
-      trace("RESIZE", {
-        target: entry.target === viewport ? "viewport" : "header",
-        contentWidth: entry.contentRect.width,
-        contentHeight: entry.contentRect.height,
-        borderWidth: border?.inlineSize,
-        borderHeight: border?.blockSize,
-      });
-    }
-  });
-  resizeTrace.observe(viewport);
-  const header = document.querySelector("header");
-  if (header) resizeTrace.observe(header);
-}
-
 // --- Images ------------------------------------------------------------------
 
 const imagePlacements = new WeakMap<
@@ -491,7 +401,6 @@ function reconcile(
  * the point where it was. The runtime resolves the rest.
  */
 function reflow(interrupt = false): void {
-  trace("REFLOW", { interrupt, layout, size, width });
   if (interrupt) {
     // Interruption may first commit a fetched page. Build from the newly
     // committed source and reading point, not a pre-interruption snapshot.
@@ -648,7 +557,6 @@ function reportLoadError(error: unknown): void {
 }
 
 function loadMore(edge: Edge, context: ReachContext): void {
-  trace("REACH", { edge });
   // Boot can reach an edge before the paging companion has been constructed.
   queueMicrotask(() => {
     if (!paging) {
@@ -657,10 +565,7 @@ function loadMore(edge: Edge, context: ReachContext): void {
     }
     void paging
       .load(edge, context)
-      .then((applied) => {
-        trace("LOAD DONE", { edge, applied, aborted: context.signal.aborted });
-        return paging?.reconcile();
-      })
+      .then(() => paging?.reconcile())
       .catch(reportLoadError);
   });
 }
@@ -723,7 +628,6 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     onMount: queueImages,
     onUnmount: dropImages,
     onState: (_state, viewport) => {
-      if (tracing) trace("STATE", { ..._state, ...viewport });
       imageViewport = viewport;
       flushImages();
       void paging?.reconcile()?.catch(reportLoadError);
@@ -737,19 +641,16 @@ paging = createPagedWindow({
   initial,
   maxItems: RETAIN,
   key: (p) => String(p.id),
-  load: ({ edge, cursor, signal }) =>
+  load: ({ cursor, signal }) =>
     new Promise((resolve, reject) => {
-      trace("FETCH", { edge, cursor });
       const timer = window.setTimeout(() => {
         signal.removeEventListener("abort", cancel);
         const page = photoPage(cursor);
-        trace("FETCH READY", { edge, cursor, count: page.items.length });
         loaded = Math.max(loaded, cursor + page.items.length);
         syncStatus();
         resolve(page);
       }, LOAD_DELAY_MS);
       function cancel(): void {
-        trace("FETCH ABORT", { edge, cursor });
         window.clearTimeout(timer);
         reject(signal.reason);
       }
@@ -758,21 +659,7 @@ paging = createPagedWindow({
   project: (next) => reconcile(build(next), items),
   anchor: (rows) => {
     const point = pointUnderViewportTop();
-    const anchor = point ? anchorFor(point, rows) : "viewport";
-    if (tracing) {
-      tracePoint = point;
-      traceCommit++;
-      trace("BEFORE COMMIT", {
-        commit: traceCommit,
-        top: viewport.scrollTop,
-        point,
-        anchor,
-        oldRows: items.length,
-        newRows: rows.length,
-        total: list.state.totalSize,
-      });
-    }
-    return anchor;
+    return point ? anchorFor(point, rows) : "viewport";
   },
   keysOf: (item) => {
     const content = item.kind === "row" ? item.photos : item.cards;
@@ -782,35 +669,15 @@ paging = createPagedWindow({
       String(Math.max(0, p.id - PAGE)),
     ]);
   },
-  edgeSlots: ({ start, end }) => {
-    trace("SLOTS", {
-      commit: traceCommit,
-      start: start.available,
-      end: end.available,
-      height: LOADER_HEIGHT,
-    });
-    return {
-      start: start.available ? loaderSlot : null,
-      end: end.available ? loaderSlot : null,
-    };
-  },
+  edgeSlots: ({ start, end }) => ({
+    start: start.available ? loaderSlot : null,
+    end: end.available ? loaderSlot : null,
+  }),
   onChange: (next, rows) => {
     photos = next;
     items = [...rows];
     resizeAnchor = null;
     syncStatus();
-    if (tracing) {
-      cancelAnimationFrame(traceFrame);
-      const point = tracePoint;
-      const commit = traceCommit;
-      tracePosition("COMMIT", point, commit);
-      let remaining = 18;
-      const sample = (): void => {
-        tracePosition("FRAME", point, commit);
-        if (--remaining > 0) traceFrame = requestAnimationFrame(sample);
-      };
-      traceFrame = requestAnimationFrame(sample);
-    }
   },
   onEvict: (evicted) => images.forget(evicted.map(sourceOf)),
 });
