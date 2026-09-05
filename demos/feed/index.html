@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>virtual-list · feed</title>
+    <link rel="stylesheet" href="./feed.css" />
+  </head>
+  <body>
+    <header>
+      <h1 class="header-title">
+        <a href="/" title="Back to demos">virtual-list</a>
+        <span class="sep">·</span>feed
+      </h1>
+      <label for="source">Source</label>
+      <select id="source">
+        <option value="bsky">Bluesky Discover</option>
+        <option value="lemmy">Lemmy · New</option>
+      </select>
+      <button id="refresh" type="button" title="Discard the retained window and fetch a fresh feed">Refresh feed</button>
+      <span id="status" role="status" aria-live="polite"></span>
+    </header>
+    <!-- biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard users need to scroll the feed viewport. -->
+    <main id="viewport" tabindex="0" aria-label="Public posts"></main>
+    <script type="module" src="./feed.ts"></script>
+  </body>
+</html>

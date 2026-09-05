@@ -120,7 +120,7 @@ function saveOptions(): void {
 
 let width = 0;
 let loaded = 0;
-let paging: PagedWindow<Photo> | null = null;
+let paging: PagedWindow<Photo, number> | null = null;
 let items: GalleryItem[] = [];
 let photos: readonly Photo[] = [];
 let resizeAnchor: { point: Point; scrollTop: number } | null = null;

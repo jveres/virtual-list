@@ -44,11 +44,14 @@ export interface PagedWindowOptions<T, C, Row> {
   onEvict?: (items: readonly T[], edge: Edge) => void;
 }
 
-export interface PagedWindow<T> {
+export interface PagedWindow<T, C> {
   readonly items: readonly T[];
   readonly loading: boolean;
   canLoad(edge: Edge): boolean;
   load(edge: Edge, context?: ReachContext): Promise<boolean>;
+  /** Merge an overlapping fresh head, preserving retained tail cursors and edits.
+   * Returns false when the head no longer connects to this retained window. */
+  refreshHead(page: Page<T, C>, signal?: AbortSignal): Promise<boolean>;
   /** Edit retained source data here, not through the projected runtime rows. Keys must stay stable. */
   updateItem(key: string, update: (item: T) => T): Promise<boolean>;
   /** Retry a protected, over-budget tail. Returns null without allocating when no work is needed. */
@@ -64,7 +67,7 @@ export interface PagedWindow<T> {
  */
 export function createPagedWindow<T, C, Row>(
   options: PagedWindowOptions<T, C, Row>,
-): PagedWindow<T> {
+): PagedWindow<T, C> {
   if (!Number.isSafeInteger(options.maxItems) || options.maxItems < 1)
     throw new Error("maxItems must be a positive safe integer");
   const unique = (items: readonly T[], seen = new Set<string>()): T[] =>
@@ -261,6 +264,51 @@ export function createPagedWindow<T, C, Row>(
     },
     canLoad: (edge) => !disposed && boundary(edge).available,
     load,
+    refreshHead: (page, signal = lifetime.signal) =>
+      apply(
+        () => {
+          if (request) return null;
+          const fresh = unique(page.items);
+          if (!fresh.length) return null;
+          const first = items[0];
+          const last = fresh.at(-1);
+          const overlap = last
+            ? items.findIndex((item) => options.key(item) === options.key(last))
+            : -1;
+          if (
+            first &&
+            (overlap < 0 ||
+              !fresh.some((item) => options.key(item) === options.key(first)))
+          )
+            return null;
+          const freshKeys = new Set(fresh.map(options.key));
+          if (
+            items
+              .slice(0, overlap + 1)
+              .some((item) => !freshKeys.has(options.key(item)))
+          )
+            return null;
+          const existing = new Map(
+            items.map((item) => [options.key(item), item]),
+          );
+          // Preserve local state such as expanded text on overlapping posts.
+          const head = {
+            ...page,
+            items: fresh.map((item) => existing.get(options.key(item)) ?? item),
+          };
+          const seen = new Set(head.items.map(options.key));
+          let skip = overlap + 1;
+          const tail = pages.flatMap((old): Page<T, C>[] => {
+            const remaining = old.items.slice(skip);
+            skip = Math.max(0, skip - old.items.length);
+            const kept = unique(remaining, seen);
+            return kept.length ? [{ ...old, items: kept }] : [];
+          });
+          return [head, ...tail];
+        },
+        "end",
+        AbortSignal.any([signal, lifetime.signal]),
+      ),
     updateItem: (key, update) =>
       apply(
         () => {

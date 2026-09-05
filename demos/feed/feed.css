@@ -1,0 +1,231 @@
+:root {
+  color-scheme: light dark;
+  --bg: #fff;
+  --fg: #1a1d23;
+  --dim: #5f6673;
+  --line: #dce0e7;
+  --accent: #4f6df5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #16181d;
+    --fg: #d5d9e1;
+    --dim: #a0a9b8;
+    --line: #343b49;
+    --accent: #91a2ff;
+  }
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  font:
+    15px / 1.55 system-ui,
+    sans-serif;
+}
+header {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+  overflow-x: auto;
+}
+header > :not(#status) {
+  flex-shrink: 0;
+}
+h1 {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--dim);
+  margin: 0;
+}
+a {
+  color: var(--accent);
+}
+header .header-title a {
+  color: var(--accent);
+  text-decoration: none;
+  font-weight: 600;
+}
+header .header-title a:hover {
+  text-decoration: underline;
+}
+header .header-title .sep {
+  margin: 0 8px;
+  color: var(--dim);
+  font-weight: 400;
+}
+button,
+select {
+  font: inherit;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 10px;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+#status {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--dim);
+  font-size: 12px;
+}
+#viewport {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  overflow-anchor: none;
+}
+.feed-post {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 24px;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+.post-meta {
+  color: var(--dim);
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.feed-post h2 {
+  font-size: 20px;
+  line-height: 1.35;
+  margin: 0 0 12px;
+}
+.post-body,
+.post-text {
+  /* Keep paragraph margins inside the body in both states. overflow:hidden
+     already does this when collapsed; expansion must not collapse them out. */
+  display: flow-root;
+}
+.post-text > :first-child {
+  margin-top: 0;
+}
+.post-text > :last-child {
+  margin-bottom: 0;
+}
+.plaintext {
+  white-space: pre-wrap;
+}
+.collapsed {
+  max-height: 18em;
+  overflow: hidden;
+  mask-image: linear-gradient(#000 calc(100% - 1.55em), transparent);
+}
+.text-toggle {
+  display: block;
+  margin: 8px 0 12px;
+}
+.text-toggle[hidden] {
+  display: none;
+}
+.post-media {
+  display: grid;
+  gap: 8px;
+  max-width: 620px;
+  margin-top: 10px;
+}
+.post-media.count-2,
+.post-media.count-3,
+.post-media.count-4 {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.post-image {
+  position: relative;
+  display: block;
+  min-height: 120px;
+  max-height: min(360px, 62vh);
+  overflow: hidden;
+  border-radius: 8px;
+  contain: style layout paint;
+}
+.post-media.count-2 .post-image,
+.post-media.count-3 .post-image,
+.post-media.count-4 .post-image {
+  aspect-ratio: 1 / 1;
+}
+.post-media.count-3 .post-image:nth-child(3) {
+  grid-column: 1 / -1;
+  aspect-ratio: 2 / 1;
+}
+.post-image img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.post-body pre {
+  white-space: pre-wrap;
+  background: var(--line);
+  padding: 12px;
+  border-radius: 6px;
+}
+.post-body table {
+  display: block;
+  overflow-x: auto;
+}
+.post-body blockquote {
+  border-left: 3px solid var(--line);
+  margin-left: 0;
+  padding-left: 16px;
+}
+.feed-edge {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 0 16px;
+  font-size: 13px;
+  color: var(--dim);
+}
+.feed-edge span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.boundary-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: boundary-spin 0.8s linear infinite;
+}
+.feed-edge:not([data-state="loading"]) .boundary-spinner {
+  display: none;
+}
+@keyframes boundary-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.feed-placeholder {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--dim);
+}

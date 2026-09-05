@@ -451,6 +451,88 @@ describe("settle-time window updates", () => {
 });
 
 describe("bounded paging on the runtime", () => {
+  it("should merge an overlapping fresh head without losing edits or the older cursor", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    await paging.updateItem("m20", (m) => ({ ...m, body: "expanded" }));
+    const refreshed = { ...page(10), start: { available: false } as const };
+
+    await expect(paging.refreshHead(refreshed)).resolves.toBe(true);
+
+    expect(paging.items.map((m) => m.id)).toEqual(
+      range(10, 40).map((m) => m.id),
+    );
+    expect(paging.items.find((m) => m.id === 20)?.body).toBe("expanded");
+    expect(h.viewport.scrollTop).toBe(1000);
+    await paging.load("end");
+    expect(paging.items.map((m) => m.id)).toEqual(
+      range(10, 60).map((m) => m.id),
+    );
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should refuse a disconnected fresh head without altering retained posts", async () => {
+    const initial = page(40);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 20,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+
+    await expect(paging.refreshHead(page(0))).resolves.toBe(false);
+
+    expect(paging.items).toEqual(initial.items);
+    expect(h.viewport.scrollTop).toBe(0);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should cancel a head waiting for settle when disposed with an external signal", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    h.userScroll(100);
+    const pending = paging.refreshHead(page(10), new AbortController().signal);
+
+    paging.dispose();
+
+    await expect(pending).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    h.list.dispose();
+  });
+
   it("should evaluate an interrupting layout update after the held page commits", async () => {
     const initial = page(0);
     const h = mount([...initial.items], {
