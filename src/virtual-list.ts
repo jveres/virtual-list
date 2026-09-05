@@ -286,10 +286,13 @@ export interface VirtualList<T> {
    * Evaluate against the current window when idle, never during a gesture.
    * Add and trim in the returned snapshot for one anchor-safe commit.
    * Returning null is a no-op. Abort cancels work that has not started.
+   * Explicit controls may interrupt first; the updater then sees any page
+   * committed by that interruption, unlike a prebuilt setItems snapshot.
    */
   updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
+    options?: { interrupt?: boolean },
   ): Promise<boolean>;
   setItems(
     items: readonly T[],
@@ -1663,6 +1666,7 @@ export function createVirtualList<T>(
       return lastRange;
     }
     const geometryChanged = lastReconcile.epoch !== geometryEpoch;
+    let complete = true;
     const range = geometry.window(vp, overscanPx);
     lastRange = range;
     // Deleting the current entry while iterating a Set is defined and does
@@ -1682,7 +1686,16 @@ export function createVirtualList<T>(
       if (!row && key !== undefined) {
         const entry = declaredItems.get(key);
         if (entry) {
-          const element = render(entry.item);
+          let element: HTMLElement;
+          try {
+            element = render(entry.item);
+          } catch (error) {
+            // Geometry is already committed. Keep ownership/publication in
+            // sync, render the remaining window, and retry this row next time.
+            deferTeardown([error]);
+            complete = false;
+            continue;
+          }
           if (disposed) {
             options.onDestroy?.(element, entry.item);
             return range;
@@ -1700,11 +1713,13 @@ export function createVirtualList<T>(
     }
     // Memoized only once the window is complete: nothing in the loop may
     // leave a partial window behind a memo.
-    lastReconcile = {
-      scrollTop: vp.scrollTop,
-      height: vp.height,
-      epoch: geometryEpoch,
-    };
+    if (complete) {
+      lastReconcile = {
+        scrollTop: vp.scrollTop,
+        height: vp.height,
+        epoch: geometryEpoch,
+      };
+    } else lastReconcile.epoch = -1;
     return range;
   }
 
@@ -1935,7 +1950,9 @@ export function createVirtualList<T>(
   function updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
+    updateOptions: { interrupt?: boolean } = {},
   ): Promise<boolean> {
+    const interrupt = updateOptions.interrupt === true;
     return new Promise((resolve, reject) => {
       if (disposed || signal?.aborted) {
         resolve(false);
@@ -2001,6 +2018,20 @@ export function createVirtualList<T>(
         if (disposed || signal?.aborted) {
           cancel();
           return;
+        }
+        if (interrupt) {
+          try {
+            guarded(() => {
+              followController.stop();
+              settleParked(() => false);
+              glide?.cancel();
+              interruptNativeScroll();
+            });
+          } catch (error) {
+            cleanup();
+            reject(error);
+            return;
+          }
         }
         if (idle()) run();
         else {

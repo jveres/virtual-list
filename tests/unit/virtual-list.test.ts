@@ -278,6 +278,33 @@ beforeEach(() => {
 });
 
 describe("settle-time window updates", () => {
+  it("should reconcile the old viewport again after a lazy render fails elsewhere", () => {
+    const failures: string[] = [];
+    const onError = (event: ErrorEvent): void => {
+      failures.push(event.message);
+      event.preventDefault();
+    };
+    const h = mount(range(0, 60), {
+      boot: "start",
+      itemHeight: () => ROW_H,
+      onRender: (m) => {
+        if (m.id === 30) throw new Error("lazy render failed");
+      },
+    });
+    window.addEventListener("error", onError);
+    try {
+      h.userScroll(100);
+      h.userScroll(3000);
+      h.userScroll(100);
+      expect(failures).toEqual(["lazy render failed"]);
+      expect(h.rowElement("msg 1").isConnected).toBe(true);
+      expect(h.list.state.start).toBeLessThanOrEqual(1);
+      expect(h.list.state.end).toBeLessThan(20);
+    } finally {
+      window.removeEventListener("error", onError);
+      h.list.dispose();
+    }
+  });
   it("should discard a held job if publishing its held state fails", async () => {
     let fail = false;
     const h = mount(range(0, 40), {
@@ -424,6 +451,81 @@ describe("settle-time window updates", () => {
 });
 
 describe("bounded paging on the runtime", () => {
+  it("should evaluate an interrupting layout update after the held page commits", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    h.userScroll(100);
+    const load = paging.load("end");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.list.state.held).toBe(true);
+    let sourceCount = 0;
+    const reflow = h.list.updateWindow(
+      () => {
+        sourceCount = paging.items.length;
+        return {
+          items: paging.items.map((m) => ({ ...m, body: `reflow ${m.id}` })),
+        };
+      },
+      undefined,
+      { interrupt: true },
+    );
+    expect(sourceCount).toBe(40);
+    expect(h.list.state.count).toBe(40);
+    expect(h.list.positionOf("m39")).toEqual({ top: 3900, height: ROW_H });
+    await expect(reflow).resolves.toBe(true);
+    await expect(load).resolves.toBe(true);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should keep a lazy-render failure committed and retry its row on reconciliation", async () => {
+    const initial = { ...page(0), items: range(0, 2) };
+    let fail = true;
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+      onRender: (m) => {
+        if (m.id === 2 && fail) throw new Error("lazy render failed");
+      },
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async () => ({
+        ...page(0),
+        items: range(2, 20),
+        end: { available: false as const },
+      }),
+    });
+    await expect(paging.load("end")).rejects.toThrow("lazy render failed");
+    expect(paging.items).toEqual(range(0, 20));
+    expect(paging.canLoad("end")).toBe(false);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.state.totalSize).toBe(2000);
+    expect(h.list.positionOf("m2")).toEqual({ top: 200, height: ROW_H });
+    expect(h.rowElement("msg 3").textContent).toBe("msg 3");
+    fail = false;
+    h.userScroll(100);
+    expect(h.rowElement("msg 2").textContent).toBe("msg 2");
+    paging.dispose();
+    h.list.dispose();
+  });
   function page(start: number): Page<Msg, number> {
     return {
       items: range(start, start + 20),

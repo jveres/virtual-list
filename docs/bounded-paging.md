@@ -19,8 +19,19 @@ Return `null` for no change. The promise resolves `true` after commit, or
 Observer errors also reject it, but don't undo a completed commit: ownership
 bookkeeping and queued work finish before the error is reported. `onCommit`
 runs for the committed snapshot even if `onState` throws.
+Declared-height rows render lazily. If a newly visible row fails to render,
+the runtime completes geometry, publication, and ownership bookkeeping before
+reporting the error. That row's space remains reserved and rendering retries
+on the next window reconciliation; other visible rows still render.
 Aborting the signal cancels work that hasn't started, including fetched data
 waiting for a gesture to settle. This API waits even in `live` mode.
+
+For explicit layout controls, pass `{ interrupt: true }` as the third argument
+to `updateWindow`. It stops scrolling and commits waiting work before invoking
+your updater. Build the new layout inside that updater from the latest source
+data. A snapshot built before interruption can otherwise overwrite a page that
+the interruption just committed. Routine background paging must keep the
+default settle behavior.
 
 The updater must remain synchronous. Fetch before scheduling it. Don't mutate
 the context arrays or synchronously dispatch input from the updater.

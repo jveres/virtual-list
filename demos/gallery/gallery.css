@@ -1,6 +1,24 @@
 /* The gallery: one scroller, justified rows or masonry bands as items. */
 
 /* --content-width and --gap are set by the script from its constants. */
+/* Counters must never squeeze controls into a taller header mid-scroll.
+   Truncate diagnostics; on narrow screens, scroll the fixed-width controls. */
+header {
+  flex-shrink: 0;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+header .header-title,
+header .choices {
+  flex-shrink: 0;
+}
+
+header .ua {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 .stage {
   position: relative;
   display: flex;

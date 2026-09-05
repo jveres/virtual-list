@@ -11,6 +11,14 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("https://picsum.photos/**", (route) => route.abort());
+  await page.route("**/demos/gallery/gallery.ts*", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({
+      response,
+      body: `${await response.text()}
+      window.__gallery = { list, get photos() { return photos; }, get items() { return items; } };`,
+    });
+  });
   await page.goto(new URL("/demos/gallery/", baseUrl).href);
   await page.locator("#status").filter({ hasText: "120" }).waitFor();
   const initialHeight = await page.evaluate(() => {
@@ -39,10 +47,27 @@ try {
     return {
       bands: document.querySelectorAll("#viewport .band").length,
       rows: document.querySelectorAll("#viewport .photo-row").length,
+      retained: window.__gallery.photos.length,
+      missing: window.__gallery.items.filter(
+        (item) => !window.__gallery.list.positionOf(item.key),
+      ).length,
+      runtimeCount: window.__gallery.list.state.count,
+      layoutCount: window.__gallery.items.length,
     };
   });
   assert.ok(layoutResult.bands > 0, "masonry must mount in the click handler");
   assert.equal(layoutResult.rows, 0);
+  assert.equal(
+    layoutResult.retained,
+    240,
+    "the interrupt must commit the waiting page",
+  );
+  assert.equal(
+    layoutResult.missing,
+    0,
+    "the control must not overwrite the committed page with stale rows",
+  );
+  assert.equal(layoutResult.runtimeCount, layoutResult.layoutCount);
 
   const sizeResult = await page.evaluate(() => {
     const viewport = document.querySelector("#viewport");
