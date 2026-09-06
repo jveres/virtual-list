@@ -1,4 +1,5 @@
 import type { AnchorPolicy, ExplicitAnchor } from "./geometry";
+import type { PositionedGeometry } from "./positioned-geometry";
 import type { Edge } from "./reach";
 
 export type AnchorRequest = AnchorPolicy | ExplicitAnchor;
@@ -12,6 +13,7 @@ export interface PreparedSnapshot<T, R> {
   target: ExplicitAnchor | null;
   deferred: Map<string, T>;
   declaredItems: Map<string, DeclaredItem<T>> | null;
+  positioned: PositionedGeometry | null;
   partial: boolean;
 }
 
@@ -69,6 +71,7 @@ export function createPrepared<T, R>(
     newRows: new Map(),
     deferred: new Map(),
     declaredItems: null,
+    positioned: null,
     partial,
   };
 }

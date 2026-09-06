@@ -45,7 +45,7 @@ try {
   const layoutResult = await page.evaluate(() => {
     document.querySelector('[data-layout="masonry"]').click();
     return {
-      bands: document.querySelectorAll("#viewport .band").length,
+      cards: document.querySelectorAll("#viewport .masonry-card").length,
       rows: document.querySelectorAll("#viewport .photo-row").length,
       retained: window.__gallery.photos.length,
       missing: window.__gallery.items.filter(
@@ -55,7 +55,7 @@ try {
       layoutCount: window.__gallery.items.length,
     };
   });
-  assert.ok(layoutResult.bands > 0, "masonry must mount in the click handler");
+  assert.ok(layoutResult.cards > 0, "masonry must mount in the click handler");
   assert.equal(layoutResult.rows, 0);
   assert.equal(
     layoutResult.retained,

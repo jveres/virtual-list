@@ -123,6 +123,7 @@ function mount(
     followMode?: VirtualListOptions<Msg>["followMode"];
     followInset?: number;
     itemHeight?: (m: Msg) => number;
+    position?: VirtualListOptions<Msg>["position"];
     boot?: "start" | "end";
     onMount?: (element: HTMLElement, m: Msg) => void;
     onUnmount?: (element: HTMLElement, m: Msg) => void;
@@ -207,6 +208,7 @@ function mount(
     followMode: hooks.followMode,
     followInset: hooks.followInset,
     height: hooks.itemHeight,
+    position: hooks.position,
     boot: hooks.boot,
     onMount: hooks.onMount,
     onUnmount: hooks.onUnmount,
@@ -495,6 +497,287 @@ describe("settle-time window updates", () => {
       h.list.updateWindow(() => ({ items: [message(80, "fail")] })),
     ).rejects.toThrow("render failed");
     expect(h.list.state.count).toBe(40);
+    h.list.dispose();
+  });
+});
+
+describe("positioned declared items", () => {
+  it("should mount whole cards directly and protect only the sparse visible set", async () => {
+    const h = mount(range(0, 61), {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: (m) => (m.id === 0 ? 5000 : 100),
+      position: (m) => ({
+        top: Math.max(0, m.id - 1) * 100,
+        lane: m.id === 0 ? 0 : 1,
+      }),
+      onMeasure: () => {
+        throw new Error("declared cards must not be measured");
+      },
+    });
+    h.userScroll(2000);
+    h.settle();
+    const expected = [0, ...range(13, 37).map((m) => m.id)];
+    let protectedIds: number[] = [];
+
+    await h.list.updateWindow(({ protectedItems }) => {
+      protectedIds = protectedItems.map((m) => m.id);
+      return null;
+    });
+
+    expect(protectedIds).toEqual(expected);
+    expect(
+      [...h.canvas().children]
+        .map((node) => Number((node as HTMLElement).dataset.id))
+        .sort((a, b) => a - b),
+    ).toEqual(expected);
+    expect(h.list.elementOf("m0")?.parentElement).toBe(h.canvas());
+    expect(h.list.elementOf("m10")).toBeNull();
+    expect(h.list.positionOf("m0")).toEqual({ top: 0, height: 5000 });
+    expect(h.list.state.totalSize).toBe(6000);
+    h.list.dispose();
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+  });
+
+  it("should publish sparse mount changes even when source-index bounds stay unchanged", () => {
+    const h = mount(range(0, 3), {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: (m) => (m.id === 1 ? 100 : 5000),
+      position: (m) => ({ top: m.id === 1 ? 700 : 0, lane: m.id }),
+    });
+    const published = h.states.length;
+    expect(h.list.elementOf("m1")?.textContent).toBe("msg 1");
+
+    h.userScroll(1800);
+
+    expect(h.list.elementOf("m1")).toBeNull();
+    expect(h.list.state.start).toBe(0);
+    expect(h.list.state.end).toBe(3);
+    expect(h.states.length).toBeGreaterThan(published);
+    h.list.dispose();
+  });
+
+  it("should freeze copied positions and commit a reflow with its photo anchor", () => {
+    let shift = 0;
+    const initial = range(0, 60);
+    const h = mount(initial, {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) => ({
+        top: Math.floor(m.id / 2) * 100 + (m.id >= 10 ? shift : 0),
+        lane: m.id % 2,
+      }),
+    });
+    h.userScroll(1000);
+    const tile = h.list.elementOf("m20");
+    shift = 500;
+
+    h.list.setItems(
+      initial.map((m) => ({ ...m, body: "reflowed" })),
+      { anchor: { key: "m20", offset: 0 } },
+    );
+    shift = 1000;
+    expect(h.list.positionOf("m20")?.top).toBe(1000);
+    expect(tile?.textContent).toBe("msg 20");
+    h.settle();
+
+    expect(h.list.positionOf("m20")?.top).toBe(1500);
+    expect(h.viewport.scrollTop).toBe(1500);
+    expect(h.list.elementOf("m20")).toBe(tile);
+    expect(tile?.style.translate).toBe("0 1500px");
+    expect(tile?.textContent).toBe("reflowed");
+    h.list.dispose();
+  });
+
+  it("should rebase evicted cards without overwriting their interaction transform", () => {
+    const h = mount(range(0, 100), {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) => ({ top: Math.floor(m.id / 2) * 100, lane: m.id % 2 }),
+    });
+    h.userScroll(3000);
+    h.settle();
+    const tile = h.list.elementOf("m60");
+    if (!tile) throw new Error("missing visible card");
+    tile.style.transform = "scale(0.975)";
+    tile.style.transition = "transform 150ms";
+
+    h.list.setItems(range(20, 120), { anchor: "viewport" });
+
+    expect(h.viewport.scrollTop).toBe(2000);
+    expect(h.list.elementOf("m60")).toBe(tile);
+    expect(tile.style.translate).toBe("0 2000px");
+    expect(tile.style.transform).toBe("scale(0.975)");
+    expect(tile.style.transition).toBe("transform 150ms");
+    expect(h.list.positionOf("m60")?.top).toBe(h.viewport.scrollTop);
+    h.list.dispose();
+  });
+
+  it.each([1, 1.25, 1.5, 2])(
+    "should preserve every column's pixel alignment across eviction and restoration at DPR %s",
+    (ratio) => {
+      const original = window.devicePixelRatio;
+      Object.defineProperty(window, "devicePixelRatio", {
+        value: ratio,
+        configurable: true,
+      });
+      try {
+        const h = mount(range(0, 100), {
+          boot: "start",
+          scrollingUpdates: "freeze",
+          itemHeight: () => 99.3,
+          position: (m) => ({
+            top: Math.floor(m.id / 3) * 105.37 + (m.id % 3) * 17.73,
+            lane: m.id % 3,
+          }),
+        });
+        h.userScroll(1600);
+        h.settle();
+        const visible = range(48, 63).map((m) => {
+          const top = h.list.positionOf(`m${m.id}`)?.top;
+          if (top === undefined) throw new Error("missing card position");
+          expect(top * ratio).toBeCloseTo(Math.round(top * ratio), 8);
+          return { key: `m${m.id}`, screenTop: top - h.viewport.scrollTop };
+        });
+
+        for (const next of [range(20, 120), range(0, 100)]) {
+          const before = h.viewport.scrollTop;
+          h.list.setItems(next, { anchor: "viewport" });
+          const correction = h.viewport.scrollTop - before;
+          expect(correction).toBeCloseTo(Math.round(correction), 8);
+          expect(correction * ratio).toBeCloseTo(
+            Math.round(correction * ratio),
+            8,
+          );
+          for (const card of visible) {
+            const top = h.list.positionOf(card.key)?.top;
+            if (top === undefined) throw new Error("lost visible card");
+            expect(top - h.viewport.scrollTop).toBeCloseTo(card.screenTop, 8);
+            expect(top * ratio).toBeCloseTo(Math.round(top * ratio), 8);
+          }
+        }
+        h.list.dispose();
+      } finally {
+        Object.defineProperty(window, "devicePixelRatio", {
+          value: original,
+          configurable: true,
+        });
+      }
+    },
+  );
+
+  it("should normalize retained columns together and put edge slots outside them", async () => {
+    const loader = (key: string): EdgeSlot => ({
+      key,
+      height: 50,
+      render: () => document.createElement("div"),
+    });
+    const h = mount(range(0, 20), {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) => ({
+        top: 1000 + Math.floor(m.id / 2) * 100 + (m.id % 2) * 20,
+        lane: m.id % 2,
+      }),
+      edgeSlots: { start: loader("before"), end: loader("after") },
+    });
+
+    expect(h.list.positionOf("m0")?.top).toBe(50);
+    expect(h.list.positionOf("m1")?.top).toBe(70);
+    expect(h.list.state.totalSize).toBe(1120);
+    await expect(h.list.scrollTo("m8")).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(450);
+    h.list.dispose();
+  });
+
+  it("should keep a positioned commit consistent after a deferred render failure and retry", () => {
+    const initial = range(0, 40);
+    let fail = true;
+    const h = mount(initial, {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: (m) => (m.body === "changed" ? 150 : 100),
+      position: (m) => ({ top: Math.floor(m.id / 2) * 100, lane: m.id % 2 }),
+      onRender: (m) => {
+        if (fail && m.body === "changed") throw new Error("card render failed");
+      },
+    });
+    h.userScroll(500);
+    const changed = initial.map((m) =>
+      m.id === 10 ? { ...m, body: "changed" } : m,
+    );
+    h.list.setItems(changed, { anchor: "viewport" });
+
+    expect(() => h.settle()).toThrow("card render failed");
+
+    expect(h.list.state.held).toBe(false);
+    expect(h.list.positionOf("m10")).toEqual({ top: 500, height: 150 });
+    expect(h.list.elementOf("m10")?.style.height).toBe("150px");
+    expect(h.list.elementOf("m10")?.textContent).toBe("msg 10");
+    fail = false;
+    h.list.setItems(changed, { anchor: "viewport" });
+    expect(h.list.elementOf("m10")?.textContent).toBe("changed");
+    h.list.dispose();
+  });
+
+  it("should replace direct cards and switch to stacked rows with the same keys", () => {
+    let positioned = true;
+    const initial = range(0, 40);
+    const h = mount(initial, {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) =>
+        positioned ? { top: Math.floor(m.id / 2) * 100, lane: m.id % 2 } : null,
+      replaceOnRerender: true,
+    });
+    const old = h.list.elementOf("m0");
+
+    h.list.updateItem("m0", message(0, "replacement"));
+
+    const next = h.list.elementOf("m0");
+    expect(next).not.toBe(old);
+    expect(next?.parentElement).toBe(h.canvas());
+    expect(next?.textContent).toBe("replacement");
+    expect(
+      h.destroyedElements.filter((element) => element === old),
+    ).toHaveLength(1);
+    positioned = false;
+    h.list.setItems(initial);
+    expect(h.list.positionOf("m10")?.top).toBe(1000);
+    expect(h.list.state.totalSize).toBe(4000);
+    positioned = true;
+    h.list.setItems(initial);
+    expect(h.list.positionOf("m10")?.top).toBe(500);
+    expect(h.list.state.totalSize).toBe(2000);
+    h.list.dispose();
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+  });
+
+  it("should reject invalid or mixed placement before changing committed DOM", () => {
+    const initial = range(0, 20);
+    let mode: "valid" | "invalid" | "mixed" = "valid";
+    const h = mount(initial, {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) =>
+        mode === "mixed" && m.id === 1
+          ? null
+          : { top: m.id * 100, lane: mode === "invalid" ? -1 : 0 },
+    });
+    const tile = h.list.elementOf("m0");
+    mode = "invalid";
+    expect(() => h.list.setItems(initial)).toThrow("positioned items need");
+    mode = "mixed";
+    expect(() => h.list.setItems(initial)).toThrow("place every item or none");
+    expect(h.list.elementOf("m0")).toBe(tile);
+    expect(h.list.positionOf("m10")?.top).toBe(1000);
+    expect(h.list.state.totalSize).toBe(2000);
     h.list.dispose();
   });
 });

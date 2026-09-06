@@ -1,4 +1,5 @@
 import { FenwickTree } from "./fenwick";
+import type { GeometryWindow, PositionedGeometry } from "./positioned-geometry";
 
 // The lean core's geometry kernel: keyed items, learned heights, offsets,
 // anchoring, and the pin-to-top reserve — as pure math. No DOM, no
@@ -82,6 +83,7 @@ export class Geometry {
   private keys: readonly string[] = [];
   private indexByKey = new Map<string, number>();
   private tree = new FenwickTree(new Float64Array(0));
+  private positioned: PositionedGeometry | null = null;
   /** Learned (measured) heights by identity; estimates fill the rest. */
   private readonly heightByKey = new Map<string, number>();
   private readonly estimateForKey: (key: string) => number;
@@ -140,11 +142,18 @@ export class Geometry {
   /** Content-space top of the item; `indexOf(key) === -1` yields -1. */
   offsetOf(key: string): number {
     const index = this.indexByKey.get(key);
-    return index === undefined ? -1 : this.tree.prefix(index);
+    return index === undefined
+      ? -1
+      : (this.positioned?.top(index) ?? this.tree.prefix(index));
   }
 
   get contentSize(): number {
-    return this.tree.total();
+    return this.positioned?.totalSize ?? this.tree.total();
+  }
+
+  /** Swap a prevalidated positioned snapshot inside the normal geometry commit. */
+  setPositioned(layout: PositionedGeometry | null): void {
+    this.positioned = layout;
   }
 
   get reserve(): number {
@@ -173,6 +182,15 @@ export class Geometry {
   anchorAt(viewport: GeometryViewport): { key: string; offset: number } | null {
     if (this.keys.length === 0) return null;
     const top = Math.max(0, Math.min(viewport.scrollTop, this.contentSize));
+    if (this.positioned) {
+      const index = this.positioned.anchorAt(top, (i) =>
+        this.neverAnchor(this.keys[i] as string),
+      );
+      const key = this.keys[index];
+      return key === undefined
+        ? null
+        : { key, offset: top - this.positioned.top(index) };
+    }
     let index = this.tree.indexAt(top); // Clamped to the last index.
     // A row with less than EPSILON left below the viewport top is not what
     // the user sees as the top row: anchoring it would let its own growth
@@ -208,16 +226,23 @@ export class Geometry {
   }
 
   /** Mounted index range covering the viewport plus overscan. */
-  window(
-    viewport: GeometryViewport,
-    overscanPx: number,
-  ): { start: number; end: number } {
+  window(viewport: GeometryViewport, overscanPx: number): GeometryWindow {
     if (this.keys.length === 0) return { start: 0, end: 0 };
     const top = Math.max(0, viewport.scrollTop - overscanPx);
     const bottom = Math.min(
       this.contentSize,
       viewport.scrollTop + viewport.height + overscanPx,
     );
+    if (this.positioned) {
+      // Reuse an overscanned set across small scrolls. Whole cards still mount
+      // once each; only the query bounds advance in batches, avoiding DOM
+      // churn every time one of many staggered column edges crosses a pixel.
+      const step = overscanPx;
+      return this.positioned.window(
+        step > 0 ? Math.floor(top / step) * step : top,
+        step > 0 ? Math.ceil(bottom / step) * step : bottom,
+      );
+    }
     const start = this.tree.indexAt(top); // Clamped to the last index.
     const end = this.tree.lowerBound(bottom);
     return { start, end };

@@ -17,15 +17,13 @@ export interface Placed extends Photo {
 
 /** A photo placed in the masonry grid, in layout coordinates. */
 export interface Card extends Photo {
+  kind: "card";
+  key: string;
+  lane: number;
   left: number;
   top: number;
   width: number;
   height: number;
-}
-
-/** A card as one band holds it: `part` counts the bands it crosses, from the one holding its top. */
-export interface BandCard extends Card {
-  part: number;
 }
 
 export interface JustifiedRow {
@@ -35,17 +33,7 @@ export interface JustifiedRow {
   photos: Placed[];
 }
 
-/** A horizontal slice of the masonry grid: the cards it intersects, positioned relative to its top. */
-export interface Band {
-  kind: "band";
-  key: string;
-  /** Layout y of the slice's top. */
-  start: number;
-  height: number;
-  cards: BandCard[];
-}
-
-export type GalleryItem = JustifiedRow | Band;
+export type GalleryItem = JustifiedRow | Card;
 
 /** Compare render inputs directly, stopping at the first changed field. */
 export function sameGalleryItem(a: GalleryItem, b: GalleryItem): boolean {
@@ -65,23 +53,14 @@ export function sameGalleryItem(a: GalleryItem, b: GalleryItem): boolean {
       })
     );
   }
-  if (a.kind === "band" && b.kind === "band") {
+  if (a.kind === "card" && b.kind === "card") {
     return (
-      a.start === b.start &&
-      a.cards.length === b.cards.length &&
-      a.cards.every((p, i) => {
-        const next = b.cards[i];
-        return (
-          next !== undefined &&
-          p.id === next.id &&
-          p.aspect === next.aspect &&
-          p.left === next.left &&
-          p.top === next.top &&
-          p.width === next.width &&
-          p.height === next.height &&
-          p.part === next.part
-        );
-      })
+      a.id === b.id &&
+      a.aspect === b.aspect &&
+      a.lane === b.lane &&
+      a.left === b.left &&
+      a.top === b.top &&
+      a.width === b.width
     );
   }
   return false;
@@ -223,6 +202,9 @@ function placeColumns(
     const top = bottoms[c] as number;
     cards.push({
       ...p,
+      kind: "card",
+      key: `p${p.id}`,
+      lane: c,
       left: c * (columnWidth + gap),
       top,
       width: columnWidth,
@@ -236,9 +218,7 @@ function placeColumns(
 
 /** Both gallery layouts use the same planning/placement lifecycle. */
 export function createGalleryLayouts(
-  bandHeight: number,
   checkpoint?: (photos: readonly Photo[], density: number) => LayoutCheckpoint,
-  pixelRatio: () => number = () => 1,
 ) {
   return {
     rows: createLayoutManager({
@@ -256,69 +236,8 @@ export function createGalleryLayouts(
       minimumDensity: 2,
       plan: (photos, density) =>
         planColumns(photos, density, checkpoint?.(photos, density)),
-      place: (
-        plan: ColumnPlan,
-        width: number,
-        _target: number,
-        gap: number,
-      ) => {
-        const { cards, height } = placeColumns(plan, width, gap);
-        // Keep every retained card's top. Only the first band is shortened;
-        // all later bands keep their absolute identity and boundaries.
-        return slice(
-          cards,
-          height,
-          bandHeight,
-          cards.length ? Math.min(...cards.map((card) => card.top)) : 0,
-          pixelRatio(),
-        );
-      },
+      place: (plan: ColumnPlan, width: number, _target: number, gap: number) =>
+        placeColumns(plan, width, gap).cards,
     }),
   };
-}
-
-/**
- * Slices the masonry grid into bands of `bandHeight`, the last one ending
- * at the grid's height. A card crossing an edge belongs to every band it
- * intersects (drawn in each, offset and clipped), so the seam is invisible.
- * Bands are keyed by their start, which appends never change.
- */
-export function slice(
-  cards: readonly Card[],
-  height: number,
-  bandHeight: number,
-  from = 0,
-  pixelRatio = 1,
-): Band[] {
-  // Runtime slots round heights up to device pixels. Align slicing to the
-  // same grid so a fractional leading band cannot leave a white seam.
-  bandHeight = Math.ceil(bandHeight * pixelRatio - 1e-6) / pixelRatio;
-  from = Math.floor(from * pixelRatio + 1e-6) / pixelRatio;
-  const bands: Band[] = [];
-  const firstBand = Math.floor(from / bandHeight);
-  for (let index = firstBand; index * bandHeight < height; index++) {
-    const start = Math.max(from, index * bandHeight);
-    bands.push({
-      kind: "band",
-      key: `b${index * bandHeight}`,
-      start,
-      height: Math.min((index + 1) * bandHeight, height) - start,
-      cards: [],
-    });
-  }
-  // Assign each card directly to its intersecting bands, preserving top
-  // order without rescanning all earlier cards for every band.
-  for (const card of [...cards].sort((a, b) => a.top - b.top)) {
-    const origin = Math.floor(card.top / bandHeight);
-    const first = Math.max(0, origin - firstBand);
-    const last = Math.min(
-      bands.length - 1,
-      Math.ceil((card.top + card.height) / bandHeight) - firstBand - 1,
-    );
-    for (let i = first; i <= last; i++) {
-      const band = bands[i] as Band;
-      band.cards.push({ ...card, part: i + firstBand - origin });
-    }
-  }
-  return bands;
 }

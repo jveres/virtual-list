@@ -131,16 +131,9 @@ for (const engine of [firefox, webkit]) {
       await drag(230);
       await closed();
     }
-    // Press feedback must move every clipped drawing of a masonry photo together.
-    const splitPhoto = await page.locator("#viewport").evaluate((viewport) => {
-      const tiles = [...viewport.querySelectorAll(".tile")];
-      const tile = tiles.find(
-        (tile) =>
-          tiles.filter(
-            (other) => other.dataset.photoId === tile.dataset.photoId,
-          ).length > 1,
-      );
-      if (!tile) return null;
+    // A whole masonry card scales independently from its layout translation.
+    const pressedCard = cards.first();
+    const beforePress = await pressedCard.evaluate((tile) => {
       const rect = tile.getBoundingClientRect();
       tile.dispatchEvent(
         new PointerEvent("pointerdown", {
@@ -153,34 +146,39 @@ for (const engine of [firefox, webkit]) {
           clientY: rect.top + 10,
         }),
       );
-      return tile.dataset.photoId;
+      return {
+        width: rect.width,
+        height: rect.height,
+        translate: getComputedStyle(tile).translate,
+      };
     });
-    assert.notEqual(splitPhoto, null, "fixture must include a split thumbnail");
     await page.waitForTimeout(200);
-    const pieces = await page
-      .locator(`.tile[data-photo-id="${splitPhoto}"]`)
-      .evaluateAll((tiles) =>
-        tiles.map((tile) => ({
-          pressed: tile.classList.contains("is-photo-pressed"),
-          transform: getComputedStyle(tile).transform,
-          top: tile.getBoundingClientRect().top,
-          bottom: tile.getBoundingClientRect().bottom,
-        })),
-      );
-    assert.ok(pieces.length > 1 && pieces.every((piece) => piece.pressed));
-    assert.ok(
-      pieces.every(
-        (piece) =>
-          piece.transform === pieces[0].transform &&
-          Math.abs(piece.top - pieces[0].top) < 1 &&
-          Math.abs(piece.bottom - pieces[0].bottom) < 1,
-      ),
-      "split pieces retain matching full-photo geometry while pressed",
+    const pressed = await pressedCard.evaluate((tile) => {
+      const box = tile.getBoundingClientRect();
+      return {
+        pressed: tile.classList.contains("is-photo-pressed"),
+        transform: getComputedStyle(tile).transform,
+        translate: getComputedStyle(tile).translate,
+        width: box.width,
+        height: box.height,
+        copies: document.querySelectorAll(
+          `.tile[data-photo-id="${tile.dataset.photoId}"]`,
+        ).length,
+      };
+    });
+    assert.equal(pressed.copies, 1, "a photo has one complete thumbnail");
+    assert.equal(pressed.pressed, true);
+    assert.equal(
+      pressed.translate,
+      beforePress.translate,
+      "press preserves layout translation",
     );
-    await page
-      .locator(`.tile[data-photo-id="${splitPhoto}"]`)
-      .first()
-      .dispatchEvent("pointercancel", { pointerId: 7, pointerType: "mouse" });
+    assert.ok(Math.abs(pressed.width / beforePress.width - 0.975) < 0.001);
+    assert.ok(Math.abs(pressed.height / beforePress.height - 0.975) < 0.001);
+    await pressedCard.dispatchEvent("pointercancel", {
+      pointerId: 7,
+      pointerType: "mouse",
+    });
     assert.equal(await page.locator(".is-photo-pressed").count(), 0);
     // A wheel-scrolled tall photo can still be dragged to dismiss from the middle.
     await open();

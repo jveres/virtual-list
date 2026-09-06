@@ -4,7 +4,6 @@ import {
   justify,
   masonry,
   type Photo,
-  slice,
 } from "../../demos/gallery/layout";
 import { createLayoutManager } from "../../demos/gallery/layout-manager";
 
@@ -52,7 +51,7 @@ describe("layout manager", () => {
   });
 
   it("should match both pure layouts after resizing, appending, and completing", () => {
-    const layouts = createGalleryLayouts(480);
+    const layouts = createGalleryLayouts();
     for (const count of [120, 240]) {
       const photos = Array.from({ length: count }, (_, id) => ({
         id,
@@ -70,7 +69,7 @@ describe("layout manager", () => {
             6,
           );
           expect(layouts.masonry(photos, width, 240, 6, complete)).toEqual(
-            slice(grid.cards, grid.height, 480),
+            grid.cards,
           );
         }
       }

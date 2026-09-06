@@ -6,10 +6,11 @@ const baseUrl = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4193";
 const browser = await firefox.launch({ headless: true });
 try {
   for (const [layout, deviceScaleFactor, gapAnchor = false] of [
+    ["masonry", 1],
+    ["masonry", 2],
+    ["masonry", 1.25],
     ["rows", 2, true],
     ["rows", 1],
-    ["masonry", 1],
-    ["masonry", 1.25],
   ]) {
     const page = await browser.newPage({
       viewport: { width: 1100, height: 800 },
@@ -73,12 +74,20 @@ try {
           }
           v.dispatchEvent(new Event("scroll"));
           const point = g.pointUnderViewportTop();
-          const bands = [...document.querySelectorAll("#viewport .band")]
-            .map((band) => band.getBoundingClientRect())
-            .sort((a, b) => a.top - b.top);
-          const seam = Math.max(
+          const cards = [...v.querySelectorAll(".masonry-card")];
+          const duplicateCards =
+            cards.length - new Set(cards.map((card) => card.dataset.tile)).size;
+          const maxGap = Math.max(
             0,
-            ...bands.slice(1).map((band, i) => band.top - bands[i].bottom),
+            ...cards.map((card) => {
+              const bounds = card.getBoundingClientRect();
+              const next = cards
+                .filter((candidate) => candidate.style.left === card.style.left)
+                .map((candidate) => candidate.getBoundingClientRect())
+                .filter((candidate) => candidate.top > bounds.top)
+                .sort((a, b) => a.top - b.top)[0];
+              return next ? next.top - bounds.bottom : 0;
+            }),
           );
           const box = v.getBoundingClientRect();
           const tiles = [...v.querySelectorAll(".tile")]
@@ -93,15 +102,25 @@ try {
             .filter((tile) => tile.bottom > box.top && tile.top < box.bottom);
           return {
             first: g.photos[0].id,
+            scrollTop: v.scrollTop,
             last: g.photos.at(-1).id,
             point,
-            seam,
+            duplicateCards,
+            maxGap,
             tiles,
           };
         },
         { edge, gapAnchor },
       );
-      assert.ok(before.seam < 0.02, `white seam before load: ${before.seam}px`);
+      assert.equal(
+        before.duplicateCards,
+        0,
+        "each photo must have one whole card",
+      );
+      assert.ok(
+        before.maxGap <= 6.02 + 1 / deviceScaleFactor,
+        `unexpected column gap: ${before.maxGap}px`,
+      );
       await page.waitForFunction(
         ({ edge, before }) => {
           const g = window.__gallery;
@@ -123,6 +142,7 @@ try {
           typeof anchor === "object" ? g.list.positionOf(anchor.key) : null;
         return {
           count: g.photos.length,
+          scrollTop: document.querySelector("#viewport").scrollTop,
           rows: g.list.state.count,
           first: g.photos[0].id,
           last: g.photos.at(-1).id,
@@ -140,18 +160,10 @@ try {
               ? [tile.getBoundingClientRect().top - previous.top]
               : [];
           }),
-          clippedHeads:
-            g.items[0]?.kind === "band"
+          missingCards:
+            g.items[0]?.kind === "card"
               ? g.photos.filter(
-                  (photo) =>
-                    !g.items.some((band) =>
-                      band.cards.some(
-                        (card) =>
-                          card.id === photo.id &&
-                          card.part === 0 &&
-                          card.top >= band.start,
-                      ),
-                    ),
+                  (photo) => !g.items.some((card) => card.id === photo.id),
                 ).length
               : 0,
         };
@@ -165,12 +177,20 @@ try {
         after.tileShifts.length > 0,
         "append must retain visible comparison tiles",
       );
+      // Check individual columns as well as the shared viewport correction.
+      if (layout === "masonry")
+        assert.ok(
+          Math.max(...after.tileShifts) - Math.min(...after.tileShifts) < 0.02,
+          `columns moved independently: ${JSON.stringify(after.tileShifts)}`,
+        );
       assert.ok(
-        after.tileShifts.every((shift) => Math.abs(shift) <= 1),
-        `visible photos shifted across ${edge} load: ${JSON.stringify(after.tileShifts)}`,
+        after.tileShifts.every(
+          (shift) => Math.abs(shift) <= (layout === "masonry" ? 0.02 : 1),
+        ),
+        `visible photos shifted across ${edge} load: ${JSON.stringify({ before: { first: before.first, last: before.last, top: before.scrollTop, point: before.point }, after })}`,
       );
       assert.equal(
-        after.clippedHeads,
+        after.missingCards,
         0,
         "top loading must preserve every retained photo's top",
       );
@@ -206,7 +226,7 @@ try {
       "image priorities must not force DOM measurements during scrolling or reflow",
     );
     console.log(
-      `Firefox ${layout} DPR ${deviceScaleFactor}: 9 forward / 4 backward loads, <=480 retained photos, bounded DOM, no clipped tops/seams, stable anchors and resize`,
+      `Firefox ${layout} DPR ${deviceScaleFactor}: 9 forward / 4 backward loads, <=480 retained photos, bounded DOM, whole cards and expected column gaps, stable anchors and resize`,
     );
     await page.close();
   }

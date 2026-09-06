@@ -20,7 +20,7 @@ for (const engine of [firefox, webkit]) {
         const result = [];
         const previous = [status.textContent, metrics.textContent];
         for (const count of [0, 9, 99, 120, 999, 1320, 1440, 3000, 999999]) {
-          status.textContent = `${count.toLocaleString()} of 3,000 photos · 480 retained · 29 bands · 6 columns`;
+          status.textContent = `${count.toLocaleString()} of 3,000 photos · 480 retained · 480 cards · 6 columns`;
           metrics.textContent = `queue ${count} (peak ${count}) · loading 6/6 · loaded ${count} · reused ${count} · cancelled ${count} · failed ${count}`;
           result.push({
             count,

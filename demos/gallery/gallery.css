@@ -1,4 +1,4 @@
-/* The gallery: one scroller, justified rows or masonry bands as items. */
+/* The gallery: one scroller, justified rows or whole masonry cards. */
 
 /* --content-width and --gap are set by the script from its constants. */
 /* Counters must never squeeze controls into a taller header mid-scroll.
@@ -29,7 +29,7 @@ header .ua {
 }
 
 /* The scroller spans the page (its scrollbar at the page's edge); the
-   rows and bands inside are centred at the content width. */
+   layouts inside are centred at the content width. */
 #viewport {
   height: 100%;
   width: 100%;
@@ -41,6 +41,8 @@ header .ua {
 
 /* A justified row: photos side by side, the gap below belongs to the row. */
 .photo-row {
+  left: 0;
+  right: 0;
   display: flex;
   gap: var(--gap);
   padding-bottom: var(--gap);
@@ -48,14 +50,9 @@ header .ua {
   margin: 0 auto;
 }
 
-/* A masonry band: a slice of the grid, tiles placed absolutely, a tile
-   crossing the band's edge is clipped to the slice (its rest is drawn in
-   the neighbouring band). */
-.band {
-  position: relative;
-  overflow: hidden;
-  max-width: var(--content-width);
-  margin: 0 auto;
+/* Cards share the same centered coordinate system, without clipping slices. */
+.masonry-card {
+  margin-left: max(0px, calc((100% - var(--content-width)) / 2));
 }
 
 /* A photo's box: the placeholder, then the image fading in over it. */
@@ -64,10 +61,6 @@ header .ua {
   overflow: hidden;
   border-radius: 4px;
   background: color-mix(in srgb, var(--fg-dim) 12%, transparent);
-}
-
-.band .tile {
-  position: absolute;
 }
 
 .photo {

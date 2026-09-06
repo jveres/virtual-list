@@ -16,7 +16,7 @@ import {
 import { mustGet } from "../shared/utils.js";
 import { createImageLoader, type LoaderMetrics } from "./image-loader.js";
 import {
-  type Band,
+  type Card,
   createGalleryLayouts,
   type GalleryItem,
   type JustifiedRow,
@@ -31,15 +31,13 @@ import { layoutDensity } from "./layout-manager.js";
 // - Rows: a justified row is the item. Photos that do not yet fill a row
 //   are held back while pages remain, so a row on screen never changes
 //   when the next page arrives.
-// - Masonry: a column grid sliced into fixed-height bands; the band is the
-//   item. A card crossing a band edge is drawn in both bands, offset and
-//   clipped, so the seam is invisible. Aspect ratios balance columns
-//   independently of width. Appending never moves an earlier card; bands change
-//   in place. Bands are keyed by their start, which never changes.
+// - Masonry: each photo is one positioned item. Aspect ratios balance
+//   columns independently of width; appending never moves an earlier card.
+//   The runtime queries visible cards by lane and mounts each photo once.
 // - Every item declares its height (`height`), so the runtime never
 //   measures: a row's height follows from its photos' aspect ratios, a
-//   band's from the slicing. A band that changes during a gesture is
-//   rendered in place at the settle, inside the commit.
+//   card's from its column width. Geometry and content changes during a
+//   gesture commit together at the settle.
 // - A re-flow (width, size, or layout) names its anchor: the photo under
 //   the viewport top and a fraction of it are found in the current items,
 //   and the new item holding that point is named with the offset that
@@ -54,15 +52,13 @@ type Size = "s" | "m" | "l";
 const ROW_HEIGHTS: Record<Size, number> = { s: 150, m: 210, l: 290 };
 const COLUMN_WIDTHS: Record<Size, number> = { s: 170, m: 240, l: 330 };
 const GAP = 6;
-/** The rows and bands are centred at this width; the scroller spans the page. */
+/** The layouts are centred at this width; the scroller spans the page. */
 const CONTENT_WIDTH = 1080;
-const BAND_HEIGHT = 480;
 const PAGE = 120;
 const RETAIN = PAGE * 4;
 const TOTAL = 3_000;
 // Keep compact checkpoints for every responsive density, not discarded photos.
 const layouts = createGalleryLayouts(
-  BAND_HEIGHT,
   createLayoutHistory(
     photo,
     layoutDensity(
@@ -72,7 +68,6 @@ const layouts = createGalleryLayouts(
     ),
     PAGE,
   ),
-  () => window.devicePixelRatio,
 );
 const LOAD_DELAY_MS = 500;
 const LOADER_HEIGHT = 56;
@@ -274,7 +269,7 @@ function renderLoader(): HTMLElement {
 function render(item: GalleryItem, existing?: HTMLElement): HTMLElement {
   return item.kind === "row"
     ? renderRow(item, existing)
-    : renderBand(item, existing);
+    : renderCard(item, existing);
 }
 
 /** The height every item declares: the runtime never measures. */
@@ -282,7 +277,7 @@ function heightOf(item: GalleryItem): number {
   return item.kind === "row" ? item.height + GAP : item.height;
 }
 
-/** The tiles an element already holds, by photo and drawing: a re-render keeps them. */
+/** The tiles a row already holds: a re-render keeps them. */
 function existingTiles(el: HTMLElement): Map<string, HTMLElement> {
   const held = new Map<string, HTMLElement>();
   for (const tile of el.querySelectorAll<HTMLElement>(".tile")) {
@@ -297,9 +292,8 @@ function tileAt(
   p: Photo,
   width: number,
   height: number,
-  part = 0,
 ): HTMLElement {
-  const id = `${p.id}:${part}`;
+  const id = String(p.id);
   let tile = held.get(id);
   if (tile) {
     held.delete(id);
@@ -345,27 +339,13 @@ function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
   return el;
 }
 
-function renderBand(band: Band, existing?: HTMLElement): HTMLElement {
-  const el = existing ?? document.createElement("div");
-  const held = existingTiles(el);
-  el.className = "band";
-  el.style.height = `${band.height}px`;
-  syncTiles(
-    el,
-    band.cards.map((card) => {
-      const tile = tileAt(held, card, card.width, card.height, card.part);
-      tile.style.left = `${card.left}px`;
-      tile.style.top = `${card.top - band.start}px`;
-      return placeImage(
-        tile,
-        band.key,
-        Math.max(0, card.top - band.start),
-        Math.min(band.height, card.top - band.start + card.height),
-      );
-    }),
-    held,
-  );
-  return el;
+function renderCard(card: Card, existing?: HTMLElement): HTMLElement {
+  const tile = existing ?? tileElement(card, String(card.id));
+  tile.classList.add("masonry-card");
+  tile.style.width = `${card.width}px`;
+  tile.style.height = `${card.height}px`;
+  tile.style.left = `${card.left}px`;
+  return placeImage(tile, card.key, 0, card.height);
 }
 
 function tileElement(p: Photo, id: string): HTMLElement {
@@ -481,6 +461,32 @@ interface Point {
  */
 function pointUnderViewportTop(): Point | null {
   const scrollTop = viewport.scrollTop;
+  if (items[0]?.kind === "card") {
+    // Captured on paging/reflow, not on scroll frames. Source order is
+    // stable even where different columns overlap vertically.
+    let nearest: { card: Card; top: number; distance: number } | null = null;
+    for (const item of items) {
+      if (item.kind !== "card") continue;
+      const position = list.positionOf(item.key);
+      if (!position) continue;
+      const distance = Math.max(
+        position.top - scrollTop,
+        scrollTop - position.top - item.height,
+        0,
+      );
+      if (!nearest || distance < nearest.distance)
+        nearest = { card: item, top: position.top, distance };
+      if (distance === 0) break;
+    }
+    if (!nearest) return null;
+    const { card, top } = nearest;
+    const inside = Math.max(0, Math.min(card.height, scrollTop - top));
+    return {
+      photo: card.id,
+      fraction: inside / card.height,
+      viewportOffset: top + inside - scrollTop,
+    };
+  }
   // Items are ordered: binary-search the committed positions.
   let low = 0;
   let high = items.length - 1;
@@ -516,19 +522,7 @@ function pointUnderViewportTop(): Point | null {
         }
       : null;
   }
-  const y = item.start + offset;
-  const card =
-    item.cards.find((c) => c.top <= y && y < c.top + c.height) ?? item.cards[0];
-  const pointY = card
-    ? Math.max(item.start, card.top, Math.min(y, card.top + card.height))
-    : y;
-  return card
-    ? {
-        photo: card.id,
-        fraction: Math.min(1, Math.max(0, (pointY - card.top) / card.height)),
-        viewportOffset: pointY - y,
-      }
-    : null;
+  return null;
 }
 
 /** The new item holding the point, and the offset of its top from the viewport top that keeps the point there. */
@@ -544,24 +538,18 @@ function anchorFor(
           offset: point.viewportOffset - point.fraction * item.height,
         };
       }
-    } else {
-      const card = item.cards.find((c) => c.id === point.photo);
-      if (card) {
-        const y = card.top + point.fraction * card.height;
-        if (y >= item.start && y < item.start + item.height) {
-          return {
-            key: item.key,
-            offset: point.viewportOffset - (y - item.start),
-          };
-        }
-      }
+    } else if (item.id === point.photo) {
+      return {
+        key: item.key,
+        offset: point.viewportOffset - point.fraction * item.height,
+      };
     }
   }
   return "viewport";
 }
 
 function syncStatus(): void {
-  const unit = layout === "rows" ? "rows" : `bands · ${columns()} columns`;
+  const unit = layout === "rows" ? "rows" : `cards · ${columns()} columns`;
   status.textContent = `${loaded.toLocaleString()} of ${TOTAL.toLocaleString()} photos · ${photos.length} retained · ${items.length.toLocaleString()} ${unit}`;
 }
 
@@ -642,6 +630,8 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     key: (item) => item.key,
     render,
     height: heightOf,
+    position: (item) =>
+      item.kind === "card" ? { top: item.top, lane: item.lane } : null,
     // A gallery starts at its first photo, not at the end.
     boot: "start",
     overscanPx: 600,
@@ -654,6 +644,7 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     onMount: queueImages,
     onUnmount: dropImages,
     onDestroy: (element) => {
+      if (element.classList.contains("tile")) photoPreview.unbind(element);
       for (const tile of element.querySelectorAll<HTMLElement>(".tile"))
         photoPreview.unbind(tile);
     },
@@ -692,7 +683,7 @@ paging = createPagedWindow({
     return point ? anchorFor(point, rows) : "viewport";
   },
   keysOf: (item) => {
-    const content = item.kind === "row" ? item.photos : item.cards;
+    const content = item.kind === "row" ? item.photos : [item];
     // Keep a guard page available before the reading window during reflow.
     return content.flatMap((p) => [
       String(p.id),

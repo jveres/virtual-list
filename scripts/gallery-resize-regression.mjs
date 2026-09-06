@@ -88,12 +88,11 @@ async function stableLayoutGroups(page) {
         comparisons++;
       }
       seen.set(tile.id, tile.group);
-      if (frame.has(tile.id)) {
-        assert.ok(
-          Math.abs(tile.top - frame.get(tile.id).top) <= 1,
-          `photo ${tile.id} has misaligned band fragments`,
-        );
-      }
+      assert.equal(
+        frame.has(tile.id),
+        false,
+        `photo ${tile.id} is mounted twice`,
+      );
       frame.set(tile.id, { top: tile.top, left: tile.left });
     }
     if (Math.abs(width - previousWidth) === 1) {

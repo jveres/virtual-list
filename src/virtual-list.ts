@@ -7,6 +7,12 @@ import {
 } from "./geometry";
 import { type Glide, type GlideHost, glidePace, startGlide } from "./glide";
 import {
+  type GeometryWindow,
+  type ItemPosition,
+  PositionedGeometry,
+  type PositionedItem,
+} from "./positioned-geometry";
+import {
   createItemMeasurer,
   type ItemMeasurer,
   positionRowElement,
@@ -37,6 +43,7 @@ export type {
   ExplicitAnchor,
   GeometryViewport,
 } from "./geometry";
+export type { ItemPosition } from "./positioned-geometry";
 export type { Edge, ReachContext } from "./reach";
 /** How a snapshot resolves the viewport: a policy, or a host-named anchor. */
 export type { AnchorRequest } from "./snapshot";
@@ -130,6 +137,18 @@ export interface VirtualListOptions<T> {
    * element, and re-entry renders fresh. Keep persistent state in item data.
    */
   height?: (item: T) => number;
+  /**
+   * Experimental declared layout: whole items at overlapping vertical positions.
+   * Requires `height` and `scrollingUpdates: "freeze"` (the default here).
+   * All items in a snapshot must return a position, or all return null for
+   * ordinary stacked rows. The minimum top is rebased near the retained window's
+   * start, with small leading slack for pixel alignment; edge slots sit outside
+   * it. Positions are captured and snapped to
+   * device pixels before rebasing, so paging preserves their pixel alignment.
+   * Elements mount directly: the renderer owns horizontal placement and width;
+   * the runtime owns position:absolute, top, translate, and declared height.
+   */
+  position?: (item: T) => ItemPosition | null;
   /**
    * Ancestor for detached measurement, outside the scrolling surface.
    * Give it the same inherited typography, CSS variables, and ancestor
@@ -227,6 +246,7 @@ export interface VirtualListOptions<T> {
 
 export interface VirtualListState {
   count: number;
+  /** Source-index bounds of the mounted window; positioned layouts may have holes. */
   start: number;
   end: number;
   atStart: boolean;
@@ -387,6 +407,19 @@ function snapToDevicePixel(value: number): number {
   const ratio = devicePixelRatioNow();
   return Math.round(value * ratio) / ratio;
 }
+
+/** A rebase must also survive engines that round scroll writes to CSS pixels. */
+function positionedOrigin(top: number): number {
+  const ratio = devicePixelRatioNow();
+  // Common display/zoom scales have small rational denominators: 2x needs
+  // whole CSS pixels, 1.25x needs multiples of four. Keep the leading slack
+  // bounded; unusual scales fall back to the device grid.
+  for (let step = 1; step <= 32; step++) {
+    if (Math.abs(step * ratio - Math.round(step * ratio)) <= HEIGHT_NOISE)
+      return Math.floor(top / step) * step;
+  }
+  return Math.floor(top * ratio) / ratio;
+}
 const AT_EDGE_EPSILON_PX = 1;
 const FOLLOW_LANDING_MS = 320;
 /** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
@@ -452,8 +485,13 @@ export function createVirtualList<T>(
   options: VirtualListOptions<T>,
 ): VirtualList<T> {
   const { key: keyOf, render } = options;
-  const scrollingUpdates: ScrollingUpdates = options.scrollingUpdates ?? "live";
+  const scrollingUpdates: ScrollingUpdates =
+    options.scrollingUpdates ?? (options.position ? "freeze" : "live");
   const declared = options.height;
+  if (options.position && (!declared || scrollingUpdates !== "freeze"))
+    throw new Error(
+      "positioned layouts require declared heights and freeze updates",
+    );
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
   const overscanPx =
@@ -571,6 +609,7 @@ export function createVirtualList<T>(
   // Replaced by the boot commit's publish before the list is handed out.
   let lastState: VirtualListState = EMPTY_STATE;
   let lastPublishedEpoch = -1;
+  let lastPublishedIndices: readonly number[] | undefined;
   let lastPublishedViewport = {
     scrollTop: Number.NaN,
     height: Number.NaN,
@@ -699,9 +738,13 @@ export function createVirtualList<T>(
     item: T,
     element: HTMLElement,
     height: number,
+    direct = false,
   ): Row<T> {
-    const slot = createSlot();
-    slot.appendChild(element);
+    const slot = direct ? element : createSlot();
+    if (direct) {
+      slot.style.position = "absolute";
+      slot.style.top = "0";
+    } else slot.appendChild(element);
     const quantized = quantizeHeight(height);
     slot.style.height = `${quantized}px`;
     return {
@@ -746,6 +789,7 @@ export function createVirtualList<T>(
     element: HTMLElement,
     height: number,
   ): Row<T> {
+    if (options.position) return retain(key, item, element, height, true);
     return retain(key, item, positionRowElement(element), height);
   }
 
@@ -767,6 +811,10 @@ export function createVirtualList<T>(
     );
     row.edge = edge;
     row.edgeSlot = slot;
+    if (options.position) {
+      row.element.style.left = "0";
+      row.element.style.right = "0";
+    }
     return row;
   }
 
@@ -1008,6 +1056,43 @@ export function createVirtualList<T>(
   document.addEventListener("visibilitychange", onVisibilityChange);
 
   // --- Preparation (off-scroller, failure-atomic) ---------------------------
+  function preparePositioned(
+    entries: ReadonlyMap<string, DeclaredItem<T>> | null,
+    start: EdgeSlot | null,
+    end: EdgeSlot | null,
+  ): PositionedGeometry | null {
+    if (!options.position || !entries?.size) return null;
+    const placed: PositionedItem[] = [];
+    let origin = Infinity;
+    for (const entry of entries.values()) {
+      const position = options.position(entry.item);
+      if (position === null) continue;
+      const { top, lane } = position;
+      if (!Number.isFinite(top))
+        throw new RangeError("item top must be finite");
+      // Snap in the shared coordinate system, not after subtracting the
+      // retained origin. Otherwise eviction changes every column's fractional
+      // phase while the scroll correction can only land on device pixels.
+      const alignedTop = snapToDevicePixel(top);
+      origin = Math.min(origin, alignedTop);
+      placed.push({ top: alignedTop, lane, height: entry.height });
+    }
+    if (!placed.length) return null;
+    if (placed.length !== entries.size)
+      throw new Error("a positioned snapshot must place every item or none");
+    origin = positionedOrigin(origin);
+    const leading = start ? quantizeHeight(start.height) : 0;
+    let bottom = leading;
+    for (const item of placed) {
+      item.top += leading - origin;
+      bottom = Math.max(bottom, item.top + item.height);
+    }
+    if (start) placed.unshift({ top: 0, height: leading, lane: 0 });
+    if (end)
+      placed.push({ top: bottom, height: quantizeHeight(end.height), lane: 0 });
+    return new PositionedGeometry(placed);
+  }
+
   function prepare(
     next: readonly T[],
     requested: AnchorRequest | undefined,
@@ -1043,6 +1128,7 @@ export function createVirtualList<T>(
       partial,
     );
     prepared.declaredItems = nextDeclared;
+    prepared.positioned = preparePositioned(nextDeclared, startSlot, endSlot);
     const { newRows, deferred, anchor } = prepared;
     const built: Row<T>[] = [];
     const journal = new RenderJournal<T, Row<T>>(
@@ -1443,8 +1529,14 @@ export function createVirtualList<T>(
         rendered = renderInto(row, item);
       } catch (error) {
         teardownFailures.push(error);
-        const old = declaredItems.get(key);
-        if (old) applying.declaredItems?.set(key, old);
+        if (applying.positioned) {
+          // Explicit placement commits atomically even when rendering fails;
+          // keep the row unknown so a later snapshot retries its content.
+          row.item = item;
+        } else {
+          const old = declaredItems.get(key);
+          if (old) applying.declaredItems?.set(key, old);
+        }
         continue;
       }
       if (disposed) {
@@ -1556,6 +1648,8 @@ export function createVirtualList<T>(
       for (const row of dirtyRows) toMeasure.add(row);
 
       commitMeasured(toMeasure);
+      if (applying && !applying.partial)
+        geometry.setPositioned(applying.positioned);
       geometryEpoch += 1;
 
       const result = geometry.resolve(capture);
@@ -1645,7 +1739,10 @@ export function createVirtualList<T>(
     const offset = geometry.offsetOf(row.key);
     if (offset < 0 || row.offset === offset) return;
     row.offset = offset;
-    row.slot.style.transform = `translateY(${offset}px)`;
+    // Direct cards may animate their own transform (for example press scale).
+    // Keep layout translation separate so rebasing cannot inherit that transition.
+    if (row.slot === row.element) row.slot.style.translate = `0 ${offset}px`;
+    else row.slot.style.transform = `translateY(${offset}px)`;
   }
 
   function mountRow(row: Row<T>): void {
@@ -1678,12 +1775,9 @@ export function createVirtualList<T>(
   }
 
   let lastReconcile = { scrollTop: Number.NaN, height: Number.NaN, epoch: -1 };
-  let lastRange = { start: 0, end: 0 };
+  let lastRange: GeometryWindow = { start: 0, end: 0 };
 
-  function reconcileWindow(vp: GeometryViewport): {
-    start: number;
-    end: number;
-  } {
+  function reconcileWindow(vp: GeometryViewport): GeometryWindow {
     // A glide write and the scroll event it produces both reconcile; the
     // second pass finds nothing to do.
     if (
@@ -1696,19 +1790,34 @@ export function createVirtualList<T>(
     const geometryChanged = lastReconcile.epoch !== geometryEpoch;
     let complete = true;
     const range = geometry.window(vp, overscanPx);
+    if (!geometryChanged && range === lastRange) {
+      lastReconcile = {
+        scrollTop: vp.scrollTop,
+        height: vp.height,
+        epoch: geometryEpoch,
+      };
+      return range;
+    }
+    const visible = range.indices ? new Set(range.indices) : null;
     lastRange = range;
     // Deleting the current entry while iterating a Set is defined and does
     // not skip its successor; avoid allocating an array on every scroll.
     for (const row of mountedRows) {
       const index = geometry.indexOf(row.key);
-      if (index < range.start || index >= range.end) {
+      if (
+        visible
+          ? !visible.has(index)
+          : index < range.start || index >= range.end
+      ) {
         if (declared && !row.edge) {
           rows.delete(row.key);
           deferTeardown(destroyAll([row]));
         } else unmountRow(row);
       }
     }
-    for (let index = range.start; index < range.end; index++) {
+    const length = range.indices?.length ?? range.end - range.start;
+    for (let i = 0; i < length; i++) {
+      const index = range.indices?.[i] ?? range.start + i;
       const key = geometry.keyAt(index);
       let row = key === undefined ? undefined : rows.get(key);
       if (!row && key !== undefined) {
@@ -1754,7 +1863,7 @@ export function createVirtualList<T>(
   // --- Events ---------------------------------------------------------------
   function publish(
     vp: GeometryViewport = viewportState(),
-    reconciledRange?: { start: number; end: number },
+    reconciledRange?: GeometryWindow,
   ): void {
     if (disposed) return;
     // Until a resize has been adopted, a position at the new height is the
@@ -1788,6 +1897,7 @@ export function createVirtualList<T>(
     // must hear about it.
     if (
       lastPublishedEpoch !== geometryEpoch ||
+      lastPublishedIndices !== range.indices ||
       lastState.count !== count ||
       lastState.start !== start ||
       lastState.end !== end ||
@@ -1798,6 +1908,7 @@ export function createVirtualList<T>(
       lastState.held !== held
     ) {
       lastPublishedEpoch = geometryEpoch;
+      lastPublishedIndices = range.indices;
       lastState = {
         count,
         start,
@@ -2039,7 +2150,11 @@ export function createVirtualList<T>(
           let applied = false;
           guarded(() => {
             const range = geometry.window(viewportState(), overscanPx);
-            const keys = new Set(committedKeys.slice(range.start, range.end));
+            const keys = new Set(
+              range.indices
+                ? range.indices.map((index) => committedKeys[index] as string)
+                : committedKeys.slice(range.start, range.end),
+            );
             if (geometry.pinned !== null) keys.add(geometry.pinned);
             if (pending?.target) keys.add(pending.target.key);
             const protectedItems: T[] = [];
@@ -2175,6 +2290,12 @@ export function createVirtualList<T>(
     if (index === undefined) return;
     if (keyOf(item) !== key)
       throw new Error("updateItem cannot change an item's key");
+    if (options.position) {
+      const next = [...lastItems];
+      next[index] = item;
+      applyItems(next, anchor, false);
+      return;
+    }
     guarded(() => {
       const { prepared, teardownFailures } = prepare([item], anchor, true);
       if (!disposed) lastItems[index] = item;

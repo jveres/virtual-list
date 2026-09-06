@@ -35,7 +35,7 @@ describe("gallery layout checkpoints", () => {
 
   it("should preserve full-history row and column ownership after a checkpoint cache miss", () => {
     const history = createLayoutHistory(photo, 7, 120, 2);
-    const layouts = createGalleryLayouts(480, history);
+    const layouts = createGalleryLayouts(history);
     history(window(1200), 2);
     const retained = window(240, 480);
     const all = window(0, 720);
@@ -46,9 +46,7 @@ describe("gallery layout checkpoints", () => {
           (row) => (row.photos[0]?.id ?? 0) >= 240,
         ),
       );
-      const cards = layouts
-        .masonry(retained, width, 150, 6, true)
-        .flatMap((band) => band.cards.filter((card) => card.part === 0));
+      const cards = layouts.masonry(retained, width, 150, 6, true);
       const expected = masonry(all, width, density, 6).cards.filter(
         (card) => card.id >= 240,
       );

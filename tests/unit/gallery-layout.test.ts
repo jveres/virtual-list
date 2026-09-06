@@ -6,7 +6,6 @@ import {
   masonry,
   type Photo,
   sameGalleryItem,
-  slice,
 } from "../../demos/gallery/layout";
 import { createLayoutHistory } from "../../demos/gallery/layout-history";
 
@@ -18,32 +17,23 @@ const photos = (n: number): Photo[] =>
   }));
 
 describe("retained gallery layout continuity", () => {
-  it("should align the shortened leading band with device-pixel runtime slots", () => {
+  it("should preserve global column offsets after prefix eviction", () => {
     const all = photos(600);
-    for (const ratio of [1, 1.25, 1.5, 2]) {
-      const layouts = createGalleryLayouts(
-        480,
-        createLayoutHistory((id) => all[id] as Photo, 8),
-        () => ratio,
-      );
-      const bands = layouts.masonry(all.slice(240), 981, 240, 6, false);
-      expect(bands[0]?.height).toBeGreaterThan(0);
-      expect(bands[0]?.height).toBeLessThan(480);
-      for (let i = 0; i < bands.length - 1; i++) {
-        const band = bands[i];
-        const next = bands[i + 1];
-        if (!band || !next) throw new Error("missing band");
-        const runtimeHeight = Math.ceil(band.height * ratio - 1e-6) / ratio;
-        expect(runtimeHeight).toBeCloseTo(band.height, 9);
-        expect(band.start + runtimeHeight).toBeCloseTo(next.start, 9);
-      }
-    }
+    const layouts = createGalleryLayouts(
+      createLayoutHistory((id) => all[id] as Photo, 8),
+    );
+    const full = layouts.masonry(all, 981, 240, 6, false);
+    const retained = layouts.masonry(all.slice(240), 981, 240, 6, false);
+    expect(retained).toEqual(
+      full
+        .slice(240)
+        .map((card) => ({ ...card, top: expect.closeTo(card.top, 7) })),
+    );
+    expect(Math.min(...retained.map((card) => card.top))).toBeGreaterThan(0);
   });
-
   it("should preserve row membership through trimming, resize and restoration", () => {
     const all = photos(720);
     const layouts = createGalleryLayouts(
-      480,
       createLayoutHistory((id) => all[id] as Photo, 8),
     );
     for (const width of [1080, 981, 800, 600, 400]) {
@@ -57,61 +47,23 @@ describe("retained gallery layout continuity", () => {
     }
   });
 
-  it("should preserve masonry bands and fragments after prefix eviction at every density", () => {
+  it("should preserve whole cards after prefix eviction at every density", () => {
     const all = photos(720);
     const layouts = createGalleryLayouts(
-      480,
       createLayoutHistory((id) => all[id] as Photo, 8),
     );
     for (const width of [1080, 981, 800, 600, 400]) {
       const full = layouts.masonry(all, width, 240, 6, true);
       const retained = layouts.masonry(all.slice(240), width, 240, 6, true);
-      expect(retained.length).toBeGreaterThan(0);
-      const expected = full.slice(
-        full.findIndex((band) => band.key === retained[0]?.key),
+      expect(retained).toEqual(
+        full
+          .slice(240)
+          .map((card) => ({ ...card, top: expect.closeTo(card.top, 7) })),
       );
-      expect(retained.map((band) => band.key)).toEqual(
-        expected.map((band) => band.key),
+      expect(retained.map((card) => card.key)).toEqual(
+        all.slice(240).map((photo) => `p${photo.id}`),
       );
-      for (let i = 0; i < retained.length; i++) {
-        const actual = retained[i];
-        const original = expected[i];
-        if (!actual || !original) throw new Error("missing band");
-        expect(actual.height).toBeCloseTo(
-          original.start + original.height - actual.start,
-          7,
-        );
-        const actualCards = [...actual.cards].sort((a, b) => a.id - b.id);
-        const originalCards = original.cards
-          .filter((card) => card.id >= 240)
-          .sort((a, b) => a.id - b.id);
-        expect(
-          actualCards.map((card) => [
-            card.id,
-            card.part,
-            card.left,
-            card.width,
-          ]),
-        ).toEqual(
-          originalCards.map((card) => [
-            card.id,
-            card.part,
-            card.left,
-            card.width,
-          ]),
-        );
-        for (let c = 0; c < actualCards.length; c++)
-          expect(actualCards[c]?.top).toBeCloseTo(
-            originalCards[c]?.top ?? -1,
-            7,
-          );
-      }
-      const tops = retained.flatMap((band) =>
-        band.cards.filter((card) => card.part === 0 && card.top >= band.start),
-      );
-      expect(tops.map((card) => card.id).sort((a, b) => a - b)).toEqual(
-        all.slice(240).map((photo) => photo.id),
-      );
+      expect(layouts.masonry(all, width, 240, 6, true)).toEqual(full);
     }
   });
 });
@@ -137,37 +89,36 @@ describe("layout equality", () => {
     }
   });
 
-  it("should include band fragments and image aspects in equality", () => {
-    const grid = masonry(photos(10), 900, 4, 6);
-    const band = slice(grid.cards, grid.height, 480)[0];
-    if (!band) throw new Error("missing band");
-    expect(sameGalleryItem(band, structuredClone(band))).toBe(true);
-    expect(sameGalleryItem(band, { ...band, start: 1 })).toBe(false);
-    expect(sameGalleryItem(band, { ...band, cards: band.cards.slice(1) })).toBe(
-      false,
-    );
+  it("should compare every rendered card field", () => {
+    const card = masonry(photos(10), 900, 4, 6).cards[0];
+    if (!card) throw new Error("missing card");
+    expect(sameGalleryItem(card, structuredClone(card))).toBe(true);
+    expect(sameGalleryItem(card, { ...card, key: "other" })).toBe(false);
     for (const field of [
       "id",
       "aspect",
+      "lane",
       "left",
       "top",
       "width",
       "height",
-      "part",
     ] as const) {
-      const changed = structuredClone(band);
-      const card = changed.cards[0];
-      if (!card) throw new Error("missing card");
-      card[field] += 1;
-      expect(sameGalleryItem(band, changed)).toBe(false);
+      expect(sameGalleryItem(card, { ...card, [field]: card[field] + 1 })).toBe(
+        false,
+      );
     }
+    const row = justify(photos(10), 900, 210, 6, false)[0];
+    if (!row) throw new Error("missing row");
+    expect(
+      sameGalleryItem(card, { ...row, key: card.key, height: card.height }),
+    ).toBe(false);
   });
 });
 
 describe("justified rows", () => {
   it("should preserve row membership and scale smoothly within a density", () => {
     const input = photos(240);
-    const layouts = createGalleryLayouts(480);
+    const layouts = createGalleryLayouts();
     const wide = layouts.rows(input, 1000, 210, 6, false);
     const narrow = layouts.rows(input, 980, 210, 6, false);
     const middle = layouts.rows(input, 990, 210, 6, false);
@@ -264,10 +215,10 @@ describe("masonry", () => {
     }
   });
 
-  it("should return no bands for an empty grid", () => {
-    expect(slice([], 0, 400)).toEqual([]);
+  it("should return no cards for an empty grid", () => {
+    expect(masonry([], 900, 4, 6)).toEqual({ cards: [], height: 0 });
+    expect(createGalleryLayouts().masonry([], 900, 240, 6, true)).toEqual([]);
   });
-
   it("should scale every column continuously between column-count changes", () => {
     const input = photos(240);
     const wide = masonry(input, 1000, 4, 6).cards;
@@ -285,101 +236,6 @@ describe("masonry", () => {
       expect(card.top).toBeLessThanOrEqual(a.top);
       expect(card.top).toBeGreaterThanOrEqual(b.top);
     }
-  });
-
-  it("should preserve boundary intersections, part numbers, and stable top order", () => {
-    const card = (id: number, top: number, height: number): Card => ({
-      id,
-      top,
-      height,
-      left: 0,
-      width: 100,
-      aspect: 100 / height,
-    });
-    const cards = [
-      card(3, 800, 50),
-      card(1, 0, 400),
-      card(2, 0, 850),
-      card(4, 400, 400),
-    ];
-    const original = cards.map((c) => ({ ...c }));
-
-    const bands = slice(cards, 850, 400);
-
-    expect(bands).toEqual([
-      {
-        kind: "band",
-        key: "b0",
-        start: 0,
-        height: 400,
-        cards: [
-          { ...cards[1], part: 0 },
-          { ...cards[2], part: 0 },
-        ],
-      },
-      {
-        kind: "band",
-        key: "b400",
-        start: 400,
-        height: 400,
-        cards: [
-          { ...cards[2], part: 1 },
-          { ...cards[3], part: 0 },
-        ],
-      },
-      {
-        kind: "band",
-        key: "b800",
-        start: 800,
-        height: 50,
-        cards: [
-          { ...cards[2], part: 2 },
-          { ...cards[0], part: 0 },
-        ],
-      },
-    ]);
-    expect(cards).toEqual(original);
-  });
-
-  it("should match geometric intersections across gallery sizes and columns", () => {
-    for (const count of [1, 120, 3000]) {
-      for (const columns of [2, 4, 6]) {
-        const { cards, height } = masonry(photos(count), 1080, columns, 6);
-        const bands = slice(cards, height, 480);
-        const parts = new Map<number, number>();
-
-        expect(bands).toHaveLength(Math.ceil(height / 480));
-        for (const band of bands) {
-          const expected = cards
-            .filter(
-              (card) =>
-                card.top < band.start + band.height &&
-                card.top + card.height > band.start,
-            )
-            .sort((a, b) => a.top - b.top)
-            .map((card) => {
-              const part = parts.get(card.id) ?? 0;
-              parts.set(card.id, part + 1);
-              return { ...card, part };
-            });
-          expect(band.cards).toEqual(expected);
-        }
-      }
-    }
-  });
-
-  it("should preserve completed bands behind all column tails on append", () => {
-    const before = masonry(photos(120), 1080, 5, 6);
-    const after = masonry(photos(240), 1080, 5, 6);
-    const firstNewTop = after.cards[120]?.top as number;
-    const stable = slice(before.cards, before.height, 480).filter(
-      (band) => band.start + band.height <= firstNewTop,
-    );
-
-    const bands = slice(after.cards, after.height, 480);
-
-    expect(stable.length).toBeGreaterThan(0);
-    expect(bands.slice(0, stable.length)).toEqual(stable);
   });
 
   it("places every photo in a column without overlap and never moves a card on append", () => {
@@ -407,34 +263,5 @@ describe("masonry", () => {
     const more = masonry(photos(120), 900, 4, 6);
     for (const [i, card] of cards.entries())
       expect(more.cards[i]).toEqual(card);
-  });
-
-  it("slices into bands that cover the grid, each card in every band it crosses", () => {
-    const { cards, height } = masonry(photos(60), 900, 4, 6);
-    const bands = slice(cards, height, 400);
-    expect(bands[0]?.start).toBe(0);
-    let y = 0;
-    for (const band of bands) {
-      expect(band.start).toBe(y);
-      y += band.height;
-      for (const card of band.cards) {
-        expect(card.top).toBeLessThan(band.start + band.height);
-        expect(card.top + card.height).toBeGreaterThan(band.start);
-      }
-    }
-    expect(y).toBe(height);
-    for (const card of cards) {
-      const drawings = bands.flatMap((b) =>
-        b.cards.filter((c) => c.id === card.id),
-      );
-      const crossed = Math.max(
-        1,
-        Math.ceil((card.top + card.height) / 400) - Math.floor(card.top / 400),
-      );
-      expect(drawings.length).toBeGreaterThanOrEqual(1);
-      expect(drawings.length).toBeLessThanOrEqual(crossed);
-      // Each drawing of a card is its own part, counted from its top band.
-      expect(drawings.map((d) => d.part)).toEqual(drawings.map((_, i) => i));
-    }
   });
 });
