@@ -320,9 +320,7 @@ export class Geometry {
   pin(key: string | null, inset = 0): void {
     this.pinnedKey = key !== null && this.indexByKey.has(key) ? key : null;
     this.pinnedInsetPx =
-      this.pinnedKey !== null && Number.isFinite(inset)
-        ? Math.max(0, inset)
-        : 0;
+      this.pinnedKey !== null && Number.isFinite(inset) ? inset : 0;
   }
 
   /**

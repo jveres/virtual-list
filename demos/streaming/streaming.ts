@@ -49,6 +49,7 @@ import {
   streamOpenAIChat,
   stripGeneratedImages,
 } from "./openai.js";
+import { sampleTimestamp } from "./sample-time.js";
 
 import "../shared/styles.css";
 import {
@@ -628,6 +629,9 @@ function refreshLoadedWindow(): void {
   // and its messages.
   loadedStart -= loadedStart % MESSAGES_PER_DAY;
   messages = transcript.slice(loadedStart);
+  transcriptHasDates = transcript.some(
+    (message) => message.sentAt !== undefined,
+  );
   transcriptIndexById.clear();
   transcript.forEach((message, index) => {
     transcriptIndexById.set(message.id, index);
@@ -644,12 +648,13 @@ let stickyHeaders: StickyHeaders | undefined;
 
 const dayHeaders = new Map<number, DayHeader>();
 let labeledFor = "";
+let transcriptHasDates = false;
 
 // Two kinds of day share one number space, ordered along the transcript:
-// - a dated message (a real OpenAI turn) belongs to its calendar day, keyed
+// - a dated message (including the built-in sample) belongs to its calendar day, keyed
 //   by that day's local midnight in epoch ms;
 // - an undated message belongs to a synthetic bucket of MESSAGES_PER_DAY
-//   consecutive messages (the canned transcript), or — in a real
+//   consecutive messages (an undated import), or — in a dated
 //   conversation whose older turns were stored before dates existed — to
 //   one "Earlier" day that precedes every dated one.
 const DAY_MS = 86_400_000;
@@ -669,7 +674,7 @@ function isDatedDay(day: number): boolean {
 }
 
 function conversationIsDated(): boolean {
-  return getAISettings().provider === "openai";
+  return getAISettings().provider === "openai" || transcriptHasDates;
 }
 
 function dayOf(message: Message): number {
@@ -1032,13 +1037,18 @@ A chat log reads as one continuous thing, so virtual scrolling matches the menta
 I'd pick virtual scrolling for a chat log nearly every time; pagination only when row heights are unknowable or the dataset is enormous and rarely revisited.`,
 ];
 
-function createTemplateMessages(count: number): Message[] {
+function createTemplateMessages(
+  count: number,
+  timestampForIndex: (index: number) => number,
+): Message[] {
   const start = transcript.length;
   const nextMessages: Message[] = [];
   for (let offset = 0; offset < count; offset++) {
     const templateId = (start + offset) % conversation.length;
     const sample = at(conversation, templateId);
-    nextMessages.push(createMessage({ ...sample }));
+    nextMessages.push(
+      createMessage({ ...sample, sentAt: timestampForIndex(start + offset) }),
+    );
   }
   return nextMessages;
 }
@@ -1046,42 +1056,73 @@ function createTemplateMessages(count: number): Message[] {
 // Builds the linear spine from the conversation template, then grafts on the
 // synthetic version branches above. The active path becomes the transcript.
 function seedConversationTree(count: number): void {
-  for (const message of createTemplateMessages(count)) {
+  const bridge =
+    at(conversation, (count - 1) % conversation.length).role === "user";
+  const lastIndex = count + (bridge ? 2 : 1);
+  const now = Date.now();
+  const timestampForIndex = (index: number): number =>
+    sampleTimestamp(index, lastIndex, now);
+  for (const message of createTemplateMessages(count, timestampForIndex)) {
     addTreeChild(activeLeafId(), message, { select: true });
   }
-  seedSyntheticBranches();
+  seedSyntheticBranches(count, timestampForIndex);
 }
 
-function seedSyntheticBranches(): void {
+function seedSyntheticBranches(
+  nextIndex: number,
+  timestampForIndex: (index: number) => number,
+): void {
   // A user prompt has to follow an assistant turn; bridge if the spine ended
   // on a user message so the seeded turn always reads naturally.
   let anchorId = activeLeafId();
   if (tree.get(anchorId)?.message?.role === "user") {
     anchorId = addTreeChild(
       anchorId,
-      createMessage({ role: "assistant", markdown: BRANCH_BRIDGE_REPLY }),
+      createMessage({
+        role: "assistant",
+        markdown: BRANCH_BRIDGE_REPLY,
+        sentAt: timestampForIndex(nextIndex++),
+      }),
       { select: true },
     );
   }
 
   // Edit scenario: one prompt, two versions, each with its own reply branch.
-  const userV1 = createMessage({ role: "user", markdown: BRANCH_USER_V1 });
-  const userV2 = createMessage({ role: "user", markdown: BRANCH_USER_V2 });
+  const userSentAt = timestampForIndex(nextIndex++);
+  const replySentAt = timestampForIndex(nextIndex);
+  const userV1 = createMessage({
+    role: "user",
+    markdown: BRANCH_USER_V1,
+    sentAt: userSentAt,
+  });
+  const userV2 = createMessage({
+    role: "user",
+    markdown: BRANCH_USER_V2,
+    sentAt: userSentAt,
+  });
   addTreeChild(anchorId, userV1, { select: true });
   addTreeChild(anchorId, userV2, { select: false });
 
   // userV2 → a single reply.
   addTreeChild(
     userV2.id,
-    createMessage({ role: "assistant", markdown: BRANCH_REPLY_V2 }),
+    createMessage({
+      role: "assistant",
+      markdown: BRANCH_REPLY_V2,
+      sentAt: replySentAt,
+    }),
     { select: true },
   );
 
   // userV1 → a reply with three regenerations (the regenerate scenario).
   BRANCH_REGEN_REPLIES.forEach((markdown, index) => {
-    addTreeChild(userV1.id, createMessage({ role: "assistant", markdown }), {
-      select: index === 0,
-    });
+    addTreeChild(
+      userV1.id,
+      createMessage({ role: "assistant", markdown, sentAt: replySentAt }),
+      {
+        select: index === 0,
+      },
+    );
   });
 }
 
@@ -1862,13 +1903,13 @@ async function handleSend(): Promise<void> {
   };
 
   try {
-    // Real turns are dated (the day separators show their calendar day);
-    // the canned rotation stays undated in its synthetic days.
-    const sentAt = useOpenAI ? { sentAt: Date.now() } : {};
+    // New turns use the real clock in both providers. The built-in sample
+    // ends yesterday, so the first simulated send opens a Today section.
+    const sentAt = Date.now();
     const userMessage = createMessage({
       role: "user",
       markdown: text,
-      ...sentAt,
+      sentAt,
     });
     const assistantMessage = createMessage({
       role: "assistant",
@@ -1877,7 +1918,7 @@ async function handleSend(): Promise<void> {
       // Real replies get no pre-seeded tool calls (theirs arrive from the
       // stream); the simulated set is a prop of the canned rotation.
       ...(useOpenAI ? {} : { toolCalls: createSimulatedToolCalls() }),
-      ...sentAt,
+      sentAt,
     });
     assistantId = assistantMessage.id;
     appendToActiveBranch([userMessage, assistantMessage]);

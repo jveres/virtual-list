@@ -85,6 +85,10 @@ export default defineConfig({
         feed: new URL("demos/feed/index.html", import.meta.url).pathname,
         newspaper: new URL("demos/newspaper/index.html", import.meta.url)
           .pathname,
+        "chat-history": new URL(
+          "demos/chat-history/index.html",
+          import.meta.url,
+        ).pathname,
       },
     },
   },

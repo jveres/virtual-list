@@ -4,10 +4,10 @@
  * at the same viewport plus the header keys and the list's read queries.
  *
  * A floating header pins the current group to the top. As the next group's
- * in-flow header scrolls up, its pill rises on top of the pinned one (an
- * `incoming` slot stacked above the `active` slot), covering it; when it
- * reaches the top it becomes the pinned header. The pinned group's own
- * in-flow header is hidden meanwhile so it never shows twice.
+ * header scrolls up, its incoming pill pushes the active pill out of the
+ * clipped overlay; when it reaches the top it becomes the pinned header.
+ * Both represented in-flow headers are hidden during the handoff, so neither
+ * pill is duplicated and a wider old label cannot peek behind the new one.
  *
  * Positions come from `positionOf` — the runtime's committed geometry, which
  * changes only at commits (docs/lean-core.md; under "live" some land
@@ -36,6 +36,8 @@ interface StickyHeadersConfig {
 }
 
 export interface StickyHeaders {
+  /** Move against cached geometry using the runtime's current scroll snapshot. */
+  update(scrollTop: number): void;
   /** Re-read committed geometry; reuse the host's scroll snapshot when available. */
   refresh(scrollTop?: number): void;
   /** Turn the sticky overlay on/off (e.g. an "inline only" mode). */
@@ -70,7 +72,7 @@ export function createStickyHeaders(
     s.style.cssText = `position:absolute;left:0;right:0;z-index:${z};`;
     return s;
   };
-  // `incoming` stacks above `active` so the new header scrolls up over the old.
+  // Separate slots let the incoming header push the active header out.
   const active = makeSlot(0);
   const incoming = makeSlot(1);
   overlay.append(active, incoming);
@@ -86,7 +88,7 @@ export function createStickyHeaders(
   let incomingGroup = -1;
   let visible = false;
   let enabled = true;
-  let hiddenInline: HTMLElement | null = null;
+  let hiddenInline: HTMLElement[] = [];
 
   const headerTop = (ordinal: number): number => tops[ordinal] ?? 0;
   const headerHeight = (ordinal: number): number => heights[ordinal] ?? 0;
@@ -122,23 +124,30 @@ export function createStickyHeaders(
   };
 
   const restoreInline = (): void => {
-    if (hiddenInline) {
-      hiddenInline.style.visibility = "";
-      hiddenInline = null;
-    }
+    for (const element of hiddenInline) element.style.visibility = "";
+    hiddenInline = [];
   };
 
   // Hide the pinned group's in-flow header (if mounted) so it doesn't show
   // through the floating pill as it scrolls up behind the overlay. A
   // visibility change is not a size change: the row's geometry is untouched.
-  const hideInlineFor = (ordinal: number): void => {
-    const el = elementOf?.(keys[ordinal] ?? "") ?? null;
-    if (el === hiddenInline) return;
-    restoreInline();
-    if (el) {
-      el.style.visibility = "hidden";
-      hiddenInline = el;
+  const hideInlineFor = (ordinal: number, next = -1): void => {
+    const activeElement = elementOf?.(keys[ordinal] ?? "") ?? null;
+    const incomingElement =
+      next >= 0 ? (elementOf?.(keys[next] ?? "") ?? null) : null;
+    if (
+      activeElement === (hiddenInline[0] ?? null) &&
+      incomingElement === (hiddenInline[1] ?? null)
+    )
+      return;
+    const elements = [activeElement, incomingElement].filter(
+      (element): element is HTMLElement => element !== null,
+    );
+    for (const element of hiddenInline) {
+      if (!elements.includes(element)) element.style.visibility = "";
     }
+    for (const element of elements) element.style.visibility = "hidden";
+    hiddenInline = elements;
   };
 
   const show = (): void => {
@@ -175,25 +184,40 @@ export function createStickyHeaders(
 
     show();
     setActive(lo);
-    hideInlineFor(lo);
 
     // While the next group's header is within one header-height of the top,
-    // ride it up in the incoming slot (on top of the pinned one). The binary
+    // push the old pill above the clip while the incoming slot rises. The binary
     // search promotes it to `active` the moment it reaches the top.
     const nxt = lo + 1;
     const top =
       nxt < groupCount ? headerTop(nxt) - scroll : Number.POSITIVE_INFINITY;
-    if (top > 0 && top < headerHeight(lo)) setIncoming(nxt, top);
-    else clearIncoming();
+    if (top > 0 && top < headerHeight(lo)) {
+      active.style.transform = `translateY(${top - headerHeight(lo)}px)`;
+      // Clip the outgoing pill at the viewport top, but keep the entire
+      // incoming pill visible while its in-flow copy is hidden. A fixed
+      // one-header clip would make that pill disappear below the top band.
+      overlay.style.height = `${Math.max(headerHeight(lo), top + headerHeight(nxt))}px`;
+      setIncoming(nxt, top);
+      hideInlineFor(lo, nxt);
+    } else {
+      active.style.transform = "";
+      overlay.style.height = `${headerHeight(lo)}px`;
+      clearIncoming();
+      hideInlineFor(lo);
+    }
   };
 
-  const refresh = (scrollTop = viewport.scrollTop): void => {
-    // A scroll frame sampled before this commit would apply stale scrollTop
-    // to the new offsets. Retire it; this refresh is the newer authority.
+  const updatePosition = (scrollTop: number): void => {
+    // A runtime publication is newer than a queued native scroll sample.
+    // In particular, a glide can advance again before that rAF executes.
     if (frame) {
       cancelAnimationFrame(frame);
       frame = 0;
     }
+    update(scrollTop);
+  };
+
+  const refresh = (scrollTop = viewport.scrollTop): void => {
     const nextKeys = headerKeys();
     const positions = nextKeys.map(positionOf);
     const changed =
@@ -214,7 +238,7 @@ export function createStickyHeaders(
     groupCount = keys.length;
     // A mounted-range publication need not change geometry. Still update the
     // position and hidden inline node, but retain the existing header content.
-    update(scrollTop);
+    updatePosition(scrollTop);
   };
 
   let frame = 0;
@@ -254,5 +278,5 @@ export function createStickyHeaders(
   });
   refresh();
 
-  return { refresh, setEnabled, destroy };
+  return { update: updatePosition, refresh, setEnabled, destroy };
 }

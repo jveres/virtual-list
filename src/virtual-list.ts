@@ -155,6 +155,13 @@ export interface VirtualListOptions<T> {
     state: VirtualListState,
     viewport: Readonly<GeometryViewport>,
   ) => void;
+  /**
+   * Called after reconciliation when the viewport's position or height changes,
+   * including boot. Unlike onState, this also runs inside an unchanged mounted
+   * range and synchronously with each programmatic glide step. Use the supplied
+   * snapshot for scroll-linked overlays without another layout read.
+   */
+  onViewport?: (viewport: Readonly<GeometryViewport>) => void;
   onReachStart?: (context: ReachContext) => void;
   onReachEnd?: (context: ReachContext) => void;
   /** The element joined the scroller's DOM (an image can start loading). */
@@ -255,7 +262,8 @@ export type ScrollOptions = {
   duration?: number;
   /**
    * Keyed targets only: land this many pixels below the viewport top — room
-   * for a floating sticky header, so a pinned message is not covered by it.
+   * for a floating sticky header. Negative offsets place the row's top above
+   * the viewport, for centering or bottom-aligning a row taller than it.
    */
   offset?: number;
 };
@@ -563,6 +571,10 @@ export function createVirtualList<T>(
   // Replaced by the boot commit's publish before the list is handed out.
   let lastState: VirtualListState = EMPTY_STATE;
   let lastPublishedEpoch = -1;
+  let lastPublishedViewport = {
+    scrollTop: Number.NaN,
+    height: Number.NaN,
+  };
   const reach = new ReachController({
     start: options.onReachStart,
     end: options.onReachEnd,
@@ -875,6 +887,12 @@ export function createVirtualList<T>(
       changed = true;
     }
     if (!changed) return;
+    // A width reflow belongs to the viewport observer's atomic takeover.
+    // Some engines deliver row sizes first: committing them here would move
+    // a sticky-inset pin relative to the preceding row before the viewport
+    // observer can capture that pin's pre-resize stance.
+    if (Math.abs(viewport.clientWidth - lastViewportWidth) > MEASURE_EPSILON_PX)
+      return;
     // Idle: commit in the same frame as the delivery (after layout, before
     // paint — I6). Scrolling: the commit waits for settle — except what
     // "live" can commit without a scroll write, which commits now.
@@ -1794,6 +1812,15 @@ export function createVirtualList<T>(
     }
     if (disposed) return;
 
+    if (
+      lastPublishedViewport.scrollTop !== vp.scrollTop ||
+      lastPublishedViewport.height !== vp.height
+    ) {
+      lastPublishedViewport = vp;
+      notifyCommitted(() => options.onViewport?.(vp));
+    }
+    if (disposed) return;
+
     notifyCommitted(() => reach.update(vp.scrollTop, maxTop));
   }
 
@@ -1824,6 +1851,21 @@ export function createVirtualList<T>(
     const vp = viewportState();
     const range = reconcileWindow(vp);
     publish(vp, range);
+  }
+
+  /** Retire an old pin's offscreen tail only after the scroll has landed. */
+  function trimUnusedReserve(): void {
+    if (disposed || geometry.reserve === 0) return;
+    const vp = viewportState();
+    const needed = Math.max(
+      0,
+      Math.max(vp.scrollTop, geometry.pinTop ?? 0) +
+        vp.height -
+        geometry.contentSize,
+    );
+    if (geometry.reserve > needed + MEASURE_EPSILON_PX) {
+      commit(null, "none", "allowed", "keep");
+    }
   }
 
   // --- The settle controller (the scroll-phase authority) -------------------
@@ -1883,6 +1925,7 @@ export function createVirtualList<T>(
         publish();
       }
       resizeHeld = null;
+      trimUnusedReserve();
       // A completed command to the end is explicit follow intent: growth
       // that outran its glide (fast streaming) must not read as "the user
       // is not at the end" — a genuine interruption resolved it before this.
@@ -2276,8 +2319,7 @@ export function createVirtualList<T>(
           : undefined,
       offset:
         scrollOptions.offset !== undefined &&
-        Number.isFinite(scrollOptions.offset) &&
-        scrollOptions.offset > 0
+        Number.isFinite(scrollOptions.offset)
           ? scrollOptions.offset
           : undefined,
     };
@@ -2320,7 +2362,7 @@ export function createVirtualList<T>(
   ): void {
     followController.stop();
     const keyed = target !== "start" && target !== "end";
-    const below = Math.max(0, scrollOptions.offset ?? 0);
+    const below = scrollOptions.offset ?? 0;
     // A newer command supersedes the previous one whatever its state: a
     // parked landed command resolves false BEFORE its phase is finished
     // (finishing it would otherwise resolve it true), an in-flight glide
@@ -2356,6 +2398,7 @@ export function createVirtualList<T>(
         followController.start();
       }
       reconcileAndPublish();
+      trimUnusedReserve();
       done(!disposed && landedOn(target, below));
       return;
     }

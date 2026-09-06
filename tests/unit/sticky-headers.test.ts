@@ -74,6 +74,24 @@ describe("sticky headers", () => {
     sticky.destroy();
   });
 
+  it("should keep a glide snapshot ahead of a queued native scroll frame", () => {
+    const { sticky, viewport, incoming } = setup();
+    viewport.scrollTop = 70;
+    viewport.dispatchEvent(new Event("scroll"));
+    Object.defineProperty(viewport, "scrollTop", {
+      get() {
+        throw new Error("Unexpected layout read");
+      },
+    });
+
+    sticky.update(90);
+
+    expect(incoming.style.transform).toBe("translateY(10px)");
+    vi.advanceTimersByTime(20);
+    expect(incoming.style.transform).toBe("translateY(10px)");
+    sticky.destroy();
+  });
+
   it("should sample scroll before an earlier bubbling listener mutates layout", () => {
     let dirty = false;
     let top = 0;
@@ -124,6 +142,37 @@ describe("sticky headers", () => {
     expect(active.style.height).toBe("50px");
     expect(incoming.textContent).toBe("");
     expect(incoming.style.display).toBe("none");
+    sticky.destroy();
+  });
+
+  it("should push the previous pill out instead of stacking it behind the next", () => {
+    const { sticky, active, incoming, inline } = setup();
+
+    sticky.refresh(90);
+
+    expect(active.style.transform).toBe("translateY(-34px)");
+    expect(incoming.style.transform).toBe("translateY(10px)");
+    expect(active.parentElement?.style.height).toBe("54px");
+    expect(inline.get("day:0")?.style.visibility).toBe("hidden");
+    expect(inline.get("day:1")?.style.visibility).toBe("hidden");
+    sticky.refresh(100);
+    expect(active.textContent).toBe("day 1");
+    expect(active.style.transform).toBe("");
+    expect(active.parentElement?.style.height).toBe("44px");
+    expect(incoming.textContent).toBe("");
+    expect(inline.get("day:0")?.style.visibility).toBe("");
+    sticky.destroy();
+    expect(inline.get("day:1")?.style.visibility).toBe("");
+  });
+
+  it("should restore both inline pills when sticky headers are disabled during handoff", () => {
+    const { sticky, inline } = setup();
+    sticky.refresh(90);
+
+    sticky.setEnabled(false);
+
+    expect(inline.get("day:0")?.style.visibility).toBe("");
+    expect(inline.get("day:1")?.style.visibility).toBe("");
     sticky.destroy();
   });
 

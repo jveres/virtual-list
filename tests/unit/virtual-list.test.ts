@@ -113,6 +113,7 @@ function mount(
   hooks: {
     replaceOnRerender?: boolean;
     onState?: VirtualListOptions<Msg>["onState"];
+    onViewport?: VirtualListOptions<Msg>["onViewport"];
     onDestroy?: (element: HTMLElement) => void;
     scrollingUpdates?: ScrollingUpdates;
     followBehavior?: VirtualListOptions<Msg>["followBehavior"];
@@ -226,6 +227,7 @@ function mount(
       states.push(state);
       hooks.onState?.(state, viewport);
     },
+    onViewport: hooks.onViewport,
     onDestroy: (element) => {
       destroyed.push(Number(element.dataset.id));
       destroyedElements.push(element);
@@ -372,6 +374,29 @@ describe("settle-time window updates", () => {
     expect(viewports[0]).toEqual({ scrollTop: 0, height: VIEWPORT_H });
     h.userScroll(2000);
     expect(viewports.at(-1)).toEqual({ scrollTop: 2000, height: VIEWPORT_H });
+    h.list.dispose();
+  });
+  it("should publish each glide position before its native scroll event", async () => {
+    let snapshot = { scrollTop: -1, height: -1 };
+    const h = mount(range(0, 40), {
+      boot: "start",
+      onViewport: (viewport) => {
+        snapshot = { ...viewport };
+      },
+    });
+    const landing = h.list.scrollTo("m10", { behavior: "smooth" });
+
+    for (let frame = 0; frame < 45; frame++) {
+      vi.advanceTimersByTime(16);
+      expect(snapshot).toEqual({
+        scrollTop: h.viewport.scrollTop,
+        height: VIEWPORT_H,
+      });
+    }
+    h.settle();
+
+    await expect(landing).resolves.toBe(true);
+    expect(snapshot.scrollTop).toBe(1000);
     h.list.dispose();
   });
   it("should settle an update queued by a render that subsequently fails", async () => {
@@ -2073,6 +2098,51 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.positionOf("m45")?.top).toBe(4600);
     h.list.dispose();
   });
+
+  it.each(["live", "same-height", "freeze"] as const)(
+    "should preserve a sticky-inset pin when row resize arrives before viewport resize in %s",
+    (scrollingUpdates) => {
+      let width = 800;
+      const h = mount(range(0, 50), { width: () => width, scrollingUpdates });
+      void h.list.scrollTo("m40", { align: "start", offset: 44 });
+      expect(h.viewport.scrollTop).toBe(3956);
+
+      width = 390;
+      h.heights.set(39, 124);
+      fireResize(0, h.rowElement("msg 39"), 124);
+      fireResize(1, h.viewport, VIEWPORT_H);
+
+      expect(h.list.positionOf("m40")?.top).toBe(4024);
+      expect(h.viewport.scrollTop).toBe(3980);
+      h.list.dispose();
+    },
+  );
+
+  it.each([-200, -400])(
+    "should smoothly align a tall row with a signed offset of %i",
+    async (offset) => {
+      const h = mount(range(0, 20));
+      h.heights.set(18, 1000);
+      h.list.updateItem("m18", message(18, "tall message"));
+      h.userScroll(1000);
+      h.settle();
+
+      const landed = h.list.scrollTo("m18", {
+        align: "start",
+        offset,
+        behavior: "smooth",
+      });
+      vi.advanceTimersByTime(48);
+      expect(h.viewport.scrollTop).toBeGreaterThan(1000);
+      expect(h.viewport.scrollTop).toBeLessThan(1800 - offset);
+      advanceFramesUntil(() => h.viewport.scrollTop === 1800 - offset);
+      h.settle();
+
+      await expect(landed).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(1800 - offset);
+      h.list.dispose();
+    },
+  );
 
   it('"keep-start": smooth follow stops once the last row\'s top reaches the viewport top', () => {
     const initial = range(0, 50);
@@ -3841,6 +3911,34 @@ describe("v2 runtime — commands", () => {
     expect(writes).toBeGreaterThan(0);
     expect(stale).toEqual([]);
   });
+
+  it.each(["auto", "smooth"] as const)(
+    "should retire the previous top pin reserve after %s realignment",
+    async (behavior) => {
+      const h = mount(range(0, 20));
+      await h.list.scrollTo("m19", { align: "start" });
+      expect(h.list.state.totalSize).toBe(2500);
+
+      const centered = h.list.scrollTo("m19", {
+        align: "start",
+        offset: (VIEWPORT_H - ROW_H) / 2,
+        behavior,
+      });
+      advanceFramesUntil(() => h.viewport.scrollTop === 1650);
+      h.settle();
+
+      await expect(centered).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(1650);
+      expect(h.list.state.totalSize).toBe(2250);
+      h.userScroll(1900);
+      expect(h.viewport.scrollTop).toBe(1650);
+      h.settle();
+      await h.list.scrollTo("m19", { align: "start", offset: 500 });
+      expect(h.list.state.totalSize).toBe(2000);
+      expect(h.viewport.scrollTop).toBe(1400);
+      h.list.dispose();
+    },
+  );
 
   it("pins with a reserve for align:start (I5) and absorbs growth beneath it", () => {
     const h = mount(range(0, 20));

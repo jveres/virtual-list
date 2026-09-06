@@ -48,6 +48,8 @@ pnpm run dev
   streaming cursor) lives in the settings dialog's General section and
   persists in the browser; URL parameters are for test and debug flags
   only.
+  The built-in simulated history is dated through yesterday; new sends use
+  the current time, so the first new turn starts a **Today** section.
 
 - `/demos/gallery/index.html` — the gallery: the same photos as
   justified rows or as masonry bands, each the virtualized item with a
@@ -61,6 +63,15 @@ pnpm run dev
   header shows its metrics. A soft 480-photo window trims distant pages and
   restores them on backward scrolling. See [bounded paging](docs/bounded-paging.md)
   for the reusable companion and layout-continuity contract.
+
+- `/demos/chat-history/index.html` — 10,000 numbered messages with day
+  headers and bounded, two-way paging. The simulated indexed source creates
+  only the requested 64-message page; the pager retains a soft limit of 192
+  messages and the runtime mounts only the visible window plus overscan.
+  Enter a message number such as **853** to fetch one page around that
+  target, without loading the intervening history. **Smooth** jumps animate
+  inside that fetched page; **Instant** jumps land directly. **Top** and
+  **Bottom** address the whole archive, not just the loaded window.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
 The dynamic-height lab can POST its trace to the dev server
@@ -120,6 +131,7 @@ const list = createVirtualList(viewport, {
   followInset: 0, // px kept clear above that row under "keep-start"
   edgeSlots: { start: { key: "loader", height: 52, render } },
   onState: (state) => {},
+  onViewport: ({ scrollTop, height }) => {},
   onReachStart: ({ signal }) => loadOlder(signal),
   onReachEnd: ({ signal }) => loadNewer(signal),
   onDestroy: (element) => {},
@@ -167,7 +179,9 @@ list.dispose();
   styles scoped to a viewport ancestor.
 - `scrollTo` with `align: "start"` on a key pins it to the viewport top and
   reserves the shortfall below (a chat's send flow); `offset` lands it
-  below a floating header. A smooth command is interrupted by genuine user
+  below a floating header. Realigning a pin removes unused trailing space
+  after landing, without shortening the scroll range during the glide.
+  A smooth command is interrupted by genuine user
   input and resolves `false`; a command to `"end"` re-engages end-follow.
 - `remeasure` is the intent-bearing path for a discrete user interaction
   that changes a row's height (opening a tool panel): it keeps the viewport
@@ -181,6 +195,11 @@ list.dispose();
 
 `demos/shared/sticky-headers.ts` is a companion that floats the current
 section header over the viewport using only `positionOf`/`elementOf`.
+Use `onState` to refresh its committed geometry, and `onViewport` to update
+its position from the supplied scroll snapshot. `onViewport` runs after
+reconciliation when the scroll position or viewport height changes, including
+boot and each programmatic glide step, even within an unchanged mounted range.
+It lets scroll-linked UI move in the same frame without another layout read.
 
 Rendering failures clean up newly created elements and preserve internal
 ownership. In-place render rollback is best effort: the runtime cannot undo
@@ -200,6 +219,8 @@ pnpm test        # vitest, jsdom, deterministic
 pnpm run test:browser              # Chromium, Firefox, WebKit via Playwright
 pnpm run test:browser -- --suite=chat --engine=webkit
 pnpm run test:browser -- --chaos=300 --seed=7 --headed
+node scripts/history-regression.mjs        # Run with the dev server on port 5173
+node scripts/sticky-header-regression.mjs  # Day-pill handoff, both directions
 ```
 
 The unit suite drives the real settle controller and the real runtime
