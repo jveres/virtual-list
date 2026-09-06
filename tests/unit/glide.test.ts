@@ -31,6 +31,70 @@ function harness(start: number, target: number, floorWrites: boolean) {
 }
 
 describe("glide", () => {
+  it.each(["read", "target", "write"] as const)(
+    "should finish an interrupted glide when %s throws",
+    (callback) => {
+      const failure = new Error("scroll observer failed");
+      const completed: boolean[] = [];
+      const host = harness(0, 500, false);
+      const glide = startGlide(host, 320, (result) => completed.push(result));
+      host[callback] = () => {
+        throw failure;
+      };
+
+      expect(() => vi.advanceTimersByTime(16)).toThrow(failure);
+
+      expect(glide.active).toBe(false);
+      expect(completed).toEqual([false]);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it("should stop inside a cancelled write without touching the host again", () => {
+    const host = harness(0, 500, false);
+    const completed: boolean[] = [];
+    const glide = startGlide(host, 320, (result) => completed.push(result));
+    host.write = () => {
+      glide.cancel();
+      host.read = () => {
+        throw new Error("read after cancellation");
+      };
+    };
+
+    vi.advanceTimersByTime(16);
+
+    expect(glide.active).toBe(false);
+    expect(completed).toEqual([false]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("should release the glide and preserve both errors when cleanup also throws", () => {
+    const failure = new Error("write failed");
+    const cleanupFailure = new Error("cleanup failed");
+    const host = harness(0, 500, false);
+    const glide = startGlide(host, 320, () => {
+      throw cleanupFailure;
+    });
+    host.write = () => {
+      throw failure;
+    };
+
+    let caught: unknown;
+    try {
+      vi.advanceTimersByTime(16);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(AggregateError);
+    expect((caught as AggregateError).errors).toEqual([
+      failure,
+      cleanupFailure,
+    ]);
+    expect(glide.active).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("lands exactly on the target", () => {
     const host = harness(0, 500, false);
     let completed = false;

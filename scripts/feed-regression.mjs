@@ -193,6 +193,14 @@ for (const engine of [firefox, webkit]) {
           "3",
         );
     }
+    // The budget is soft while an older page contains protected rows.
+    // Intact overlapping pages can retain 21 unique posts here; move into
+    // the loaded page before requiring the old page to be evicted.
+    await page.evaluate(() => {
+      const viewport = document.querySelector("#viewport");
+      viewport.scrollTop += viewport.clientHeight * 3;
+      viewport.dispatchEvent(new Event("scroll"));
+    });
     await page.waitForFunction(
       () => Number(document.querySelector("#viewport").dataset.retained) <= 20,
     );

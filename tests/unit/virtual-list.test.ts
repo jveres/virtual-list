@@ -399,6 +399,30 @@ describe("settle-time window updates", () => {
     expect(snapshot.scrollTop).toBe(1000);
     h.list.dispose();
   });
+  it("should settle a failed glide and release its queued window update", async () => {
+    let fail = false;
+    const h = mount(range(0, 40), {
+      boot: "start",
+      onViewport: () => {
+        if (fail) {
+          fail = false;
+          throw new Error("scroll observer failed");
+        }
+      },
+    });
+    const moving = h.list.scrollTo("m20", { behavior: "smooth" });
+    const update = h.list.updateWindow(() => ({ items: range(0, 60) }));
+    fail = true;
+
+    expect(() => vi.advanceTimersByTime(16)).toThrow("scroll observer failed");
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(moving).resolves.toBe(false);
+    await expect(update).resolves.toBe(true);
+    expect(h.list.state.held).toBe(false);
+    expect(h.list.state.count).toBe(60);
+    h.list.dispose();
+  });
   it("should settle an update queued by a render that subsequently fails", async () => {
     let queued: Promise<boolean> | undefined;
     const h = mount(range(0, 20), {
@@ -476,6 +500,145 @@ describe("settle-time window updates", () => {
 });
 
 describe("bounded paging on the runtime", () => {
+  it.each(["start", "end"] as const)(
+    "should keep repeated overlapping %s loads bounded and contiguous",
+    async (edge) => {
+      const initial = page(200);
+      const h = mount([...initial.items], {
+        boot: edge,
+        itemHeight: () => ROW_H,
+      });
+      const evicted: number[] = [];
+      const paging = createPagedWindow({
+        list: h.list,
+        initial,
+        maxItems: 30,
+        key: (m) => `m${m.id}`,
+        keysOf: (m) => [`m${m.id}`],
+        project: (items) => items,
+        load: async ({ edge, cursor }) =>
+          page(cursor + (edge === "end" ? -10 : 10)),
+        onEvict: (removed) => {
+          const retainedKeys = new Set(paging.items.map((m) => m.id));
+          expect(removed.some((m) => retainedKeys.has(m.id))).toBe(false);
+          evicted.push(...removed.map((m) => m.id));
+        },
+      });
+
+      for (let step = 0; step < 10; step++) {
+        await expect(paging.load(edge)).resolves.toBe(true);
+        await h.list.scrollTo(edge);
+        await paging.reconcile();
+        const ids = paging.items.map((m) => m.id);
+        expect(ids).toEqual(
+          range(ids[0] ?? 0, (ids.at(-1) ?? -1) + 1).map((m) => m.id),
+        );
+        expect(ids.length).toBeLessThanOrEqual(30);
+      }
+      expect(evicted.length).toBeGreaterThan(0);
+      expect(
+        paging.items.some((m) => m.id === (edge === "end" ? 319 : 100)),
+      ).toBe(true);
+      paging.dispose();
+      h.list.dispose();
+    },
+  );
+
+  it("should preserve a single shared edit when its original page is evicted", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 30,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor - 10),
+    });
+    await paging.updateItem("m35", (m) => ({ ...m, body: "edited" }));
+    await paging.load("end");
+    let edits = 0;
+    await paging.updateItem("m35", (m) => {
+      edits++;
+      return { ...m, body: `${m.body} again` };
+    });
+    await h.list.scrollTo("end");
+    await paging.load("end");
+    await paging.reconcile();
+
+    expect(paging.items[0]?.id).toBe(30);
+    expect(paging.items.find((m) => m.id === 35)).toEqual(
+      message(35, "edited again"),
+    );
+    expect(edits).toBe(1);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should restore an overlapping continuation without skipping its shared boundary", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 30,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ edge, cursor }) =>
+        page(edge === "end" ? cursor - 10 : cursor),
+    });
+    await paging.load("end");
+    await h.list.scrollTo("m45");
+    await paging.load("end");
+    await h.list.scrollTo("m55");
+    await paging.reconcile();
+    await paging.load("start");
+
+    const ids = paging.items.map((m) => m.id);
+    expect(ids).toEqual(
+      range(ids[0] ?? 0, (ids.at(-1) ?? -1) + 1).map((m) => m.id),
+    );
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should preserve contiguous cursors after trimming a refreshed partial page", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 50,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      load: async ({ cursor }) => page(cursor),
+    });
+    await paging.load("end");
+    await paging.refreshHead(page(10));
+    await h.list.scrollTo("m55");
+    await paging.load("end");
+    await paging.load("start");
+
+    const ids = paging.items.map((m) => m.id);
+    expect(ids).toEqual(
+      range(ids[0] ?? 0, (ids.at(-1) ?? -1) + 1).map((m) => m.id),
+    );
+    paging.dispose();
+    h.list.dispose();
+  });
+
   it("should merge an overlapping fresh head without losing edits or the older cursor", async () => {
     const initial = page(20);
     const h = mount([...initial.items], {

@@ -2416,6 +2416,7 @@ export function createVirtualList<T>(
           glideToPin = false;
           if (!completed || disposed) {
             done(false);
+            if (!disposed) controller.markSettlePending();
             return;
           }
           awaitingSettle = {

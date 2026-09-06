@@ -177,6 +177,21 @@ export function startGlide(
   function tick(now: number): void {
     frame = 0;
     if (finished) return;
+    try {
+      advance(now);
+    } catch (error) {
+      // A host exception must not leave an active glide with no next frame.
+      // Release its owner (and pending command) before surfacing the error.
+      try {
+        finish(false);
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], "glide cleanup failed");
+      }
+      throw error;
+    }
+  }
+
+  function advance(now: number): void {
     if (startTime < 0) startTime = now;
     const target = host.target();
     const current = host.read();
@@ -215,6 +230,8 @@ export function startGlide(
       step = Math.sign(remaining); // |remaining| > SNAP_PX here.
     }
     host.write(current + step);
+    // The write publishes host callbacks, which can cancel or replace us.
+    if (finished) return;
     lastWritten = current + step;
     if (
       elapsed >= totalMs(legs) &&
