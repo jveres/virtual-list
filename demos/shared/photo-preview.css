@@ -171,11 +171,13 @@ html.photo-view-open body {
     transparent
   );
   color: var(--fg);
-  font: inherit;
-  font-size: 24px;
-  line-height: 1;
   cursor: pointer;
   backdrop-filter: blur(12px);
+}
+
+.photo-viewer-close svg {
+  display: block;
+  pointer-events: none;
 }
 
 .photo-viewer-close:focus-visible {

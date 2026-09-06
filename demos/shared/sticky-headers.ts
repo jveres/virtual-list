@@ -36,8 +36,8 @@ interface StickyHeadersConfig {
 }
 
 export interface StickyHeaders {
-  /** Re-read the header keys and positions (after a commit). */
-  refresh(): void;
+  /** Re-read committed geometry; reuse the host's scroll snapshot when available. */
+  refresh(scrollTop?: number): void;
   /** Turn the sticky overlay on/off (e.g. an "inline only" mode). */
   setEnabled(enabled: boolean): void;
   /** Remove the overlay and its scroll listener. */
@@ -110,7 +110,7 @@ export function createStickyHeaders(
       fillSlot(incoming, ordinal);
       incoming.style.display = "";
     }
-    incoming.style.transform = `translateY(${Math.round(top)}px)`;
+    incoming.style.transform = `translateY(${top}px)`;
   };
 
   const clearIncoming = (): void => {
@@ -187,21 +187,34 @@ export function createStickyHeaders(
     else clearIncoming();
   };
 
-  const refresh = (): void => {
+  const refresh = (scrollTop = viewport.scrollTop): void => {
     // A scroll frame sampled before this commit would apply stale scrollTop
     // to the new offsets. Retire it; this refresh is the newer authority.
     if (frame) {
       cancelAnimationFrame(frame);
       frame = 0;
     }
-    keys = headerKeys();
-    const positions = keys.map(positionOf);
-    tops = positions.map((position) => position?.top ?? 0);
-    heights = positions.map((position) => position?.height ?? 0);
+    const nextKeys = headerKeys();
+    const positions = nextKeys.map(positionOf);
+    const changed =
+      nextKeys.length !== keys.length ||
+      nextKeys.some(
+        (key, index) =>
+          key !== keys[index] ||
+          (positions[index]?.top ?? 0) !== tops[index] ||
+          (positions[index]?.height ?? 0) !== heights[index],
+      );
+    if (changed) {
+      keys = nextKeys;
+      tops = positions.map((position) => position?.top ?? 0);
+      heights = positions.map((position) => position?.height ?? 0);
+      activeGroup = -1;
+      clearIncoming();
+    }
     groupCount = keys.length;
-    activeGroup = -1;
-    clearIncoming();
-    update(viewport.scrollTop);
+    // A mounted-range publication need not change geometry. Still update the
+    // position and hidden inline node, but retain the existing header content.
+    update(scrollTop);
   };
 
   let frame = 0;
@@ -209,8 +222,8 @@ export function createStickyHeaders(
   const onScroll = (): void => {
     // Don't even schedule a frame while disabled (inline-only mode).
     if (!enabled) return;
-    // Sample scrollTop now (at event time, before any render writes this
-    // frame) so the rAF never reads it after a DOM write and forces a layout.
+    // Capture runs before the list's bubbling listener reconciles its window.
+    // Neither the later listeners nor our rAF need a post-write layout read.
     pendingScroll = viewport.scrollTop;
     if (frame) return;
     frame = requestAnimationFrame(() => {
@@ -228,14 +241,17 @@ export function createStickyHeaders(
 
   const destroy = (): void => {
     restoreInline();
-    viewport.removeEventListener("scroll", onScroll);
+    viewport.removeEventListener("scroll", onScroll, true);
     if (frame) cancelAnimationFrame(frame);
     overlay.remove();
   };
 
   overlay.style.display = "none";
   incoming.style.display = "none";
-  viewport.addEventListener("scroll", onScroll, { passive: true });
+  viewport.addEventListener("scroll", onScroll, {
+    passive: true,
+    capture: true,
+  });
   refresh();
 
   return { refresh, setEnabled, destroy };

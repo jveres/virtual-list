@@ -12,7 +12,7 @@ import {
   mulberry32,
   settleEdgePill,
 } from "../shared/lab.js";
-import { mustGet } from "../shared/utils.js";
+import { mustGet, setTextIfChanged } from "../shared/utils.js";
 
 // The scroll-settle lab: makes the settle controller testable in every real
 // browser, with no virtualizer in the way. A plain (non-virtualized) DOM list
@@ -194,27 +194,34 @@ function scheduleStatus(): void {
   statusFrame = requestAnimationFrame(() => {
     statusFrame = 0;
     const active = controller.isScrollPhaseActive();
-    stat.activeDot.className = `dot${active ? " on" : ""}`;
-    stat.activeText.textContent = active ? "active" : "idle";
-    stat.top.textContent = `${Math.round(viewport.scrollTop)} / ${Math.max(
+    const topText = `${Math.round(viewport.scrollTop)} / ${Math.max(
       0,
       viewport.scrollHeight - viewport.clientHeight,
     )}`;
-    stat.gestures.textContent = String(gestures);
-    stat.settles.textContent = String(settles);
-    stat.chunks.textContent = `${chunksApplied} (T:${chunksRemaining.top} B:${chunksRemaining.bottom} left)`;
+    stat.activeDot.className = `dot${active ? " on" : ""}`;
+    setTextIfChanged(stat.activeText, active ? "active" : "idle");
+    setTextIfChanged(stat.top, topText);
+    setTextIfChanged(stat.gestures, String(gestures));
+    setTextIfChanged(stat.settles, String(settles));
+    setTextIfChanged(
+      stat.chunks,
+      `${chunksApplied} (T:${chunksRemaining.top} B:${chunksRemaining.bottom} left)`,
+    );
     stat.queuedDot.className = `dot${anythingQueued() ? " pending" : ""}`;
-    stat.queuedText.textContent = anythingQueued()
-      ? `waiting (${[
-          queuedChunks.top ? "T" : "",
-          queuedChunks.bottom ? "B" : "",
-        ]
-          .filter(Boolean)
-          .join("+")})`
-      : anythingLoading()
-        ? "loading"
-        : "no";
-    stat.premature.textContent = String(prematureCount);
+    setTextIfChanged(
+      stat.queuedText,
+      anythingQueued()
+        ? `waiting (${[
+            queuedChunks.top ? "T" : "",
+            queuedChunks.bottom ? "B" : "",
+          ]
+            .filter(Boolean)
+            .join("+")})`
+        : anythingLoading()
+          ? "loading"
+          : "no",
+    );
+    setTextIfChanged(stat.premature, String(prematureCount));
   });
 }
 

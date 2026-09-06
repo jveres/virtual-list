@@ -13,7 +13,7 @@ import {
   mulberry32,
   settleEdgePill,
 } from "../shared/lab.js";
-import { mustGet } from "../shared/utils.js";
+import { mustGet, setTextIfChanged } from "../shared/utils.js";
 
 // The dynamic-height lab: adversarial, size-changing content on the v2
 // runtime, with telemetry that observes the runtime STRICTLY FROM OUTSIDE.
@@ -444,6 +444,7 @@ let commandIssuing = false;
 let smoothPending = 0;
 /** A command was just issued; its takeover commit may follow in this task. */
 let takeoverPending = false;
+let widthTakeoverPending = false;
 /** The last few raw input/scroll events — dumped with every G/W violation. */
 const RECENT_INPUT_MAX = 16;
 const recentInput: string[] = [];
@@ -515,7 +516,12 @@ function installWriteHook(): void {
       if (verbose()) log(`write scrollTop=${Math.round(actual)}`);
       // Glide frames race a user grab by at most one frame before the
       // controller cancels the glide; those writes are not a violation.
-      if (!commandIssuing && smoothPending === 0 && nativeActive(now)) {
+      if (
+        !commandIssuing &&
+        !widthTakeoverPending &&
+        smoothPending === 0 &&
+        nativeActive(now)
+      ) {
         const stack = (new Error().stack ?? "")
           .split("\n")
           .slice(1, 6)
@@ -783,7 +789,29 @@ function scrollingMode(): ScrollingUpdates {
     .value as ScrollingUpdates;
 }
 
+let viewportWidthObserver: ResizeObserver | null = null;
+
 function createList(): void {
+  // Observe the actual layout change before the runtime's ResizeObserver.
+  // Width changes take over the old phase by contract, just like commands;
+  // input from before that delivery must not taint its commit. This does
+  // not suppress later input or commits, nor a glide left running afterward.
+  let observedWidth = viewport.clientWidth;
+  viewportWidthObserver = new ResizeObserver(() => {
+    const width = viewport.clientWidth;
+    if (Math.abs(width - observedWidth) <= 0.5) return;
+    observedWidth = width;
+    if (Math.abs(width - lastSeenWidth) > 0.5) {
+      lastSeenWidth = width;
+      recordWidthChange();
+      log(`environment width → ${width}px`, "mark");
+    }
+    widthTakeoverPending = true;
+    lastWheelAt = Number.NEGATIVE_INFINITY;
+    lastKeyAt = Number.NEGATIVE_INFINITY;
+    lastNativeScrollAt = Number.NEGATIVE_INFINITY;
+  });
+  viewportWidthObserver.observe(viewport);
   list = createVirtualList<Item>(viewport, {
     items,
     key: (item) => String(item.id),
@@ -948,6 +976,8 @@ function observeCanvas(target: HTMLElement): void {
 
 function classifyBatch(records: MutationRecord[]): void {
   if (!canvas) return;
+  const widthTakeover = widthTakeoverPending;
+  widthTakeoverPending = false;
   const now = performance.now();
   // Synced on EVERY batch (window batches arrive on every scroll event),
   // so a geometry batch knows whether a runtime write happened since.
@@ -1059,7 +1089,7 @@ function classifyBatch(records: MutationRecord[]): void {
   const settleCommit = heldJustCleared && !heldClearedUnderActivity;
   // A command's takeover commit: the runtime stopped the native scroll and
   // committed held work by contract (explicit command > gesture).
-  const takeover = takeoverPending && heldJustCleared;
+  const takeover = widthTakeover || (takeoverPending && heldJustCleared);
   takeoverPending = false;
   // Idle streaming commits every few frames; log only settle commits
   // unless verbose.
@@ -1377,24 +1407,37 @@ function scheduleStatus(): void {
     statusFrame = 0;
     const active = nativeActive();
     stat.activeDot.className = `dot${active ? " on" : ""}`;
-    stat.activeText.textContent = active ? "active" : "idle";
+    setTextIfChanged(stat.activeText, active ? "active" : "idle");
     stat.heldDot.className = `dot${stateHeld ? " pending" : ""}`;
-    stat.heldText.textContent = stateHeld ? "yes" : "no";
-    stat.rows.textContent = `${lastState?.count ?? 0} / ${canvas?.children.length ?? 0}`;
-    stat.commits.textContent =
-      liveCommits > 0 ? `${commits} (${liveCommits} live)` : String(commits);
-    stat.violations.textContent = String(violations);
+    setTextIfChanged(stat.heldText, stateHeld ? "yes" : "no");
+    setTextIfChanged(
+      stat.rows,
+      `${lastState?.count ?? 0} / ${canvas?.children.length ?? 0}`,
+    );
+    setTextIfChanged(
+      stat.commits,
+      liveCommits > 0 ? `${commits} (${liveCommits} live)` : String(commits),
+    );
+    setTextIfChanged(stat.violations, String(violations));
     stat.violations.className = `val${violations > 0 ? " bad" : ""}`;
-    stat.nodes.textContent = `${created}/${destroyed}/${created - destroyed}`;
-    stat.clipped.textContent = String(clippedKeys.size);
-    stat.paints.textContent = String(clippedPaints);
+    setTextIfChanged(
+      stat.nodes,
+      `${created}/${destroyed}/${created - destroyed}`,
+    );
+    setTextIfChanged(stat.clipped, String(clippedKeys.size));
+    setTextIfChanged(stat.paints, String(clippedPaints));
     stat.paints.className = `val${clippedPaints > 0 ? " bad" : ""}`;
-    stat.streams.textContent =
+    setTextIfChanged(
+      stat.streams,
       chaosOps > 0
         ? `${streams.size} active · chaos ${chaosOps}`
-        : `${streams.size} active`;
-    stat.images.textContent = `${imagesPending}/${imagesLoaded}`;
-    stat.loads.textContent = `T:${chunksLeft.start} B:${chunksLeft.end} left · ${loadsAborted} aborted`;
+        : `${streams.size} active`,
+    );
+    setTextIfChanged(stat.images, `${imagesPending}/${imagesLoaded}`);
+    setTextIfChanged(
+      stat.loads,
+      `T:${chunksLeft.start} B:${chunksLeft.end} left · ${loadsAborted} aborted`,
+    );
   });
 }
 
@@ -1748,10 +1791,18 @@ function issue<T>(work: () => T): T {
     lastWheelAt = Number.NEGATIVE_INFINITY;
     lastKeyAt = Number.NEGATIVE_INFINITY;
     lastNativeScrollAt = Number.NEGATIVE_INFINITY;
+    const commandWriteSerial = writeSerial;
     // Queued AFTER the command's mutations, so the observer's own microtask
     // (queued at the first mutation) runs first and sees the flag.
     queueMicrotask(() => {
       takeoverPending = false;
+      // A command can write without producing a canvas mutation. Do not
+      // attribute that write to an unrelated later live commit. Preserve
+      // any writes made after this command returned.
+      writeSerialAtLastBatch = Math.max(
+        writeSerialAtLastBatch,
+        commandWriteSerial,
+      );
     });
   }
 }
@@ -1820,6 +1871,9 @@ function recreate(): void {
 
 function disposeCurrent(): void {
   stopStreams();
+  viewportWidthObserver?.disconnect();
+  viewportWidthObserver = null;
+  widthTakeoverPending = false;
 
   guardedCall("dispose", () => list.dispose());
   canvasObserver?.disconnect();

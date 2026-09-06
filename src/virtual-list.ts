@@ -923,7 +923,14 @@ export function createVirtualList<T>(
     // settles it — held work commits with its anchor, rows at the new
     // width — and the scroll goes on in a new phase; waiting for the
     // settle showed the old layout under the new width for its duration.
-    if (widthChanged) interruptNativeScroll();
+    if (widthChanged) {
+      // Ending the phase must also stop its JS animation. Otherwise its
+      // next frame writes under an idle controller, allowing geometry to
+      // commit in the middle of the old glide.
+      settleParked(() => false);
+      glide?.cancel();
+      interruptNativeScroll("resize");
+    }
     const pinTop = geometry.pinTop;
     // In flight, a glide's destination decides: a command onto the pin
     // stands on it in intent, one leaving it does not even while its first
@@ -953,6 +960,9 @@ export function createVirtualList<T>(
     // event may still be on its way (an in-page composer resize clamps in
     // the frame's layout and reports in the next one).
     lastViewportHeight = height;
+    // A width takeover cancels the old animation, not automatic follow
+    // intent. Start any catch-up in a fresh phase against the new geometry.
+    if (widthChanged && followController.armed && idle()) followIfBehindEnd();
   });
   viewportObserver.observe(viewport);
 
@@ -1880,9 +1890,13 @@ export function createVirtualList<T>(
       settleParked((landed) => !disposed && landed());
       // A scheduled interaction owns the next frame/settle. Do not infer a
       // fresh end-follow intent in the gap after cancelling its old glide.
-      if (options.followBehavior === "smooth" && !remeasureOwnsNextCommit()) {
+      if (
+        options.followBehavior === "smooth" &&
+        takingOver !== "resize" &&
+        !remeasureOwnsNextCommit()
+      ) {
         const changed = followController.resolveSettle({
-          takingOver,
+          takingOver: takingOver !== null,
           atEnd: lastState.atEnd,
           endCommand,
           gliding: followGlide,
@@ -1918,7 +1932,7 @@ export function createVirtualList<T>(
 
   // A command is settling the phase it interrupts: that settle must not
   // infer follow intent from the position the command is leaving.
-  let takingOver = false;
+  let takingOver: "command" | "resize" | null = null;
 
   /**
    * An explicit command takes the viewport over: genuinely stop the
@@ -1926,7 +1940,9 @@ export function createVirtualList<T>(
    * forced reflow — merely clearing timers would leave momentum alive),
    * then settle the phase so held work commits before the command.
    */
-  function interruptNativeScroll(): void {
+  function interruptNativeScroll(
+    reason: "command" | "resize" = "command",
+  ): void {
     if (!controller.isScrollPhaseActive()) return;
     // Write the CURRENT position back untouched and unrounded: a fractional
     // native position must survive the takeover exactly; the engine clamps
@@ -1938,11 +1954,11 @@ export function createVirtualList<T>(
     void viewport.offsetHeight;
     viewport.style.overflowY = previousOverflowY;
     writeScrollTop(currentTop);
-    takingOver = true;
+    takingOver = reason;
     try {
       controller.finishGesture();
     } finally {
-      takingOver = false;
+      takingOver = null;
     }
   }
 

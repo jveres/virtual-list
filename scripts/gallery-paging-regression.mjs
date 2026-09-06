@@ -5,7 +5,8 @@ import { firefox } from "playwright";
 const baseUrl = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4193";
 const browser = await firefox.launch({ headless: true });
 try {
-  for (const [layout, deviceScaleFactor] of [
+  for (const [layout, deviceScaleFactor, gapAnchor = false] of [
+    ["rows", 2, true],
     ["rows", 1],
     ["masonry", 1],
     ["masonry", 1.25],
@@ -55,21 +56,51 @@ try {
     );
 
     async function load(edge) {
-      const before = await page.evaluate((edge) => {
-        const v = document.querySelector("#viewport");
-        const g = window.__gallery;
-        v.scrollTop = edge === "end" ? v.scrollHeight : 0;
-        v.dispatchEvent(new Event("scroll"));
-        const point = g.pointUnderViewportTop();
-        const bands = [...document.querySelectorAll("#viewport .band")]
-          .map((band) => band.getBoundingClientRect())
-          .sort((a, b) => a.top - b.top);
-        const seam = Math.max(
-          0,
-          ...bands.slice(1).map((band, i) => band.top - bands[i].bottom),
-        );
-        return { first: g.photos[0].id, last: g.photos.at(-1).id, point, seam };
-      }, edge);
+      const before = await page.evaluate(
+        ({ edge, gapAnchor }) => {
+          const v = document.querySelector("#viewport");
+          const g = window.__gallery;
+          v.scrollTop = edge === "end" ? v.scrollHeight : 0;
+          if (gapAnchor && edge === "end") {
+            const max = v.scrollHeight - v.clientHeight;
+            const row = g.items.findLast((item) => {
+              const position = g.list.positionOf(item.key);
+              const top = position?.top + item.height + 5;
+              return item.kind === "row" && top <= max && top >= max - 750;
+            });
+            if (!row) throw new Error("No photo gap in the load zone");
+            v.scrollTop = g.list.positionOf(row.key).top + row.height + 5;
+          }
+          v.dispatchEvent(new Event("scroll"));
+          const point = g.pointUnderViewportTop();
+          const bands = [...document.querySelectorAll("#viewport .band")]
+            .map((band) => band.getBoundingClientRect())
+            .sort((a, b) => a.top - b.top);
+          const seam = Math.max(
+            0,
+            ...bands.slice(1).map((band, i) => band.top - bands[i].bottom),
+          );
+          const box = v.getBoundingClientRect();
+          const tiles = [...v.querySelectorAll(".tile")]
+            .map((tile) => {
+              const bounds = tile.getBoundingClientRect();
+              return {
+                id: tile.dataset.tile,
+                top: bounds.top,
+                bottom: bounds.bottom,
+              };
+            })
+            .filter((tile) => tile.bottom > box.top && tile.top < box.bottom);
+          return {
+            first: g.photos[0].id,
+            last: g.photos.at(-1).id,
+            point,
+            seam,
+            tiles,
+          };
+        },
+        { edge, gapAnchor },
+      );
       assert.ok(before.seam < 0.02, `white seam before load: ${before.seam}px`);
       await page.waitForFunction(
         ({ edge, before }) => {
@@ -85,7 +116,7 @@ try {
         { edge, before },
         { timeout: 15000 },
       );
-      const after = await page.evaluate((point) => {
+      const after = await page.evaluate(({ point, tiles }) => {
         const g = window.__gallery;
         const anchor = point ? g.anchorFor(point) : "viewport";
         const position =
@@ -101,6 +132,14 @@ try {
               anchor.offset
             : null,
           nodes: document.querySelectorAll("#viewport .tile").length,
+          tileShifts: tiles.flatMap((previous) => {
+            const tile = [...document.querySelectorAll("#viewport .tile")].find(
+              (tile) => tile.dataset.tile === previous.id,
+            );
+            return tile
+              ? [tile.getBoundingClientRect().top - previous.top]
+              : [];
+          }),
           clippedHeads:
             g.items[0]?.kind === "band"
               ? g.photos.filter(
@@ -116,12 +155,20 @@ try {
                 ).length
               : 0,
         };
-      }, before.point);
+      }, before);
       assert.ok(
         after.count <= 480,
         `source window exceeded budget: ${JSON.stringify(after)}`,
       );
       assert.ok(after.nodes < 150, `mounted tiles not bounded: ${after.nodes}`);
+      assert.ok(
+        after.tileShifts.length > 0,
+        "append must retain visible comparison tiles",
+      );
+      assert.ok(
+        after.tileShifts.every((shift) => Math.abs(shift) <= 1),
+        `visible photos shifted across ${edge} load: ${JSON.stringify(after.tileShifts)}`,
+      );
       assert.equal(
         after.clippedHeads,
         0,

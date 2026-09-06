@@ -1,0 +1,78 @@
+import AppKit
+import CoreGraphics
+import Darwin
+
+func fail(_ message: String) -> Never {
+    fputs(message + "\n", stderr)
+    exit(1)
+}
+
+let args = CommandLine.arguments
+guard args.count >= 2 else { fail("Expected displays, scroll, or quit") }
+
+switch args[1] {
+case "displays":
+    let top = NSScreen.screens[0].frame.maxY
+    let screens: [[String: Any]] = NSScreen.screens.enumerated().map { index, screen in
+        let rect = screen.visibleFrame
+        let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as! NSNumber
+        return ["index": index, "name": screen.localizedName,
+                "builtin": CGDisplayIsBuiltin(number.uint32Value) != 0,
+                "x": rect.minX, "y": top - rect.maxY,
+                "width": rect.width, "height": rect.height,
+                "scale": screen.backingScaleFactor,
+                "maximumFramesPerSecond": screen.maximumFramesPerSecond]
+    }
+    let data = try JSONSerialization.data(withJSONObject: screens)
+    print(String(data: data, encoding: .utf8)!)
+case "quit":
+    guard args.count == 3, let pid = Int32(args[2]) else { fail("Expected PID") }
+    if let app = NSRunningApplication(processIdentifier: pid), !app.terminate() {
+        fail("Could not terminate the isolated Firefox instance")
+    }
+case "scroll":
+    guard args.count == 8, let pid = Int32(args[2]),
+          let x = Double(args[3]), let y = Double(args[4]),
+          let delta = Int32(args[5]), let count = Int(args[6]),
+          let delay = UInt32(args[7]), count > 0 else {
+        fail("Expected PID, x, y, delta, count, and interval in microseconds")
+    }
+    guard CGPreflightPostEventAccess() else {
+        fail("macOS event posting is not permitted; enable Accessibility for the invoking app")
+    }
+    func checkForeground() {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+            fail("Test Firefox lost foreground; stopped native input")
+        }
+    }
+    checkForeground()
+    let point = CGPoint(x: x, y: y)
+    let original = CGEvent(source: nil)?.location
+    CGWarpMouseCursorPosition(point)
+    defer {
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+           let original = original {
+            CGWarpMouseCursorPosition(original)
+        }
+    }
+    let source = CGEventSource(stateID: .combinedSessionState)
+    func send(_ amount: Int32, phase: Int64) {
+        checkForeground()
+        guard let event = CGEvent(scrollWheelEvent2Source: source, units: .pixel,
+                                  wheelCount: 1, wheel1: amount, wheel2: 0, wheel3: 0) else {
+            fail("Could not create a native scroll event")
+        }
+        event.location = point
+        event.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        event.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+        event.setIntegerValueField(.scrollWheelEventMomentumPhase, value: 0)
+        event.post(tap: .cghidEventTap)
+    }
+    for index in 0..<count {
+        send(delta, phase: index == 0 ? 1 : 2)
+        usleep(delay)
+    }
+    send(0, phase: 4)
+default:
+    fail("Unknown native profiling action")
+}

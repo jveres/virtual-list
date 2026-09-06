@@ -9,6 +9,11 @@ type HTMLElementConstructor<T extends HTMLElement> = {
   new (): T;
 };
 
+/** Keep unchanged status labels out of the DOM mutation/layout pipeline. */
+export function setTextIfChanged(element: HTMLElement, text: string): void {
+  if (element.textContent !== text) element.textContent = text;
+}
+
 /**
  * Indexed access that asserts the element is present. Replaces non-null `!`
  * and `as` casts on array/tuple lookups that are known to be in range, turning

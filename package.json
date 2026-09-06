@@ -11,6 +11,8 @@
     "check": "biome check . && tsc --noEmit",
     "test": "vitest run",
     "test:browser": "node scripts/browser-matrix.mjs",
+    "profile:firefox": "node scripts/firefox-profile.mjs",
+    "test:firefox-profile": "node --test scripts/firefox-profile/analyze.checks.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {

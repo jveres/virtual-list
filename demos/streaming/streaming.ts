@@ -35,6 +35,7 @@ import {
   bindThemeButtons,
   mustGet,
   refreshTheme,
+  setTextIfChanged,
   syncThemeButtons,
 } from "../shared/utils.js";
 import {
@@ -1450,8 +1451,11 @@ function syncMetrics(state = virtualList?.state): void {
       : "none";
   const mountedEnd = Math.max(state.start, state.end - 1);
 
-  windowStatus.textContent = `${loadedRange} · load ${topStatus}`;
-  virtualListStatus.textContent = `dom ${formatCount(state.end - state.start)}/${formatCount(state.count)} · mounted ${formatCount(state.start)}-${formatCount(mountedEnd)} · height ${formatCount(state.totalSize)}px`;
+  const windowText = `${loadedRange} · load ${topStatus}`;
+  const listText = `dom ${formatCount(state.end - state.start)}/${formatCount(state.count)} · mounted ${formatCount(state.start)}-${formatCount(mountedEnd)} · height ${formatCount(state.totalSize)}px`;
+  // Streaming commits can publish new content without changing these labels.
+  setTextIfChanged(windowStatus, windowText);
+  setTextIfChanged(virtualListStatus, listText);
 }
 
 function endSendGlide(): void {
@@ -2095,15 +2099,16 @@ function mountConversation(): void {
     followBehavior: "smooth",
     followMode,
     followInset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
-    onState: (state) => {
+    onState: (state, snapshot) => {
       // A deferred prepend committed: close out the load it belongs to.
       if (pendingPrepend && state.count >= pendingPrepend.count) {
         pendingPrepend.finish();
       }
       syncScrollButtons(state);
       syncMetrics(state);
-      // Positions change only at commits: re-read them for the sticky header.
-      stickyHeaders?.refresh();
+      // Publications also report mounted-range changes during scrolling.
+      // Reuse the runtime's read instead of flushing layout after DOM writes.
+      stickyHeaders?.refresh(snapshot.scrollTop);
     },
     onReachStart: loadOlderMessages,
     onDestroy: handleRowDestroy,

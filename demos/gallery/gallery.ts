@@ -505,11 +505,14 @@ function pointUnderViewportTop(): Point | null {
   const { item, offset } = found;
   if (item.kind === "row") {
     const first = item.photos[0];
+    const photoOffset = Math.max(0, Math.min(item.height, offset));
     return first
       ? {
           photo: first.id,
-          fraction: Math.max(0, Math.min(1, offset / item.height)),
-          viewportOffset: Math.max(0, -offset),
+          fraction: photoOffset / item.height,
+          // Keep the signed distance outside the photo, including the gap
+          // below it. Clamping that gap to zero moves every row at append.
+          viewportOffset: photoOffset - offset,
         }
       : null;
   }

@@ -4449,6 +4449,57 @@ describe("boot position", () => {
 });
 
 describe("viewport width change", () => {
+  it("should preserve end-follow intent when a width change interrupts its glide", () => {
+    let width = 300;
+    const h = mount(range(0, 50), {
+      followBehavior: "smooth",
+      width: () => width,
+    });
+    const row = h.rowElement("msg 49");
+    h.heights.set(49, 700);
+    fireResize(0, row, 700);
+    vi.advanceTimersByTime(48);
+    expect(h.viewport.scrollTop).toBeLessThan(5000);
+    const published = h.states.length;
+
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    vi.advanceTimersByTime(2000);
+    h.settle();
+
+    expect(
+      h.states.slice(published).map((state) => state.following),
+    ).not.toContain(false);
+    expect(h.list.state.following).toBe(true);
+    expect(h.list.state.atEnd).toBe(true);
+    expect(h.viewport.scrollTop).toBe(5000);
+    h.list.dispose();
+  });
+
+  it("should cancel a command glide before committing resized geometry", async () => {
+    const initial = range(0, 50);
+    let width = 300;
+    const h = mount(initial, { boot: "start", width: () => width });
+    const landed = h.list.scrollTo("end", { behavior: "smooth" });
+    vi.advanceTimersByTime(48);
+    expect(h.viewport.scrollTop).toBeGreaterThan(0);
+    expect(h.viewport.scrollTop).toBeLessThan(4400);
+    h.list.setItems([...range(-10, 0), ...initial]);
+    expect(h.list.state.held).toBe(true);
+
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    const resizedTop = h.viewport.scrollTop;
+    vi.advanceTimersByTime(2000);
+    h.settle();
+
+    expect(h.viewport.scrollTop).toBe(resizedTop);
+    expect(h.list.state.held).toBe(false);
+    expect(h.list.state.count).toBe(60);
+    await expect(landed).resolves.toBe(false);
+    h.list.dispose();
+  });
+
   it("ends a scroll phase in flight: held work commits at once, at the new width", () => {
     const initial = range(0, 50);
     let width = 300;

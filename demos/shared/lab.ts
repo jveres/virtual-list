@@ -26,22 +26,40 @@ interface TraceLog {
 export function createTraceLog(element: HTMLElement): TraceLog {
   const ring: string[] = [];
   const startedAt = performance.now();
+  const pending: [string, LogClass | undefined][] = [];
+  let frame = 0;
+  const flush = (): void => {
+    frame = 0;
+    const fragment = document.createDocumentFragment();
+    for (const [line, cls] of pending.splice(0)) {
+      const span = document.createElement("span");
+      if (cls) span.className = cls;
+      span.textContent = `${line}\n`;
+      fragment.appendChild(span);
+    }
+    element.appendChild(fragment);
+    while (element.childNodes.length > LOG_DOM_MAX) {
+      element.firstChild?.remove();
+    }
+    // Follow the log once per frame, not once per native input event.
+    element.scrollTop = element.scrollHeight;
+  };
   return {
     ring,
     log(message, cls) {
       const line = `+${(performance.now() - startedAt).toFixed(0)}ms ${message}`;
       ring.push(line);
       if (ring.length > LOG_RING_MAX) ring.shift();
-      const span = document.createElement("span");
-      if (cls) span.className = cls;
-      span.textContent = `${line}\n`;
-      element.appendChild(span);
-      while (element.childNodes.length > LOG_DOM_MAX) {
-        element.firstChild?.remove();
-      }
-      element.scrollTop = element.scrollHeight;
+      // Export/diagnostic consumers see the trace immediately; only its DOM
+      // view is batched. Keep pending work bounded if rendering is suspended.
+      pending.push([line, cls]);
+      if (pending.length > LOG_DOM_MAX) pending.shift();
+      if (!frame) frame = requestAnimationFrame(flush);
     },
     clear() {
+      if (frame) cancelAnimationFrame(frame);
+      frame = 0;
+      pending.length = 0;
       element.replaceChildren();
       ring.length = 0;
     },

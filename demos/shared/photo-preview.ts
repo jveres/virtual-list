@@ -309,7 +309,8 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       window.clearTimeout(state.pressTimer);
     }
     photoPressStates.delete(card);
-    setPhotoClass(card, "is-photo-pressed", false);
+    if (card.classList.contains("is-photo-pressed"))
+      setPhotoClass(card, "is-photo-pressed", false);
   }
 
   function applyPhotoPress(card: HTMLElement, state: PhotoPressState): void {
@@ -833,7 +834,13 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     closeButton.type = "button";
     closeButton.className = "photo-viewer-close";
     closeButton.setAttribute("aria-label", "Close photo");
-    closeButton.textContent = "×";
+    // Lucide's x icon: https://lucide.dev/icons/x (see lucide-license.txt).
+    closeButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg"
+      width="20" height="20" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+      stroke-linejoin="round" aria-hidden="true" focusable="false">
+      <path d="M18 6 6 18"/><path d="m6 6 12 12"/>
+    </svg>`;
 
     const details = document.createElement("div");
     details.className = "photo-viewer-details";
@@ -1253,6 +1260,15 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       animationFinished(scrollAnimation),
       animationFinished(closeButtonAnimation),
     ]);
+    if (activePhotoView !== view || !view.overlay.isConnected) return;
+    // Give the clipped thumbnail drawings a paint opportunity underneath the
+    // settled hero before removing it. Firefox can otherwise flash at handoff.
+    revealPhotoSource(currentSource);
+    if (currentSource !== view.sourceElement)
+      revealPhotoSource(view.sourceElement);
+    await nextFrame();
+    await nextFrame();
+    if (activePhotoView !== view || !view.overlay.isConnected) return;
     cleanupPhotoView(view, currentSource);
   }
 

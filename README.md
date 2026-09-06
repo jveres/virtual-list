@@ -190,6 +190,10 @@ removes the runtime's DOM, observers, and listeners before rethrowing.
 
 ## Validation
 
+Use the [Firefox-first profiling workflow](docs/firefox-profiling.md) before
+making performance changes. It captures native macOS scrolling in the installed
+Firefox on the affected monitor, with isolated runs and local artifacts.
+
 ```sh
 pnpm run check   # Biome + TypeScript
 pnpm test        # vitest, jsdom, deterministic

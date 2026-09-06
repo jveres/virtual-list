@@ -55,6 +55,24 @@ for (const engine of [firefox, webkit]) {
         .locator("#viewport")
         .evaluate((el) => el.scrollTop);
       await open();
+      const closeIcon = await page
+        .locator(".photo-viewer-close")
+        .evaluate((button) => {
+          const svg = button.querySelector("svg");
+          const box = button.getBoundingClientRect();
+          const icon = svg.getBoundingClientRect();
+          return {
+            dx: icon.x + icon.width / 2 - (box.x + box.width / 2),
+            dy: icon.y + icon.height / 2 - (box.y + box.height / 2),
+            strokeWidth: svg.getAttribute("stroke-width"),
+          };
+        });
+      assert.ok(
+        Math.abs(closeIcon.dx) < 0.1,
+        "close icon centered horizontally",
+      );
+      assert.ok(Math.abs(closeIcon.dy) < 0.1, "close icon centered vertically");
+      assert.equal(closeIcon.strokeWidth, "1.5");
       assert.equal(await page.locator("main").evaluate((el) => el.inert), true);
       await page.keyboard.press("Tab");
       assert.equal(
@@ -63,8 +81,37 @@ for (const engine of [firefox, webkit]) {
           .evaluate((el) => el === document.activeElement),
         true,
       );
+      await page.evaluate(() => {
+        const source = document.querySelector(".is-photo-view-source");
+        const pieces = [
+          ...document.querySelectorAll(".photo-preview-card"),
+        ].filter((card) => card.dataset.photoId === source.dataset.photoId);
+        window.previewHandoff = new Promise((resolve) => {
+          let overlapFrames = 0;
+          const sample = () => {
+            const hero = document.querySelector(".photo-viewer-hero");
+            if (!document.querySelector(".photo-viewer")) {
+              resolve(overlapFrames);
+              return;
+            }
+            if (
+              hero &&
+              pieces.every(
+                (card) => getComputedStyle(card).visibility === "visible",
+              )
+            )
+              overlapFrames++;
+            requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        });
+      });
       await page.keyboard.press("Escape");
       await closed();
+      assert.ok(
+        (await page.evaluate(() => window.previewHandoff)) >= 1,
+        "all thumbnail pieces are revealed beneath the hero before its removal",
+      );
       assert.equal(
         await page.locator("#viewport").evaluate((el) => el.scrollTop),
         top,

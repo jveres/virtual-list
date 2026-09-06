@@ -197,6 +197,12 @@ async function runFullScenario(page) {
   await mark(page, "glide top");
   await page.click("#glide-top");
   await page.waitForTimeout(3_500);
+  await mark(page, "width change during glide bottom");
+  await page.click("#glide-bottom");
+  await page.waitForTimeout(200);
+  // Change layout without a pointer event that could cancel the glide first.
+  await page.locator("#width").evaluate((button) => button.click());
+  await page.waitForTimeout(1_000);
   await mark(page, "glide bottom");
   await page.click("#glide-bottom");
   await page.waitForTimeout(3_500);
