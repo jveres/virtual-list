@@ -342,6 +342,51 @@ try {
     ],
     { timeout: 15000 },
   );
+  // Window activation can leave Firefox's address bar focused. Click an inert
+  // overlay, never a photo/control, then move focus to the scroll container.
+  // All layout reads and the temporary element are outside measurement.
+  async function focusViewport() {
+    const focusTarget = await evaluate(`(() => {
+    const v=document.querySelector(${JSON.stringify(options.viewport)}),r=v.getBoundingClientRect();
+    const target=document.createElement('div');
+    target.id='ff-profile-focus-target';target.tabIndex=-1;
+    target.style.cssText='position:fixed;width:20px;height:20px;z-index:2147483647;opacity:0;pointer-events:auto';
+    target.style.left=(r.x+r.width/2-10)+'px';target.style.top=(r.y+r.height/2-10)+'px';
+    target.addEventListener('click',event=>event.stopPropagation());
+    document.body.append(target);
+    return {x:screenX+r.x+r.width/2,y:screenY+(outerHeight-innerHeight)+r.y+r.height/2,visible:r.width>0&&r.height>0};
+  })()`);
+    if (
+      !focusTarget.visible ||
+      focusTarget.x < monitor.x ||
+      focusTarget.x >= monitor.x + monitor.width ||
+      focusTarget.y < monitor.y ||
+      focusTarget.y >= monitor.y + monitor.height
+    )
+      throw new Error("Focus target is outside the selected monitor");
+    await sleep(100);
+    execFileSync(
+      helper,
+      [
+        "focus",
+        String(child.pid),
+        String(focusTarget.x),
+        String(focusTarget.y),
+      ],
+      { timeout: 5000 },
+    );
+    await sleep(100);
+    metadata.documentFocus = await evaluate(`(() => {
+    document.querySelector('#ff-profile-focus-target')?.remove();
+    const v=document.querySelector(${JSON.stringify(options.viewport)});
+    if (!v.hasAttribute('tabindex')) v.tabIndex=-1;
+    v.focus({preventScroll:true});
+    return {focused:document.hasFocus()&&document.activeElement===v,activeElement:document.activeElement?.id};
+  })()`);
+    if (!metadata.documentFocus.focused)
+      throw new Error("Test gallery did not receive document focus");
+  }
+  await focusViewport();
   await sleep(warmup);
   if (options.setup) {
     const source = await readFile(resolve(options.setup), "utf8");
@@ -349,6 +394,8 @@ try {
     metadata.setupResult = await evaluate(source);
     await sleep(warmup);
   }
+  if (interrupted) throw new Error("Capture interrupted");
+  await focusViewport();
   display = await evaluate(
     `({x:screenX,y:screenY,outerWidth,outerHeight,innerWidth,innerHeight,dpr:devicePixelRatio,screenWidth:screen.width,screenHeight:screen.height,userAgent:navigator.userAgent})`,
   );

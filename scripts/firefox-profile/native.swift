@@ -8,7 +8,7 @@ func fail(_ message: String) -> Never {
 }
 
 let args = CommandLine.arguments
-guard args.count >= 2 else { fail("Expected displays, scroll, or quit") }
+guard args.count >= 2 else { fail("Expected displays, focus, scroll, or quit") }
 
 switch args[1] {
 case "displays":
@@ -30,6 +30,38 @@ case "quit":
     if let app = NSRunningApplication(processIdentifier: pid), !app.terminate() {
         fail("Could not terminate the isolated Firefox instance")
     }
+case "focus":
+    guard args.count == 5, let pid = Int32(args[2]),
+          let x = Double(args[3]), let y = Double(args[4]),
+          let app = NSRunningApplication(processIdentifier: pid) else {
+        fail("Expected PID, x, and y")
+    }
+    guard CGPreflightPostEventAccess() else {
+        fail("macOS event posting is not permitted; enable Accessibility for the invoking app")
+    }
+    app.activate(options: [])
+    for _ in 0..<100 {
+        if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { break }
+        usleep(10000)
+    }
+    guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
+        fail("Could not activate the test Firefox for document focus")
+    }
+    let point = CGPoint(x: x, y: y)
+    let original = CGEvent(source: nil)?.location
+    let source = CGEventSource(stateID: .combinedSessionState)
+    CGWarpMouseCursorPosition(point)
+    for kind in [CGEventType.leftMouseDown, CGEventType.leftMouseUp] {
+        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+              let event = CGEvent(mouseEventSource: source, mouseType: kind,
+                                  mouseCursorPosition: point, mouseButton: .left) else {
+            fail("Test Firefox lost foreground during document focus")
+        }
+        event.post(tap: .cghidEventTap)
+        usleep(50000)
+    }
+    if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
+       let original = original { CGWarpMouseCursorPosition(original) }
 case "scroll":
     guard args.count == 8, let pid = Int32(args[2]),
           let x = Double(args[3]), let y = Double(args[4]),
@@ -41,8 +73,9 @@ case "scroll":
         fail("macOS event posting is not permitted; enable Accessibility for the invoking app")
     }
     func checkForeground() {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-            fail("Test Firefox lost foreground; stopped native input")
+        let front = NSWorkspace.shared.frontmostApplication
+        guard front?.processIdentifier == pid else {
+            fail("Test Firefox lost foreground; stopped native input (frontmost: \(front?.localizedName ?? "unknown"), PID \(front?.processIdentifier ?? -1))")
         }
     }
     checkForeground()

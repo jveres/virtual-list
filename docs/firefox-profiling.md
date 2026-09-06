@@ -35,8 +35,15 @@ its window to the selected display's usable area. It checks the browser's
 position and pixel ratio against that display. It then records six downward
 and four upward gestures, including pauses for native release and paging.
 
+The runner focuses the scroll container after navigation and again after
+warmup, immediately before measurement. It uses a native click on a temporary
+inert overlay so Firefox's address bar cannot retain document focus. The
+overlay is removed before capture, and `run.json` records the focus check.
+The click does not target a photo or control.
+
 Keep the test window in front and don't interact with other windows during
-scripted gestures. Native input stops if the test Firefox loses focus. The
+scripted gestures. Native input stops if the test Firefox loses foreground;
+it does not reactivate Firefox during a gesture. The
 runner closes only the instance it created, including on most failure paths.
 If cleanup fails, inspect the run metadata and process before taking action;
 never terminate all Firefox processes.

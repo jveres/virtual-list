@@ -1798,26 +1798,42 @@ export function createVirtualList<T>(
       };
       return range;
     }
-    const visible = range.indices ? new Set(range.indices) : null;
+    const delta =
+      !geometryChanged && range.delta?.from === lastRange.indices
+        ? range.delta
+        : undefined;
     lastRange = range;
-    // Deleting the current entry while iterating a Set is defined and does
-    // not skip its successor; avoid allocating an array on every scroll.
-    for (const row of mountedRows) {
-      const index = geometry.indexOf(row.key);
-      if (
-        visible
-          ? !visible.has(index)
-          : index < range.start || index >= range.end
-      ) {
-        if (declared && !row.edge) {
-          rows.delete(row.key);
-          deferTeardown(destroyAll([row]));
-        } else unmountRow(row);
+    function retire(row: Row<T>): void {
+      if (declared && !row.edge) {
+        rows.delete(row.key);
+        deferTeardown(destroyAll([row]));
+      } else unmountRow(row);
+    }
+    if (delta) {
+      for (const index of delta.leaving) {
+        const key = geometry.keyAt(index);
+        const row = key === undefined ? undefined : rows.get(key);
+        if (row) retire(row);
+      }
+    } else {
+      const visible = range.indices ? new Set(range.indices) : null;
+      // Deleting the current entry while iterating a Set is defined and does
+      // not skip its successor; avoid allocating an array on every scroll.
+      for (const row of mountedRows) {
+        const index = geometry.indexOf(row.key);
+        if (
+          visible
+            ? !visible.has(index)
+            : index < range.start || index >= range.end
+        ) {
+          retire(row);
+        }
       }
     }
-    const length = range.indices?.length ?? range.end - range.start;
+    const enteringIndices = delta?.entering ?? range.indices;
+    const length = enteringIndices?.length ?? range.end - range.start;
     for (let i = 0; i < length; i++) {
-      const index = range.indices?.[i] ?? range.start + i;
+      const index = enteringIndices?.[i] ?? range.start + i;
       const key = geometry.keyAt(index);
       let row = key === undefined ? undefined : rows.get(key);
       if (!row && key !== undefined) {

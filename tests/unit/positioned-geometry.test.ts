@@ -6,6 +6,90 @@ import {
 } from "../../src/positioned-geometry";
 
 describe("positioned geometry", () => {
+  it("should preserve exact membership and deltas through reversals, resizing, gaps and jumps", () => {
+    const items = Array.from({ length: 200 }, (_, i) => ({
+      top: Math.floor(i / 5) * 113.25 + (i % 5) * 9.5,
+      height: 70.5 + (i % 5) * 7,
+      lane: i % 5,
+    })).reverse();
+    const layout = new PositionedGeometry(items);
+    const queries = [
+      [0, 600],
+      [100, 700],
+      [200, 800],
+      [150, 650],
+      [150, 350],
+      [150, 1000],
+      [4000, 4600],
+      [3900, 4500],
+      [0, 30],
+      [80, 90],
+      [82, 88],
+      [0, 0],
+      [5000, 5500],
+      [4900, 5300],
+      [0, 600],
+      ...Array.from({ length: 60 }, (_, i) => [i * 31.25, i * 31.25 + 600]),
+      ...Array.from({ length: 60 }, (_, i) => [
+        1800 - i * 31.25,
+        2400 - i * 31.25,
+      ]),
+    ];
+    let previous = layout.window(0, 600);
+    const snapshots: { indices: readonly number[]; copy: number[] }[] = [];
+
+    for (const query of queries) {
+      const top = query[0] as number;
+      const bottom = query[1] as number;
+      const current = layout.window(top, bottom);
+      const expected = items.flatMap((item, index) =>
+        item.top < bottom && item.top + item.height > top ? [index] : [],
+      );
+      expect(current.indices).toEqual(expected);
+      expect(current.start).toBe(expected[0] ?? items.length);
+      expect(current.end).toBe(
+        expected.length ? (expected.at(-1) as number) + 1 : items.length,
+      );
+      if (current !== previous && current.delta) {
+        expect(current.delta.from).toBe(previous.indices);
+        expect(current.delta.entering).toEqual(
+          expected.filter((i) => !previous.indices?.includes(i)),
+        );
+        expect(current.delta.leaving).toEqual(
+          previous.indices?.filter((i) => !expected.includes(i)),
+        );
+      }
+      if (current.indices)
+        snapshots.push({
+          indices: current.indices,
+          copy: [...current.indices],
+        });
+      previous = current;
+    }
+    for (const snapshot of snapshots)
+      expect(snapshot.indices).toEqual(snapshot.copy);
+  });
+
+  it("should retain containing cards when bottom ordering prevents incremental lane ranges", () => {
+    const items = [
+      { top: 0, height: 5000, lane: 0 },
+      ...Array.from({ length: 40 }, (_, i) => ({
+        top: i * 100,
+        height: 30,
+        lane: 0,
+      })),
+    ];
+    const layout = new PositionedGeometry(items);
+
+    for (const top of [0, 100, 250, 300, 200, 50, 4500, 4900, 300]) {
+      expect(layout.window(top, top + 250).indices).toEqual(
+        items.flatMap((item, index) =>
+          item.top < top + 250 && item.top + item.height > top ? [index] : [],
+        ),
+      );
+    }
+  });
+
   it("should keep a tall card visible without mounting the intervening source items", () => {
     const layout = new PositionedGeometry([
       { top: 0, height: 2000, lane: 0 },

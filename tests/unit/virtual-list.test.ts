@@ -502,6 +502,102 @@ describe("settle-time window updates", () => {
 });
 
 describe("positioned declared items", () => {
+  it("should fully reconcile after protected-window queries advance past the last mounted window", async () => {
+    const h = mount(range(0, 100), {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) => ({ top: Math.floor(m.id / 2) * 100, lane: m.id % 2 }),
+    });
+    try {
+      for (const top of [700, 1300]) {
+        // A caller can query protection before the engine delivers scroll.
+        h.viewport.scrollTop = top;
+        await expect(h.list.updateWindow(() => null)).resolves.toBe(false);
+      }
+
+      h.userScroll(1900);
+
+      expect(
+        [...h.canvas().children]
+          .map((el) => Number((el as HTMLElement).dataset.id))
+          .sort((a, b) => a - b),
+      ).toEqual(range(24, 72).map((m) => m.id));
+    } finally {
+      h.list.dispose();
+    }
+  });
+
+  it("should preserve exact buffered coverage and retained elements across scroll reversals", () => {
+    const items = range(0, 200);
+    const topOf = (id: number) => Math.floor(id / 5) * 120 + (id % 5) * 10;
+    const h = mount(items, {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) => ({ top: topOf(m.id), lane: m.id % 5 }),
+    });
+    try {
+      for (const top of [100, 700, 1300, 1900, 1300, 700, 710, 3000, 3100, 0]) {
+        const before = new Map(
+          items.map((m) => [m.id, h.list.elementOf(`m${m.id}`)]),
+        );
+        h.userScroll(top);
+        const lower = Math.floor(Math.max(0, top - 600) / 600) * 600;
+        const upper =
+          Math.ceil(Math.min(h.list.state.totalSize, top + 1200) / 600) * 600;
+        const expected = items.filter(
+          (m) => topOf(m.id) < upper && topOf(m.id) + 100 > lower,
+        );
+        expect(
+          [...h.canvas().children]
+            .map((el) => Number((el as HTMLElement).dataset.id))
+            .sort((a, b) => a - b),
+        ).toEqual(expected.map((m) => m.id));
+        for (const item of expected) {
+          const retained = before.get(item.id);
+          if (retained) expect(h.list.elementOf(`m${item.id}`)).toBe(retained);
+        }
+      }
+    } finally {
+      h.list.dispose();
+    }
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+  });
+
+  it("should retry a failed incremental entry even when the next scroll has the same buffered window", () => {
+    let fail = true;
+    const failures: string[] = [];
+    const onError = (event: ErrorEvent): void => {
+      failures.push(event.message);
+      event.preventDefault();
+    };
+    const h = mount(range(0, 100), {
+      boot: "start",
+      scrollingUpdates: "freeze",
+      itemHeight: () => 100,
+      position: (m) => ({ top: Math.floor(m.id / 2) * 100, lane: m.id % 2 }),
+      onRender: (m) => {
+        if (fail && m.id === 40) throw new Error("incremental entry failed");
+      },
+    });
+    window.addEventListener("error", onError);
+    try {
+      h.userScroll(100);
+      h.userScroll(700);
+      expect(failures).toEqual(["incremental entry failed"]);
+      expect(h.list.elementOf("m40")).toBeNull();
+      expect(h.list.elementOf("m41")?.textContent).toBe("msg 41");
+      fail = false;
+      h.userScroll(710);
+      expect(h.list.elementOf("m40")?.textContent).toBe("msg 40");
+      expect(failures).toEqual(["incremental entry failed"]);
+    } finally {
+      window.removeEventListener("error", onError);
+      h.list.dispose();
+    }
+  });
+
   it("should mount whole cards directly and protect only the sparse visible set", async () => {
     const h = mount(range(0, 61), {
       boot: "start",
