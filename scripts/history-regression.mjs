@@ -348,6 +348,88 @@ for (const engine of [firefox, chromium, webkit]) {
     );
     await page.setViewportSize({ width: 1200, height: 820 });
     await page.waitForTimeout(150);
+
+    // Unretained endpoints still travel across several screens of the one
+    // fetched page. Exercise the actual buttons and sample writes, not layout
+    // reads in animation frames. Mounted endpoints keep their natural travel.
+    for (const edge of ["start", "end"]) {
+      await jump(853);
+      const motion = await page.evaluate(async (edge) => {
+        const h = window.chatHistory;
+        const v = document.querySelector("#viewport");
+        const key = `message:${edge === "start" ? 0 : h.total() - 1}`;
+        const missing = h.virtualList.positionOf(key) === null;
+        const pagesBefore = h.stats.pageLoads;
+        const height = v.clientHeight;
+        const samples = [];
+        const descriptor = Object.getOwnPropertyDescriptor(
+          Element.prototype,
+          "scrollTop",
+        );
+        Object.defineProperty(v, "scrollTop", {
+          configurable: true,
+          get() {
+            return descriptor.get.call(this);
+          },
+          set(top) {
+            descriptor.set.call(this, top);
+            queueMicrotask(() => {
+              if (h.virtualList.positionOf(key))
+                samples.push({ top, time: performance.now() });
+            });
+          },
+        });
+        try {
+          document
+            .querySelector(edge === "start" ? "#top-btn" : "#bottom-btn")
+            .click();
+          while (h.stats.busy) await new Promise(requestAnimationFrame);
+          return {
+            missing,
+            samples,
+            height,
+            pages: h.stats.pageLoads - pagesBefore,
+            retained: h.stats.retained,
+            reached:
+              edge === "start"
+                ? h.virtualList.state.atStart
+                : h.virtualList.state.atEnd,
+          };
+        } finally {
+          delete v.scrollTop;
+        }
+      }, edge);
+      assert.equal(motion.missing, true);
+      assert.equal(motion.reached, true);
+      assert.equal(motion.pages, 1);
+      assert.equal(motion.retained, 64);
+      const first = motion.samples[0];
+      const last = motion.samples.at(-1);
+      const distance = Math.abs(last.top - first.top);
+      assert.ok(
+        distance >= motion.height * 3,
+        `${edge} needs a travel leg: ${distance}px`,
+      );
+      assert.ok(
+        distance <= motion.height * 6,
+        `${edge} approach is bounded: ${distance}px`,
+      );
+      assert.ok(
+        last.time - first.time >= 550,
+        `${edge} includes travel before landing`,
+      );
+      assert.ok(
+        motion.samples.length >= 25,
+        `${edge} has intermediate positions`,
+      );
+      for (let i = 1; i < motion.samples.length; i++) {
+        const step = motion.samples[i].top - motion.samples[i - 1].top;
+        assert.ok(
+          edge === "start" ? step <= 1 : step >= -1,
+          `${edge} does not reverse`,
+        );
+      }
+    }
     await jump(0);
     await aligned(0);
     await page.click("#bottom-btn");

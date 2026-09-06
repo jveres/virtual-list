@@ -37,6 +37,7 @@ import "../shared/styles.css";
 import "./history.css";
 
 const HEADER_HEIGHT = 44;
+const ENDPOINT_APPROACH_VIEWPORTS = 4;
 const source = new HistorySource();
 const viewport = mustGet("viewport");
 const viewportWrap = mustGet("viewport-wrap");
@@ -246,16 +247,21 @@ async function jump(
       const page = await source.around(index, active.signal);
       if (!current()) return false;
       const nextRows = projectHistory(page.items, rows);
+      const approach = smooth
+        ? direction *
+          viewport.clientHeight *
+          (options.edge ? ENDPOINT_APPROACH_VIEWPORTS : 1)
+        : 0;
       const committed = await list.updateWindow(
         () => ({
           items: nextRows,
-          // Stage a one-viewport approach inside the fetched page. This
-          // animates a distant jump without materializing the missing span.
+          // Stage within the fetched page, without materializing the gap.
+          // Endpoint navigation needs several viewports of travel so the
+          // shared glide includes its approach, not just its landing leg.
+          // Indexed jumps retain their shorter, one-viewport approach.
           anchor: {
             key,
-            offset:
-              options.offset ??
-              topOffset + (smooth ? direction * viewport.clientHeight : 0),
+            offset: options.offset ?? topOffset + approach,
           },
           edgeSlots: edgeSlots(page),
           onCommit: () => {
