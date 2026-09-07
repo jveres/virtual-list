@@ -8,6 +8,7 @@ for (const engine of [firefox, webkit]) {
   try {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 820 },
+      hasTouch: true,
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -64,6 +65,82 @@ for (const engine of [firefox, webkit]) {
       "default",
     );
     assert.equal(await photo.getAttribute("aria-label"), "Preview Landscape");
+    const touch = (type) =>
+      photo.evaluate((image, type) => {
+        const box = image.getBoundingClientRect();
+        image.dispatchEvent(
+          new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 42,
+            pointerType: "touch",
+            isPrimary: true,
+            button: 0,
+            buttons: type === "pointerdown" ? 1 : 0,
+            clientX: box.x + box.width / 2,
+            clientY: box.y + box.height / 2,
+          }),
+        );
+      }, type);
+    // No app scaling while a native long-press is still being recognized.
+    await touch("pointerdown");
+    await page.waitForTimeout(700);
+    assert.equal(
+      await photo.evaluate((image) =>
+        image.classList.contains("is-photo-pressed"),
+      ),
+      false,
+    );
+    assert.equal(
+      await photo.evaluate((image) => getComputedStyle(image).transform),
+      "none",
+    );
+    assert.equal(await page.locator(".photo-viewer").count(), 0);
+    assert.equal(
+      await photo.evaluate((image) =>
+        image.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            button: 2,
+          }),
+        ),
+      ),
+      true,
+    );
+    await touch("pointerup");
+    await photo.dispatchEvent("click", { button: 0 });
+    await page.waitForTimeout(250);
+    assert.equal(
+      await page.locator(".photo-viewer").count(),
+      0,
+      "long-press release must not open a preview",
+    );
+    // A subsequent short tap waits for the browser's click, then presses/opens.
+    await touch("pointerdown");
+    await touch("pointerup");
+    assert.equal(await page.locator(".photo-viewer").count(), 0);
+    assert.equal(
+      await photo.evaluate((image) =>
+        image.classList.contains("is-photo-pressed"),
+      ),
+      false,
+    );
+    await photo.dispatchEvent("click", { button: 0 });
+    assert.equal(
+      await photo.evaluate((image) =>
+        image.classList.contains("is-photo-pressed"),
+      ),
+      true,
+    );
+    await page.locator(".photo-viewer:not(.is-preparing)").waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator(".photo-viewer").waitFor({ state: "detached" });
+    // Exercise the browser-generated touch/click sequence too.
+    await photo.tap();
+    await page.locator(".photo-viewer:not(.is-preparing)").waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator(".photo-viewer").waitFor({ state: "detached" });
     // The image itself remains a native Save Image / Copy Image target.
     assert.equal(
       await photo.evaluate((image) =>

@@ -1296,6 +1296,13 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         if (!event.isPrimary || event.button !== 0 || activePhotoView) return;
         if (options.nativeImageMenu && event.ctrlKey) return;
         suppressClick = false;
+        // Let the browser distinguish a tap from its native image long-press.
+        // Scaling under the finger competes with the iOS callout animation;
+        // a confirmed tap's click still gets press feedback before opening.
+        if (options.nativeImageMenu && event.pointerType === "touch") {
+          releasePhotoPress(card);
+          return;
+        }
         startPhotoPress(card, event);
       },
       { signal: events.signal },
