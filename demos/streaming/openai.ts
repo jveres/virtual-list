@@ -70,7 +70,14 @@ function replayTurn(turn: StoredTurn): Record<string, unknown>[] {
     ];
   }
   if (turn.role === "assistant" && turn.responseState?.output.length) {
-    return turn.responseState.output;
+    return turn.responseState.output.map((item) => {
+      if (item.type !== "image_generation_call") return item;
+      // Image output carries metadata (action, revised_prompt, format, etc.)
+      // that the Responses input schema does not accept. Keep the stored
+      // output intact, but replay only the image call's input fields.
+      const { id, type, status, result } = item;
+      return { id, type, status, result };
+    });
   }
   const items: Record<string, unknown>[] = [
     { role: turn.role, content: stripGeneratedImages(turn.markdown) },

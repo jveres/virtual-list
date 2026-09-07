@@ -1,10 +1,11 @@
 // Offline API fixture: no credentials or billable requests. Start Vite first.
 // BROWSER_MATRIX_URL=http://127.0.0.1:5173 node scripts/openai-context-regression.mjs
 import assert from "node:assert/strict";
-import { firefox } from "playwright";
+import { firefox, webkit } from "playwright";
 
 const baseUrl = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
-const browser = await firefox.launch();
+const engine = process.env.BROWSER_ENGINE ?? "firefox";
+const browser = await { firefox, webkit }[engine].launch();
 try {
   const page = await browser.newPage();
   const requests = [];
@@ -32,6 +33,15 @@ try {
     assert.equal(route.request().url(), "https://api.openai.com/v1/responses");
     const request = route.request().postDataJSON();
     requests.push(request);
+    for (const item of request.input) {
+      if (item.type === "image_generation_call")
+        assert.deepEqual(Object.keys(item).sort(), [
+          "id",
+          "result",
+          "status",
+          "type",
+        ]);
+    }
     if (missing && request.previous_response_id) {
       missing = false;
       await route.fulfill({
@@ -65,6 +75,10 @@ try {
         id: "ig_first",
         status: "completed",
         output_format: "png",
+        action: "generate",
+        revised_prompt: "A tiny test image",
+        size: "1024x1024",
+        quality: "medium",
         result:
           "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6w1sAAAAASUVORK5CYII=",
       });
@@ -133,7 +147,7 @@ try {
   );
   assert.equal(requests[5].input.length, 2);
   console.log(
-    "PASS Firefox: image chaining, IndexedDB reload, expired-anchor recovery, bounded history (6 requests, no live API).",
+    `PASS ${engine}: image chaining, IndexedDB reload, expired-anchor recovery, bounded history (6 requests, no live API).`,
   );
 } finally {
   await browser.close();

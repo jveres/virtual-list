@@ -64,6 +64,37 @@ async function collect(
 }
 
 describe("OpenAI response context", () => {
+  it("should replay image results without response-only metadata and retain web-search actions", () => {
+    const image = {
+      ...state().output[0],
+      action: "edit",
+      output_format: "png",
+      revised_prompt: "A brighter cat",
+      size: "1024x1024",
+      quality: "medium",
+    };
+    const search = {
+      type: "web_search_call",
+      id: "ws_first",
+      status: "completed",
+      action: { type: "search", query: "cat" },
+    };
+    const turns = validateStoredTurns(
+      JSON.parse(JSON.stringify(history(state({ output: [image, search] })))),
+    );
+
+    const chained = buildResponseContext(turns, 0, model);
+    const rebuilt = buildResponseContext(turns, 12, model);
+
+    expect(chained.fallbackInput).toEqual([
+      { role: "user", content: "Draw a cat" },
+      state().output[0],
+      search,
+      { role: "user", content: "Make it brighter" },
+    ]);
+    expect(rebuilt.input).toEqual(chained.fallbackInput);
+    expect(turns[1]?.responseState?.output).toEqual([image, search]);
+  });
   it("uses the selected branch's parent and starts fresh for a new conversation", () => {
     const branch = history(state({ id: "resp_alternative" }));
     expect(buildResponseContext(branch, 0, model).previousResponseId).toBe(
