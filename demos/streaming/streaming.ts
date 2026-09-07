@@ -187,6 +187,7 @@ const demoParams = new URLSearchParams(location.search);
 // General options live in the settings dialog and persist in this browser
 // (the browser matrix seeds the store before a load).
 const OPTIONS_KEY = "virtual-list:chat-options";
+const DRAFT_KEY = "virtual-list:chat-draft";
 /** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
 type LandingMode = "prompt" | "end";
 type CursorMode = "bar" | "none";
@@ -1837,6 +1838,23 @@ function linkedAbortSignal(abort: StreamAbort): {
 
 // --- Composer and send flow -------------------------------------------------
 
+function restoreDraft(): void {
+  try {
+    promptInput.value = localStorage.getItem(DRAFT_KEY) ?? "";
+  } catch {
+    // Storage may be unavailable; the composer still works in memory.
+  }
+}
+
+function saveDraft(): void {
+  try {
+    if (promptInput.value) localStorage.setItem(DRAFT_KEY, promptInput.value);
+    else localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    // A full or disabled store must not interrupt typing or sending.
+  }
+}
+
 function borderBlockSize(element: HTMLElement): number {
   const style = getComputedStyle(element);
   return (
@@ -1997,6 +2015,7 @@ async function handleSend(): Promise<void> {
   clearPendingAttachments();
 
   promptInput.value = "";
+  saveDraft();
   autosize();
 
   const abort: StreamAbort = { cancelled: false, onCancel: new Set() };
@@ -2206,7 +2225,11 @@ scrollBottomBtn.addEventListener("click", (event) => {
   void virtualList?.scrollTo("end", { behavior: "smooth" });
 });
 
-promptInput.addEventListener("input", autosize);
+restoreDraft();
+promptInput.addEventListener("input", () => {
+  saveDraft();
+  autosize();
+});
 promptInput.addEventListener("paste", (event) => {
   const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
     file.type.startsWith("image/"),
