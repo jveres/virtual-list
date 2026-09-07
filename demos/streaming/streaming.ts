@@ -2631,7 +2631,7 @@ viewport.addEventListener(
 syncMetrics();
 document.documentElement.classList.remove("booting");
 
-const imagePreview = createChatImagePreview(viewport);
+const imagePreview = createChatImagePreview(viewport, () => transcript);
 window.addEventListener("pagehide", () => imagePreview.dispose());
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) location.reload();

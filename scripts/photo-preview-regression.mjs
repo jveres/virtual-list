@@ -77,7 +77,7 @@ for (const engine of [firefox, webkit]) {
       await page.keyboard.press("Tab");
       assert.equal(
         await page
-          .locator(".photo-viewer-close")
+          .locator(".photo-viewer-next")
           .evaluate((el) => el === document.activeElement),
         true,
       );

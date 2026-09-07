@@ -2209,14 +2209,12 @@ export function createVirtualList<T>(
                   end: ownEdgeSlot(next.edgeSlots.end),
                 }
               : null;
-            const previousSlots = { ...edgeSlots };
-            if (slots) Object.assign(edgeSlots, slots);
-            try {
-              applyItems([...next.items], next.anchor ?? "viewport", false);
-            } catch (error) {
-              Object.assign(edgeSlots, previousSlots);
-              throw error;
-            }
+            applyItems(
+              [...next.items],
+              next.anchor ?? "viewport",
+              false,
+              slots,
+            );
             if (disposed) return;
             notifyCommitted(() => next.onCommit?.());
             applied = true;
@@ -2285,6 +2283,7 @@ export function createVirtualList<T>(
     snapshot: T[],
     anchor: AnchorRequest | undefined,
     interrupt: boolean,
+    slots: { start: EdgeSlot | null; end: EdgeSlot | null } | null = null,
   ): void {
     if (disposed) return;
     // Always prepared now (off-scroller, inside the reentrancy guard since
@@ -2298,7 +2297,18 @@ export function createVirtualList<T>(
         interruptNativeScroll();
         if (disposed) return;
       }
-      const { prepared, teardownFailures } = prepare(snapshot, anchor);
+      const previousSlots = slots ? { ...edgeSlots } : null;
+      if (slots) Object.assign(edgeSlots, slots);
+      let preparation: ReturnType<typeof prepare>;
+      try {
+        preparation = prepare(snapshot, anchor);
+      } catch (error) {
+        if (previousSlots) Object.assign(edgeSlots, previousSlots);
+        throw error;
+      }
+      // Preparation failure rolls back configuration. A later host callback
+      // can throw after adoption; keep the slots belonging to that snapshot.
+      const { prepared, teardownFailures } = preparation;
       if (!disposed) {
         lastItems = snapshot;
         lastIndexByKey = new Map(
@@ -2482,11 +2492,11 @@ export function createVirtualList<T>(
           ? scrollOptions.offset
           : undefined,
     };
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       if (
         enqueueDuringTransaction(
           () => {
-            void scrollTo(target, owned).then(resolve);
+            void scrollTo(target, owned).then(resolve, reject);
           },
           () => resolve(false),
         )
@@ -2785,8 +2795,10 @@ export function createVirtualList<T>(
     if (disposed) return;
     const owned = ownEdgeSlot(slot);
     if (enqueueDuringTransaction(() => setEdgeSlot(edge, owned))) return;
-    edgeSlots[edge] = owned;
-    setItems(lastItems);
+    applyItems([...lastItems], undefined, false, {
+      ...edgeSlots,
+      [edge]: owned,
+    });
   }
 
   function positionOf(key: string): { top: number; height: number } | null {

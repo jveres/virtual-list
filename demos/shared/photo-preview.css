@@ -154,7 +154,7 @@ html.photo-view-open body {
 }
 
 .photo-viewer-hero {
-  position: fixed;
+  position: absolute;
   z-index: 5;
   overflow: hidden;
   backface-visibility: hidden;
@@ -167,7 +167,8 @@ html.photo-view-open body {
   will-change: transform;
 }
 
-.photo-viewer-close {
+.photo-viewer-close,
+.photo-viewer-nav {
   position: fixed;
   z-index: 4;
   top: 16px;
@@ -187,6 +188,35 @@ html.photo-view-open body {
   color: var(--fg);
   cursor: pointer;
   backdrop-filter: blur(12px);
+}
+
+.photo-viewer-nav {
+  top: 50%;
+  transform: translateY(-50%);
+  transition: opacity 180ms ease;
+}
+.photo-viewer-previous {
+  left: 16px;
+  right: auto;
+}
+.photo-viewer-next {
+  right: 16px;
+}
+.photo-viewer-nav[hidden] {
+  display: none;
+}
+.photo-viewer-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.photo-viewer-nav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.photo-viewer.is-navigation-hidden .photo-viewer-nav {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .photo-viewer-close svg {
@@ -213,6 +243,7 @@ html.photo-view-open body {
 @media (prefers-reduced-motion: reduce) {
   .photo-preview-card,
   .photo-preview-image,
+  .photo-viewer-nav,
   .photo-viewer-image-hires {
     transition: none;
   }

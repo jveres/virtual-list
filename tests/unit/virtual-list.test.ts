@@ -3889,6 +3889,32 @@ describe("v2 runtime — retained nodes", () => {
     await expect(queued).resolves.toBe(false);
   });
 
+  it("should reject a queued scroll command when that command fails", async () => {
+    let listRef: VirtualList<Msg> | null = null;
+    let queued: Promise<boolean> | null = null;
+    let failScroll = false;
+    const h = mount(range(0, 20), {
+      onRender: (item) => {
+        if (item.body === "queue command")
+          queued = listRef?.scrollTo("m0", { align: "start" }) ?? null;
+      },
+      onState: (state) => {
+        if (state.count === 21) failScroll = true;
+      },
+      anchorable: () => {
+        if (failScroll) throw new Error("command anchor failed");
+        return true;
+      },
+    });
+    listRef = h.list;
+
+    h.list.setItems([...range(0, 20), message(20, "queue command")]);
+
+    await expect(queued).rejects.toThrow("command anchor failed");
+    failScroll = false;
+    await expect(h.list.scrollTo("end")).resolves.toBe(true);
+  });
+
   it("completes the commit before surfacing a teardown failure — state stays consistent", () => {
     const h = mount(range(0, 20), {
       onDestroy: (element) => {
@@ -4247,6 +4273,59 @@ describe("v2 runtime — edge slots", () => {
     expect(h.list.state.held).toBe(false);
     expect(h.list.state.totalSize).toBe(total);
     expect(h.slotOf(element).style.height).toBe("52px");
+  });
+
+  it("should retain the previous edge slot after a replacement fails to render", () => {
+    const initial = range(0, 20);
+    const slot = loader();
+    const h = mount(initial, { edgeSlots: { start: slot } });
+    const broken: EdgeSlot = {
+      key: "broken",
+      height: 80,
+      render: () => {
+        throw new Error("slot render failed");
+      },
+    };
+
+    expect(() => h.list.setEdgeSlot("start", broken)).toThrow(
+      "slot render failed",
+    );
+    h.list.setItems([...initial, message(20)]);
+
+    expect(h.list.state.count).toBe(21);
+    expect(h.list.state.totalSize).toBe(21 * ROW_H + slot.height);
+    expect(h.list.positionOf("m0")).toEqual({
+      top: slot.height,
+      height: ROW_H,
+    });
+  });
+
+  it("should retain adopted window slots when a post-commit callback throws", async () => {
+    const initial = range(0, 20);
+    let failNotification = false;
+    const h = mount(initial, {
+      edgeSlots: { start: loader() },
+      onState: () => {
+        if (failNotification) throw new Error("notification failed");
+      },
+    });
+    const replacement = loader("replacement", 80);
+    failNotification = true;
+
+    await expect(
+      h.list.updateWindow(() => ({
+        items: initial,
+        edgeSlots: { start: replacement },
+      })),
+    ).rejects.toThrow("notification failed");
+    failNotification = false;
+    h.list.setItems([...initial, message(20)]);
+
+    expect(h.list.state.count).toBe(21);
+    expect(h.list.positionOf("m0")).toEqual({
+      top: replacement.height,
+      height: ROW_H,
+    });
   });
 
   it("rejects invalid slot heights and host keys in the reserved namespace", () => {

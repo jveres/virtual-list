@@ -85,6 +85,17 @@ function photo(id: number): Photo {
 const viewport = mustGet("viewport");
 const photoPreview = createPhotoPreview<PhotoPreviewItem>({
   viewport,
+  getAdjacentPhoto: (current, direction) => {
+    const id = current.id + direction;
+    if (id < 0 || id >= TOTAL) return null;
+    const { aspect } = photo(id);
+    return {
+      id,
+      aspectRatio: 1 / aspect,
+      width: SOURCE_WIDTH,
+      height: Math.round(SOURCE_WIDTH / aspect),
+    };
+  },
   thumbnailUrl: (p) =>
     `https://picsum.photos/seed/vl-${p.id}/${SOURCE_WIDTH}/${Math.round(SOURCE_WIDTH * p.aspectRatio)}`,
   previewUrl: (p, width) =>

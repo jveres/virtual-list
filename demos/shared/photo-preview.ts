@@ -17,6 +17,7 @@ const PHOTO_VIEW_BLOCK_PADDING = 0;
 const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
 const PHOTO_VIEW_DURATION_MS = 420;
+const PHOTO_NAV_INITIAL_HIDE_MS = 1500;
 const PHOTO_VIEW_IOS_DURATION_MS = 520;
 const PHOTO_VIEW_GEOMETRY_EASING = "cubic-bezier(0.18, 1.28, 0.32, 1)";
 const PHOTO_VIEW_IOS_GEOMETRY_EASING = "cubic-bezier(0.18, 1.24, 0.32, 1)";
@@ -42,6 +43,7 @@ export interface PhotoPreviewOptions<T extends PhotoPreviewItem> {
   thumbnailUrl: (photo: T) => string;
   previewUrl: (photo: T, width: number) => string;
   detailsText?: (photo: T) => string;
+  getAdjacentPhoto?: (photo: T, direction: -1 | 1) => T | null;
   maxPreviewSourceWidth?: number;
   /** Native Save/Copy menus; "preview-on-ios" disables the source's iOS callout. */
   nativeImageMenu?: boolean | "preview-on-ios";
@@ -77,6 +79,10 @@ interface ActivePhotoView<T extends PhotoPreviewItem> {
   overlay: HTMLElement;
   backdrop: HTMLElement;
   closeButton: HTMLButtonElement;
+  previousButton: HTMLButtonElement;
+  nextButton: HTMLButtonElement;
+  navigationImage: HTMLImageElement | null;
+  navigationHideTimer: number | null;
   frame: HTMLElement;
   stage: HTMLElement;
   scroll: HTMLElement;
@@ -128,6 +134,13 @@ interface PhotoPressState {
   startY: number;
 }
 
+interface PhotoBinding {
+  events: AbortController;
+  attributes: Map<string, string | null>;
+  classes: Map<string, boolean>;
+  hadClassAttribute: boolean;
+}
+
 function reducedMotion(): boolean {
   return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
@@ -162,7 +175,7 @@ function readRect(rect: DOMRect): PhotoRect {
   };
 }
 
-function styleFixedRect(element: HTMLElement, rect: PhotoRect): void {
+function stylePhotoRect(element: HTMLElement, rect: PhotoRect): void {
   element.style.left = `${rect.left}px`;
   element.style.top = `${rect.top}px`;
   element.style.width = `${rect.width}px`;
@@ -217,7 +230,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     (options.nativeImageMenu === "preview-on-ios" && !isIOSLike());
   let activePhotoView: ActivePhotoView<T> | null = null;
   let disposed = false;
-  const bindings = new WeakMap<HTMLElement, AbortController>();
+  const bindings = new Map<HTMLElement, PhotoBinding>();
   const openingPhotoCards = new WeakSet<HTMLElement>();
   const photoPressStates = new WeakMap<HTMLElement, PhotoPressState>();
 
@@ -241,11 +254,17 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
   }
 
   function photoViewViewportWidth(): number {
-    return window.visualViewport?.width ?? window.innerWidth;
+    // Pinch zoom changes the visual viewport, not the image's layout box.
+    // Refitting to it would counteract native magnification mid-gesture.
+    return document.documentElement.clientWidth;
   }
 
   function photoViewViewportHeight(): number {
-    return window.visualViewport?.height ?? window.innerHeight;
+    return document.documentElement.clientHeight;
+  }
+
+  function photoViewZoom(): number {
+    return window.visualViewport?.scale || 1;
   }
 
   function photoViewImageBox(photo: T): PhotoViewBox {
@@ -396,6 +415,8 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     card: HTMLElement,
   ): Promise<void> {
     if (disposed || activePhotoView || openingPhotoCards.has(card)) return;
+    const binding = bindings.get(card);
+    if (!binding) return;
     openingPhotoCards.add(card);
 
     try {
@@ -403,10 +424,15 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         await holdPhotoPressForOpen(card);
         await nextFrame();
       }
-      if (!disposed && bindings.has(card) && card.isConnected)
+      if (
+        !disposed &&
+        !activePhotoView &&
+        bindings.get(card) === binding &&
+        card.isConnected
+      )
         await openPhotoView(photo, card);
     } finally {
-      clearPhotoPressState(card);
+      if (bindings.get(card) === binding) clearPhotoPressState(card);
       openingPhotoCards.delete(card);
     }
   }
@@ -471,7 +497,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const hero = document.createElement("div");
     hero.className = "photo-viewer-hero";
     hero.style.backgroundImage = `url(${JSON.stringify(src)})`;
-    styleFixedRect(hero, rect);
+    stylePhotoRect(hero, rect);
     return hero;
   }
 
@@ -488,6 +514,13 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
   }
 
   function syncPhotoViewLayout(view: ActivePhotoView<T>): void {
+    if (
+      view.overlay.style.getPropertyValue("--photo-viewer-width") ===
+        `${photoViewViewportWidth()}px` &&
+      view.overlay.style.getPropertyValue("--photo-viewer-height") ===
+        `${photoViewViewportHeight()}px`
+    )
+      return;
     syncPhotoViewViewportVars(view.overlay, view.photo);
     requestAnimationFrame(() => {
       if (activePhotoView === view) syncPhotoViewScrollMode(view);
@@ -639,7 +672,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     clientX: number,
     clientY: number,
   ): void {
-    if (view.closing) return;
+    if (view.closing || photoViewZoom() > 1.01) return;
     view.suppressClick = false;
     cancelPhotoSwipeReset(view);
     view.swipeScrollTop = view.scroll.scrollTop;
@@ -767,6 +800,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
   async function revealHighResolutionImage(
     view: ActivePhotoView<T>,
   ): Promise<void> {
+    const photo = view.photo;
     if (!view.highResolutionImage.src) {
       view.highResolutionImage.src = photoViewImageUrl(view.photo);
     }
@@ -775,8 +809,108 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     } catch {
       return; // Keep the thumbnail when the larger source cannot be loaded.
     }
-    if (activePhotoView !== view || view.closing) return;
+    if (activePhotoView !== view || view.closing || view.photo !== photo)
+      return;
     view.highResolutionImage.classList.add("is-loaded");
+  }
+
+  function updateNavigation(view: ActivePhotoView<T>): void {
+    const focused = document.activeElement;
+    const previous = options.getAdjacentPhoto?.(view.photo, -1);
+    const next = options.getAdjacentPhoto?.(view.photo, 1);
+    view.previousButton.hidden = view.nextButton.hidden = !previous && !next;
+    view.previousButton.disabled = !previous || !!view.navigationImage;
+    view.nextButton.disabled = !next || !!view.navigationImage;
+    view.overlay.setAttribute("aria-busy", String(!!view.navigationImage));
+    view.overlay.dataset.photoId = String(view.photo.id);
+    if (
+      focused instanceof HTMLButtonElement &&
+      (focused === view.previousButton || focused === view.nextButton) &&
+      (focused.disabled || focused.hidden)
+    ) {
+      // Disabling a focused button can send focus back to the inert page.
+      // Keep a usable keyboard target inside the dialog while decoding.
+      view.closeButton.focus({ preventScroll: true });
+    }
+  }
+
+  function cancelNavigationHide(view: ActivePhotoView<T>): void {
+    if (view.navigationHideTimer === null) return;
+    window.clearTimeout(view.navigationHideTimer);
+    view.navigationHideTimer = null;
+  }
+
+  function setNavigationVisible(
+    view: ActivePhotoView<T>,
+    visible: boolean,
+  ): void {
+    cancelNavigationHide(view);
+    if (
+      !visible &&
+      (document.activeElement === view.previousButton ||
+        document.activeElement === view.nextButton)
+    ) {
+      view.closeButton.focus({ preventScroll: true });
+    }
+    view.overlay.classList.toggle("is-navigation-hidden", !visible);
+    view.previousButton.inert = view.nextButton.inert = !visible;
+  }
+
+  async function navigatePhoto(
+    view: ActivePhotoView<T>,
+    direction: -1 | 1,
+  ): Promise<void> {
+    if (view.closing || view.navigationImage) return;
+    const target = options.getAdjacentPhoto?.(view.photo, direction);
+    if (!target) return;
+    const loaded = new Image();
+    view.navigationImage = loaded;
+    updateNavigation(view);
+    loaded.src = photoViewImageUrl(target);
+    try {
+      await loaded.decode();
+    } catch {
+      if (activePhotoView !== view || view.closing) return;
+      view.navigationImage = null;
+      view.details.textContent = `${photoDetailsText(view.photo)} — Unable to load image. Try again.`;
+      updateNavigation(view);
+      return;
+    }
+    if (activePhotoView !== view || view.closing) return;
+    cancelPhotoViewOpeningAnimation(view);
+    cancelPhotoSwipeReset(view);
+    view.swipeState = null;
+    clearPhotoSwipeVisualState(view, null);
+    revealPhotoSource(view.sourceElement);
+    view.photo =
+      target.width && target.height
+        ? target
+        : {
+            ...target,
+            width: loaded.naturalWidth,
+            height: loaded.naturalHeight,
+            aspectRatio: loaded.naturalHeight / loaded.naturalWidth,
+          };
+    view.sourceElement = findMountedPhotoElement(target.id);
+    if (view.sourceElement)
+      view.sourceRect = readRect(view.sourceElement.getBoundingClientRect());
+    hidePhotoSource(view.sourceElement);
+    const box = syncPhotoViewViewportVars(view.overlay, view.photo);
+    view.highResolutionImage.classList.remove("is-loaded");
+    view.highResolutionImage.removeAttribute("src");
+    view.image.src = loaded.src;
+    view.image.width = view.highResolutionImage.width = box.width;
+    view.image.height = view.highResolutionImage.height = box.height;
+    view.frame.style.transform = "translate3d(0, 0, 0) scale(1)";
+    view.frame.style.transformOrigin = "";
+    view.frame.style.willChange = "";
+    setPhotoHeroRadius(view.frame, previewRadius);
+    view.scroll.scrollTop = 0;
+    view.details.textContent = photoDetailsText(view.photo);
+    view.overlay.setAttribute("aria-label", `Photo ${target.id}`);
+    view.navigationImage = null;
+    updateNavigation(view);
+    syncPhotoViewScrollMode(view);
   }
 
   function cleanupPhotoView(
@@ -784,6 +918,9 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     source: HTMLElement | null,
   ): void {
     if (!view.overlay.isConnected) return;
+    cancelNavigationHide(view);
+    view.navigationImage?.removeAttribute("src");
+    view.navigationImage = null;
     document.removeEventListener("keydown", view.onKeyDown, true);
     view.overlay.removeEventListener("click", view.onOverlayClick);
     view.scroll.removeEventListener("pointercancel", view.onSwipePointerCancel);
@@ -854,6 +991,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
 
     const details = document.createElement("div");
     details.className = "photo-viewer-details";
+    details.setAttribute("aria-live", "polite");
     details.textContent = photoDetailsText(photo);
 
     const scroll = document.createElement("div");
@@ -886,12 +1024,50 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     frame.append(image, highResolutionImage);
     stage.append(frame, details);
     scroll.append(stage);
-    overlay.append(backdrop, scroll, closeButton);
+    const navigationButton = (direction: -1 | 1): HTMLButtonElement => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `photo-viewer-nav photo-viewer-${direction === -1 ? "previous" : "next"}`;
+      button.setAttribute(
+        "aria-label",
+        direction === -1 ? "Previous image" : "Next image",
+      );
+      button.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${direction === -1 ? "m15 18-6-6 6-6" : "m9 18 6-6-6-6"}"/></svg>`;
+      button.addEventListener("click", () => {
+        setNavigationVisible(view, true);
+        void navigatePhoto(view, direction);
+      });
+      return button;
+    };
+    const previousButton = navigationButton(-1);
+    const nextButton = navigationButton(1);
+    overlay.append(backdrop, scroll, previousButton, nextButton, closeButton);
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Tab") {
         event.preventDefault();
-        closeButton.focus({ preventScroll: true });
+        setNavigationVisible(view, true);
+        const buttons = [previousButton, nextButton, closeButton].filter(
+          (button) => !button.hidden && !button.disabled,
+        );
+        const index =
+          document.activeElement instanceof HTMLButtonElement
+            ? buttons.indexOf(document.activeElement)
+            : -1;
+        buttons[
+          (index + (event.shiftKey ? -1 : 1) + buttons.length) % buttons.length
+        ]?.focus({ preventScroll: true });
+      }
+      if (
+        (event.key === "ArrowLeft" || event.key === "ArrowRight") &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        setNavigationVisible(view, true);
+        void navigatePhoto(view, event.key === "ArrowLeft" ? -1 : 1);
       }
       if (event.key === "Escape") {
         event.preventDefault();
@@ -900,17 +1076,27 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       }
     };
     const onOverlayClick = (event: MouseEvent) => {
+      if (view.closing) return;
       if (view.suppressClick) {
         view.suppressClick = false;
         return;
       }
       if (!(event.target instanceof Node)) return;
       if (
-        pointInsideElement(view.frame, event.clientX, event.clientY) ||
-        view.closeButton.contains(event.target)
+        view.closeButton.contains(event.target) ||
+        view.previousButton.contains(event.target) ||
+        view.nextButton.contains(event.target)
       ) {
         return;
       }
+      if (pointInsideElement(view.frame, event.clientX, event.clientY)) {
+        setNavigationVisible(
+          view,
+          view.overlay.classList.contains("is-navigation-hidden"),
+        );
+        return;
+      }
+      if (photoViewZoom() > 1.01) return;
       void closePhotoView();
     };
     const onSwipePointerDown = (event: PointerEvent) => {
@@ -928,6 +1114,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         event.clientX,
         event.clientY,
       );
+      if (!view.swipeState) return;
       try {
         view.scroll.setPointerCapture(event.pointerId);
       } catch {
@@ -1014,13 +1201,23 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       const touch = changedTouchById(event, state.pointerId);
       cancelPhotoSwipe(view, "touch", touch?.identifier ?? state.pointerId);
     };
-    const onViewportChange = () => syncPhotoViewLayout(view);
+    const onViewportChange = () => {
+      const state = view.swipeState;
+      if (photoViewZoom() > 1.01) {
+        if (state) cancelPhotoSwipe(view, state.input, state.pointerId);
+      }
+      syncPhotoViewLayout(view);
+    };
 
     const view: ActivePhotoView<T> = {
       photo,
       overlay,
       backdrop,
       closeButton,
+      previousButton,
+      nextButton,
+      navigationImage: null,
+      navigationHideTimer: null,
       frame,
       stage,
       scroll,
@@ -1058,6 +1255,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     };
 
     activePhotoView = view;
+    updateNavigation(view);
     document.body.append(overlay);
     // The modal owns Escape before background document shortcuts see it.
     document.addEventListener("keydown", onKeyDown, true);
@@ -1089,6 +1287,11 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     frame.style.willChange = "transform";
     image.classList.add("is-visible");
     overlay.classList.remove("is-preparing");
+    view.navigationHideTimer = window.setTimeout(() => {
+      view.navigationHideTimer = null;
+      if (activePhotoView === view && !view.closing)
+        setNavigationVisible(view, false);
+    }, PHOTO_NAV_INITIAL_HIDE_MS);
     for (const entry of view.background) entry.element.inert = true;
     closeButton.focus({ preventScroll: true });
     const backdropOpacity = photoViewBackdropOpacity(view);
@@ -1136,12 +1339,14 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       animationFinished(frameAnimation),
       animationFinished(backdropAnimation),
     ]);
-    if (activePhotoView !== view || view.closing) return;
+    if (activePhotoView !== view || view.closing || view.photo !== photo)
+      return;
     backdrop.style.opacity = backdropOpacity;
     setPhotoHeroRadius(frame, previewRadius);
     frame.style.transform = "translate3d(0, 0, 0) scale(1)";
     frame.style.transformOrigin = "";
     frame.style.willChange = "";
+    frameAnimation.cancel();
     backdropAnimation.cancel();
     view.openingAnimations = [];
     void revealHighResolutionImage(view);
@@ -1155,22 +1360,36 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       return;
     }
     view.closing = true;
+    cancelNavigationHide(view);
+    view.navigationImage?.removeAttribute("src");
+    view.previousButton.hidden = view.nextButton.hidden = true;
     view.swipeState = null;
     cancelPhotoSwipeReset(view);
 
     const currentSource =
-      (view.sourceElement?.isConnected ? view.sourceElement : null) ??
-      findMountedPhotoElement(view.photo.id);
+      (view.sourceElement?.isConnected &&
+      view.sourceElement.dataset.photoId === String(view.photo.id)
+        ? view.sourceElement
+        : null) ?? findMountedPhotoElement(view.photo.id);
     hidePhotoSource(currentSource);
 
+    // Use one coordinate space for the frame and its closing hero. In Safari,
+    // zoomed client rectangles need not have the fixed-position origin.
+    const overlayRect = view.overlay.getBoundingClientRect();
+    const withinOverlay = (rect: PhotoRect): PhotoRect => ({
+      ...rect,
+      left: rect.left - overlayRect.left,
+      top: rect.top - overlayRect.top,
+    });
     const currentImage = currentPhotoViewImage(view);
-    const currentRect = readRect(view.frame.getBoundingClientRect());
+    const currentRect = withinOverlay(
+      readRect(view.frame.getBoundingClientRect()),
+    );
     const hero = createPhotoHero(
       currentImage.currentSrc || currentImage.src,
       currentRect,
     );
     cancelPhotoViewOpeningAnimation(view);
-    styleFixedRect(hero, currentRect);
     view.overlay.append(hero);
     view.frame.style.visibility = "hidden";
     view.image.classList.remove("is-visible");
@@ -1181,9 +1400,11 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       return;
     }
 
-    const targetRect = currentSource
-      ? readRect(currentSource.getBoundingClientRect())
-      : view.sourceRect;
+    const targetRect = withinOverlay(
+      currentSource
+        ? readRect(currentSource.getBoundingClientRect())
+        : view.sourceRect,
+    );
     const viewDuration = photoViewDurationMs();
     const heroBorderRadius = currentSource ? sourceRadius : previewRadius;
     const heroClipPath = `inset(0 round ${heroBorderRadius})`;
@@ -1192,7 +1413,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const heroAnimation = currentSource
       ? (() => {
           const initialTransform = photoHeroTransform(currentRect, targetRect);
-          styleFixedRect(hero, targetRect);
+          stylePhotoRect(hero, targetRect);
           hero.style.transform = initialTransform;
           return hero.animate(
             [
@@ -1287,7 +1508,23 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
   function bind(card: HTMLElement, photo: T): void {
     if (disposed || bindings.has(card)) return;
     const events = new AbortController();
-    bindings.set(card, events);
+    bindings.set(card, {
+      events,
+      attributes: new Map(
+        ["role", "tabindex", "aria-label", "data-photo-id", "draggable"].map(
+          (name) => [name, card.getAttribute(name)],
+        ),
+      ),
+      classes: new Map(
+        [
+          "photo-preview-card",
+          "native-image-menu",
+          "is-photo-pressed",
+          "is-photo-view-source",
+        ].map((name) => [name, card.classList.contains(name)]),
+      ),
+      hadClassAttribute: card.hasAttribute("class"),
+    });
     let suppressClick = false;
     card.classList.add("photo-preview-card");
     card.classList.toggle("native-image-menu", nativeSourceMenu);
@@ -1395,9 +1632,21 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
   }
 
   function unbind(card: HTMLElement): void {
-    bindings.get(card)?.abort();
-    bindings.delete(card);
+    const binding = bindings.get(card);
+    if (!binding) return;
+    binding.events.abort();
     clearPhotoPressState(card);
+    if (card.classList.contains("is-photo-view-source"))
+      revealPhotoSource(card);
+    for (const [name, value] of binding.attributes) {
+      if (value === null) card.removeAttribute(name);
+      else card.setAttribute(name, value);
+    }
+    for (const [name, present] of binding.classes)
+      card.classList.toggle(name, present);
+    if (!binding.hadClassAttribute && card.classList.length === 0)
+      card.removeAttribute("class");
+    bindings.delete(card);
   }
 
   return {
@@ -1410,6 +1659,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     dispose() {
       disposed = true;
       void closePhotoView(false);
+      for (const card of bindings.keys()) unbind(card);
     },
   };
 }
