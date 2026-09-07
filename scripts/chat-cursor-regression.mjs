@@ -1,8 +1,8 @@
 // Offline streaming cursor lifecycle: idle while virtualized away, then remount.
 import assert from "node:assert/strict";
-import { firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 
-for (const engine of [firefox, webkit]) {
+for (const engine of [firefox, webkit, chromium]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage({
@@ -103,6 +103,13 @@ for (const engine of [firefox, webkit]) {
     await page.waitForTimeout(750);
     await page.keyboard.press("Escape");
     await page.locator(".photo-viewer").waitFor({ state: "detached" });
+    assert.equal(
+      await page.evaluate(() =>
+        window.cursorBeforeDetach.classList.contains("cursor-active"),
+      ),
+      false,
+      "the retained cursor becomes idle even while detached",
+    );
     await page.locator("#viewport").evaluate((viewport) => {
       viewport.scrollTop = viewport.scrollHeight;
     });
