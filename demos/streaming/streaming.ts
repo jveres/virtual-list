@@ -44,6 +44,7 @@ import {
   type ChatAttachment,
   readAttachments,
 } from "./attachments.js";
+import { createChatImagePreview } from "./image-preview.js";
 import {
   buildResponseContext,
   GENERATED_IMAGE_PATTERN,
@@ -2069,11 +2070,6 @@ async function handleSend(): Promise<void> {
     streamAbort = null;
     setStreamingUI(false);
     if (virtualList) syncScrollButtons(virtualList.state);
-    // Focusing the composer collapses any text selection, so skip it while
-    // the user is selecting text in a message — otherwise stream end clears
-    // it.
-    const selection = window.getSelection();
-    if (!selection || selection.isCollapsed) promptInput.focus();
   }
 }
 
@@ -2514,6 +2510,11 @@ viewport.addEventListener(
 
 syncMetrics();
 document.documentElement.classList.remove("booting");
-promptInput.focus();
+
+const imagePreview = createChatImagePreview(viewport);
+window.addEventListener("pagehide", () => imagePreview.dispose());
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted) location.reload();
+});
 
 watchSystemTheme(refreshTheme);

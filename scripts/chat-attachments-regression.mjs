@@ -81,6 +81,22 @@ try {
   await page.waitForFunction(() =>
     document.getElementById("attachment-files")?.accept.includes(".pdf"),
   );
+  await page.waitForFunction(
+    () => !document.documentElement.classList.contains("booting"),
+  );
+  assert.equal(
+    await page
+      .locator("#prompt")
+      .evaluate((input) => input === document.activeElement),
+    false,
+  );
+  await page.locator("#prompt").focus();
+  assert.equal(
+    await page
+      .locator("#prompt")
+      .evaluate((input) => getComputedStyle(input).outlineStyle),
+    "none",
+  );
   const textFile = {
     name: "notes.txt",
     mimeType: "text/plain",
@@ -103,11 +119,18 @@ try {
   async function send(text = "") {
     const count = requests.length;
     await page.fill("#prompt", text);
+    await page.locator("#send-btn").focus();
     await page.click("#send-btn");
     await page.waitForFunction(
       () => document.getElementById("send-btn")?.textContent === "Send",
     );
     assert.ok(requests.length > count);
+    assert.equal(
+      await page
+        .locator("#prompt")
+        .evaluate((input) => input === document.activeElement),
+      false,
+    );
     assert.equal(
       await page.getByText("OpenAI request failed", { exact: false }).count(),
       0,

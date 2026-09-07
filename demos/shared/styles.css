@@ -754,8 +754,7 @@ p.ai-settings-note {
 }
 
 .composer textarea:focus {
-  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  outline-offset: 1px;
+  outline: none;
 }
 
 .composer-attachments,
