@@ -12,6 +12,32 @@ for (const engine of [firefox, webkit]) {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("dialog", (dialog) => dialog.accept());
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        "virtual-list:ai-settings",
+        JSON.stringify({
+          provider: "openai",
+          apiKey: "offline-test",
+          model: "gpt-5-mini",
+        }),
+      );
+      const originalFetch = window.fetch;
+      window.fetch = (input, init) => {
+        if (!String(input).startsWith("https://api.openai.com/"))
+          return originalFetch(input, init);
+        window.previewRequestStarted = true;
+        return new Promise((_resolve, reject) => {
+          init.signal.addEventListener(
+            "abort",
+            () => {
+              window.previewRequestAborted = true;
+              reject(new DOMException("Cancelled", "AbortError"));
+            },
+            { once: true },
+          );
+        });
+      };
+    });
     await page.goto(`${base}/demos/streaming/index.html`);
     await page.waitForFunction(
       () => !document.documentElement.classList.contains("booting"),
@@ -38,6 +64,25 @@ for (const engine of [firefox, webkit]) {
       "default",
     );
     assert.equal(await photo.getAttribute("aria-label"), "Preview Landscape");
+    // The image itself remains a native Save Image / Copy Image target.
+    assert.equal(
+      await photo.evaluate((image) =>
+        image.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            button: 2,
+          }),
+        ),
+      ),
+      true,
+    );
+    await photo.click({ button: "right" });
+    assert.equal(await page.locator(".photo-viewer").count(), 0);
+    await page.keyboard.press("Escape");
+    await photo.click({ modifiers: ["Control"] });
+    assert.equal(await page.locator(".photo-viewer").count(), 0);
+    await page.keyboard.press("Escape");
     const initialUrl = page.url();
     const initialTop = await page
       .locator("#viewport")
@@ -124,6 +169,25 @@ for (const engine of [firefox, webkit]) {
     );
     await page.keyboard.press("Escape");
     await page.locator(".photo-viewer").waitFor({ state: "detached" });
+    // Closing a modal must not also cancel a generation behind it.
+    await page.locator("#prompt").fill("Keep generating while I preview");
+    await page.locator("#send-btn").click();
+    await page.waitForFunction(() => window.previewRequestStarted);
+    await attached.click();
+    await page.locator(".photo-viewer:not(.is-preparing)").waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator(".photo-viewer").waitFor({ state: "detached" });
+    assert.equal(await page.locator("#send-btn").textContent(), "Stop");
+    assert.equal(
+      await page.evaluate(() => window.previewRequestAborted === true),
+      false,
+    );
+    // Once the modal is gone, Escape still cancels generation normally.
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(() => window.previewRequestAborted === true);
+    await page.waitForFunction(
+      () => document.getElementById("send-btn").textContent === "Send",
+    );
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ engine: engine.name(), result: "passed" }));
   } finally {

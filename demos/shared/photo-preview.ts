@@ -43,6 +43,8 @@ export interface PhotoPreviewOptions<T extends PhotoPreviewItem> {
   previewUrl: (photo: T, width: number) => string;
   detailsText?: (photo: T) => string;
   maxPreviewSourceWidth?: number;
+  /** Let image-based hosts expose the browser's Save Image / Copy Image menu. */
+  nativeImageMenu?: boolean;
 }
 
 export interface PhotoPreviewController<T extends PhotoPreviewItem> {
@@ -775,7 +777,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     source: HTMLElement | null,
   ): void {
     if (!view.overlay.isConnected) return;
-    document.removeEventListener("keydown", view.onKeyDown);
+    document.removeEventListener("keydown", view.onKeyDown, true);
     view.overlay.removeEventListener("click", view.onOverlayClick);
     view.scroll.removeEventListener("pointercancel", view.onSwipePointerCancel);
     view.scroll.removeEventListener("pointerdown", view.onSwipePointerDown);
@@ -885,6 +887,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       }
       if (event.key === "Escape") {
         event.preventDefault();
+        event.stopPropagation();
         void closePhotoView();
       }
     };
@@ -1048,7 +1051,8 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
 
     activePhotoView = view;
     document.body.append(overlay);
-    document.addEventListener("keydown", onKeyDown);
+    // The modal owns Escape before background document shortcuts see it.
+    document.addEventListener("keydown", onKeyDown, true);
     overlay.addEventListener("click", onOverlayClick);
     scroll.addEventListener("pointercancel", onSwipePointerCancel);
     scroll.addEventListener("pointerdown", onSwipePointerDown);
@@ -1278,6 +1282,10 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     bindings.set(card, events);
     let suppressClick = false;
     card.classList.add("photo-preview-card");
+    card.classList.toggle(
+      "native-image-menu",
+      options.nativeImageMenu === true,
+    );
     card.dataset.photoId = String(photo.id);
     card.setAttribute("role", "button");
     card.setAttribute("tabindex", "0");
@@ -1286,6 +1294,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       "pointerdown",
       (event) => {
         if (!event.isPrimary || event.button !== 0 || activePhotoView) return;
+        if (options.nativeImageMenu && event.ctrlKey) return;
         suppressClick = false;
         startPhotoPress(card, event);
       },
@@ -1328,13 +1337,20 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     card.addEventListener(
       "contextmenu",
       (event) => {
+        if (options.nativeImageMenu) {
+          suppressClick = true;
+          releasePhotoPress(card);
+          return;
+        }
         event.preventDefault();
       },
       { signal: events.signal },
     );
     card.addEventListener(
       "click",
-      () => {
+      (event) => {
+        if (event.button !== 0 || (options.nativeImageMenu && event.ctrlKey))
+          return;
         if (suppressClick) {
           suppressClick = false;
           return;

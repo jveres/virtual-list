@@ -17,6 +17,7 @@ export function createChatImagePreview(viewport: HTMLElement): {
     thumbnailUrl: (photo) => photo.url,
     previewUrl: (photo) => photo.url,
     detailsText: (photo) => photo.label,
+    nativeImageMenu: true,
   });
   const photos = new WeakMap<HTMLImageElement, ChatImage>();
   const bound = new Set<HTMLImageElement>();

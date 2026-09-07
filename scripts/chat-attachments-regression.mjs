@@ -340,6 +340,66 @@ try {
     resizeGaps.every((gap) => Math.abs(gap) <= 1),
     `composer resize must land instantly: ${JSON.stringify(resizeGaps)}`,
   );
+  // Clipboard images use the same local attachment pipeline as selected files.
+  await page.fill("#prompt", "Keep this draft");
+  const beforePaste = requests.length;
+  const pasteImage = () =>
+    page.locator("#prompt").evaluate((input) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 2;
+      const bytes = Uint8Array.from(
+        atob(canvas.toDataURL().split(",")[1]),
+        (c) => c.charCodeAt(0),
+      );
+      const clipboardData = new DataTransfer();
+      clipboardData.items.add(new File([bytes], "", { type: "image/png" }));
+      clipboardData.setData("text/plain", "image fallback text");
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+      });
+      // Firefox discards files passed to the ClipboardEvent constructor.
+      Object.defineProperty(event, "clipboardData", { value: clipboardData });
+      return !input.dispatchEvent(event);
+    });
+  assert.equal(await pasteImage(), true);
+  await page.waitForFunction(
+    () => !document.getElementById("attach-btn").disabled,
+  );
+  assert.equal(requests.length, beforePaste, "pasting must not upload images");
+  assert.equal(await page.locator("#prompt").inputValue(), "Keep this draft");
+  assert.equal(
+    await page.locator("#pending-attachments .attachment-chip img").count(),
+    1,
+  );
+  await page
+    .getByRole("button", { name: "Remove pasted-image.png", exact: true })
+    .click();
+  assert.equal(await page.locator("#pending-attachments").isVisible(), false);
+  assert.equal(await pasteImage(), true);
+  await page.waitForFunction(
+    () => !document.getElementById("attach-btn").disabled,
+  );
+  await send("Describe the pasted image");
+  assert.equal(requests.length, beforePaste + 1);
+  const pastedContent = requests.at(-1).input.at(-1).content;
+  assert.equal(pastedContent[0].text, "Describe the pasted image");
+  assert.equal(pastedContent[1].type, "input_image");
+  assert.match(pastedContent[1].image_url, /^data:image\/png;base64,/);
+  assert.equal(
+    await page.locator("#prompt").evaluate((input) => {
+      const clipboardData = new DataTransfer();
+      clipboardData.setData("text/plain", "ordinary text");
+      const event = new ClipboardEvent("paste", {
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, "clipboardData", { value: clipboardData });
+      return input.dispatchEvent(event);
+    }),
+    true,
+    "ordinary text paste must retain its native behavior",
+  );
   assert.deepEqual(errors, []);
   console.log(
     JSON.stringify({ engine, result: "passed", requests: requests.length }),

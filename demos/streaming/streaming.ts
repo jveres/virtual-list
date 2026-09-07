@@ -2207,6 +2207,28 @@ scrollBottomBtn.addEventListener("click", (event) => {
 });
 
 promptInput.addEventListener("input", autosize);
+promptInput.addEventListener("paste", (event) => {
+  const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
+    file.type.startsWith("image/"),
+  );
+  if (files.length === 0) return;
+  event.preventDefault();
+  // Clipboard images can have no filename; validation still uses the same
+  // supported formats and limits as the file picker.
+  const extensions: Record<string, string> = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/webp": "webp",
+  };
+  void selectAttachments(
+    files.map((file) => {
+      const extension = extensions[file.type];
+      return extension && !/\.(png|jpe?g|webp)$/i.test(file.name)
+        ? new File([file], `pasted-image.${extension}`, { type: file.type })
+        : file;
+    }),
+  );
+});
 attachmentInput.accept = ATTACHMENT_ACCEPT;
 attachBtn.addEventListener("click", () => attachmentInput.click());
 attachmentInput.addEventListener("change", () => {
