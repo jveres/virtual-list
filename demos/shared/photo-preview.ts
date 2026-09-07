@@ -83,6 +83,7 @@ interface ActivePhotoView<T extends PhotoPreviewItem> {
   previousButton: HTMLButtonElement;
   nextButton: HTMLButtonElement;
   navigationImage: HTMLImageElement | null;
+  navigationLoading: HTMLElement;
   navigationHideTimer: number | null;
   frame: HTMLElement;
   stage: HTMLElement;
@@ -823,6 +824,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     view.previousButton.disabled = !previous || !!view.navigationImage;
     view.nextButton.disabled = !next || !!view.navigationImage;
     view.overlay.setAttribute("aria-busy", String(!!view.navigationImage));
+    view.navigationLoading.hidden = !view.navigationImage;
     view.overlay.dataset.photoId = String(view.photo.id);
     if (
       focused instanceof HTMLButtonElement &&
@@ -1055,7 +1057,19 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     };
     const previousButton = navigationButton(-1);
     const nextButton = navigationButton(1);
-    overlay.append(backdrop, scroll, previousButton, nextButton, closeButton);
+    const navigationLoading = document.createElement("div");
+    navigationLoading.className = "photo-viewer-loading";
+    navigationLoading.setAttribute("role", "status");
+    navigationLoading.setAttribute("aria-label", "Loading image");
+    navigationLoading.hidden = true;
+    overlay.append(
+      backdrop,
+      scroll,
+      previousButton,
+      nextButton,
+      closeButton,
+      navigationLoading,
+    );
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Tab") {
@@ -1231,6 +1245,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       previousButton,
       nextButton,
       navigationImage: null,
+      navigationLoading,
       navigationHideTimer: null,
       frame,
       stage,
@@ -1374,6 +1389,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       return;
     }
     view.closing = true;
+    view.navigationLoading.hidden = true;
     cancelNavigationHide(view);
     view.navigationImage?.removeAttribute("src");
     view.previousButton.hidden = view.nextButton.hidden = true;

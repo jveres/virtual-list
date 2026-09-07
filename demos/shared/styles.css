@@ -250,7 +250,7 @@ p.ai-settings-note {
 .section-header-pill {
   padding: 4px 12px;
   border-radius: 999px;
-  background: var(--bg-surface);
+  background: color-mix(in srgb, var(--bg-surface) 70%, transparent);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   font-size: 12px;
