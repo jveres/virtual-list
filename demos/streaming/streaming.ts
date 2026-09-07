@@ -39,6 +39,12 @@ import {
   syncThemeButtons,
 } from "../shared/utils.js";
 import {
+  ATTACHMENT_ACCEPT,
+  attachmentChip,
+  type ChatAttachment,
+  readAttachments,
+} from "./attachments.js";
+import {
   buildResponseContext,
   GENERATED_IMAGE_PATTERN,
   getAISettings,
@@ -92,6 +98,7 @@ import {
 //   of which refreshes it — never under a native scroll write.
 
 interface Message {
+  attachments?: ChatAttachment[];
   responseState?: StoredTurn["responseState"];
   id: number;
   role: "user" | "assistant";
@@ -229,6 +236,13 @@ const forceFastLongReply =
 const viewport = mustGet("viewport");
 const viewportWrap = viewport.parentElement as HTMLElement;
 const promptInput = mustGet("prompt", HTMLTextAreaElement);
+const attachmentInput = mustGet("attachment-files", HTMLInputElement);
+const attachBtn = mustGet("attach-btn", HTMLButtonElement);
+const pendingAttachmentList = mustGet("pending-attachments", HTMLDivElement);
+const attachmentStatus = mustGet("attachment-status", HTMLDivElement);
+let pendingAttachments: ChatAttachment[] = [];
+let readingAttachments = false;
+let attachmentEpoch = 0;
 const sendBtn = mustGet("send-btn", HTMLButtonElement);
 const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
 const scrollBottomBtn = mustGet("scroll-bottom-btn", HTMLButtonElement);
@@ -1187,6 +1201,7 @@ function seedStoredTurns(turns: readonly StoredTurn[]): void {
       createMessage({
         role: turn.role,
         markdown: turn.markdown,
+        ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         ...(turn.responseState ? { responseState: turn.responseState } : {}),
         ...(turn.toolCalls
           ? { toolCalls: cloneToolCalls(turn.toolCalls) }
@@ -1216,6 +1231,7 @@ function seedActiveConversation(): void {
 // restore, or a history clear: cancel any live stream, rebuild the state,
 // and present it exactly as the boot does.
 function reloadConversation(): void {
+  clearPendingAttachments();
   if (streamAbort) cancelStream(streamAbort);
   seedActiveConversation();
   setEdgeState("hidden");
@@ -1376,6 +1392,14 @@ function streamingDisplayText(message: Message): string {
 // sibling versions, the navigator that switches between them.
 function buildStaticRow(message: Message): HTMLElement {
   const row = buildChatItem(message, htmlForMessage(message));
+  if (message.attachments?.length) {
+    const list = document.createElement("div");
+    list.className = "message-attachments";
+    list.setAttribute("role", "group");
+    list.setAttribute("aria-label", "Attached files");
+    list.append(...message.attachments.map(attachmentChip));
+    row.querySelector(".message-content")?.append(list);
+  }
   appendVersionNav(row, message);
   return row;
 }
@@ -1616,12 +1640,20 @@ function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
 function persistOpenAIConversation(): void {
   const turns: StoredTurn[] = [];
   for (const message of transcript) {
-    if (message.markdown === "" && !message.responseState) continue;
+    if (
+      message.markdown === "" &&
+      !message.responseState &&
+      !message.attachments?.length
+    )
+      continue;
     // A cancel can leave a call mid-flight; store it as errored.
     const toolCalls = message.toolCalls?.map(settledToolCall);
     turns.push({
       role: message.role,
       markdown: message.markdown,
+      ...(message.attachments?.length
+        ? { attachments: message.attachments }
+        : {}),
       ...(message.responseState
         ? { responseState: message.responseState }
         : {}),
@@ -1813,6 +1845,69 @@ function autosize(): void {
 function setStreamingUI(streaming: boolean): void {
   sendBtn.textContent = streaming ? "Stop" : "Send";
   sendBtn.classList.toggle("stop-btn", streaming);
+  sendBtn.disabled = !streaming && readingAttachments;
+  attachBtn.disabled = streaming || readingAttachments;
+}
+
+function renderPendingAttachments(): void {
+  pendingAttachmentList.replaceChildren(
+    ...pendingAttachments.map((attachment, index) => {
+      const chip = attachmentChip(attachment);
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "attachment-remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", `Remove ${attachment.name}`);
+      remove.disabled = readingAttachments;
+      remove.addEventListener("click", () => {
+        pendingAttachments.splice(index, 1);
+        if (pendingAttachments.length === 0) attachmentStatus.textContent = "";
+        renderPendingAttachments();
+        attachBtn.focus();
+      });
+      chip.append(remove);
+      return chip;
+    }),
+  );
+  pendingAttachmentList.hidden = pendingAttachments.length === 0;
+}
+
+function clearPendingAttachments(): void {
+  attachmentEpoch++;
+  pendingAttachments = [];
+  readingAttachments = false;
+  attachmentInput.value = "";
+  attachmentStatus.textContent = "";
+  renderPendingAttachments();
+  setStreamingUI(streamAbort !== null);
+}
+
+async function selectAttachments(files: File[]): Promise<void> {
+  if (readingAttachments || streamAbort || files.length === 0) return;
+  const epoch = ++attachmentEpoch;
+  readingAttachments = true;
+  attachmentStatus.textContent = "Reading files…";
+  setStreamingUI(false);
+  renderPendingAttachments();
+  try {
+    const attachments = await readAttachments(files, pendingAttachments);
+    if (epoch !== attachmentEpoch) return;
+    pendingAttachments.push(...attachments);
+    attachmentStatus.textContent =
+      "Files stay local until you send. Up to 10 files, 10 MB each, 20 MB total.";
+  } catch (error) {
+    if (epoch !== attachmentEpoch) return;
+    attachmentStatus.textContent =
+      error instanceof Error
+        ? error.message
+        : "Could not read the selected files.";
+  } finally {
+    if (epoch === attachmentEpoch) {
+      readingAttachments = false;
+      setStreamingUI(streamAbort !== null);
+      renderPendingAttachments();
+    }
+  }
 }
 
 function animateRowsClass(
@@ -1873,7 +1968,9 @@ async function handleSend(): Promise<void> {
   }
 
   const text = promptInput.value.trim();
-  if (!text) return;
+  if (readingAttachments || (!text && pendingAttachments.length === 0)) return;
+  const attachments = pendingAttachments;
+  clearPendingAttachments();
 
   promptInput.value = "";
   autosize();
@@ -1898,6 +1995,7 @@ async function handleSend(): Promise<void> {
     const userMessage = createMessage({
       role: "user",
       markdown: text,
+      ...(attachments.length ? { attachments } : {}),
       sentAt,
     });
     const assistantMessage = createMessage({
@@ -2066,6 +2164,13 @@ scrollBottomBtn.addEventListener("click", (event) => {
 });
 
 promptInput.addEventListener("input", autosize);
+attachmentInput.accept = ATTACHMENT_ACCEPT;
+attachBtn.addEventListener("click", () => attachmentInput.click());
+attachmentInput.addEventListener("change", () => {
+  const files = Array.from(attachmentInput.files ?? []);
+  attachmentInput.value = "";
+  void selectAttachments(files);
+});
 promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
@@ -2089,7 +2194,6 @@ autosize();
 if (getAISettings().provider === "openai") await prepareOpenAIConversation();
 seedActiveConversation();
 
-edgeSlotRequested = shouldMountEdgeSlot();
 /**
  * The one way a conversation is presented: a fresh runtime over the seeded
  * transcript — the boot, and every reload (a provider switch, an import, a
@@ -2099,6 +2203,10 @@ edgeSlotRequested = shouldMountEdgeSlot();
  */
 function mountConversation(): void {
   virtualList?.dispose();
+  // A replacement owns its loader state: do not inherit the old chat's
+  // invisible scrollback strip when all imported turns are already loaded.
+  edgeSlotRequested = shouldMountEdgeSlot();
+  edgeSlotElement = null;
   virtualList = createVirtualList<ChatRow>(viewport, {
     items: rowsForRuntime(),
     key: rowKey,

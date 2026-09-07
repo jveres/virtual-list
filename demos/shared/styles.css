@@ -758,6 +758,92 @@ p.ai-settings-note {
   outline-offset: 1px;
 }
 
+.composer-attachments,
+.attachment-status {
+  max-width: var(--chat-width);
+  margin: 0 auto;
+  padding-inline: var(--chat-gutter);
+}
+
+.composer-attachments,
+.message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.composer-attachments {
+  max-height: 144px;
+  overflow-y: auto;
+  margin-bottom: 8px;
+}
+
+.composer-attachments[hidden] {
+  display: none;
+}
+
+.message-attachments {
+  margin-top: 8px;
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-surface);
+  font-size: 12px;
+}
+
+.attachment-chip img {
+  flex-shrink: 0;
+  object-fit: cover;
+  border-radius: 4px;
+}
+
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachment-size {
+  flex-shrink: 0;
+  color: var(--fg-muted);
+}
+
+.composer .attach-btn {
+  flex-shrink: 0;
+  align-self: stretch;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: auto;
+  padding: 0;
+}
+
+.composer .attachment-remove {
+  flex-shrink: 0;
+  align-self: center;
+  height: 28px;
+  min-height: 28px;
+  width: 28px;
+  padding: 0;
+}
+
+.attachment-status {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+.attachment-status:not(:empty) {
+  padding-top: 6px;
+}
+
 .stop-btn {
   color: #fff;
   background: #ef4444;

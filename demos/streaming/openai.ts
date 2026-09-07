@@ -1,5 +1,10 @@
 import type { ChatToolCall } from "../shared/chat-ui.js";
 import { mustGet } from "../shared/utils.js";
+import {
+  attachmentInput,
+  type ChatAttachment,
+  storedAttachments,
+} from "./attachments.js";
 
 type AIProvider = "simulated" | "openai";
 
@@ -40,6 +45,7 @@ export interface ResponseContext {
 
 /** One persisted turn of the OpenAI conversation. */
 export interface StoredTurn {
+  attachments?: ChatAttachment[];
   responseState?: ResponseState;
   role: "user" | "assistant";
   markdown: string;
@@ -50,6 +56,19 @@ export interface StoredTurn {
 
 /** Rebuild actual API content, never send base64 as text tokens. */
 function replayTurn(turn: StoredTurn): Record<string, unknown>[] {
+  if (turn.role === "user" && turn.attachments?.length) {
+    return [
+      {
+        role: "user",
+        content: [
+          ...(turn.markdown
+            ? [{ type: "input_text", text: turn.markdown }]
+            : []),
+          ...turn.attachments.map(attachmentInput),
+        ],
+      },
+    ];
+  }
   if (turn.role === "assistant" && turn.responseState?.output.length) {
     return turn.responseState.output;
   }
@@ -81,7 +100,8 @@ export function buildResponseContext(
   model: string,
 ): ResponseContext {
   const turns = transcript.filter(
-    (turn) => turn.markdown !== "" || turn.responseState,
+    (turn) =>
+      turn.markdown !== "" || turn.responseState || turn.attachments?.length,
   );
   const contextStart =
     contextTurns > 0 ? Math.max(0, turns.length - contextTurns) : 0;
@@ -249,13 +269,15 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
   for (const entry of value) {
     if (!isRecord(entry)) continue;
     if (entry.role !== "user" && entry.role !== "assistant") continue;
+    const attachments =
+      entry.role === "user" ? storedAttachments(entry.attachments) : [];
     const responseState =
       entry.role === "assistant" && validResponseState(entry.responseState)
         ? entry.responseState
         : undefined;
     if (
       typeof entry.markdown !== "string" ||
-      (entry.markdown === "" && !responseState)
+      (entry.markdown === "" && !responseState && attachments.length === 0)
     )
       continue;
     const toolCalls = storedToolCalls(entry.toolCalls);
@@ -266,6 +288,7 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
     turns.push({
       role: entry.role,
       markdown: entry.markdown,
+      ...(attachments.length ? { attachments } : {}),
       ...(toolCalls ? { toolCalls } : {}),
       ...(sentAt !== undefined ? { sentAt } : {}),
       ...(responseState ? { responseState } : {}),

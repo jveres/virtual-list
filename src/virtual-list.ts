@@ -547,6 +547,17 @@ export function createVirtualList<T>(
   // destination in flight, else the pre-resize position; the engine's
   // clamp has moved the viewport off the pin by the settle.
   let resizeHeld: "pin" | "viewport" | null = null;
+
+  function syncCanvasHeight(totalSize: number): void {
+    canvas.style.height = `${totalSize}px`;
+    // A pin's reserve must grow in the SAME layout as its viewport. Waiting
+    // for ResizeObserver lets a collapsing composer clamp scrollTop against
+    // yesterday's shorter canvas, then the pin commit pulls it back up.
+    // The pixel height still owns measured content/retained reserve; this
+    // viewport-relative floor only supplies the pin's current shortfall.
+    const pinTop = geometry.pinTop;
+    canvas.style.minHeight = pinTop === null ? "" : `calc(100% + ${pinTop}px)`;
+  }
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
   const measurer: ItemMeasurer = createItemMeasurer({
@@ -1007,7 +1018,14 @@ export function createVirtualList<T>(
         ? glideToPin
         : Math.abs(lastObservedTop - pinTop) <= AT_EDGE_EPSILON_PX);
     if (idle()) {
-      commit(null, stoodOnPin ? "pin" : "viewport", "allowed", "keep");
+      // Viewport size changed, not content: follow its new bottom immediately.
+      commit(
+        null,
+        stoodOnPin ? "pin" : "viewport",
+        "allowed",
+        "keep",
+        "instant",
+      );
       // The commit's write is where the viewport stands now; the next
       // delivery must not compare against the pre-resize position.
       if (!disposed) lastObservedTop = viewport.scrollTop;
@@ -1471,7 +1489,7 @@ export function createVirtualList<T>(
       commitMeasured(committable);
       geometryEpoch += 1;
       const result = geometry.resolve(capture);
-      canvas.style.height = `${result.totalSize}px`;
+      syncCanvasHeight(result.totalSize);
       repositionMounted();
       // There is no explicit scroll write, but shrinking the scroll range
       // can make the browser clamp scrollTop. Re-read after the canvas write
@@ -1494,6 +1512,7 @@ export function createVirtualList<T>(
     policyOverride?: CapturePolicy,
     scrollWrite: "allowed" | "never" = "allowed",
     follow: "derive" | "keep" = "derive",
+    motion: "smooth" | "instant" = "smooth",
   ): void {
     if (disposed) return;
     guarded(() => {
@@ -1501,7 +1520,7 @@ export function createVirtualList<T>(
       pending = null;
       committing = applying;
       try {
-        commitBody(applying, policyOverride, scrollWrite, follow);
+        commitBody(applying, policyOverride, scrollWrite, follow, motion);
       } finally {
         committing = null;
       }
@@ -1575,6 +1594,7 @@ export function createVirtualList<T>(
     policyOverride: CapturePolicy | undefined,
     scrollWrite: "allowed" | "never",
     follow: "derive" | "keep",
+    motion: "smooth" | "instant",
   ): void {
     // Teardown failures are collected here and surfaced only after the
     // commit has reached its consistent terminal state.
@@ -1653,7 +1673,7 @@ export function createVirtualList<T>(
       geometryEpoch += 1;
 
       const result = geometry.resolve(capture);
-      canvas.style.height = `${result.totalSize}px`;
+      syncCanvasHeight(result.totalSize);
       repositionMounted();
       // Engines quantize scroll positions differently: Chromium rounds a
       // fractional write, WebKit floors it (the anchor then lands up to a
@@ -1670,6 +1690,7 @@ export function createVirtualList<T>(
           )
         : snapToDevicePixel(result.scrollTop);
       const smoothFollow =
+        motion === "smooth" &&
         !booting &&
         !followController.catchingUp &&
         options.followBehavior === "smooth" &&
@@ -1714,7 +1735,8 @@ export function createVirtualList<T>(
       // uncovered the end, a live append landed in the gap between two
       // follow legs — catches up (a glide is a phase of its own, never a
       // write into a gesture; genuine input already cleared the intent).
-      else if (follow === "keep" && followController.armed) followIfBehindEnd();
+      else if (follow === "keep" && followController.armed)
+        followIfBehindEnd(motion);
     } finally {
       deferTeardown(teardownFailures);
     }
@@ -2044,10 +2066,10 @@ export function createVirtualList<T>(
           pinnedKey !== null &&
           (pending === null ||
             (pending.anchor === "auto" && pending.keys.includes(pinnedKey)));
-        if (onPin) commit(null, "pin", "allowed", "keep");
+        if (onPin) commit(null, "pin", "allowed", "keep", "instant");
         else commit(null, explicitPolicy);
       } else if (resizeHeld !== null) {
-        commit(null, resizeHeld, "allowed", "keep");
+        commit(null, resizeHeld, "allowed", "keep", "instant");
       } else {
         publish();
       }
@@ -2584,12 +2606,12 @@ export function createVirtualList<T>(
     };
   }
 
-  function followIfBehindEnd(): void {
+  function followIfBehindEnd(motion: "smooth" | "instant" = "smooth"): void {
     // The same band as atEnd: a viewport within a pixel of the end is
     // there, and never starts a glide phase to move under a pixel.
     const current = viewport.scrollTop;
     if (!followController.needsMotion(current)) return;
-    if (followController.catchingUp) {
+    if (motion === "instant" || followController.catchingUp) {
       // A write and its reconcile are a transaction (I4): a host acting
       // from a mount hook or onState is queued, never re-entered.
       guarded(() => {

@@ -1757,7 +1757,7 @@ describe("v2 runtime — commits and slots", () => {
     h.list.dispose();
   });
 
-  it("a viewport resize while following keeps following and catches up", () => {
+  it("should follow viewport resizes instantly while keeping streamed growth smooth", () => {
     const initial = range(0, 50);
     let height = VIEWPORT_H;
     const h = mount(initial, {
@@ -1772,12 +1772,15 @@ describe("v2 runtime — commits and slots", () => {
     expect(h.list.state.following).toBe(true);
 
     // The composer grows: the viewport shrinks by 100px and the end is
-    // uncovered. Following stays on and the viewport glides to the new end.
+    // uncovered. Following stays on and the viewport adopts the new end
+    // in the resize delivery itself, without starting an animation.
     height = 500;
     fireResize(1, h.viewport, 500);
     expect(h.list.state.following).toBe(true);
-    advanceFramesUntil(() => h.viewport.scrollTop === 4500);
     expect(h.viewport.scrollTop).toBe(4500);
+    height = 600;
+    fireResize(1, h.viewport, 600);
+    expect(h.viewport.scrollTop).toBe(4400);
     h.settle();
     expect(h.list.state.following).toBe(true);
 
@@ -1786,8 +1789,9 @@ describe("v2 runtime — commits and slots", () => {
     const streamed = [...initial];
     streamed[49] = message(49, "streamed longer");
     h.list.setItems(streamed);
-    advanceFramesUntil(() => h.viewport.scrollTop === 4700);
-    expect(h.viewport.scrollTop).toBe(4700);
+    expect(h.viewport.scrollTop).toBe(4400);
+    advanceFramesUntil(() => h.viewport.scrollTop === 4600);
+    expect(h.viewport.scrollTop).toBe(4600);
     expect(h.list.state.following).toBe(true);
     h.list.dispose();
   });
@@ -2611,6 +2615,18 @@ describe("v2 runtime — commits and slots", () => {
     h.settle();
     expect(h.list.positionOf("m41")?.top).toBe(4100);
     expect(h.viewport.scrollTop).toBe(4100);
+    h.list.dispose();
+  });
+
+  it("should tie the pin's canvas floor to the viewport and clear it when unpinned", () => {
+    const h = mount(range(0, 50));
+
+    void h.list.scrollTo("m45", { align: "start", offset: 44 });
+
+    expect(h.canvas().style.minHeight).toBe("calc(100% + 4456px)");
+    expect(h.list.state.totalSize).toBe(5056);
+    void h.list.scrollTo("m0", { align: "start" });
+    expect(h.canvas().style.minHeight).toBe("");
     h.list.dispose();
   });
 

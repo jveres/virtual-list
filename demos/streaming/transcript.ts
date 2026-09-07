@@ -55,6 +55,7 @@ export function transcriptMarkdown<M extends TranscriptMessage>(
     lines.push(message.role === "user" ? USER_MARKER : ASSISTANT_MARKER);
     const meta: Record<string, unknown> = {};
     if (message.sentAt !== undefined) meta.sentAt = message.sentAt;
+    if (message.attachments?.length) meta.attachments = message.attachments;
     // A call still running when the file is written is stored as
     // persistence stores it: settled, as an error.
     const toolCalls = message.toolCalls?.map(
@@ -199,6 +200,7 @@ export function parseTranscriptMarkdown(text: string): StoredTurn[] {
         role: turn.role,
         markdown: STATUS_PLACEHOLDER.test(markdown) ? "" : markdown,
         sentAt: turn.meta?.sentAt,
+        attachments: turn.meta?.attachments,
         toolCalls:
           fromMeta ?? (turn.summaries.length > 0 ? turn.summaries : undefined),
       };
