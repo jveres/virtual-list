@@ -21,18 +21,89 @@ interface AISettings {
   reasoningSummary: boolean;
 }
 
-export interface ChatTurn {
-  role: "user" | "assistant";
-  content: string;
+export interface ResponseState {
+  id: string;
+  model: string;
+  /** Index in the complete active branch, not the virtualized window. */
+  contextStart: number;
+  contextTurns: number;
+  output: Record<string, unknown>[];
+}
+
+export interface ResponseContext {
+  input: Record<string, unknown>[];
+  fallbackInput: Record<string, unknown>[];
+  previousResponseId?: string;
+  contextStart: number;
+  contextTurns: number;
 }
 
 /** One persisted turn of the OpenAI conversation. */
 export interface StoredTurn {
+  responseState?: ResponseState;
   role: "user" | "assistant";
   markdown: string;
   toolCalls?: ChatToolCall[];
   /** When the turn was sent (epoch ms); absent on turns stored before dates. */
   sentAt?: number;
+}
+
+/** Rebuild actual API content, never send base64 as text tokens. */
+function replayTurn(turn: StoredTurn): Record<string, unknown>[] {
+  if (turn.role === "assistant" && turn.responseState?.output.length) {
+    return turn.responseState.output;
+  }
+  const items: Record<string, unknown>[] = [
+    { role: turn.role, content: stripGeneratedImages(turn.markdown) },
+  ];
+  const images = [
+    ...turn.markdown.matchAll(new RegExp(GENERATED_IMAGE_PATTERN, "g")),
+  ];
+  for (const image of images) {
+    const url = image[0].slice(image[0].indexOf("(data:") + 1, -1);
+    items.push({
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: "Image from the preceding conversation turn:",
+        },
+        { type: "input_image", image_url: url, detail: "auto" },
+      ],
+    });
+  }
+  return items;
+}
+
+export function buildResponseContext(
+  transcript: readonly StoredTurn[],
+  contextTurns: number,
+  model: string,
+): ResponseContext {
+  const turns = transcript.filter(
+    (turn) => turn.markdown !== "" || turn.responseState,
+  );
+  const contextStart =
+    contextTurns > 0 ? Math.max(0, turns.length - contextTurns) : 0;
+  const selected = turns.slice(contextStart);
+  const fallbackInput = selected.flatMap(replayTurn);
+  const parent = turns.at(-2);
+  const state = parent?.role === "assistant" ? parent.responseState : undefined;
+  // A moving last-N window must not silently inherit the chain's older turns.
+  // The immediate parent also keeps edits, retries, and branches independent.
+  const canChain =
+    turns.at(-1)?.role === "user" &&
+    selected.length >= 2 &&
+    state?.model === model &&
+    state.contextStart === contextStart &&
+    state.contextTurns === contextTurns;
+  return {
+    input: canChain ? selected.slice(-1).flatMap(replayTurn) : fallbackInput,
+    fallbackInput,
+    ...(canChain ? { previousResponseId: state.id } : {}),
+    contextStart,
+    contextTurns,
+  };
 }
 
 const DEFAULT_OPENAI_MODEL = "gpt-5-mini";
@@ -178,7 +249,15 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
   for (const entry of value) {
     if (!isRecord(entry)) continue;
     if (entry.role !== "user" && entry.role !== "assistant") continue;
-    if (typeof entry.markdown !== "string" || entry.markdown === "") continue;
+    const responseState =
+      entry.role === "assistant" && validResponseState(entry.responseState)
+        ? entry.responseState
+        : undefined;
+    if (
+      typeof entry.markdown !== "string" ||
+      (entry.markdown === "" && !responseState)
+    )
+      continue;
     const toolCalls = storedToolCalls(entry.toolCalls);
     const sentAt =
       typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)
@@ -189,9 +268,37 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
       markdown: entry.markdown,
       ...(toolCalls ? { toolCalls } : {}),
       ...(sentAt !== undefined ? { sentAt } : {}),
+      ...(responseState ? { responseState } : {}),
     });
   }
   return turns;
+}
+
+function validResponseState(value: unknown): value is ResponseState {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    value.id.startsWith("resp_") &&
+    typeof value.model === "string" &&
+    Number.isInteger(value.contextStart) &&
+    Number(value.contextStart) >= 0 &&
+    Number.isInteger(value.contextTurns) &&
+    Number(value.contextTurns) >= 0 &&
+    Array.isArray(value.output) &&
+    value.output.every(
+      (item) =>
+        isRecord(item) &&
+        typeof item.type === "string" &&
+        (item.type === "message"
+          ? item.role === "assistant" && Array.isArray(item.content)
+          : [
+              "reasoning",
+              "image_generation_call",
+              "web_search_call",
+              "code_interpreter_call",
+            ].includes(item.type)),
+    )
+  );
 }
 
 // The pre-IndexedDB store; still read as a migration source and as the
@@ -338,6 +445,7 @@ async function errorDetail(response: Response): Promise<string> {
 }
 
 type OpenAIStreamChunk =
+  | { kind: "response-completed"; state: ResponseState }
   | { kind: "text"; text: string }
   | { kind: "image"; id: string; markdown: string }
   | { kind: "image-partial"; id: string; markdown: string }
@@ -414,13 +522,7 @@ function codeInterpreterLogs(item: Record<string, unknown>): string {
 
 // One `data:` SSE payload from the Responses API → the chunks it carries.
 // Failure events throw so the caller surfaces them like request errors.
-function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(payload);
-  } catch {
-    return [];
-  }
+function chunksFromEvent(parsed: unknown): OpenAIStreamChunk[] {
   if (!isRecord(parsed) || typeof parsed.type !== "string") return [];
 
   if (parsed.type === "response.output_text.delta") {
@@ -599,6 +701,11 @@ function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
   if (parsed.type === "response.failed") {
     throw new Error(apiErrorDetail(parsed.response, "response failed"));
   }
+  if (parsed.type === "response.incomplete") {
+    throw new Error(
+      "Response incomplete; its partial output was not saved as a chain anchor.",
+    );
+  }
 
   return [];
 }
@@ -612,7 +719,7 @@ function chunksFromEvent(payload: string): OpenAIStreamChunk[] {
  * rejects with an AbortError the caller owns).
  */
 export async function* streamOpenAIChat(
-  turns: readonly ChatTurn[],
+  context: ResponseContext,
   {
     apiKey,
     model,
@@ -628,24 +735,51 @@ export async function* streamOpenAIChat(
   }
 
   const toolList = requestTools(tools);
-  const response = await fetch(RESPONSES_URL, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model,
-      stream: true,
-      instructions: SYSTEM_PROMPT,
-      input: turns,
-      ...(toolList.length > 0 ? { tools: toolList } : {}),
-      // Reasoning models stream a summary of their thinking; raw chain of
-      // thought is never exposed. Support varies by model, hence the toggle.
-      ...(reasoningSummary ? { reasoning: { summary: "auto" } } : {}),
-    }),
-    signal,
-  });
+  const request = (chained: boolean) =>
+    fetch(RESPONSES_URL, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        stream: true,
+        instructions: SYSTEM_PROMPT,
+        store: true,
+        include: ["reasoning.encrypted_content"],
+        input: chained ? context.input : context.fallbackInput,
+        ...(chained && context.previousResponseId
+          ? { previous_response_id: context.previousResponseId }
+          : {}),
+        ...(toolList.length > 0 ? { tools: toolList } : {}),
+        // Reasoning models stream a summary of their thinking; raw chain of
+        // thought is never exposed. Support varies by model, hence the toggle.
+        ...(reasoningSummary ? { reasoning: { summary: "auto" } } : {}),
+      }),
+      signal,
+    });
+
+  let response = await request(true);
+  if (
+    !response.ok &&
+    context.previousResponseId &&
+    (response.status === 400 || response.status === 404)
+  ) {
+    const body: unknown = await response
+      .clone()
+      .json()
+      .catch(() => null);
+    const error =
+      isRecord(body) && isRecord(body.error) ? body.error : undefined;
+    if (
+      error?.code === "previous_response_not_found" ||
+      (error?.param === "previous_response_id" &&
+        error.code === "resource_not_found")
+    ) {
+      response = await request(false);
+    }
+  }
 
   if (!response.ok) throw new Error(await errorDetail(response));
   if (!response.body) throw new Error("response had no readable body");
@@ -656,7 +790,9 @@ export async function* streamOpenAIChat(
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) return;
+      if (done) {
+        throw new Error("Response stream ended before completion.");
+      }
       buffer += decoder.decode(value, { stream: true });
       // SSE events are newline-delimited; the trailing partial line stays
       // buffered until its terminator arrives in a later chunk.
@@ -666,7 +802,30 @@ export async function* streamOpenAIChat(
         if (!line.startsWith("data:")) continue;
         const payload = line.slice("data:".length).trim();
         if (payload === "") continue;
-        yield* chunksFromEvent(payload);
+        let event: unknown;
+        try {
+          event = JSON.parse(payload);
+        } catch {
+          event = null;
+        }
+        if (
+          isRecord(event) &&
+          event.type === "response.completed" &&
+          isRecord(event.response)
+        ) {
+          const state = {
+            id: event.response.id,
+            model,
+            contextStart: context.contextStart,
+            contextTurns: context.contextTurns,
+            output: event.response.output,
+          };
+          if (validResponseState(state)) {
+            yield { kind: "response-completed", state };
+            return;
+          }
+        }
+        yield* chunksFromEvent(event);
       }
     }
   } finally {

@@ -39,7 +39,7 @@ import {
   syncThemeButtons,
 } from "../shared/utils.js";
 import {
-  type ChatTurn,
+  buildResponseContext,
   GENERATED_IMAGE_PATTERN,
   getAISettings,
   initAISettingsPanel,
@@ -47,8 +47,8 @@ import {
   type StoredTurn,
   saveOpenAIHistory,
   streamOpenAIChat,
-  stripGeneratedImages,
 } from "./openai.js";
+import { repaintAfterReplacement } from "./repaint.js";
 import { sampleTimestamp } from "./sample-time.js";
 
 import "../shared/styles.css";
@@ -92,6 +92,7 @@ import {
 //   of which refreshes it — never under a native scroll write.
 
 interface Message {
+  responseState?: StoredTurn["responseState"];
   id: number;
   role: "user" | "assistant";
   markdown: string;
@@ -1186,6 +1187,7 @@ function seedStoredTurns(turns: readonly StoredTurn[]): void {
       createMessage({
         role: turn.role,
         markdown: turn.markdown,
+        ...(turn.responseState ? { responseState: turn.responseState } : {}),
         ...(turn.toolCalls
           ? { toolCalls: cloneToolCalls(turn.toolCalls) }
           : {}),
@@ -1219,6 +1221,8 @@ function reloadConversation(): void {
   setEdgeState("hidden");
   mountConversation();
   syncMetrics();
+  const epoch = conversationEpoch;
+  repaintAfterReplacement(viewport, () => epoch === conversationEpoch);
 }
 
 /**
@@ -1607,38 +1611,20 @@ function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
     : toolCall;
 }
 
-// The active transcript, oldest → newest, as API turns — sliced per the
-// context setting (0 = full history). This reads `transcript`, the complete
-// in-memory conversation, never the virtualizer's loaded window: what is
-// rendered depends on viewport height and scroll position, which should not
-// decide what the model gets to see. The just-appended assistant placeholder
-// is still empty, so the markdown filter drops it.
-function openAIContext(contextTurns: number): ChatTurn[] {
-  const tail = contextTurns > 0 ? transcript.slice(-contextTurns) : transcript;
-  const turns: ChatTurn[] = [];
-  for (const message of tail) {
-    if (message.markdown === "") continue;
-    // Embedded generated images would go back to the API as base64 text —
-    // megabytes of tokens per image; a placeholder marks where they were.
-    turns.push({
-      role: message.role,
-      content: stripGeneratedImages(message.markdown),
-    });
-  }
-  return turns;
-}
-
-// Role, markdown, and settled tool calls persist; ids are reassigned on the
-// next load.
+// Persist the whole active branch, including API state, not the virtualized
+// window. Local message ids are reassigned on the next load.
 function persistOpenAIConversation(): void {
   const turns: StoredTurn[] = [];
   for (const message of transcript) {
-    if (message.markdown === "") continue;
+    if (message.markdown === "" && !message.responseState) continue;
     // A cancel can leave a call mid-flight; store it as errored.
     const toolCalls = message.toolCalls?.map(settledToolCall);
     turns.push({
       role: message.role,
       markdown: message.markdown,
+      ...(message.responseState
+        ? { responseState: message.responseState }
+        : {}),
       ...(toolCalls?.length ? { toolCalls } : {}),
       ...(message.sentAt !== undefined ? { sentAt: message.sentAt } : {}),
     });
@@ -1663,7 +1649,7 @@ async function streamOpenAIResponse(
     // frame (and the final image) swaps it in place instead of stacking up.
     const partialImages = new Map<string, string>();
     for await (const chunk of streamOpenAIChat(
-      openAIContext(contextTurns),
+      buildResponseContext(transcript, contextTurns, model),
       { apiKey, model, tools, reasoningSummary },
       abortLink.signal,
     )) {
@@ -1672,6 +1658,9 @@ async function streamOpenAIResponse(
         // The row stays "thinking" until the first real activity arrives.
         if (!started) message.status = "streaming";
         switch (chunk.kind) {
+          case "response-completed":
+            message.responseState = chunk.state;
+            break;
           case "text":
             message.markdown += chunk.text;
             break;
