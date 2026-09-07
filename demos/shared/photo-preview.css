@@ -17,6 +17,12 @@
   -webkit-touch-callout: default;
 }
 
+.photo-preview-card:not(.native-image-menu),
+a:has(.photo-preview-card:not(.native-image-menu)) {
+  -webkit-touch-callout: none;
+  -webkit-user-drag: none;
+}
+
 .photo-preview-card.is-photo-view-source {
   visibility: hidden;
 }
@@ -131,6 +137,10 @@ html.photo-view-open body {
 
 .photo-viewer-image.is-visible {
   visibility: visible;
+}
+
+.photo-viewer.native-image-menu .photo-viewer-image {
+  -webkit-touch-callout: default;
 }
 
 .photo-viewer-image-hires {

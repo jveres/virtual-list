@@ -300,6 +300,130 @@ for (const engine of [firefox, webkit]) {
       () => document.getElementById("send-btn").textContent === "Send",
     );
     assert.deepEqual(errors, []);
+    if (engine === webkit) {
+      // Exercise both iPhone identification and iPadOS's desktop platform.
+      for (const platform of ["iPhone", "MacIntel"]) {
+        const mobile = await browser.newPage({
+          hasTouch: true,
+          isMobile: true,
+          viewport:
+            platform === "iPhone"
+              ? { width: 390, height: 844 }
+              : { width: 820, height: 1180 },
+        });
+        await mobile.addInitScript((platform) => {
+          Object.defineProperty(navigator, "platform", { get: () => platform });
+          Object.defineProperty(navigator, "maxTouchPoints", { get: () => 5 });
+        }, platform);
+        mobile.on("dialog", (dialog) => dialog.accept());
+        await mobile.goto(`${base}/demos/streaming/index.html`);
+        await mobile.waitForFunction(
+          () => !document.documentElement.classList.contains("booting"),
+        );
+        await mobile.locator("#import-file").setInputFiles({
+          name: "mobile-photo.md",
+          mimeType: "text/markdown",
+          buffer: Buffer.from(markdown),
+        });
+        const source = mobile
+          .locator("#viewport img.photo-preview-card")
+          .first();
+        await source.waitFor();
+        assert.equal(await source.evaluate((image) => image.draggable), false);
+        assert.equal(
+          await source.evaluate((image) =>
+            getComputedStyle(image).getPropertyValue("-webkit-user-drag"),
+          ),
+          "none",
+        );
+        assert.equal(
+          await source.evaluate((image) =>
+            getComputedStyle(image.closest("a")).getPropertyValue(
+              "-webkit-user-drag",
+            ),
+          ),
+          "none",
+        );
+        assert.equal(
+          await source.evaluate((image) =>
+            image.classList.contains("native-image-menu"),
+          ),
+          false,
+        );
+        const menuAllowed = (element) =>
+          element.dispatchEvent(
+            new MouseEvent("contextmenu", {
+              bubbles: true,
+              cancelable: true,
+              button: 2,
+            }),
+          );
+        assert.equal(
+          await source.evaluate(menuAllowed),
+          false,
+          "iOS chat source suppresses native callout",
+        );
+        // If a platform callout/drag event arrives anyway, release must not
+        // stack the custom viewer on top of the native image lift.
+        await source.evaluate((image) => {
+          const box = image.getBoundingClientRect();
+          const pointer = {
+            bubbles: true,
+            isPrimary: true,
+            pointerId: 7,
+            pointerType: "touch",
+            button: 0,
+            clientX: box.x + box.width / 2,
+            clientY: box.y + box.height / 2,
+          };
+          image.dispatchEvent(new PointerEvent("pointerdown", pointer));
+          image.dispatchEvent(
+            new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+          );
+          image.dispatchEvent(new PointerEvent("pointerup", pointer));
+          image.dispatchEvent(
+            new MouseEvent("click", { bubbles: true, button: 0 }),
+          );
+        });
+        await mobile.waitForTimeout(250);
+        assert.equal(await mobile.locator(".photo-viewer").count(), 0);
+        assert.equal(
+          await source.evaluate((image) =>
+            image.dispatchEvent(
+              new DragEvent("dragstart", { bubbles: true, cancelable: true }),
+            ),
+          ),
+          false,
+        );
+        await source.tap();
+        await mobile.locator(".photo-viewer:not(.is-preparing)").waitFor();
+        assert.equal(
+          await mobile
+            .locator(".photo-viewer")
+            .evaluate((viewer) =>
+              viewer.classList.contains("native-image-menu"),
+            ),
+          true,
+        );
+        const fullImage = mobile
+          .locator(".photo-viewer-image.is-visible")
+          .first();
+        await mobile.locator(".photo-viewer-frame").evaluate(async (frame) => {
+          await Promise.all(
+            frame.getAnimations().map((animation) => animation.finished),
+          );
+        });
+        assert.equal(
+          await fullImage.evaluate(menuAllowed),
+          true,
+          "iOS preview allows native callout",
+        );
+        assert.equal(await fullImage.getAttribute("src"), url);
+        await mobile.keyboard.press("Escape");
+        await mobile.locator(".photo-viewer").waitFor({ state: "detached" });
+        await mobile.close();
+      }
+    }
     console.log(JSON.stringify({ engine: engine.name(), result: "passed" }));
   } finally {
     await browser.close();

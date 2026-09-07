@@ -43,8 +43,8 @@ export interface PhotoPreviewOptions<T extends PhotoPreviewItem> {
   previewUrl: (photo: T, width: number) => string;
   detailsText?: (photo: T) => string;
   maxPreviewSourceWidth?: number;
-  /** Let image-based hosts expose the browser's Save Image / Copy Image menu. */
-  nativeImageMenu?: boolean;
+  /** Native Save/Copy menus; "preview-on-ios" disables the source's iOS callout. */
+  nativeImageMenu?: boolean | "preview-on-ios";
   /** Set false to keep square image corners, including the hero animation. */
   roundedCorners?: boolean;
 }
@@ -212,6 +212,9 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
 ): PhotoPreviewController<T> {
   const sourceRadius = options.roundedCorners === false ? "0px" : "8px";
   const previewRadius = options.roundedCorners === false ? "0px" : "10px";
+  const nativeSourceMenu =
+    options.nativeImageMenu === true ||
+    (options.nativeImageMenu === "preview-on-ios" && !isIOSLike());
   let activePhotoView: ActivePhotoView<T> | null = null;
   let disposed = false;
   const bindings = new WeakMap<HTMLElement, AbortController>();
@@ -827,6 +830,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const sourceRect = readRect(sourceElement.getBoundingClientRect());
     const overlay = document.createElement("div");
     overlay.className = "photo-viewer is-preparing";
+    overlay.classList.toggle("native-image-menu", !!options.nativeImageMenu);
     overlay.setAttribute("role", "dialog");
     overlay.setAttribute("aria-modal", "true");
     overlay.setAttribute("aria-label", `Photo ${photo.id}`);
@@ -1286,10 +1290,9 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     bindings.set(card, events);
     let suppressClick = false;
     card.classList.add("photo-preview-card");
-    card.classList.toggle(
-      "native-image-menu",
-      options.nativeImageMenu === true,
-    );
+    card.classList.toggle("native-image-menu", nativeSourceMenu);
+    if (!nativeSourceMenu && card instanceof HTMLImageElement)
+      card.draggable = false;
     card.dataset.photoId = String(photo.id);
     card.setAttribute("role", "button");
     card.setAttribute("tabindex", "0");
@@ -1298,12 +1301,12 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       "pointerdown",
       (event) => {
         if (!event.isPrimary || event.button !== 0 || activePhotoView) return;
-        if (options.nativeImageMenu && event.ctrlKey) return;
+        if (nativeSourceMenu && event.ctrlKey) return;
         suppressClick = false;
         // Let the browser distinguish a tap from its native image long-press.
         // Scaling under the finger competes with the iOS callout animation;
         // a confirmed tap's click still gets press feedback before opening.
-        if (options.nativeImageMenu && event.pointerType === "touch") {
+        if (nativeSourceMenu && event.pointerType === "touch") {
           releasePhotoPress(card);
           return;
         }
@@ -1348,9 +1351,9 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     card.addEventListener(
       "contextmenu",
       (event) => {
-        if (options.nativeImageMenu) {
-          suppressClick = true;
-          releasePhotoPress(card);
+        suppressClick = true;
+        releasePhotoPress(card);
+        if (nativeSourceMenu) {
           return;
         }
         event.preventDefault();
@@ -1358,10 +1361,19 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       { signal: events.signal },
     );
     card.addEventListener(
+      "dragstart",
+      (event) => {
+        if (nativeSourceMenu) return;
+        event.preventDefault();
+        suppressClick = true;
+        releasePhotoPress(card);
+      },
+      { signal: events.signal },
+    );
+    card.addEventListener(
       "click",
       (event) => {
-        if (event.button !== 0 || (options.nativeImageMenu && event.ctrlKey))
-          return;
+        if (event.button !== 0 || (nativeSourceMenu && event.ctrlKey)) return;
         if (suppressClick) {
           suppressClick = false;
           return;
