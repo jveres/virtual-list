@@ -53,6 +53,67 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     const modal = page.locator(".photo-viewer");
     const frame = page.locator(".photo-viewer-frame");
+    const nativeDefaults = await frame.evaluate((element) => {
+      const image = element.querySelector(".photo-viewer-image");
+      return {
+        dragAllowed: image.dispatchEvent(
+          new Event("dragstart", { bubbles: true, cancelable: true }),
+        ),
+        selectionAllowed: image.dispatchEvent(
+          new Event("selectstart", { bubbles: true, cancelable: true }),
+        ),
+        contextMenuAllowed: image.dispatchEvent(
+          new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+        ),
+        userSelect:
+          getComputedStyle(
+            element.closest(".photo-viewer-scroll"),
+          ).getPropertyValue("user-select") ||
+          getComputedStyle(
+            element.closest(".photo-viewer-scroll"),
+          ).getPropertyValue("-webkit-user-select"),
+        draggable: image.draggable,
+      };
+    });
+    assert.deepEqual(nativeDefaults, {
+      dragAllowed: false,
+      selectionAllowed: false,
+      contextMenuAllowed: true,
+      userSelect: "none",
+      draggable: false,
+    });
+    await page.evaluate(() => {
+      window.previewNativeDrags = 0;
+      document
+        .querySelector(".photo-viewer")
+        .addEventListener("dragstart", (event) => {
+          if (!event.defaultPrevented) window.previewNativeDrags++;
+        });
+      window.getSelection().removeAllRanges();
+    });
+    const imageBox = await frame.boundingBox();
+    const x = imageBox.x + imageBox.width / 2;
+    const y = imageBox.y + imageBox.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.down();
+    await page.mouse.move(x, y + 40, { steps: 10 });
+    assert.equal(
+      await page
+        .locator(".photo-viewer-scroll")
+        .evaluate((element) => element.classList.contains("is-swiping")),
+      true,
+    );
+    await page.waitForTimeout(150);
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    assert.equal(await modal.count(), 1, "short image drag springs back");
+    assert.deepEqual(
+      await page.evaluate(() => ({
+        drags: window.previewNativeDrags,
+        selection: window.getSelection().toString(),
+      })),
+      { drags: 0, selection: "" },
+    );
     await page.waitForFunction(() => {
       const arrow = document.querySelector(".photo-viewer-next");
       return arrow?.inert && getComputedStyle(arrow).opacity === "0";
@@ -107,6 +168,55 @@ for (const engine of [firefox, webkit, chromium]) {
         document.querySelector(".photo-viewer-details")?.textContent ===
         "Second",
     );
+    // Navigation uses the longer delay, reset from the most recent click/tap.
+    await page.waitForTimeout(1700);
+    assert.equal(
+      await modal.evaluate((element) =>
+        element.classList.contains("is-navigation-hidden"),
+      ),
+      false,
+    );
+    await next.tap();
+    await page.waitForTimeout(1700);
+    assert.equal(
+      await modal.evaluate((element) =>
+        element.classList.contains("is-navigation-hidden"),
+      ),
+      false,
+    );
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".photo-viewer")
+          ?.classList.contains("is-navigation-hidden"),
+      null,
+      { timeout: 5000 },
+    );
+    await frame.click();
+    await page.waitForTimeout(1750);
+    assert.equal(
+      await modal.evaluate((element) =>
+        element.classList.contains("is-navigation-hidden"),
+      ),
+      true,
+      "click-to-reveal restores the 1.5-second hide delay after navigation",
+    );
+    await frame.tap();
+    await page.waitForTimeout(1750);
+    assert.equal(
+      await modal.evaluate((element) =>
+        element.classList.contains("is-navigation-hidden"),
+      ),
+      true,
+      "touch-to-reveal also restores the 1.5-second hide delay",
+    );
+    await frame.click();
+    await previous.click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".photo-viewer-details")?.textContent ===
+        "Second",
+    );
     await page.keyboard.press("ArrowLeft");
     await page.waitForFunction(
       () =>
@@ -115,11 +225,35 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     assert.equal(await previous.isDisabled(), true);
     assert.equal(await modal.getAttribute("data-same-overlay"), "yes");
+    await page.waitForTimeout(1700);
+    assert.equal(
+      await modal.evaluate((element) =>
+        element.classList.contains("is-navigation-hidden"),
+      ),
+      false,
+      "keyboard navigation uses the longer delay",
+    );
     await page.keyboard.press("ArrowRight");
     await page.waitForFunction(
       () =>
         document.querySelector(".photo-viewer-details")?.textContent ===
         "Second",
+    );
+    await page.waitForTimeout(1700);
+    assert.equal(
+      await modal.evaluate((element) =>
+        element.classList.contains("is-navigation-hidden"),
+      ),
+      false,
+      "each arrow key resets the hide timer",
+    );
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".photo-viewer")
+          ?.classList.contains("is-navigation-hidden"),
+      null,
+      { timeout: 2500 },
     );
     const dimensions = await page
       .locator(".photo-viewer-image")

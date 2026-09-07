@@ -77,6 +77,8 @@ html.photo-view-open body {
 }
 
 .photo-viewer-scroll {
+  -webkit-user-select: none;
+  user-select: none;
   position: relative;
   z-index: 1;
   box-sizing: border-box;
@@ -126,6 +128,7 @@ html.photo-view-open body {
 }
 
 .photo-viewer-image {
+  -webkit-user-drag: none;
   position: absolute;
   inset: 0;
   display: block;

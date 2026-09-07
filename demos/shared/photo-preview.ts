@@ -18,6 +18,7 @@ const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
 const PHOTO_VIEW_DURATION_MS = 420;
 const PHOTO_NAV_INITIAL_HIDE_MS = 1500;
+const PHOTO_NAV_AFTER_NAVIGATION_HIDE_MS = 3000;
 const PHOTO_VIEW_IOS_DURATION_MS = 520;
 const PHOTO_VIEW_GEOMETRY_EASING = "cubic-bezier(0.18, 1.28, 0.32, 1)";
 const PHOTO_VIEW_IOS_GEOMETRY_EASING = "cubic-bezier(0.18, 1.24, 0.32, 1)";
@@ -856,6 +857,18 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     view.previousButton.inert = view.nextButton.inert = !visible;
   }
 
+  function scheduleNavigationHide(
+    view: ActivePhotoView<T>,
+    delayMs: number,
+  ): void {
+    cancelNavigationHide(view);
+    view.navigationHideTimer = window.setTimeout(() => {
+      view.navigationHideTimer = null;
+      if (activePhotoView === view && !view.closing)
+        setNavigationVisible(view, false);
+    }, delayMs);
+  }
+
   async function navigatePhoto(
     view: ActivePhotoView<T>,
     direction: -1 | 1,
@@ -1035,6 +1048,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       button.innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="${direction === -1 ? "m15 18-6-6 6-6" : "m9 18 6-6-6-6"}"/></svg>`;
       button.addEventListener("click", () => {
         setNavigationVisible(view, true);
+        scheduleNavigationHide(view, PHOTO_NAV_AFTER_NAVIGATION_HIDE_MS);
         void navigatePhoto(view, direction);
       });
       return button;
@@ -1067,6 +1081,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         event.preventDefault();
         event.stopPropagation();
         setNavigationVisible(view, true);
+        scheduleNavigationHide(view, PHOTO_NAV_AFTER_NAVIGATION_HIDE_MS);
         void navigatePhoto(view, event.key === "ArrowLeft" ? -1 : 1);
       }
       if (event.key === "Escape") {
@@ -1090,10 +1105,9 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         return;
       }
       if (pointInsideElement(view.frame, event.clientX, event.clientY)) {
-        setNavigationVisible(
-          view,
-          view.overlay.classList.contains("is-navigation-hidden"),
-        );
+        const reveal = view.overlay.classList.contains("is-navigation-hidden");
+        setNavigationVisible(view, reveal);
+        if (reveal) scheduleNavigationHide(view, PHOTO_NAV_INITIAL_HIDE_MS);
         return;
       }
       if (photoViewZoom() > 1.01) return;
@@ -1260,6 +1274,10 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     // The modal owns Escape before background document shortcuts see it.
     document.addEventListener("keydown", onKeyDown, true);
     overlay.addEventListener("click", onOverlayClick);
+    // Native drag/selection must not steal the swipe before its threshold.
+    // Leave touchstart and contextmenu alone for pinch zoom and Save/Copy.
+    scroll.addEventListener("dragstart", (event) => event.preventDefault());
+    scroll.addEventListener("selectstart", (event) => event.preventDefault());
     scroll.addEventListener("pointercancel", onSwipePointerCancel);
     scroll.addEventListener("pointerdown", onSwipePointerDown);
     scroll.addEventListener("pointermove", onSwipePointerMove);
@@ -1287,11 +1305,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     frame.style.willChange = "transform";
     image.classList.add("is-visible");
     overlay.classList.remove("is-preparing");
-    view.navigationHideTimer = window.setTimeout(() => {
-      view.navigationHideTimer = null;
-      if (activePhotoView === view && !view.closing)
-        setNavigationVisible(view, false);
-    }, PHOTO_NAV_INITIAL_HIDE_MS);
+    scheduleNavigationHide(view, PHOTO_NAV_INITIAL_HIDE_MS);
     for (const entry of view.background) entry.element.inert = true;
     closeButton.focus({ preventScroll: true });
     const backdropOpacity = photoViewBackdropOpacity(view);

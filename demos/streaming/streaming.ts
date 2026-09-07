@@ -2476,16 +2476,44 @@ importInput.addEventListener("change", () => {
   if (file) void importTranscript(file);
 });
 
-// A transcript dropped on the chat imports it. Only a file drag lights the
-// drop target; text or link drags fall through to the browser.
+// Only external file drags are imports. Native image drags can also expose
+// "Files", so remember drags originating anywhere in this document.
+let internalDrag = false;
+let dragDepth = 0;
+function resetImportDrag(): void {
+  internalDrag = false;
+  dragDepth = 0;
+  viewportWrap.classList.remove("drop-target");
+}
+document.addEventListener(
+  "dragstart",
+  (event) => {
+    resetImportDrag();
+    internalDrag = true;
+    // A prevented dragstart has no dragend (for example, preview swipe guards).
+    window.setTimeout(() => {
+      if (event.defaultPrevented) resetImportDrag();
+    });
+  },
+  true,
+);
+document.addEventListener("dragend", resetImportDrag, true);
+document.addEventListener(
+  "drop",
+  () => {
+    // Keep the origin flag through the target's drop handler, including when
+    // another target stops propagation, then clear it for the next file drag.
+    window.setTimeout(resetImportDrag);
+  },
+  true,
+);
 function draggedFile(event: DragEvent): boolean {
-  return event.dataTransfer?.types.includes("Files") === true;
+  return !internalDrag && event.dataTransfer?.types.includes("Files") === true;
 }
 function transcriptFile(event: DragEvent): File | null {
   const file = event.dataTransfer?.files[0] ?? null;
   return file && /\.(md|markdown|txt)$/i.test(file.name) ? file : null;
 }
-let dragDepth = 0;
 viewportWrap.addEventListener("dragenter", (event) => {
   if (!draggedFile(event)) return;
   event.preventDefault();
