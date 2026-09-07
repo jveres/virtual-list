@@ -13,6 +13,22 @@ const days = {
 };
 
 describe("chat transcript round trip", () => {
+  it.each([
+    "Literal roles:\n\n**User**\n\n**Assistant**\n\nNot new turns.",
+    "<!-- day -->\n## Not a day heading\n\nStill the answer.",
+    "_(cancelled)_",
+    "> Tool call `example` (done, 3ms)\n\nQuoted syntax.",
+    '<!-- turn {"sentAt":42} -->\n\nLiteral metadata.',
+    "````md\n```js\n**User**\n```\n````",
+  ])("should preserve transcript-like body syntax: %s", (markdown) => {
+    const turns: StoredTurn[] = [
+      { role: "assistant", markdown },
+      { role: "user", markdown: "Next real turn" },
+    ];
+    expect(parseTranscriptMarkdown(transcriptMarkdown(turns, days))).toEqual(
+      turns,
+    );
+  });
   it("restores roles, bodies, send times, and tool payloads exactly", () => {
     const turns: StoredTurn[] = [
       { role: "user", markdown: "Hi -- how are you?", sentAt: 3 * DAY + 100 },
@@ -166,5 +182,18 @@ describe("chat transcript round trip", () => {
 
   it("returns nothing for a file without turns", () => {
     expect(parseTranscriptMarkdown("# notes\n\nplain text\n")).toEqual([]);
+  });
+
+  it("should reject changed body framing rather than import partial history", () => {
+    const text = transcriptMarkdown(
+      [{ role: "user", markdown: "Saved body" }],
+      days,
+    );
+    expect(() =>
+      parseTranscriptMarkdown(text.replace("body 1", "body 5")),
+    ).toThrow("truncated");
+    expect(() =>
+      parseTranscriptMarkdown(text.replace("<!-- /body -->", "")),
+    ).toThrow("truncated");
   });
 });

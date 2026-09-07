@@ -26,16 +26,27 @@ function commentSafe(json: string): string {
   return json.replace(/--/g, "-\\u002d");
 }
 
-const FENCE = /^\s*(```|~~~)/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})(.*)$/;
+
+function nextFence(line: string, open: string | null): string | null {
+  const match = FENCE.exec(line);
+  const fence = match?.[1];
+  if (!fence) return open;
+  if (open === null) {
+    return fence.startsWith("`") && match?.[2]?.includes("`") ? null : fence;
+  }
+  return fence[0] === open[0] &&
+    fence.length >= open.length &&
+    !match?.[2]?.trim()
+    ? null
+    : open;
+}
 
 /** A body cut inside a code block (a reply stopped mid-fence) is closed, so the next turn's marker stays a marker. */
 function closeFences(body: string): string {
   let open: string | null = null;
   for (const line of body.split("\n")) {
-    const fence = FENCE.exec(line)?.[1];
-    if (!fence) continue;
-    if (open === null) open = fence;
-    else if (fence === open) open = null;
+    open = nextFence(line, open);
   }
   return open === null ? body : `${body}\n${open}`;
 }
@@ -74,12 +85,20 @@ export function transcriptMarkdown<M extends TranscriptMessage>(
     lines.push("");
     for (const call of toolCalls ?? []) {
       lines.push(
-        `> Tool call \`${call.name}\` (${call.status}, ${Math.round(call.durationMs)}ms)`,
+        `> Tool call \`${call.name.replace(/[\r\n`]/g, " ")}\` (${call.status}, ${Math.round(call.durationMs)}ms)`,
         "",
       );
     }
     const body = closeFences(message.markdown.trim());
-    if (body) lines.push(body, "");
+    // Length framing makes role markers, comments, and status-like text in a
+    // real body opaque, without duplicating large embedded images in metadata.
+    if (body)
+      lines.push(
+        `<!-- body ${body.split("\n").length} -->`,
+        body,
+        "<!-- /body -->",
+        "",
+      );
     else if (message.status && message.status !== "done") {
       lines.push(`_(${message.status})_`, "");
     }
@@ -95,6 +114,7 @@ interface ParsedTurn {
   meta: Record<string, unknown> | null;
   summaries: ChatToolCall[];
   body: string[];
+  framed: boolean;
 }
 
 function nextNonBlank(lines: readonly string[], from: number): string {
@@ -124,9 +144,9 @@ export function parseTranscriptMarkdown(text: string): StoredTurn[] {
   let skipHeading = false;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] as string;
-    const fence = current ? FENCE.exec(line)?.[1] : undefined;
-    if (fence && (openFence === null || fence === openFence)) {
-      openFence = openFence === null ? fence : null;
+    const fence: string | null = current ? nextFence(line, openFence) : null;
+    if (fence !== openFence) {
+      openFence = fence;
       current?.body.push(line);
       continue;
     }
@@ -151,6 +171,7 @@ export function parseTranscriptMarkdown(text: string): StoredTurn[] {
         meta: null,
         summaries: [],
         body: [],
+        framed: false,
       };
       turns.push(current);
       continue;
@@ -159,6 +180,23 @@ export function parseTranscriptMarkdown(text: string): StoredTurn[] {
     // The prelude — before the first body line — holds the turn's comment
     // and the tool-call summaries.
     if (current.body.length === 0) {
+      const bodyFrame = /^<!-- body (\d+) -->$/.exec(line);
+      if (bodyFrame) {
+        const count = Number(bodyFrame[1]);
+        if (
+          !Number.isSafeInteger(count) ||
+          count < 1 ||
+          count > lines.length - i - 2 ||
+          lines[i + count + 1] !== "<!-- /body -->"
+        )
+          throw new Error(
+            "The transcript body is truncated or has invalid length metadata.",
+          );
+        current.body = lines.slice(i + 1, i + 1 + count);
+        current.framed = true;
+        i += count + 1;
+        continue;
+      }
       if (line.startsWith(TURN_TAG) && line.endsWith(" -->")) {
         try {
           const parsed: unknown = JSON.parse(
@@ -198,7 +236,8 @@ export function parseTranscriptMarkdown(text: string): StoredTurn[] {
       ])[0]?.toolCalls;
       return {
         role: turn.role,
-        markdown: STATUS_PLACEHOLDER.test(markdown) ? "" : markdown,
+        markdown:
+          !turn.framed && STATUS_PLACEHOLDER.test(markdown) ? "" : markdown,
         sentAt: turn.meta?.sentAt,
         attachments: turn.meta?.attachments,
         toolCalls:

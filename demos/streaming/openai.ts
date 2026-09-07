@@ -369,16 +369,25 @@ function historyDb(): Promise<IDBDatabase> {
 // provider switch right after a send reads the just-persisted turns.
 let historyWriteChain: Promise<void> = Promise.resolve();
 
-function queueHistoryWrite(write: (db: IDBDatabase) => IDBRequest): void {
+function queueHistoryWrite(
+  write: (db: IDBDatabase) => IDBRequest,
+  onCommitted?: () => void,
+): void {
   historyWriteChain = historyWriteChain.then(async () => {
     try {
       const db = await historyDb();
       await new Promise<void>((resolve, reject) => {
         const request = write(db);
-        request.onsuccess = () => resolve();
-        request.onerror = () =>
-          reject(request.error ?? new Error("IndexedDB write failed"));
+        const transaction = request.transaction;
+        if (!transaction) {
+          reject(new Error("IndexedDB write has no transaction"));
+          return;
+        }
+        transaction.oncomplete = () => resolve();
+        transaction.onabort = transaction.onerror = () =>
+          reject(transaction.error ?? new Error("IndexedDB write failed"));
       });
+      onCommitted?.();
     } catch {
       // Storage unavailable; the in-memory transcript lives on.
     }
@@ -408,8 +417,7 @@ export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
     if (stored !== undefined) return validateStoredTurns(stored);
     const legacy = readLegacyHistory();
     if (legacy.length > 0) {
-      saveOpenAIHistory(legacy);
-      removeLegacyHistory();
+      queueHistorySave(legacy, removeLegacyHistory);
     }
     return legacy;
   } catch {
@@ -421,11 +429,20 @@ export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
 // Callers always pass freshly built arrays, so deferring the structured
 // clone into the queued write is safe.
 export function saveOpenAIHistory(turns: readonly StoredTurn[]): void {
-  queueHistoryWrite((db) =>
-    db
-      .transaction(HISTORY_STORE, "readwrite")
-      .objectStore(HISTORY_STORE)
-      .put(turns, HISTORY_RECORD_KEY),
+  queueHistorySave(turns);
+}
+
+function queueHistorySave(
+  turns: readonly StoredTurn[],
+  onCommitted?: () => void,
+): void {
+  queueHistoryWrite(
+    (db) =>
+      db
+        .transaction(HISTORY_STORE, "readwrite")
+        .objectStore(HISTORY_STORE)
+        .put(turns, HISTORY_RECORD_KEY),
+    onCommitted,
   );
 }
 

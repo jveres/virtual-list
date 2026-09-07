@@ -278,6 +278,18 @@ p.ai-settings-note {
   flex: none;
 }
 
+.icon-btn[hidden] {
+  display: none;
+}
+
+.chat-header {
+  flex-wrap: wrap;
+}
+
+.chat-header .header-actions {
+  flex-shrink: 0;
+}
+
 .viewport-wrap {
   position: relative;
   flex: 1;

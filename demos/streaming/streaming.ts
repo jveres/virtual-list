@@ -57,6 +57,11 @@ import {
 } from "./openai.js";
 import { repaintAfterReplacement } from "./repaint.js";
 import { sampleTimestamp } from "./sample-time.js";
+import {
+  createTranscriptFile,
+  shareChatFile,
+  supportsChatSharing,
+} from "./share.js";
 
 import "../shared/styles.css";
 import {
@@ -243,6 +248,7 @@ const pendingAttachmentList = mustGet("pending-attachments", HTMLDivElement);
 const attachmentStatus = mustGet("attachment-status", HTMLDivElement);
 let pendingAttachments: ChatAttachment[] = [];
 let readingAttachments = false;
+let preparingConversation = false;
 let attachmentEpoch = 0;
 const sendBtn = mustGet("send-btn", HTMLButtonElement);
 const scrollTopBtn = mustGet("scroll-top-btn", HTMLButtonElement);
@@ -1189,10 +1195,16 @@ let importedConversation: readonly StoredTurn[] | null = null;
 // Loads the history snapshot and the fence languages its static render needs
 // (loadLanguages ignores unknown names, so the raw info strings are safe to
 // feed through).
-async function prepareOpenAIConversation(): Promise<void> {
-  openAIHistory = await loadOpenAIHistory();
-  const languages = historyFenceLanguages(openAIHistory);
+async function prepareOpenAIConversation(
+  epoch = conversationEpoch,
+): Promise<boolean> {
+  const history = await loadOpenAIHistory();
+  if (epoch !== conversationEpoch) return false;
+  const languages = historyFenceLanguages(history);
   if (languages.length > 0) await loadLanguages(languages);
+  if (epoch !== conversationEpoch) return false;
+  openAIHistory = history;
+  return true;
 }
 
 function seedStoredTurns(turns: readonly StoredTurn[]): void {
@@ -1232,8 +1244,11 @@ function seedActiveConversation(): void {
 // restore, or a history clear: cancel any live stream, rebuild the state,
 // and present it exactly as the boot does.
 function reloadConversation(): void {
-  clearPendingAttachments();
   if (streamAbort) cancelStream(streamAbort);
+  streamAbort = null;
+  preparingConversation = false;
+  clearPendingAttachments();
+  endSendGlide();
   seedActiveConversation();
   setEdgeState("hidden");
   mountConversation();
@@ -1846,8 +1861,9 @@ function autosize(): void {
 function setStreamingUI(streaming: boolean): void {
   sendBtn.textContent = streaming ? "Stop" : "Send";
   sendBtn.classList.toggle("stop-btn", streaming);
-  sendBtn.disabled = !streaming && readingAttachments;
-  attachBtn.disabled = streaming || readingAttachments;
+  sendBtn.disabled =
+    !streaming && (readingAttachments || preparingConversation);
+  attachBtn.disabled = streaming || readingAttachments || preparingConversation;
 }
 
 function renderPendingAttachments(): void {
@@ -1884,7 +1900,13 @@ function clearPendingAttachments(): void {
 }
 
 async function selectAttachments(files: File[]): Promise<void> {
-  if (readingAttachments || streamAbort || files.length === 0) return;
+  if (
+    preparingConversation ||
+    readingAttachments ||
+    streamAbort ||
+    files.length === 0
+  )
+    return;
   const epoch = ++attachmentEpoch;
   readingAttachments = true;
   attachmentStatus.textContent = "Reading files…";
@@ -1963,6 +1985,7 @@ function fadeInRows(ids: readonly number[], abort: StreamAbort): void {
 }
 
 async function handleSend(): Promise<void> {
+  if (preparingConversation) return;
   if (streamAbort) {
     cancelStream(streamAbort);
     return;
@@ -2034,7 +2057,10 @@ async function handleSend(): Promise<void> {
         // Under the floating day pill, not behind it.
         offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
       }) ?? Promise.resolve(false);
-    void pinCommand.then(endSendGlide);
+    void pinCommand.then(() => {
+      if (sendEpoch === conversationEpoch && streamAbort === abort)
+        endSendGlide();
+    });
     if (shouldFlyIn) {
       await flyInRows([userMessage.id], abort);
       if (abort.cancelled) return;
@@ -2058,7 +2084,7 @@ async function handleSend(): Promise<void> {
       await streamResponse(reply, assistantId, abort);
     }
   } finally {
-    if (assistantId !== null) {
+    if (sendEpoch === conversationEpoch && assistantId !== null) {
       updateMessage(assistantId, (message) => {
         message.status = abort.cancelled ? "cancelled" : "done";
       });
@@ -2066,10 +2092,12 @@ async function handleSend(): Promise<void> {
     // The finished (or cancelled-partial) assistant turn joins the history;
     // empty turns are filtered out during serialization.
     persistTurns();
-    endSendGlide();
-    streamAbort = null;
-    setStreamingUI(false);
-    if (virtualList) syncScrollButtons(virtualList.state);
+    if (streamAbort === abort) {
+      endSendGlide();
+      streamAbort = null;
+      setStreamingUI(false);
+      if (virtualList) syncScrollButtons(virtualList.state);
+    }
   }
 }
 
@@ -2079,8 +2107,27 @@ bindThemeButtons(refreshTheme);
 initAISettingsPanel({
   onProviderChange: (provider) => {
     if (provider === "openai") {
+      // Stop the old provider immediately; sending its still-mounted history
+      // under the newly selected provider would cross conversation ownership.
+      reloadConversation();
+      const epoch = conversationEpoch;
+      preparingConversation = true;
+      setStreamingUI(false);
       // Fence languages must be loaded before the history's static render.
-      void prepareOpenAIConversation().then(() => reloadConversation());
+      void prepareOpenAIConversation(epoch)
+        .then((loaded) => {
+          if (loaded) reloadConversation();
+        })
+        .catch((error: unknown) => {
+          if (epoch !== conversationEpoch) return;
+          preparingConversation = false;
+          setStreamingUI(false);
+          window.alert(
+            error instanceof Error
+              ? error.message
+              : "Could not load the conversation.",
+          );
+        });
     } else {
       reloadConversation();
     }
@@ -2284,13 +2331,11 @@ function transcriptMarkdown(): string {
 }
 
 function downloadTranscript(): void {
-  const blob = new Blob([transcriptMarkdown()], {
-    type: "text/markdown;charset=utf-8",
-  });
-  const url = URL.createObjectURL(blob);
+  const file = createTranscriptFile(transcriptMarkdown());
+  const url = URL.createObjectURL(file);
   const link = document.createElement("a");
   link.href = url;
-  link.download = `chat-${new Date().toISOString().slice(0, 10)}.md`;
+  link.download = file.name;
   document.body.append(link);
   link.click();
   link.remove();
@@ -2303,6 +2348,27 @@ mustGet("download-btn", HTMLButtonElement).addEventListener(
   downloadTranscript,
 );
 
+const shareBtn = mustGet("share-btn", HTMLButtonElement);
+shareBtn.hidden = !supportsChatSharing();
+shareBtn.addEventListener("click", async () => {
+  if (shareBtn.disabled) return;
+  shareBtn.disabled = true;
+  try {
+    const result = await shareChatFile(
+      createTranscriptFile(transcriptMarkdown()),
+    );
+    if (result === "unsupported")
+      window.alert(
+        "This chat cannot be shared as a file in this browser. Use Download to save it instead.",
+      );
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "Sharing failed.";
+    window.alert(`${detail}\nUse Download to save the chat instead.`);
+  } finally {
+    shareBtn.disabled = false;
+  }
+});
+
 // Import replaces the conversation: the stored OpenAI history in this
 // browser, or the simulated transcript for this session.
 // One import at a time: a second file dropped while the first is being
@@ -2314,13 +2380,21 @@ async function importTranscript(file: File): Promise<void> {
   importing = true;
   try {
     await importTranscriptNow(file);
+  } catch (error) {
+    window.alert(
+      error instanceof Error
+        ? error.message
+        : "Could not import the transcript.",
+    );
   } finally {
     importing = false;
   }
 }
 
 async function importTranscriptNow(file: File): Promise<void> {
+  const epoch = conversationEpoch;
   const turns = parseTranscriptMarkdown(await file.text());
+  if (epoch !== conversationEpoch) return;
   if (turns.length === 0) {
     window.alert(`${file.name} holds no chat turns.`);
     return;
@@ -2337,6 +2411,7 @@ async function importTranscriptNow(file: File): Promise<void> {
     return;
   }
   await loadLanguages(historyFenceLanguages(turns));
+  if (epoch !== conversationEpoch) return;
   if (useOpenAI) {
     openAIHistory = turns;
     saveOpenAIHistory(turns);
