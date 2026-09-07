@@ -45,6 +45,8 @@ export interface PhotoPreviewOptions<T extends PhotoPreviewItem> {
   maxPreviewSourceWidth?: number;
   /** Let image-based hosts expose the browser's Save Image / Copy Image menu. */
   nativeImageMenu?: boolean;
+  /** Set false to keep square image corners, including the hero animation. */
+  roundedCorners?: boolean;
 }
 
 export interface PhotoPreviewController<T extends PhotoPreviewItem> {
@@ -208,6 +210,8 @@ function defaultDetailsText(photo: PhotoPreviewItem): string {
 export function createPhotoPreview<T extends PhotoPreviewItem>(
   options: PhotoPreviewOptions<T>,
 ): PhotoPreviewController<T> {
+  const sourceRadius = options.roundedCorners === false ? "0px" : "8px";
+  const previewRadius = options.roundedCorners === false ? "0px" : "10px";
   let activePhotoView: ActivePhotoView<T> | null = null;
   let disposed = false;
   const bindings = new WeakMap<HTMLElement, AbortController>();
@@ -1075,7 +1079,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const viewDuration = photoViewDurationMs();
     const targetRect = readRect(frame.getBoundingClientRect());
     const openingTransform = photoHeroTransform(sourceRect, targetRect);
-    setPhotoHeroRadius(frame, "8px");
+    setPhotoHeroRadius(frame, sourceRadius);
     frame.style.transform = openingTransform;
     frame.style.transformOrigin = "top left";
     frame.style.willChange = "transform";
@@ -1087,7 +1091,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
 
     if (reducedMotion()) {
       backdrop.style.opacity = backdropOpacity;
-      setPhotoHeroRadius(frame, "10px");
+      setPhotoHeroRadius(frame, previewRadius);
       frame.style.transform = "";
       frame.style.transformOrigin = "";
       frame.style.willChange = "";
@@ -1098,13 +1102,13 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     const frameAnimation = frame.animate(
       [
         {
-          borderRadius: "8px",
-          clipPath: "inset(0 round 8px)",
+          borderRadius: sourceRadius,
+          clipPath: `inset(0 round ${sourceRadius})`,
           transform: openingTransform,
         },
         {
-          borderRadius: "10px",
-          clipPath: "inset(0 round 10px)",
+          borderRadius: previewRadius,
+          clipPath: `inset(0 round ${previewRadius})`,
           transform: "translate3d(0, 0, 0) scale(1)",
         },
       ],
@@ -1130,7 +1134,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     ]);
     if (activePhotoView !== view || view.closing) return;
     backdrop.style.opacity = backdropOpacity;
-    setPhotoHeroRadius(frame, "10px");
+    setPhotoHeroRadius(frame, previewRadius);
     frame.style.transform = "translate3d(0, 0, 0) scale(1)";
     frame.style.transformOrigin = "";
     frame.style.willChange = "";
@@ -1177,7 +1181,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       ? readRect(currentSource.getBoundingClientRect())
       : view.sourceRect;
     const viewDuration = photoViewDurationMs();
-    const heroBorderRadius = currentSource ? "8px" : "10px";
+    const heroBorderRadius = currentSource ? sourceRadius : previewRadius;
     const heroClipPath = `inset(0 round ${heroBorderRadius})`;
     setPhotoHeroRadius(hero, heroBorderRadius);
 

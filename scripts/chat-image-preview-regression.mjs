@@ -11,6 +11,24 @@ for (const engine of [firefox, webkit]) {
       hasTouch: true,
     });
     const errors = [];
+    const assertSquareCorners = async (selector) => {
+      const corners = await page.locator(selector).evaluate((element) => ({
+        radius: getComputedStyle(element).borderRadius,
+        clip: getComputedStyle(element).clipPath,
+        animatedRadii: element
+          .getAnimations()
+          .flatMap((animation) =>
+            animation.effect
+              .getKeyframes()
+              .flatMap((frame) =>
+                frame.borderRadius === undefined ? [] : [frame.borderRadius],
+              ),
+          ),
+      }));
+      assert.equal(corners.radius, "0px");
+      assert.match(corners.clip, /^inset\(0px(?: round 0px)?\)$/);
+      for (const radius of corners.animatedRadii) assert.equal(radius, "0px");
+    };
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("dialog", (dialog) => dialog.accept());
     await page.addInitScript(() => {
@@ -172,7 +190,15 @@ for (const engine of [firefox, webkit]) {
       await page.locator(".photo-viewer-details").textContent(),
       "Landscape",
     );
+    await assertSquareCorners(".photo-viewer-frame");
+    await page.locator(".photo-viewer-frame").evaluate(async (element) => {
+      await Promise.all(
+        element.getAnimations().map((animation) => animation.finished),
+      );
+    });
+    await assertSquareCorners(".photo-viewer-frame");
     await page.keyboard.press("Escape");
+    await assertSquareCorners(".photo-viewer-hero");
     await page.locator(".photo-viewer").waitFor({ state: "detached" });
     assert.equal(await photo.isVisible(), true);
     assert.equal(
@@ -198,6 +224,14 @@ for (const engine of [firefox, webkit]) {
       .getByRole("button", { name: "Close photo", exact: true })
       .click();
     await page.locator(".photo-viewer").waitFor({ state: "detached" });
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await photo.click();
+    await page.locator(".photo-viewer:not(.is-preparing)").waitFor();
+    await assertSquareCorners(".photo-viewer-frame");
+    await page.keyboard.press("Escape");
+    await page.locator(".photo-viewer").waitFor({ state: "detached" });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
 
     // A dynamically rendered image gets a binding, including late decoding.
     await page.evaluate((source) => {
