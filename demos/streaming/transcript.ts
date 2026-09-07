@@ -70,12 +70,25 @@ export function transcriptMarkdown<M extends TranscriptMessage>(
     // A call still running when the file is written is stored as
     // persistence stores it: settled, as an error.
     const toolCalls = message.toolCalls?.map(
-      ({ name, status, durationMs, input, output }) => ({
+      ({ name, status, durationMs, input, output, markdownOffset }) => ({
         name,
         status: status === "running" ? "error" : status,
         durationMs,
         input,
         output,
+        ...(markdownOffset !== undefined
+          ? {
+              markdownOffset: Math.max(
+                0,
+                Math.min(
+                  message.markdown.trim().length,
+                  markdownOffset -
+                    (message.markdown.length -
+                      message.markdown.trimStart().length),
+                ),
+              ),
+            }
+          : {}),
       }),
     );
     if (toolCalls?.length) meta.toolCalls = toolCalls;

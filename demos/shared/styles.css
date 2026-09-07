@@ -563,6 +563,10 @@ p.ai-settings-note {
   margin: 0 0 10px;
 }
 
+.message-text-intermediate:not([hidden]) + .tool-calls {
+  margin-top: 10px;
+}
+
 .tool-call {
   overflow: hidden;
   border: 1px solid var(--border);
@@ -573,6 +577,8 @@ p.ai-settings-note {
 }
 
 .tool-call-summary {
+  -webkit-user-select: none;
+  user-select: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -680,6 +686,11 @@ p.ai-settings-note {
 }
 
 .message.assistant .markdown:has(> .cursor) {
+  padding-bottom: 0;
+}
+
+/* Only the final text segment reserves the streaming cursor's line. */
+.message.assistant .message-text-intermediate .markdown {
   padding-bottom: 0;
 }
 

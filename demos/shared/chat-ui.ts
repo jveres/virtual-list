@@ -7,6 +7,8 @@ export interface ChatToolCall {
   durationMs: number;
   input: string;
   output: string;
+  /** UTF-16 offset in the message markdown when the call started. Legacy calls omit it. */
+  markdownOffset?: number;
   open?: boolean;
 }
 
@@ -49,7 +51,7 @@ export function setRoleLabel(label: HTMLElement, message: ChatMessage): void {
   if (dot.className !== className) dot.className = className;
 }
 
-function buildToolCall(toolCall: ChatToolCall): HTMLElement {
+export function buildToolCall(toolCall: ChatToolCall): HTMLDetailsElement {
   const details = document.createElement("details");
   details.className = "tool-call";
   details.open = toolCall.open === true;

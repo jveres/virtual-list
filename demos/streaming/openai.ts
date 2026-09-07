@@ -262,6 +262,11 @@ function storedToolCalls(value: unknown): ChatToolCall[] | undefined {
       durationMs: typeof entry.durationMs === "number" ? entry.durationMs : 0,
       input: typeof entry.input === "string" ? entry.input : "",
       output: typeof entry.output === "string" ? entry.output : "",
+      ...(typeof entry.markdownOffset === "number" &&
+      Number.isSafeInteger(entry.markdownOffset) &&
+      entry.markdownOffset >= 0
+        ? { markdownOffset: entry.markdownOffset }
+        : {}),
     });
   }
   return calls.length > 0 ? calls : undefined;
@@ -282,12 +287,15 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
       entry.role === "assistant" && validResponseState(entry.responseState)
         ? entry.responseState
         : undefined;
+    const toolCalls = storedToolCalls(entry.toolCalls);
     if (
       typeof entry.markdown !== "string" ||
-      (entry.markdown === "" && !responseState && attachments.length === 0)
+      (entry.markdown === "" &&
+        !responseState &&
+        attachments.length === 0 &&
+        !toolCalls?.length)
     )
       continue;
-    const toolCalls = storedToolCalls(entry.toolCalls);
     const sentAt =
       typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)
         ? entry.sentAt

@@ -15,16 +15,14 @@ import {
   buildSectionHeader,
   type ChatToolCall,
   setRoleLabel,
-  syncToolCalls,
 } from "../shared/chat-ui.js";
 import {
   attachInteractions,
-  createMarkdownViewer,
   initMarkdown,
   loadLanguages,
-  type MarkdownViewerHandle,
   renderMarkdown,
 } from "../shared/markdown.js";
+import { replaceMessageMarkdown } from "../shared/message-order.js";
 import {
   createStickyHeaders,
   type StickyHeaders,
@@ -45,6 +43,11 @@ import {
   readAttachments,
 } from "./attachments.js";
 import { createChatImagePreview } from "./image-preview.js";
+import {
+  appendStaticMessageContent,
+  createMessageContent,
+  type MessageContentHandle,
+} from "./message-content.js";
 import {
   buildResponseContext,
   GENERATED_IMAGE_PATTERN,
@@ -276,7 +279,7 @@ const htmlCache = new Map<string, string>();
 // remounts and replacements never collide; the runtime's onDestroy callback
 // tears a viewer down when it is done with the element for good (a retained
 // row that merely leaves the window keeps its viewer).
-const streamingViewers = new WeakMap<HTMLElement, MarkdownViewerHandle>();
+const streamingViewers = new WeakMap<HTMLElement, MessageContentHandle>();
 // Row elements by message id, for the send animations. Pruned by the same
 // onDestroy callback.
 const rowById = new Map<string, HTMLElement>();
@@ -1408,7 +1411,16 @@ function streamingDisplayText(message: Message): string {
 // A finished row: the static markdown render plus, when the message has
 // sibling versions, the navigator that switches between them.
 function buildStaticRow(message: Message): HTMLElement {
-  const row = buildChatItem(message, htmlForMessage(message));
+  const ordered =
+    message.role === "assistant" &&
+    message.toolCalls?.some((call) => call.markdownOffset !== undefined);
+  const row = ordered
+    ? buildChatRow({ ...message, toolCalls: undefined }).row
+    : buildChatItem(message, htmlForMessage(message));
+  if (ordered) {
+    const content = row.querySelector<HTMLElement>(".message-content");
+    if (content) appendStaticMessageContent(content, message);
+  }
   if (message.attachments?.length) {
     const list = document.createElement("div");
     list.className = "message-attachments";
@@ -1422,26 +1434,9 @@ function buildStaticRow(message: Message): HTMLElement {
 }
 
 function buildStreamingRow(message: Message): HTMLElement {
-  const { row, content } = buildChatRow(message);
-  // createMarkdownViewer takes over its host's children, so it gets a
-  // dedicated wrapper rather than `content` (which also holds the role label
-  // and tool calls).
-  const host = document.createElement("div");
-  // The live viewer binds its own copy / table-copy click handler to its
-  // root. The chat viewport also delegates those clicks (for static rows), so
-  // stop the bubble here to keep both from firing on this one row. The
-  // viewer's handler is bound deeper in the tree, so it has already run by
-  // the time the event reaches here.
-  host.addEventListener("click", (event) => event.stopPropagation());
-  content.appendChild(host);
-  const handle = createMarkdownViewer(host, {
-    text: streamingDisplayText(message),
-    isStreaming: true,
-    // The viewer root rarely holds focus inside the list (the composer does),
-    // so keep a solid block cursor instead of dimming to a hollow frame.
-    unfocusedCursorStyle: "block",
-    cursor: cursorMode,
-  });
+  const { row, content } = buildChatRow({ ...message, toolCalls: undefined });
+  const handle = createMessageContent(content, cursorMode);
+  handle.update(message, streamingDisplayText(message), true);
   streamingViewers.set(row, handle);
   return row;
 }
@@ -1474,14 +1469,13 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
     // rebuild would replace the viewer and its streaming cursor. Without a
     // live viewer (a "thinking" row, a static one) rebuilding is cheap.
     if (!handle) return null;
-    syncToolCalls(element, message);
     element.dataset.toolsig = signature;
   }
   if (message.status === "streaming") {
     // A row that was mounted as "thinking" has no live viewer yet: rebuild.
     if (!handle) return null;
     syncRoleLabel(element, message);
-    handle.update({ text: streamingDisplayText(message), isStreaming: true });
+    handle.update(message, streamingDisplayText(message), true);
     return element;
   }
   // Stream just ended on a still-live row: finalize the viewer in place
@@ -1490,7 +1484,7 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
   // it unmounts, then remounts static.
   if (handle) {
     syncRoleLabel(element, message);
-    handle.update({ text: message.markdown, isStreaming: false });
+    handle.update(message, message.markdown, false);
     return element;
   }
   return null;
@@ -1660,7 +1654,8 @@ function persistOpenAIConversation(): void {
     if (
       message.markdown === "" &&
       !message.responseState &&
-      !message.attachments?.length
+      !message.attachments?.length &&
+      !message.toolCalls?.length
     )
       continue;
     // A cancel can leave a call mid-flight; store it as errored.
@@ -1719,12 +1714,10 @@ async function streamOpenAIResponse(
             // image takes the partial's place. Blank lines keep the image a
             // block of its own regardless of surrounding text.
             const previous = partialImages.get(chunk.id);
-            if (previous && message.markdown.includes(previous)) {
-              message.markdown = message.markdown.replace(
-                previous,
-                chunk.markdown,
-              );
-            } else {
+            if (
+              !previous ||
+              !replaceMessageMarkdown(message, previous, chunk.markdown)
+            ) {
               message.markdown += `\n\n${chunk.markdown}\n\n`;
             }
             if (chunk.kind === "image-partial") {
@@ -1748,6 +1741,7 @@ async function streamOpenAIResponse(
                 durationMs: 0,
                 input: chunk.input,
                 output: "",
+                markdownOffset: message.markdown.length,
               },
             ];
             break;
@@ -1762,6 +1756,10 @@ async function streamOpenAIResponse(
                 : 0,
               input: chunk.input,
               output: chunk.output,
+              markdownOffset: live
+                ? (message.toolCalls?.[live.slot]?.markdownOffset ??
+                  message.markdown.length)
+                : message.markdown.length,
             };
             const toolCalls = [...(message.toolCalls ?? [])];
             if (live && toolCalls[live.slot]) toolCalls[live.slot] = entry;
@@ -1864,6 +1862,13 @@ function borderBlockSize(element: HTMLElement): number {
 }
 
 function autosize(): void {
+  // Measuring at the minimum textarea height must not temporarily expand the
+  // chat viewport: WebKit clamps its bottom scroll position during that layout,
+  // even when the textarea's final height is unchanged (no resize delivery).
+  const composer = promptInput.parentElement;
+  const previousMinHeight = composer?.style.minHeight ?? "";
+  if (composer)
+    composer.style.minHeight = `${composer.getBoundingClientRect().height}px`;
   promptInput.style.height = `${composerMinHeight}px`;
   const next = Math.min(
     COMPOSER_MAX_HEIGHT,
@@ -1874,6 +1879,7 @@ function autosize(): void {
   );
   promptInput.style.height = `${next}px`;
   promptInput.style.overflowY = next >= COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
+  if (composer) composer.style.minHeight = previousMinHeight;
 }
 
 function setStreamingUI(streaming: boolean): void {
@@ -2572,7 +2578,7 @@ cursorSelect.addEventListener("change", () => {
 // A live reply takes a changed cursor choice at once.
 function syncStreamingViewerOptions(): void {
   for (const row of rowById.values()) {
-    streamingViewers.get(row)?.update({ cursor: cursorMode });
+    streamingViewers.get(row)?.setCursor(cursorMode);
   }
 }
 landingSelect.value = landingMode;
