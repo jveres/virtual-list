@@ -459,12 +459,19 @@ p.ai-settings-note {
   pointer-events: none;
 }
 
-.message-user-actions:hover,
-.message.user:focus-within > .message-user-actions,
-.message.user[data-actions-visible] > .message-user-actions,
-.message.user:has(> .message-content:hover) > .message-user-actions {
+.message-user-actions:focus-within,
+.message.user[data-actions-visible] > .message-user-actions {
   opacity: 1;
   pointer-events: auto;
+}
+
+/* Touch can synthesize sticky hover while operating the navigator. */
+@media (hover: hover) {
+  .message-user-actions:hover,
+  .message.user:has(> .message-content:hover) > .message-user-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .message-delete-btn,

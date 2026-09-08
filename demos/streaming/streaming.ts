@@ -2834,14 +2834,14 @@ deleteDialog.addEventListener("close", () => {
     deleteMessagesFrom(pending.id, pending.epoch);
 });
 
-// Touch has no hover: reveal only the tapped message's action. Do not
-// prevent the gesture, text selection, or links inside the bubble.
+// Touch has no hover: reveal the tapped bubble's actions, but not when
+// operating its version navigator. Do not prevent gestures or text selection.
 document.addEventListener(
   "pointerdown",
   (event) => {
     if (event.pointerType === "mouse") return;
     const row =
-      event.target instanceof Element
+      event.target instanceof Element && !event.target.closest(".version-nav")
         ? (event.target
             .closest(
               ".message-content, .message-user-actions, .message-actions",
