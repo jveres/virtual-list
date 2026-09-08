@@ -43,6 +43,12 @@ import {
   type ChatAttachment,
   readAttachments,
 } from "./attachments.js";
+import {
+  branchingTranscriptMarkdown,
+  type ImportedTranscript,
+  parseBranchingTranscript,
+  type TranscriptTree,
+} from "./branching-transcript.js";
 import { createChatImagePreview } from "./image-preview.js";
 import {
   appendStaticMessageContent,
@@ -68,10 +74,6 @@ import {
 } from "./share.js";
 
 import "../shared/styles.css";
-import {
-  parseTranscriptMarkdown,
-  transcriptMarkdown as transcriptToMarkdown,
-} from "./transcript.js";
 
 // The demo is the runtime's API pressure test: the full streaming chat —
 // send flow with pin-to-top, end-follow through streams, scrollback loading,
@@ -544,7 +546,15 @@ miss with very short responses.`,
 ];
 
 function createMessage(message: Omit<Message, "id">): Message {
-  return { id: nextMessageId++, ...message };
+  // Imported IDs can be sparse or reach the safe-integer limit. Allocate
+  // unused IDs without allowing a new version to overwrite an imported node.
+  while (tree.has(nextMessageId)) {
+    nextMessageId =
+      nextMessageId === Number.MAX_SAFE_INTEGER ? 1 : nextMessageId + 1;
+  }
+  const id = nextMessageId;
+  nextMessageId = id === Number.MAX_SAFE_INTEGER ? 1 : id + 1;
+  return { id, ...message };
 }
 
 function cloneToolCalls(toolCalls: readonly ChatToolCall[]): ChatToolCall[] {
@@ -1250,7 +1260,7 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
 // switch — into this cache; an import replaces it outright.
 let openAIHistory: readonly StoredTurn[] = [];
 // A transcript imported under the simulated provider; session-only.
-let importedConversation: readonly StoredTurn[] | null = null;
+let importedConversation: ImportedTranscript | null = null;
 let simulatedConversationChanged = false;
 let userEdit: { id: number; epoch: number; text: string } | null = null;
 
@@ -1293,12 +1303,45 @@ function seedStoredTurns(turns: readonly StoredTurn[]): void {
   }
 }
 
-function seedActiveConversation(): void {
+function seedTranscriptTree(snapshot: TranscriptTree): void {
+  // Parsing validated connectivity and selections before the old chat changed.
+  // Restore nodes before their links so parents need not appear first in the file.
+  for (const node of snapshot.nodes) {
+    tree.set(node.id, {
+      message: { ...node.message, id: node.id },
+      parentId: node.parentId,
+      childrenIds: [],
+      selectedChildIndex: 0,
+    });
+    nextMessageId = Math.max(nextMessageId, node.id + 1);
+  }
+  if (!Number.isSafeInteger(nextMessageId)) nextMessageId = 1;
+  for (const node of snapshot.nodes) {
+    tree.get(node.parentId)?.childrenIds.push(node.id);
+  }
+  for (const node of snapshot.nodes) {
+    const restored = tree.get(node.id);
+    if (restored && node.selectedChildId !== null)
+      restored.selectedChildIndex = restored.childrenIds.indexOf(
+        node.selectedChildId,
+      );
+  }
+  const root = tree.get(TREE_ROOT_ID);
+  if (root && snapshot.selectedRootId !== null)
+    root.selectedChildIndex = root.childrenIds.indexOf(snapshot.selectedRootId);
+}
+
+function seedActiveConversation(importedTree?: TranscriptTree | null): void {
   resetConversationState();
-  if (getAISettings().provider === "openai") {
+  const simulated = getAISettings().provider === "simulated";
+  const snapshot =
+    importedTree ?? (simulated ? importedConversation?.tree : null);
+  if (snapshot) {
+    seedTranscriptTree(snapshot);
+  } else if (!simulated) {
     seedStoredTurns(openAIHistory);
   } else if (importedConversation !== null) {
-    seedStoredTurns(importedConversation);
+    seedStoredTurns(importedConversation.turns);
   } else {
     simulatedConversationChanged = false;
     seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
@@ -1311,13 +1354,13 @@ function seedActiveConversation(): void {
 // Swaps the rendered conversation after a provider change, an import, a
 // restore, or a history clear: cancel any live stream, rebuild the state,
 // and present it exactly as the boot does.
-function reloadConversation(): void {
+function reloadConversation(importedTree?: TranscriptTree | null): void {
   if (streamAbort) cancelStream(streamAbort);
   streamAbort = null;
   preparingConversation = false;
   clearPendingAttachments();
   endSendGlide();
-  seedActiveConversation();
+  seedActiveConversation(importedTree);
   setEdgeState("hidden");
   mountConversation();
   syncMetrics();
@@ -1435,7 +1478,7 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
     openAIHistory = turns;
     saveOpenAIHistory(turns);
   } else {
-    importedConversation = turns;
+    importedConversation = { turns, tree: null };
   }
   setEdgeState("hidden");
   if (isVersion) pushItems();
@@ -2708,16 +2751,6 @@ viewport.addEventListener("click", (event) => {
     if (row) beginUserEdit(row);
     return;
   }
-  const userText = event.target.closest<HTMLElement>(".message.user .markdown");
-  if (
-    userText &&
-    !event.target.closest("a, button") &&
-    !userText.isContentEditable
-  ) {
-    const row = userText.closest<HTMLElement>(".message.user");
-    if (row) beginUserEdit(row);
-    return;
-  }
   const button = event.target.closest<HTMLButtonElement>(
     ".message-delete-btn, .message-version-delete-btn",
   );
@@ -2858,12 +2891,26 @@ stickyHeaders = createStickyHeaders({
   },
 });
 // --- Export ------------------------------------------------------------------
-// The whole active branch (not just the loaded window) as one Markdown
-// document: day separators become headings, a tool call a one-line note, a
-// reply that never finished its status.
+// The readable active branch plus all other versions in hidden tree metadata.
 function transcriptMarkdown(): string {
+  const snapshot: TranscriptTree<Message> = {
+    selectedRootId:
+      selectedChildId(tree.get(TREE_ROOT_ID) ?? rootNode()) ?? null,
+    nodes: [...tree.entries()].flatMap(([id, node]) =>
+      node.message
+        ? [
+            {
+              id,
+              parentId: node.parentId,
+              selectedChildId: selectedChildId(node) ?? null,
+              message: node.message,
+            },
+          ]
+        : [],
+    ),
+  };
   // A file is read later: a dated day gets its full date, not "Today".
-  return transcriptToMarkdown(transcript, {
+  return branchingTranscriptMarkdown(snapshot, {
     dayOf,
     dayLabel: (day) =>
       isDatedDay(day)
@@ -2939,7 +2986,8 @@ async function importTranscript(file: File): Promise<void> {
 
 async function importTranscriptNow(file: File): Promise<void> {
   const epoch = conversationEpoch;
-  const turns = parseTranscriptMarkdown(await file.text());
+  const imported = parseBranchingTranscript(await file.text());
+  const { turns, tree: importedTree } = imported;
   if (epoch !== conversationEpoch) return;
   if (turns.length === 0) {
     window.alert(`${file.name} holds no chat turns.`);
@@ -2951,20 +2999,24 @@ async function importTranscriptNow(file: File): Promise<void> {
     : "the simulated conversation for this session";
   if (
     !window.confirm(
-      `Replace ${target} with the ${turns.length} turns in ${file.name}?`,
+      `Replace ${target} with the ${importedTree?.nodes.length ?? turns.length} turns${importedTree ? " (including all versions)" : ""} in ${file.name}?`,
     )
   ) {
     return;
   }
-  await loadLanguages(historyFenceLanguages(turns));
+  await loadLanguages(
+    historyFenceLanguages(
+      importedTree?.nodes.map((node) => node.message) ?? turns,
+    ),
+  );
   if (epoch !== conversationEpoch) return;
   if (useOpenAI) {
     openAIHistory = turns;
     saveOpenAIHistory(turns);
   } else {
-    importedConversation = turns;
+    importedConversation = imported;
   }
-  reloadConversation();
+  reloadConversation(importedTree);
 }
 
 const importInput = mustGet("import-file", HTMLInputElement);

@@ -148,7 +148,10 @@ function isMarker(line: string): boolean {
  * skipped when it carries the day tag, or — in a file written before the
  * tags, which has none — when a role marker follows it.
  */
-export function parseTranscriptMarkdown(text: string): StoredTurn[] {
+export function parseTranscriptMarkdown(
+  text: string,
+  { preserveEmpty = false }: { preserveEmpty?: boolean } = {},
+): StoredTurn[] {
   const lines = text.split(/\r?\n/);
   const tagged = lines.includes(DAY_TAG);
   const turns: ParsedTurn[] = [];
@@ -239,23 +242,30 @@ export function parseTranscriptMarkdown(text: string): StoredTurn[] {
     }
     current.body.push(line);
   }
-  return validateStoredTurns(
-    turns.map((turn) => {
-      const markdown = turn.body.join("\n").trim();
-      // The comment's calls carry the payloads; the summaries stand in
-      // when a hand-edited comment yields none.
-      const fromMeta = validateStoredTurns([
-        { role: turn.role, markdown: "-", toolCalls: turn.meta?.toolCalls },
-      ])[0]?.toolCalls;
-      return {
-        role: turn.role,
-        markdown:
-          !turn.framed && STATUS_PLACEHOLDER.test(markdown) ? "" : markdown,
-        sentAt: turn.meta?.sentAt,
-        attachments: turn.meta?.attachments,
-        toolCalls:
-          fromMeta ?? (turn.summaries.length > 0 ? turn.summaries : undefined),
-      };
-    }),
-  );
+  const parsed = turns.map((turn) => {
+    const markdown = turn.body.join("\n").trim();
+    // The comment's calls carry the payloads; the summaries stand in
+    // when a hand-edited comment yields none.
+    const fromMeta = validateStoredTurns([
+      { role: turn.role, markdown: "-", toolCalls: turn.meta?.toolCalls },
+    ])[0]?.toolCalls;
+    return {
+      role: turn.role,
+      markdown:
+        !turn.framed && STATUS_PLACEHOLDER.test(markdown) ? "" : markdown,
+      sentAt: turn.meta?.sentAt,
+      attachments: turn.meta?.attachments,
+      toolCalls:
+        fromMeta ?? (turn.summaries.length > 0 ? turn.summaries : undefined),
+    };
+  });
+  if (!preserveEmpty) return validateStoredTurns(parsed);
+  // Tree references address every readable turn, including an empty reply
+  // exported before its first token. Do not shift subsequent turn indices.
+  return parsed.flatMap((turn) => {
+    const stored = validateStoredTurns([
+      { ...turn, markdown: turn.markdown || "-" },
+    ])[0];
+    return stored ? [{ ...stored, markdown: turn.markdown }] : [];
+  });
 }

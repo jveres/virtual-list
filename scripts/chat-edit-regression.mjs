@@ -49,6 +49,10 @@ try {
   const originalRow = page
     .locator(".message.user")
     .filter({ hasText: "Original question" });
+  await originalRow.locator(".markdown").click();
+  assert.equal(await page.locator(".message.user.is-editing").count(), 0);
+  await originalRow.locator(".markdown").dblclick();
+  assert.equal(await page.locator(".message.user.is-editing").count(), 0);
   await originalRow.locator(".message-content").hover();
   await originalRow.locator(".message-edit-btn").click();
   const editor = page.getByRole("textbox", {
@@ -73,7 +77,8 @@ try {
     .click();
   assert.equal(await editor.count(), 0);
   assert.equal(await page.evaluate(() => window.requests), 0);
-  await originalRow.locator(".markdown").click();
+  await originalRow.locator(".message-content").hover();
+  await originalRow.locator(".message-edit-btn").click();
   await editor.fill("Cancel by clicking outside");
   await page.locator("#prompt").click();
   assert.equal(await editor.count(), 0);
@@ -81,7 +86,8 @@ try {
     await originalRow.locator(".markdown").textContent(),
     "Original question\n",
   );
-  await originalRow.locator(".markdown").click();
+  await originalRow.locator(".message-content").hover();
+  await originalRow.locator(".message-edit-btn").click();
   await editor.fill("Changed question");
   await editor.press("Shift+Enter");
   await editor.press("N");
