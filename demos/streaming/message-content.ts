@@ -5,6 +5,7 @@ import {
   renderMarkdown,
 } from "../shared/markdown.js";
 import { messageParts, type OrderedMessage } from "../shared/message-order.js";
+import { setHiddenIfChanged } from "../shared/utils.js";
 
 type Cursor = "bar" | "none";
 type TextSlot = {
@@ -96,11 +97,17 @@ export function createMessageContent(
           slots.set(part.key, slot);
         }
         if (part.kind === "text" && slot.kind === "text") {
-          slot.host.classList.toggle(
-            "message-text-intermediate",
-            index < parts.length - 1,
-          );
-          slot.host.hidden = !part.text.trim() && !streaming;
+          const intermediate = index < parts.length - 1;
+          if (
+            slot.host.classList.contains("message-text-intermediate") !==
+            intermediate
+          ) {
+            slot.host.classList.toggle(
+              "message-text-intermediate",
+              intermediate,
+            );
+          }
+          setHiddenIfChanged(slot.host, !part.text.trim() && !streaming);
           slot.handle.update({
             text: part.text,
             isStreaming: streaming,

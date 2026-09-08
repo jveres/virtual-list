@@ -13,7 +13,11 @@ import {
   mulberry32,
   settleEdgePill,
 } from "../shared/lab.js";
-import { mustGet, setTextIfChanged } from "../shared/utils.js";
+import {
+  mustGet,
+  setAttributeIfChanged,
+  setTextIfChanged,
+} from "../shared/utils.js";
 
 // The dynamic-height lab: adversarial, size-changing content on the
 // runtime, with telemetry that observes the runtime STRICTLY FROM OUTSIDE.
@@ -1406,9 +1410,13 @@ function scheduleStatus(): void {
   statusFrame = requestAnimationFrame(() => {
     statusFrame = 0;
     const active = nativeActive();
-    stat.activeDot.className = `dot${active ? " on" : ""}`;
+    setAttributeIfChanged(stat.activeDot, "class", `dot${active ? " on" : ""}`);
     setTextIfChanged(stat.activeText, active ? "active" : "idle");
-    stat.heldDot.className = `dot${stateHeld ? " pending" : ""}`;
+    setAttributeIfChanged(
+      stat.heldDot,
+      "class",
+      `dot${stateHeld ? " pending" : ""}`,
+    );
     setTextIfChanged(stat.heldText, stateHeld ? "yes" : "no");
     setTextIfChanged(
       stat.rows,
@@ -1419,14 +1427,22 @@ function scheduleStatus(): void {
       liveCommits > 0 ? `${commits} (${liveCommits} live)` : String(commits),
     );
     setTextIfChanged(stat.violations, String(violations));
-    stat.violations.className = `val${violations > 0 ? " bad" : ""}`;
+    setAttributeIfChanged(
+      stat.violations,
+      "class",
+      `val${violations > 0 ? " bad" : ""}`,
+    );
     setTextIfChanged(
       stat.nodes,
       `${created}/${destroyed}/${created - destroyed}`,
     );
     setTextIfChanged(stat.clipped, String(clippedKeys.size));
     setTextIfChanged(stat.paints, String(clippedPaints));
-    stat.paints.className = `val${clippedPaints > 0 ? " bad" : ""}`;
+    setAttributeIfChanged(
+      stat.paints,
+      "class",
+      `val${clippedPaints > 0 ? " bad" : ""}`,
+    );
     setTextIfChanged(
       stat.streams,
       chaosOps > 0

@@ -21,8 +21,8 @@ importers:
         specifier: ^0.18.5
         version: 0.18.5
       markdown-viewer:
-        specifier: github:jveres/markdown-viewer#v0.1.1
-        version: git+https://github.com/jveres/markdown-viewer.git#685182fa292058a42701f9532c8aa28bd675407c
+        specifier: github:jveres/markdown-viewer#v0.1.2
+        version: git+https://github.com/jveres/markdown-viewer.git#4d5f01e01104c52ec0aced07f10009f85b3a5e34
       playwright:
         specifier: ^1.62.1
         version: 1.62.1
@@ -426,7 +426,7 @@ packages:
     engines: {node: '>=22.12.0'}
 
   comrak-wasm@https://codeload.github.com/jveres/comrak-wasm/tar.gz/9a7b0326580496b535155babd0d0b3ac1ec2934a:
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/jveres/comrak-wasm/tar.gz/9a7b0326580496b535155babd0d0b3ac1ec2934a}
+    resolution: {gitHosted: true, integrity: sha512-AM2JOE6Y0Q+OOLxHmIFxzKy6jqmCA3SgnQVJQYRfm2w7nW0QUCTasMvUfPTXTN7q35Iogg4buUn3ZfVgqc6zdw==, tarball: https://codeload.github.com/jveres/comrak-wasm/tar.gz/9a7b0326580496b535155babd0d0b3ac1ec2934a}
     version: 0.2.0
     engines: {node: '>=22'}
 
@@ -577,7 +577,7 @@ packages:
     engines: {node: '>= 12.0.0'}
 
   loom@https://codeload.github.com/jveres/loom/tar.gz/bd3d24aaf47ddeac02bddbd6883b96230bcc4d8d:
-    resolution: {gitHosted: true, tarball: https://codeload.github.com/jveres/loom/tar.gz/bd3d24aaf47ddeac02bddbd6883b96230bcc4d8d}
+    resolution: {gitHosted: true, integrity: sha512-nFV9/S1EyOpZoElWJz9QzmxbPjbYG41fo+ZzZtplkOXGThRBkBrsnMXguEgo0+hMfHF5e3A3kt3kWV0YfjfkTQ==, tarball: https://codeload.github.com/jveres/loom/tar.gz/bd3d24aaf47ddeac02bddbd6883b96230bcc4d8d}
     version: 0.7.0
 
   lru-cache@11.5.2:
@@ -587,9 +587,9 @@ packages:
   magic-string@1.2.3:
     resolution: {integrity: sha512-Bpb0W2TbLKOZ7vJnOUnVRGq3WL2p+ISV29M6hYPL1AFCpyKZpdr5ytiXoTSSxRVhg8YW7f65+6gbG8WG6PCa/g==}
 
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#685182fa292058a42701f9532c8aa28bd675407c:
-    resolution: {commit: 685182fa292058a42701f9532c8aa28bd675407c, repo: https://github.com/jveres/markdown-viewer.git, type: git}
-    version: 0.1.1
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#4d5f01e01104c52ec0aced07f10009f85b3a5e34:
+    resolution: {commit: 4d5f01e01104c52ec0aced07f10009f85b3a5e34, repo: https://github.com/jveres/markdown-viewer.git, type: git}
+    version: 0.1.2
 
   mdn-data@2.27.1:
     resolution: {integrity: sha512-9Yubnt3e8A0OKwxYSXyhLymGW4sCufcLG6VdiDdUGVkPhpqLxlvP5vl1983gQjJl3tqbrM731mjaZaP68AgosQ==}
@@ -1184,7 +1184,7 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#685182fa292058a42701f9532c8aa28bd675407c:
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#4d5f01e01104c52ec0aced07f10009f85b3a5e34:
     dependencies:
       comrak-wasm: https://codeload.github.com/jveres/comrak-wasm/tar.gz/9a7b0326580496b535155babd0d0b3ac1ec2934a
       highlight.js: 11.12.0

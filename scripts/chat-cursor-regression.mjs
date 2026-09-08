@@ -89,6 +89,26 @@ for (const engine of [firefox, webkit, chromium]) {
     await page.waitForFunction(() =>
       window.cursorBeforeDetach.classList.contains("cursor-active"),
     );
+    const redundantClassWrites = await page.evaluate(async () => {
+      const mutations = [];
+      const observer = new MutationObserver((records) =>
+        mutations.push(...records),
+      );
+      observer.observe(window.cursorBeforeDetach, {
+        attributes: true,
+        attributeFilter: ["class"],
+      });
+      window.sendCursorDelta();
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      mutations.push(...observer.takeRecords());
+      observer.disconnect();
+      return mutations.length;
+    });
+    assert.equal(
+      redundantClassWrites,
+      0,
+      "continued streaming must not rewrite an already active cursor class",
+    );
     await page.locator("#viewport").evaluate((viewport) => {
       viewport.dispatchEvent(
         new WheelEvent("wheel", { deltaY: -1000, bubbles: true }),

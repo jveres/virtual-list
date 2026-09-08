@@ -13,7 +13,9 @@ import {
   type PositionedItem,
 } from "./positioned-geometry";
 import {
+  createItemMeasurementStage,
   createItemMeasurer,
+  type ItemMeasurementStage,
   type ItemMeasurer,
   positionRowElement,
 } from "./premeasure";
@@ -314,7 +316,10 @@ export interface VirtualList<T> {
   /**
    * Evaluate against the current window when idle, never during a gesture.
    * Add and trim in the returned snapshot for one anchor-safe commit.
-   * Returning null is a no-op. Abort cancels work that has not started.
+   * Large measured additions prepare across frames; the old window stays
+   * interactive until exact heights are ready for one idle commit. Boot
+   * and setItems remain synchronous. Returning null is a no-op. Abort or
+   * superseding data/width changes cancel uncommitted work (false).
    * Explicit controls may interrupt first; the updater then sees any page
    * committed by that interruption, unlike a prebuilt setItems snapshot.
    */
@@ -530,6 +535,7 @@ export function createVirtualList<T>(
   const dirtyRows = new Set<Row<T>>();
   /** Advances on every commit; window reconciliation is memoized on it and onState fires when it moved. */
   let geometryEpoch = 0;
+  let inputEpoch = 0;
 
   // --- Pending work (waits for the scroll phase to settle) ------------------
   let pending: Prepared<T> | null = null;
@@ -1128,6 +1134,8 @@ export function createVirtualList<T>(
     next: readonly T[],
     requested: AnchorRequest | undefined,
     partial = false,
+    stagedRows?: Map<string, Row<T>>,
+    measureStaged?: () => void,
   ): { prepared: Prepared<T>; teardownFailures: unknown[] } {
     const previous = pending;
     const {
@@ -1309,8 +1317,14 @@ export function createVirtualList<T>(
         } else {
           const committed = rows.get(key);
           if (committed === undefined) {
-            if (!declared)
-              newRows.set(key, retainFresh(key, item, render(item)));
+            if (!declared) {
+              const staged = stagedRows?.get(key);
+              if (staged && staged.item === item && !staged.destroyed) {
+                stagedRows?.delete(key);
+                built.push(staged);
+                newRows.set(key, staged);
+              } else newRows.set(key, retainFresh(key, item, render(item)));
+            }
           } else if (
             committed.renderUnknown ||
             committed.renderedItem !== item
@@ -1331,6 +1345,10 @@ export function createVirtualList<T>(
           row.slot.style.height = `${height}px`;
         });
       }
+      // Incremental rows stayed connected in their private root. Read them
+      // only after ALL host renders, so a render that changes shared styles
+      // cannot invalidate heights that were read earlier in this transaction.
+      measureStaged?.();
 
       for (const candidate of promotionCandidates) {
         if (candidate.fresh.height !== candidate.row.height) continue;
@@ -2066,6 +2084,7 @@ export function createVirtualList<T>(
     // command still parked for its settle resolves interrupted NOW — the
     // user owns the viewport from here, whatever the settle later finds.
     cancelActiveSmoothScroll: () => {
+      inputEpoch += 1;
       holdLandingRows = false;
       const wasFollowing = followController.stop();
       // Input that stops a glide onto the pin short (a tap, a scrollbar
@@ -2210,6 +2229,24 @@ export function createVirtualList<T>(
   }
 
   // --- Data -----------------------------------------------------------------
+  function windowUpdateContext(): WindowUpdateContext<T> {
+    const range = geometry.window(viewportState(), overscanPx);
+    const keys = new Set(
+      range.indices
+        ? range.indices.map((index) => committedKeys[index] as string)
+        : committedKeys.slice(range.start, range.end),
+    );
+    if (geometry.pinned !== null) keys.add(geometry.pinned);
+    if (pending?.target) keys.add(pending.target.key);
+    const protectedItems: T[] = [];
+    for (const key of keys) {
+      if (isSlotKey(key)) continue;
+      const item = declaredItems.get(key)?.item ?? rows.get(key)?.item;
+      if (item !== undefined) protectedItems.push(item);
+    }
+    return { items: [...lastItems], protectedItems };
+  }
+
   function updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
@@ -2221,62 +2258,237 @@ export function createVirtualList<T>(
         resolve(false);
         return;
       }
+      let finished = false;
+      let frame = 0;
+      let working = false;
+      let cancelRequested = false;
+      let staged: {
+        next: WindowUpdate<T>;
+        snapshot: T[];
+        slots: { start: EdgeSlot | null; end: EdgeSlot | null } | null;
+        source: readonly T[];
+        width: number;
+        input: number;
+        protectedKeys: Set<string>;
+        keys: Set<string>;
+        fresh: [string, T][];
+        cursor: number;
+        rows: Map<string, Row<T>>;
+        measurer: ItemMeasurementStage;
+        ready: boolean;
+      } | null = null;
       const cleanup = (): void => {
         windowUpdates.delete(run);
         cancelWindowUpdates.delete(cancel);
         signal?.removeEventListener("abort", cancel);
+        if (frame !== 0) cancelAnimationFrame(frame);
+        frame = 0;
+      };
+      const finish = (applied: boolean, error?: unknown): void => {
+        if (finished) return;
+        finished = true;
+        cleanup();
+        const failures = error === undefined ? [] : failuresOf(error);
+        const abandoned = staged;
+        staged = null;
+        if (abandoned) {
+          abandoned.measurer.dispose();
+          failures.push(...destroyAll(abandoned.rows.values()));
+          abandoned.rows.clear();
+        }
+        try {
+          if (!disposed && !enqueueDuringTransaction(() => guarded(publish)))
+            guarded(publish);
+        } catch (failure) {
+          failures.push(...failuresOf(failure));
+        }
+        if (failures.length > 0) {
+          reject(
+            failures.length === 1
+              ? failures[0]
+              : new AggregateError(failures, "window preparation failed"),
+          );
+        } else resolve(applied);
       };
       const cancel = (): void => {
-        cleanup();
-        resolve(false);
-        if (!disposed && !enqueueDuringTransaction(() => guarded(publish)))
-          guarded(publish);
+        // Let an active host callback return before settling cancellation.
+        // Its returned element still needs teardown, which can itself fail.
+        if (working) cancelRequested = true;
+        else finish(false);
       };
+      const current = (): boolean =>
+        !finished &&
+        !cancelRequested &&
+        !disposed &&
+        !signal?.aborted &&
+        (!staged ||
+          (staged.width === lastViewportWidth &&
+            (!interrupt || staged.input === inputEpoch) &&
+            staged.source.length === lastItems.length &&
+            staged.source.every((item, index) => item === lastItems[index])));
+
+      const stageFrame = (): void => {
+        frame = 0;
+        if (!current()) {
+          cancel();
+          return;
+        }
+        if (!idle()) return; // The settle callback resumes this job.
+        const job = staged;
+        if (!job) return;
+        working = true;
+        try {
+          guarded(() => {
+            const batch: Row<T>[] = [];
+            const started = performance.now();
+            while (job.cursor < job.fresh.length && batch.length < 8) {
+              const [key, item] = job.fresh[job.cursor] as [string, T];
+              const row = retain(key, item, render(item), 1);
+              // A host can abort/dispose inside render, before this row
+              // belongs to the job. It still gets exactly one teardown.
+              if (!current()) {
+                destroyRow(row);
+                cancel();
+                return;
+              }
+              job.rows.set(key, row);
+              batch.push(row);
+              job.cursor += 1;
+              if (performance.now() - started >= 3) break;
+            }
+            job.measurer.append(batch.map((row) => row.element));
+            if (!current()) {
+              cancel();
+              return;
+            }
+            job.ready = job.cursor === job.fresh.length;
+          });
+          if (!current()) finish(false);
+          else {
+            // Final reads/commit get their own frame, not the tail of the
+            // last build/layout batch.
+            frame = requestAnimationFrame(job.ready ? runFrame : stageFrame);
+          }
+        } catch (error) {
+          finish(false, error);
+        } finally {
+          working = false;
+        }
+      };
+
+      const runFrame = (): void => {
+        frame = 0;
+        run();
+      };
+
       const run = (): void => {
-        if (disposed || signal?.aborted) {
+        if (working || finished) return;
+        if (!current()) {
           cancel();
           return;
         }
         if (!idle()) return;
-        cleanup();
         try {
           let applied = false;
           guarded(() => {
-            const range = geometry.window(viewportState(), overscanPx);
-            const keys = new Set(
-              range.indices
-                ? range.indices.map((index) => committedKeys[index] as string)
-                : committedKeys.slice(range.start, range.end),
-            );
-            if (geometry.pinned !== null) keys.add(geometry.pinned);
-            if (pending?.target) keys.add(pending.target.key);
-            const protectedItems: T[] = [];
-            for (const key of keys) {
-              if (isSlotKey(key)) continue;
-              const item = declaredItems.get(key)?.item ?? rows.get(key)?.item;
-              if (item !== undefined) protectedItems.push(item);
+            const job = staged;
+            if (job && !job.ready) {
+              if (frame === 0) frame = requestAnimationFrame(stageFrame);
+              return;
             }
-            const next = update({ items: [...lastItems], protectedItems });
-            if (!next || disposed || signal?.aborted) return;
+            const context = windowUpdateContext();
+            const next = job?.next ?? update(context);
+            if (!next || !current()) return;
+            const snapshot = job?.snapshot ?? [...next.items];
             const slots = next.edgeSlots
               ? {
                   start: ownEdgeSlot(next.edgeSlots.start),
                   end: ownEdgeSlot(next.edgeSlots.end),
                 }
               : null;
+            if (!job && !declared && pending === null) {
+              const indexed = indexItems(snapshot, keyOf, null);
+              const fresh = [...indexed.itemByKey].filter(
+                ([key]) => !rows.has(key),
+              );
+              if (!current()) return;
+              if (fresh.length > 8) {
+                const protectedKeys = new Set(
+                  context.protectedItems.map(keyOf),
+                );
+                if (!current()) return;
+                staged = {
+                  next: {
+                    ...next,
+                    anchor: ownAnchorRequest(next.anchor ?? "viewport"),
+                  },
+                  snapshot,
+                  slots,
+                  source: context.items,
+                  width: lastViewportWidth,
+                  input: inputEpoch,
+                  protectedKeys,
+                  keys: new Set(indexed.itemKeys),
+                  fresh,
+                  cursor: 0,
+                  rows: new Map(),
+                  measurer: createItemMeasurementStage({
+                    viewport,
+                    container: options.measurementContainer,
+                    viewportWidth: () => lastViewportWidth,
+                  }),
+                  ready: false,
+                };
+                windowUpdates.add(run);
+                frame = requestAnimationFrame(stageFrame);
+                publish();
+                return;
+              }
+            }
+            if (job) {
+              // A gesture may expose rows the updater was allowed to trim
+              // earlier. Never evict that newly protected reading window.
+              if (
+                context.protectedItems.some((item) => {
+                  const key = keyOf(item);
+                  return !job.protectedKeys.has(key) && !job.keys.has(key);
+                })
+              ) {
+                cancel();
+                return;
+              }
+            }
+            if (!current()) {
+              cancel();
+              return;
+            }
+            const stagedRows = job ? [...job.rows.values()] : [];
+            cleanup();
             applyItems(
-              [...next.items],
+              snapshot,
               ownAnchorRequest(next.anchor ?? "viewport"),
               false,
-              slots,
+              job ? job.slots : slots,
+              job?.rows,
+              job
+                ? () => {
+                    const heights = job.measurer.measure();
+                    stagedRows.forEach((row, index) => {
+                      row.height = quantizeHeight(heights[index] as number);
+                      row.slot.style.height = `${row.height}px`;
+                      if (!row.destroyed) row.slot.appendChild(row.element);
+                    });
+                    job.measurer.dispose();
+                  }
+                : undefined,
             );
             if (disposed) return;
             notifyCommitted(() => next.onCommit?.());
             applied = true;
           }, true);
-          resolve(applied);
+          if (applied || !staged || disposed) finish(applied);
         } catch (error) {
-          reject(error);
+          finish(false, error);
         }
       };
       const schedule = (): void => {
@@ -2293,8 +2505,7 @@ export function createVirtualList<T>(
               interruptNativeScroll();
             });
           } catch (error) {
-            cleanup();
-            reject(error);
+            finish(false, error);
             return;
           }
         }
@@ -2304,8 +2515,7 @@ export function createVirtualList<T>(
           try {
             guarded(publish);
           } catch (error) {
-            cleanup();
-            reject(error);
+            finish(false, error);
           }
         }
       };
@@ -2357,6 +2567,8 @@ export function createVirtualList<T>(
     anchor: AnchorRequest | undefined,
     interrupt: boolean,
     slots: { start: EdgeSlot | null; end: EdgeSlot | null } | null = null,
+    stagedRows?: Map<string, Row<T>>,
+    measureStaged?: () => void,
   ): void {
     if (disposed) return;
     // Always prepared now (off-scroller, inside the reentrancy guard since
@@ -2374,7 +2586,13 @@ export function createVirtualList<T>(
       if (slots) Object.assign(edgeSlots, slots);
       let preparation: ReturnType<typeof prepare>;
       try {
-        preparation = prepare(snapshot, anchor);
+        preparation = prepare(
+          snapshot,
+          anchor,
+          false,
+          stagedRows,
+          measureStaged,
+        );
       } catch (error) {
         if (previousSlots) Object.assign(edgeSlots, previousSlots);
         throw error;

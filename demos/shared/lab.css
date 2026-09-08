@@ -187,6 +187,12 @@ main {
   color: var(--fg-dim);
 }
 
+/* Each entry has its own line layout; appending a trace must not reflow the
+   entire retained log as one long inline formatting context. */
+#log > span {
+  display: block;
+}
+
 #log .mark {
   color: var(--accent);
   font-weight: 700;

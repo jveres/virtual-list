@@ -2,7 +2,10 @@
  * @vitest-environment jsdom
  */
 import { afterEach, describe, expect, it } from "vitest";
-import { createItemMeasurer } from "../../src/premeasure";
+import {
+  createItemMeasurementStage,
+  createItemMeasurer,
+} from "../../src/premeasure";
 
 // Lifecycle characterization only: jsdom has no layout engine, so measured
 // heights here are the positiveSize fallback (1) — real premeasurement
@@ -120,5 +123,67 @@ describe("item measurer", () => {
     measurer.measureMany([document.createElement("div")]);
     expect(root.style.width).toBe("720px");
     measurer.dispose();
+  });
+});
+
+describe("staged item measurement", () => {
+  it("should keep batches connected and read their latest heights at handoff", () => {
+    const viewport = makeViewport();
+    const stage = createItemMeasurementStage({ viewport });
+    const first = document.createElement("article");
+    const second = document.createElement("article");
+    let height = 80;
+    first.getBoundingClientRect = () => ({ height }) as DOMRect;
+    second.getBoundingClientRect = () => ({ height: 120 }) as DOMRect;
+
+    stage.append([first]);
+    stage.append([second]);
+    height = 160;
+
+    expect(first.isConnected).toBe(true);
+    expect(second.parentElement).toBe(first.parentElement);
+    expect(viewport.contains(first)).toBe(false);
+    expect(stage.measure()).toEqual([160, 120]);
+    stage.dispose();
+    expect(first.parentElement).toBeNull();
+    expect(second.parentElement).toBeNull();
+    expect(() => stage.measure()).toThrow("disposed");
+    expect(() => stage.append([first])).toThrow("disposed");
+    stage.dispose();
+  });
+
+  it("should stay independent of synchronous measurements in the same list", () => {
+    const viewport = makeViewport();
+    const stage = createItemMeasurementStage({ viewport });
+    const measurer = createItemMeasurer({ viewport });
+    const staged = document.createElement("article");
+    staged.getBoundingClientRect = () => ({ height: 80 }) as DOMRect;
+    const live = document.createElement("article");
+    live.getBoundingClientRect = () => ({ height: 50 }) as DOMRect;
+
+    stage.append([staged]);
+    expect(measurer.measureMany([live])).toEqual([50]);
+
+    expect(staged.isConnected).toBe(true);
+    expect(live.isConnected).toBe(false);
+    expect(stage.measure()).toEqual([80]);
+    stage.dispose();
+    measurer.dispose();
+    expect(document.body.childElementCount).toBe(1);
+  });
+
+  it("should remove every staged row after a warm-layout failure", () => {
+    const viewport = makeViewport();
+    const stage = createItemMeasurementStage({ viewport });
+    const row = document.createElement("article");
+    row.getBoundingClientRect = () => {
+      throw new Error("layout failed");
+    };
+
+    expect(() => stage.append([row])).toThrow("layout failed");
+    stage.dispose();
+
+    expect(row.parentElement).toBeNull();
+    expect(document.body.childElementCount).toBe(1);
   });
 });

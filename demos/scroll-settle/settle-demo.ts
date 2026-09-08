@@ -12,7 +12,11 @@ import {
   mulberry32,
   settleEdgePill,
 } from "../shared/lab.js";
-import { mustGet, setTextIfChanged } from "../shared/utils.js";
+import {
+  mustGet,
+  setAttributeIfChanged,
+  setTextIfChanged,
+} from "../shared/utils.js";
 
 // The scroll-settle lab: makes the settle controller testable in every real
 // browser, with no virtualizer in the way. A plain (non-virtualized) DOM list
@@ -198,7 +202,7 @@ function scheduleStatus(): void {
       0,
       viewport.scrollHeight - viewport.clientHeight,
     )}`;
-    stat.activeDot.className = `dot${active ? " on" : ""}`;
+    setAttributeIfChanged(stat.activeDot, "class", `dot${active ? " on" : ""}`);
     setTextIfChanged(stat.activeText, active ? "active" : "idle");
     setTextIfChanged(stat.top, topText);
     setTextIfChanged(stat.gestures, String(gestures));
@@ -207,7 +211,11 @@ function scheduleStatus(): void {
       stat.chunks,
       `${chunksApplied} (T:${chunksRemaining.top} B:${chunksRemaining.bottom} left)`,
     );
-    stat.queuedDot.className = `dot${anythingQueued() ? " pending" : ""}`;
+    setAttributeIfChanged(
+      stat.queuedDot,
+      "class",
+      `dot${anythingQueued() ? " pending" : ""}`,
+    );
     setTextIfChanged(
       stat.queuedText,
       anythingQueued()

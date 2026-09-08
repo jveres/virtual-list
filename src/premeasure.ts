@@ -39,6 +39,14 @@ export interface ItemMeasurer {
   dispose(): void;
 }
 
+export interface ItemMeasurementStage {
+  /** Append a bounded group and warm its layout without detaching earlier groups. */
+  append(elements: readonly HTMLElement[]): void;
+  /** Read every staged height together immediately before the atomic commit. */
+  measure(): number[];
+  dispose(): void;
+}
+
 function positiveSize(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
@@ -100,6 +108,53 @@ function createMeasurementRoot(
   syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
   container.appendChild(measureRoot);
   return measureRoot;
+}
+
+/**
+ * A private root for an incremental window preparation. Keeping the rows
+ * connected between batches preserves the browser's layout work. The final
+ * read is still authoritative: an image, font, or host style that changed
+ * between frames is reflected before any row reaches the scroller.
+ */
+export function createItemMeasurementStage(
+  config: ItemMeasurerConfig,
+): ItemMeasurementStage {
+  const root = createMeasurementRoot(
+    config.viewport,
+    config.canvasClassName,
+    config.viewportWidth,
+    config.container ?? document.body,
+  );
+  const staged: HTMLElement[] = [];
+  let disposed = false;
+  const assertActive = (): void => {
+    if (disposed) throw new Error("cannot use a disposed measurement stage");
+  };
+  return {
+    append(elements) {
+      assertActive();
+      if (elements.length === 0) return;
+      root.append(...elements.map(positionRowElement));
+      staged.push(...elements);
+      // One read warms the entire new group. Do not read every retained
+      // row after each append; their authoritative pass is measure().
+      elements[elements.length - 1]?.getBoundingClientRect();
+    },
+    measure() {
+      assertActive();
+      syncMeasurementRootWidth(root, config.viewport, config.viewportWidth);
+      return staged.map((element) =>
+        positiveSize(element.getBoundingClientRect().height),
+      );
+    },
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      root.remove();
+      root.replaceChildren();
+      staged.length = 0;
+    },
+  };
 }
 
 export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {

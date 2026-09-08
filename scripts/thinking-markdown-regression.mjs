@@ -78,6 +78,12 @@ for (const engine of [firefox, chromium, webkit]) {
         live.querySelector("details").open = false;
         handle.update(message, "", false);
         const closedAfterUpdate = !live.querySelector("details").open;
+        const observer = new MutationObserver(() => {});
+        for (const slot of live.children)
+          observer.observe(slot, { attributes: true });
+        handle.update(message, "", false);
+        const unchangedSlotMutations = observer.takeRecords().length;
+        observer.disconnect();
         const plain = buildToolCall({ ...call, name: "search" });
         const unsafe = buildToolCall({
           ...call,
@@ -88,6 +94,7 @@ for (const engine of [firefox, chromium, webkit]) {
         return {
           rendered: [inspect(legacy), inspect(ordered), running, inspect(live)],
           closedAfterUpdate,
+          unchangedSlotMutations,
           plain: plain.querySelector(".tool-call-body > p")?.textContent,
           plainColor: getComputedStyle(
             plain.querySelector(".tool-call-body > p"),
@@ -127,6 +134,7 @@ for (const engine of [firefox, chromium, webkit]) {
       assert.equal(rendered.input, "(internal reasoning; summary below)");
     }
     assert.equal(result.closedAfterUpdate, true);
+    assert.equal(result.unchangedSlotMutations, 0);
     assert.equal(result.plain, result.output);
     assert.equal(result.plainHasMarkdown, false);
     assert.equal(result.unsafeElements, 0);

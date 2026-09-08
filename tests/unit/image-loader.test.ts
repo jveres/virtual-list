@@ -2,7 +2,10 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createImageLoader } from "../../demos/gallery/image-loader";
+import {
+  createImageLoader,
+  type LoaderMetrics,
+} from "../../demos/gallery/image-loader";
 
 function viewportAt(top: number, height: number): HTMLElement {
   const viewport = document.createElement("div");
@@ -42,6 +45,105 @@ describe("image loader", () => {
     if (!img) throw new Error(`No download started for ${src}`);
     return img;
   }
+
+  it("should not rewrite clean image classes when subscribing", () => {
+    const image = imageAt(0);
+    image.className = "photo";
+    const observer = new MutationObserver(() => {});
+    observer.observe(image, { attributes: true, attributeFilter: ["class"] });
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 1,
+    });
+
+    loader.add(image, "photo");
+
+    expect(observer.takeRecords()).toEqual([]);
+    download("photo").dispatchEvent(new Event("load"));
+    expect(image.className).toBe("photo loaded");
+    expect(observer.takeRecords()).toHaveLength(1);
+    observer.disconnect();
+  });
+
+  it("should publish changed metrics without scheduling idle notifications", () => {
+    const published: LoaderMetrics[] = [];
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 1,
+      onMetrics: (metrics) => published.push({ ...metrics }),
+    });
+    loader.reprioritize();
+    vi.advanceTimersByTime(20);
+    expect(published).toEqual([
+      {
+        queued: 0,
+        inFlight: 0,
+        peakQueued: 0,
+        loaded: 0,
+        failed: 0,
+        cancelled: 0,
+        reused: 0,
+        concurrency: 1,
+      },
+    ]);
+
+    loader.reprioritize();
+    loader.update({});
+    loader.setConcurrency(1);
+
+    expect(vi.getTimerCount()).toBe(0);
+    expect(published).toHaveLength(1);
+
+    loader.add(imageAt(0), "photo");
+    vi.advanceTimersByTime(20);
+    expect(published.at(-1)).toMatchObject({ inFlight: 1, peakQueued: 1 });
+    download("photo").dispatchEvent(new Event("load"));
+    vi.advanceTimersByTime(20);
+    expect(published.at(-1)).toMatchObject({ inFlight: 0, loaded: 1 });
+    loader.add(imageAt(0), "photo");
+    vi.advanceTimersByTime(20);
+    expect(published.at(-1)).toMatchObject({ loaded: 1, reused: 1 });
+    expect(published).toHaveLength(4);
+  });
+
+  it("should omit a coalesced notification that returned to its published value", () => {
+    const values: number[] = [];
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 2,
+      onMetrics: (metrics) => values.push(metrics.concurrency),
+    });
+    loader.reprioritize();
+    vi.advanceTimersByTime(20);
+
+    loader.setConcurrency(3);
+    loader.setConcurrency(2);
+    vi.advanceTimersByTime(20);
+
+    expect(values).toEqual([2]);
+    expect(vi.getTimerCount()).toBe(0);
+    loader.setConcurrency(4);
+    vi.advanceTimersByTime(20);
+    expect(values).toEqual([2, 4]);
+  });
+
+  it("should preserve a metric change initiated by its subscriber", () => {
+    const values: number[] = [];
+    const loader = createImageLoader({
+      viewport: viewportAt(0, 600),
+      concurrency: 1,
+      onMetrics: (metrics) => {
+        values.push(metrics.concurrency);
+        if (metrics.concurrency === 1) loader.setConcurrency(2);
+      },
+    });
+
+    loader.reprioritize();
+    vi.advanceTimersByTime(40);
+
+    expect(values).toEqual([1, 2]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   it("should prioritize supplied geometry without measuring the viewport or images", () => {
     const viewport = viewportAt(0, 600);

@@ -33,6 +33,7 @@ import {
   bindThemeButtons,
   mustGet,
   refreshTheme,
+  setHiddenIfChanged,
   setTextIfChanged,
   syncThemeButtons,
 } from "../shared/utils.js";
@@ -159,10 +160,10 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-// Shared pace for pinning a new message and returning to the top: a
-// one-viewport hop uses this landing duration. Longer trips decelerate
-// through the same landing after an approach of at most this long.
+// Landing durations for pinning a new message and returning to the top.
+// Longer trips add an approach of at most the chosen landing duration.
 // The bottom button retains the runtime's quicker default landing.
+const NEW_MESSAGE_SCROLL_DURATION_MS = 450;
 const CHAT_SCROLL_DURATION_MS = 650;
 // Synthetic days over the transcript: one separator per this many messages.
 const MESSAGES_PER_DAY = 12;
@@ -1518,12 +1519,15 @@ function formatCount(value: number): string {
 }
 
 function syncScrollButtons(state: VirtualListState): void {
-  scrollTopBtn.hidden = state.atStart && !canLoadOlderMessages();
+  setHiddenIfChanged(scrollTopBtn, state.atStart && !canLoadOlderMessages());
   // Following to the end will get there on its own; following under
   // "keep-start" stops at the reply's start, and the end may well be off
   // screen — the button is the way there.
   const headedToEnd = state.following && followMode === "end";
-  scrollBottomBtn.hidden = state.atEnd || headedToEnd || sendGlideActive;
+  setHiddenIfChanged(
+    scrollBottomBtn,
+    state.atEnd || headedToEnd || sendGlideActive,
+  );
 }
 
 function syncMetrics(state = virtualList?.state): void {
@@ -1918,7 +1922,7 @@ function renderPendingAttachments(): void {
       return chip;
     }),
   );
-  pendingAttachmentList.hidden = pendingAttachments.length === 0;
+  setHiddenIfChanged(pendingAttachmentList, pendingAttachments.length === 0);
 }
 
 function clearPendingAttachments(): void {
@@ -2086,7 +2090,7 @@ async function handleSend(): Promise<void> {
       virtualList?.scrollTo(String(userMessage.id), {
         align: "start",
         behavior: "smooth",
-        duration: CHAT_SCROLL_DURATION_MS,
+        duration: NEW_MESSAGE_SCROLL_DURATION_MS,
         // Under the floating day pill, not behind it.
         offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
       }) ?? Promise.resolve(false);

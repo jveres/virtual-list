@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createTraceLog } from "../../demos/shared/lab";
+import { createEdgePill, createTraceLog } from "../../demos/shared/lab";
 
 describe("diagnostic trace log", () => {
   beforeEach(() => vi.useFakeTimers());
@@ -51,5 +51,36 @@ describe("diagnostic trace log", () => {
     expect(element.firstChild?.textContent).toMatch(/event 3655\n$/);
     expect(element.lastChild?.textContent).toMatch(/event 4004\n$/);
     trace.clear();
+  });
+});
+
+describe("edge indicator", () => {
+  it("should not mutate an already hidden or unchanged visible indicator", () => {
+    const element = document.createElement("div");
+    const label = document.createElement("span");
+    element.append(label);
+    const pill = createEdgePill(element, label);
+    const observer = new MutationObserver(() => {});
+    observer.observe(element, {
+      attributes: true,
+      childList: true,
+      subtree: true,
+    });
+
+    pill.hide();
+    expect(observer.takeRecords()).toEqual([]);
+    pill.show("loading", false);
+    expect(label.textContent).toBe("loading");
+    expect(element.className).toBe("visible");
+    observer.takeRecords();
+
+    pill.show("loading", false);
+    expect(observer.takeRecords()).toEqual([]);
+    pill.hide();
+    expect(element.classList.contains("visible")).toBe(false);
+    expect(observer.takeRecords()).toHaveLength(1);
+    pill.hide();
+    expect(observer.takeRecords()).toEqual([]);
+    observer.disconnect();
   });
 });

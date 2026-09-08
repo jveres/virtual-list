@@ -1,6 +1,6 @@
 allowBuilds:
   esbuild: true
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#685182fa292058a42701f9532c8aa28bd675407c: true
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#4d5f01e01104c52ec0aced07f10009f85b3a5e34: true
 blockExoticSubdeps: false
 minimumReleaseAgeExclude:
   - katex@0.18.1

@@ -20,6 +20,7 @@ import {
   bindThemeButtons,
   mustGet,
   refreshTheme,
+  setAttributeIfChanged,
   setTextIfChanged,
   syncThemeButtons,
 } from "../shared/utils";
@@ -125,13 +126,15 @@ function sync(): void {
         ? `Loading ${direction} messages…`
         : `Load ${direction} messages`,
     );
-    button.disabled = Boolean(navigation || loadingEdge);
+    const disabled = Boolean(navigation || loadingEdge);
+    if (button.disabled !== disabled) button.disabled = disabled;
   }
-  indexInput.max = String(source.total - 1);
+  setAttributeIfChanged(indexInput, "max", String(source.total - 1));
   const text = `${source.total.toLocaleString()} messages · loaded #${messages[0]?.index ?? "–"}–${messages.at(-1)?.index ?? "–"} (${messages.length}/${RETAIN_MESSAGES}) · ${list ? list.state.end - list.state.start : 0} mounted${navigation ? " · locating…" : loadingEdge ? " · loading…" : ""}${error ? ` · ${error}` : ""}`;
   setTextIfChanged(status, text);
-  status.title = text;
-  viewport.setAttribute(
+  setAttributeIfChanged(status, "title", text);
+  setAttributeIfChanged(
+    viewport,
     "aria-busy",
     String(Boolean(navigation || loadingEdge)),
   );

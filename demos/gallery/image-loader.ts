@@ -74,12 +74,34 @@ export function createImageLoader(options: {
   /** Sources that have arrived: a later image of the same source shows at once. */
   const fetched = new Set<string>();
   let metricsFrame = 0;
+  let publishedMetrics: LoaderMetrics | undefined;
+
+  function metricsChanged(next: Readonly<LoaderMetrics>): boolean {
+    const previous = publishedMetrics;
+    return (
+      !previous ||
+      previous.queued !== next.queued ||
+      previous.inFlight !== next.inFlight ||
+      previous.peakQueued !== next.peakQueued ||
+      previous.loaded !== next.loaded ||
+      previous.failed !== next.failed ||
+      previous.cancelled !== next.cancelled ||
+      previous.reused !== next.reused ||
+      previous.concurrency !== next.concurrency
+    );
+  }
 
   function publish(): void {
-    if (metricsFrame || !options.onMetrics) return;
+    if (metricsFrame || !options.onMetrics || !metricsChanged(current()))
+      return;
     metricsFrame = requestAnimationFrame(() => {
       metricsFrame = 0;
-      options.onMetrics?.(current());
+      const next = current();
+      if (!metricsChanged(next)) return;
+      // Keep a value snapshot: current() is a live object, and a subscriber
+      // may synchronously queue more work from inside its notification.
+      publishedMetrics = { ...next };
+      options.onMetrics?.(next);
     });
   }
 
@@ -93,7 +115,7 @@ export function createImageLoader(options: {
   /** Shows an image whose source the loader has fetched. */
   function show(img: HTMLImageElement, src: string, reused = true): void {
     if (reused) metrics.reused++;
-    img.classList.add("loaded");
+    img.classList.toggle("loaded", true);
     img.src = src;
   }
 
@@ -113,7 +135,12 @@ export function createImageLoader(options: {
     const previous = subscriptions.get(img);
     if (previous?.src === src) return;
     if (previous) unsubscribe(img);
-    img.classList.remove("loaded", "failed", "cached");
+    if (
+      ["loaded", "failed", "cached"].some((name) =>
+        img.classList.contains(name),
+      )
+    )
+      img.classList.remove("loaded", "failed", "cached");
     if (fetched.has(src)) {
       // Reflow creates new drawings of photos already seen. Do not replay
       // their entrance transition as they move between rows or bands.

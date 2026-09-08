@@ -130,6 +130,7 @@ function mount(
     onUnmount?: (element: HTMLElement, m: Msg) => void;
     /** Runs at the start of every render (probe hook). */
     onRender?: (m: Msg, existing?: HTMLElement) => void;
+    onKey?: (m: Msg) => void;
     /** Reports how many fresh peers share the detached root at each read. */
     onMeasure?: (m: Msg, batchSize: number) => void;
     reach?: boolean | "start-only";
@@ -198,7 +199,10 @@ function mount(
 
   const list = createVirtualList<Msg>(viewport, {
     items,
-    key: (m) => `m${m.id}`,
+    key: (m) => {
+      hooks.onKey?.(m);
+      return `m${m.id}`;
+    },
     settleStrategy: hooks.settleStrategy ?? "default",
     // The harness pins "same-height" (the mode most tests describe); the
     // runtime's own default is "live" (pinned by its own test).
@@ -599,6 +603,352 @@ describe("settle-time window updates", () => {
       h.list.updateWindow(() => ({ items: [message(80, "fail")] })),
     ).rejects.toThrow("render failed");
     expect(h.list.state.count).toBe(40);
+    h.list.dispose();
+  });
+});
+
+describe("incremental window preparation", () => {
+  it("should commit small measured additions without staging", async () => {
+    const h = mount(range(0, 20));
+
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, ...range(20, 28)],
+    }));
+
+    expect(h.list.state.count).toBe(28);
+    expect(h.list.state.held).toBe(false);
+    await expect(applied).resolves.toBe(true);
+    h.list.dispose();
+  });
+
+  it("should commit declared-height pages without measurement staging", async () => {
+    const h = mount(range(0, 20), { itemHeight: () => ROW_H });
+
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, ...range(20, 60)],
+    }));
+
+    expect(h.list.state.count).toBe(60);
+    expect(h.list.state.held).toBe(false);
+    await expect(applied).resolves.toBe(true);
+    h.list.dispose();
+  });
+
+  it.each([1, 2])(
+    "should not attach a stage after disposal in key pass %s",
+    async (pass) => {
+      let armed = false;
+      let visits = 0;
+      const h = mount(range(0, 20), {
+        boot: "start",
+        onKey: (item) => {
+          if (armed && item.id === 0 && ++visits === pass) h.list.dispose();
+        },
+      });
+      armed = true;
+
+      const applied = h.list.updateWindow(({ items }) => ({
+        items: [...items, ...range(20, 44)],
+      }));
+      vi.advanceTimersByTime(100);
+
+      await expect(applied).resolves.toBe(false);
+      expect(document.body.childElementCount).toBe(1);
+      expect(h.destroyed).toEqual(range(0, 20).map((item) => item.id));
+    },
+  );
+
+  it("should keep the old window until all rows have exact current heights", async () => {
+    const h = mount(range(0, 20));
+    const committed: number[] = [];
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, ...range(20, 44)],
+      onCommit: () => committed.push(h.list.state.count),
+    }));
+
+    vi.advanceTimersByTime(16);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.state.held).toBe(true);
+    expect(h.list.elementOf("m20")).toBeNull();
+    expect(committed).toEqual([]);
+    // Growth after the first batch must be included by the final read.
+    h.heights.set(20, 180);
+    advanceFramesUntil(() => h.list.state.count === 44);
+
+    await expect(applied).resolves.toBe(true);
+    expect(committed).toEqual([44]);
+    expect(h.list.positionOf("m20")).toEqual({ top: 2000, height: 180 });
+    expect(h.list.state.totalSize).toBe(4480);
+    expect(h.list.state.held).toBe(false);
+    expect(h.destroyed).toEqual([]);
+    h.list.dispose();
+    expect(h.destroyed.sort((a, b) => a - b)).toEqual(
+      range(0, 44).map((item) => item.id),
+    );
+  });
+
+  it("should stop before handoff when a protected-key callback aborts", async () => {
+    const abort = new AbortController();
+    const renderedAfterAbort: number[] = [];
+    let armed = false;
+    let visits = 0;
+    const h = mount(range(0, 20), {
+      boot: "start",
+      onKey: (item) => {
+        if (armed && item.id === 0 && ++visits === 3) abort.abort();
+      },
+      onRender: (item) => {
+        if (abort.signal.aborted) renderedAfterAbort.push(item.id);
+      },
+    });
+    armed = true;
+    const applied = h.list.updateWindow(
+      ({ items }) => ({ items: [...items, ...range(20, 44)] }),
+      abort.signal,
+    );
+
+    vi.advanceTimersByTime(300);
+
+    await expect(applied).resolves.toBe(false);
+    expect(renderedAfterAbort).toEqual([]);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.state.held).toBe(false);
+    expect(document.body.childElementCount).toBe(2);
+    h.list.dispose();
+  });
+
+  it("should measure staged rows after existing-row render callbacks", async () => {
+    const initial = range(0, 20);
+    const h = mount(initial, {
+      onRender: (item) => {
+        if (item.body === "new shared style") h.heights.set(20, 240);
+      },
+    });
+    const applied = h.list.updateWindow(() => ({
+      items: [
+        message(0, "new shared style"),
+        ...initial.slice(1),
+        ...range(20, 44),
+      ],
+    }));
+
+    advanceFramesUntil(() => h.list.state.count === 44);
+
+    await expect(applied).resolves.toBe(true);
+    expect(h.list.positionOf("m20")).toEqual({ top: 2000, height: 240 });
+    expect(h.list.state.totalSize).toBe(4540);
+    h.list.dispose();
+  });
+
+  it("should discard an aborted partial batch without mounting or leaking it", async () => {
+    const h = mount(range(0, 20));
+    const abort = new AbortController();
+    const bodyChildren = document.body.childElementCount;
+    const applied = h.list.updateWindow(
+      ({ items }) => ({ items: [...items, ...range(20, 44)] }),
+      abort.signal,
+    );
+    vi.advanceTimersByTime(16);
+
+    abort.abort();
+    vi.advanceTimersByTime(300);
+
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.state.held).toBe(false);
+    expect(h.destroyed).toEqual(range(20, 28).map((item) => item.id));
+    expect(h.destroyedElements.every((element) => !element.isConnected)).toBe(
+      true,
+    );
+    expect(document.body.childElementCount).toBe(bodyChildren);
+    h.list.dispose();
+  });
+
+  it.each(["abort", "dispose"] as const)(
+    "should release a row returned after a render-time %s",
+    async (action) => {
+      const abort = new AbortController();
+      const h = mount(range(0, 20), {
+        onRender: (item) => {
+          if (item.id !== 22) return;
+          if (action === "abort") abort.abort();
+          else h.list.dispose();
+        },
+      });
+      const applied = h.list.updateWindow(
+        ({ items }) => ({ items: [...items, ...range(20, 44)] }),
+        abort.signal,
+      );
+
+      vi.advanceTimersByTime(100);
+
+      await expect(applied).resolves.toBe(false);
+      expect(
+        h.destroyed.filter((id) => id >= 20).sort((a, b) => a - b),
+      ).toEqual([20, 21, 22]);
+      expect(h.destroyedElements.every((element) => !element.isConnected)).toBe(
+        true,
+      );
+      h.list.dispose();
+      expect(document.body.childElementCount).toBe(1);
+    },
+  );
+
+  it.each(["render", "measure"] as const)(
+    "should reject a staged %s failure and leave the committed page intact",
+    async (failure) => {
+      const h = mount(range(0, 20), {
+        throwOn: failure === "render" ? "fail" : undefined,
+        measureFailOn: failure === "measure" ? "fail" : undefined,
+      });
+      const bodyChildren = document.body.childElementCount;
+      const next = range(20, 44);
+      // This row is not a batch's last row: its measurement failure is in
+      // the final authoritative pass, after every batch was staged.
+      next[9] = message(29, "fail");
+      const applied = h.list.updateWindow(({ items }) => ({
+        items: [...items, ...next],
+      }));
+      const rejected = expect(applied).rejects.toThrow(`${failure} failed`);
+
+      await vi.advanceTimersByTimeAsync(300);
+
+      await rejected;
+      expect(h.list.state.count).toBe(20);
+      expect(h.list.state.totalSize).toBe(2000);
+      expect(h.list.state.held).toBe(false);
+      expect(h.destroyed.sort((a, b) => a - b)).toEqual(
+        range(20, failure === "render" ? 29 : 44).map((item) => item.id),
+      );
+      expect(document.body.childElementCount).toBe(bodyChildren);
+      h.list.dispose();
+    },
+  );
+
+  it("should report teardown failure after a render-time abort without leaking other rows", async () => {
+    const abort = new AbortController();
+    const h = mount(range(0, 20), {
+      onRender: (item) => {
+        if (item.id === 22) abort.abort();
+      },
+      onDestroy: (element) => {
+        if (element.dataset.id === "22") throw new Error("teardown failed");
+      },
+    });
+    const applied = h.list.updateWindow(
+      ({ items }) => ({ items: [...items, ...range(20, 44)] }),
+      abort.signal,
+    );
+    const rejected = expect(applied).rejects.toThrow("teardown failed");
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    await rejected;
+    expect(h.destroyed.sort((a, b) => a - b)).toEqual([20, 21, 22]);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.state.held).toBe(false);
+    expect(document.body.childElementCount).toBe(2);
+    h.list.dispose();
+  });
+
+  it("should cancel a stale preparation after a newer snapshot", async () => {
+    const h = mount(range(0, 20));
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, ...range(20, 44)],
+    }));
+    vi.advanceTimersByTime(16);
+
+    h.list.setItems(range(100, 120));
+    vi.advanceTimersByTime(100);
+
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.positionOf("m100")).toEqual({ top: 0, height: 100 });
+    expect(h.list.positionOf("m20")).toBeNull();
+    expect(h.destroyed.filter((id) => id >= 20)).toEqual(
+      range(20, 28).map((item) => item.id),
+    );
+    h.list.dispose();
+  });
+
+  it("should cancel width-stale work and leave no hidden measurement root", async () => {
+    let width = 300;
+    const h = mount(range(0, 20), {
+      width: () => width,
+    });
+    const bodyChildren = document.body.childElementCount;
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, ...range(20, 44)],
+    }));
+    vi.advanceTimersByTime(16);
+
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    vi.advanceTimersByTime(100);
+
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.state.held).toBe(false);
+    expect(document.body.childElementCount).toBe(bodyChildren);
+    h.list.dispose();
+  });
+
+  it("should pause batches during a new gesture and commit at the new reading position", async () => {
+    const h = mount(range(0, 80), {
+      boot: "start",
+    });
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, ...range(80, 104)],
+    }));
+    vi.advanceTimersByTime(16);
+
+    h.userScroll(2000);
+    vi.advanceTimersByTime(64);
+    expect(h.list.state.count).toBe(80);
+    h.settle();
+    advanceFramesUntil(() => h.list.state.count === 104);
+
+    await expect(applied).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(2000);
+    expect(h.list.state.held).toBe(false);
+    h.list.dispose();
+  });
+
+  it("should not evict a reading window exposed while a batch was preparing", async () => {
+    const h = mount(range(0, 80), {
+      boot: "start",
+    });
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items.slice(0, 20), ...range(80, 104)],
+    }));
+    vi.advanceTimersByTime(16);
+
+    h.userScroll(5000);
+    h.settle();
+    vi.advanceTimersByTime(300);
+
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(80);
+    expect(h.viewport.scrollTop).toBe(5000);
+    expect(h.list.elementOf("m50")?.textContent).toBe("msg 50");
+    h.list.dispose();
+  });
+
+  it("should cancel an interrupting page command when the user takes over", async () => {
+    const h = mount(range(0, 20));
+    const applied = h.list.updateWindow(
+      () => ({ items: range(40, 64) }),
+      undefined,
+      { interrupt: true },
+    );
+    vi.advanceTimersByTime(16);
+
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -20 }));
+    vi.advanceTimersByTime(100);
+
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.positionOf("m40")).toBeNull();
     h.list.dispose();
   });
 });
@@ -1522,7 +1872,9 @@ describe("bounded paging on the runtime", () => {
       project: (items) => items,
       load: async ({ cursor }) => page(cursor),
     });
-    await paging.load("end");
+    const loaded = paging.load("end");
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(loaded).resolves.toBe(true);
     expect(paging.items).toHaveLength(40);
     h.userScroll(3400);
     const trim = paging.reconcile();
@@ -1594,7 +1946,9 @@ describe("bounded paging on the runtime", () => {
     await paging.load("end");
     expect(paging.canLoad("end")).toBe(true);
     expect(paging.items).toHaveLength(20);
-    await paging.load("end");
+    const loaded = paging.load("end");
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(loaded).resolves.toBe(true);
     expect(paging.items.map((m) => m.id)).toEqual(
       range(0, 30).map((m) => m.id),
     );
@@ -1632,6 +1986,7 @@ describe("bounded paging on the runtime", () => {
     abort.abort();
     const opposite = paging.load("start");
     await expect(stale).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(300);
     await expect(opposite).resolves.toBe(true);
     expect(complete).toHaveBeenCalledTimes(1);
     finish(page(40));
@@ -1663,7 +2018,9 @@ describe("bounded paging on the runtime", () => {
     expect(paging.loading).toBe(false);
     expect(paging.items).toEqual(initial.items);
     fail = false;
-    await expect(paging.load("end")).resolves.toBe(true);
+    const loaded = paging.load("end");
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(loaded).resolves.toBe(true);
     expect(paging.items).toHaveLength(40);
     paging.dispose();
     h.list.dispose();

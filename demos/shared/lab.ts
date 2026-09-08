@@ -1,6 +1,8 @@
 // Helpers the two labs share: deterministic content, the trace log (a ring
 // for export plus a trimmed DOM view), and the edge pill.
 
+import { setTextIfChanged } from "./utils";
+
 export function mulberry32(seed: number): () => number {
   let state = seed;
   return () => {
@@ -113,12 +115,12 @@ export function createEdgePill(
       window.clearTimeout(timer);
       sticky = stickyFlag;
       pill.classList.toggle("bottom", atBottom);
-      label.textContent = text;
-      pill.classList.add("visible");
+      setTextIfChanged(label, text);
+      pill.classList.toggle("visible", true);
       if (sticky) {
         timer = window.setTimeout(() => {
           sticky = false;
-          pill.classList.remove("visible");
+          pill.classList.toggle("visible", false);
         }, PILL_STICKY_MS);
       }
     },
@@ -126,7 +128,7 @@ export function createEdgePill(
       if (sticky && !force) return;
       window.clearTimeout(timer);
       sticky = false;
-      pill.classList.remove("visible");
+      pill.classList.toggle("visible", false);
     },
   };
 }

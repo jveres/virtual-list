@@ -5,7 +5,7 @@ import {
   type VirtualList,
 } from "../../src/virtual-list";
 import { initMarkdown } from "../shared/markdown";
-import { setTextIfChanged } from "../shared/utils";
+import { setAttributeIfChanged, setTextIfChanged } from "../shared/utils";
 import { mountPost, renderPost, unmountPost } from "./render";
 import {
   type FeedCursor,
@@ -95,8 +95,8 @@ async function reset(): Promise<void> {
   bottom.append(spinner(), bottomLabel);
   function sync(): void {
     if (!current() || !pager) return;
-    top.dataset.state = headBusy ? "loading" : "idle";
-    bottom.dataset.state = busy ? "loading" : "idle";
+    setAttributeIfChanged(top, "data-state", headBusy ? "loading" : "idle");
+    setAttributeIfChanged(bottom, "data-state", busy ? "loading" : "idle");
     setTextIfChanged(
       topLabel,
       headBusy
@@ -115,13 +115,17 @@ async function reset(): Promise<void> {
             ? "Scroll for older posts"
             : "No more posts"),
     );
-    bottomLabel.title = bottomLabel.textContent;
+    setAttributeIfChanged(bottomLabel, "title", bottomLabel.textContent);
     const text = `${pager.items.length} retained / ${retain} target · ${list ? list.state.end - list.state.start : 0} mounted · ${pages} pages${busy || headBusy ? " · loading" : ""}${error ? ` · ${error}` : ""}`;
     setTextIfChanged(status, text);
-    status.title = text;
-    viewport.dataset.retained = String(pager.items.length);
-    viewport.dataset.pages = String(pages);
-    viewport.dataset.evicted = String(evicted);
+    setAttributeIfChanged(status, "title", text);
+    setAttributeIfChanged(
+      viewport,
+      "data-retained",
+      String(pager.items.length),
+    );
+    setAttributeIfChanged(viewport, "data-pages", String(pages));
+    setAttributeIfChanged(viewport, "data-evicted", String(evicted));
   }
   async function load(context?: ReachContext): Promise<void> {
     if (!pager || !current() || busy || headBusy) {

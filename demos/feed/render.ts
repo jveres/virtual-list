@@ -1,4 +1,5 @@
 import { renderMarkdown } from "../shared/markdown";
+import { setHiddenIfChanged } from "../shared/utils";
 import { type FeedPost, safeUrl } from "./source";
 
 const allowedTags = new Set(
@@ -98,7 +99,7 @@ export function renderPost(
     if (!content.isConnected) return;
     const limit = Number.parseFloat(getComputedStyle(body).fontSize) * 18;
     const overflows = content.getBoundingClientRect().height > limit + 1;
-    button.hidden = !overflows;
+    setHiddenIfChanged(button, !overflows);
     body.classList.toggle("collapsed", overflows && !post.expanded);
   };
   // Decide from laid-out text, not character count. This is off-scroller and
