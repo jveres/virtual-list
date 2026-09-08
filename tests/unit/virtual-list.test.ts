@@ -137,7 +137,7 @@ function mount(
     width?: () => number;
     height?: () => number;
     /** Observes every scrollTop write — where an engine forces layout. */
-    onScrollWrite?: () => void;
+    onScrollWrite?: (top: number) => void;
     /** Lets the position leave the range, as an iOS rubber-band bounce does. */
     overscroll?: boolean;
     /** render() throws for items with this body. */
@@ -168,7 +168,7 @@ function mount(
         return scrollTop;
       },
       set: (next: number) => {
-        hooks.onScrollWrite?.();
+        hooks.onScrollWrite?.(next);
         if (hooks.overscroll) {
           scrollTop = next;
           return;
@@ -2030,6 +2030,100 @@ describe("bounded paging on the runtime", () => {
 afterEach(() => {
   vi.useRealTimers();
   document.body.replaceChildren();
+});
+
+describe("runtime — replacement paint lifecycle", () => {
+  function replacement(viewport: HTMLElement): VirtualList<Msg> {
+    return createVirtualList(viewport, {
+      items: range(0, 20),
+      key: (item) => `m${item.id}`,
+      height: () => ROW_H,
+      settleStrategy: "default",
+      render: (item) => {
+        const element = document.createElement("div");
+        element.textContent = item.body;
+        return element;
+      },
+    });
+  }
+
+  it.each([
+    {
+      userAgent: "AppleWebKit/605.1.15 Version/18.0 Safari/605.1.15",
+      repairs: 1,
+    },
+    { userAgent: "AppleWebKit/605.1.15 Mobile/15E148", repairs: 1 },
+    { userAgent: "Firefox/142.0", repairs: 0 },
+    {
+      userAgent: "AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36",
+      repairs: 0,
+    },
+  ])(
+    "should repair only a replacement WebKit viewport ($userAgent)",
+    ({ userAgent, repairs }) => {
+      vi.spyOn(navigator, "userAgent", "get").mockReturnValue(userAgent);
+      const h = mount(range(0, 20));
+      const observed: string[] = [];
+      vi.spyOn(h.viewport, "offsetHeight", "get").mockImplementation(() => {
+        observed.push(h.viewport.style.overflowY);
+        return VIEWPORT_H;
+      });
+      vi.advanceTimersByTime(32);
+      h.list.updateItem("m19", message(19, "ordinary update"));
+      vi.advanceTimersByTime(32);
+      expect(observed).toEqual([]);
+
+      h.list.dispose();
+      const next = replacement(h.viewport);
+      const top = h.viewport.scrollTop;
+      vi.advanceTimersByTime(32);
+
+      expect(observed).toEqual(Array.from({ length: repairs }, () => "hidden"));
+      expect(h.viewport.style.overflowY).toBe("");
+      expect(h.viewport.scrollTop).toBe(top);
+      next.dispose();
+    },
+  );
+
+  it("should cancel a disposed replacement's repaint before another list mounts", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "AppleWebKit/605.1.15",
+    );
+    const h = mount(range(0, 20));
+    h.list.dispose();
+    const observed: string[] = [];
+    vi.spyOn(h.viewport, "offsetHeight", "get").mockImplementation(() => {
+      observed.push(h.viewport.style.overflowY);
+      return VIEWPORT_H;
+    });
+
+    replacement(h.viewport).dispose();
+    const next = replacement(h.viewport);
+    vi.advanceTimersByTime(32);
+
+    expect(observed).toEqual(["hidden"]);
+    next.dispose();
+  });
+
+  it("should not rebuild the scrolling layer after new user input", () => {
+    vi.spyOn(navigator, "userAgent", "get").mockReturnValue(
+      "AppleWebKit/605.1.15",
+    );
+    const h = mount(range(0, 20));
+    h.list.dispose();
+    const observed: string[] = [];
+    vi.spyOn(h.viewport, "offsetHeight", "get").mockImplementation(() => {
+      observed.push(h.viewport.style.overflowY);
+      return VIEWPORT_H;
+    });
+
+    const next = replacement(h.viewport);
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -30 }));
+    vi.advanceTimersByTime(32);
+
+    expect(observed).toEqual([]);
+    next.dispose();
+  });
 });
 
 describe("runtime — commits and slots", () => {
@@ -5103,6 +5197,159 @@ describe("runtime — commands", () => {
     fireResize(0, row, 300);
     expect(h.viewport.scrollTop).toBe(18 * ROW_H);
     expect(h.list.state.totalSize).toBe(18 * ROW_H + VIEWPORT_H);
+  });
+
+  it.each([
+    { replyHeight: 100, landing: 1756, totalSize: 2356 },
+    { replyHeight: 800, landing: 2100, totalSize: 2700 },
+  ])(
+    "should pin and land at the end without an intermediate scroll for a $replyHeight px tail",
+    async ({ replyHeight, landing, totalSize }) => {
+      const writes: number[] = [];
+      const h = mount(range(0, 20), {
+        onScrollWrite: (top) => writes.push(top),
+      });
+      h.heights.set(19, replyHeight);
+      fireResize(0, h.rowElement("msg 19"), replyHeight);
+      await h.list.scrollTo("start");
+      writes.length = 0;
+
+      const command = h.list.scrollTo("end", {
+        pin: { key: "m18", offset: 44 },
+      });
+
+      await expect(command).resolves.toBe(true);
+      expect(writes).toEqual([landing]);
+      expect(h.viewport.scrollTop).toBe(landing);
+      expect(h.list.state.totalSize).toBe(totalSize);
+      expect(h.list.state.atEnd).toBe(true);
+      h.list.dispose();
+    },
+  );
+
+  it.each(["auto", "smooth"] as const)(
+    "should retire an older pin's reserve after a %s atomic end landing",
+    async (behavior) => {
+      const h = mount(range(0, 20));
+      await h.list.scrollTo("m19", { align: "start" });
+      expect(h.viewport.scrollTop).toBe(1900);
+      expect(h.list.state.totalSize).toBe(2500);
+
+      const command = h.list.scrollTo("end", {
+        pin: { key: "m15", offset: 44 },
+        behavior,
+      });
+      if (behavior === "smooth") {
+        expect(h.list.state.totalSize).toBe(2500);
+        advanceFramesUntil(() => h.viewport.scrollTop === 1456);
+        h.settle();
+      }
+
+      await expect(command).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(1456);
+      expect(h.list.state.totalSize).toBe(2056);
+      expect(h.list.state.atEnd).toBe(true);
+      h.list.dispose();
+    },
+  );
+
+  it("should absorb growth under an atomic pin and follow once the tail outgrows it", async () => {
+    const h = mount(range(0, 20));
+    await h.list.scrollTo("end", { pin: { key: "m18", offset: 44 } });
+    const tail = h.rowElement("msg 19");
+
+    h.heights.set(19, 300);
+    fireResize(0, tail, 300);
+    expect(h.viewport.scrollTop).toBe(1756);
+    h.heights.set(19, 800);
+    fireResize(0, tail, 800);
+
+    expect(h.viewport.scrollTop).toBe(2100);
+    expect(h.list.state.atEnd).toBe(true);
+    h.list.dispose();
+  });
+
+  it.each(["instant", "smooth"] as const)(
+    "should not undo a rounded pin landing during %s streaming commits",
+    async (followBehavior) => {
+      const original = window.devicePixelRatio;
+      Object.defineProperty(window, "devicePixelRatio", {
+        value: 3,
+        configurable: true,
+      });
+      const h = mount(range(0, 20), { overscroll: true, followBehavior });
+      try {
+        h.heights.set(0, 100.1);
+        h.list.updateItem("m0", message(0, "fractional prefix"));
+        await h.list.scrollTo("end", { pin: { key: "m18", offset: 44 } });
+        const landed = h.viewport.scrollTop;
+        expect(landed).toBe(1757);
+
+        h.heights.set(19, 300);
+        h.list.updateItem("m19", message(19, "streamed text"));
+        vi.advanceTimersByTime(1000);
+        h.settle();
+
+        expect(h.viewport.scrollTop).toBe(landed);
+        expect(h.list.state.atEnd).toBe(true);
+      } finally {
+        h.list.dispose();
+        Object.defineProperty(window, "devicePixelRatio", {
+          value: original,
+          configurable: true,
+        });
+      }
+    },
+  );
+
+  it("should leave geometry and position untouched when an end pin is missing", async () => {
+    const h = mount(range(0, 20));
+    const before = h.viewport.scrollTop;
+    const totalSize = h.list.state.totalSize;
+
+    await expect(
+      h.list.scrollTo("end", { pin: { key: "missing" } }),
+    ).resolves.toBe(false);
+
+    expect(h.viewport.scrollTop).toBe(before);
+    expect(h.list.state.totalSize).toBe(totalSize);
+    expect(h.canvas().style.minHeight).toBe("");
+    h.list.dispose();
+  });
+
+  it("should reject a pin on a non-end target without scrolling", async () => {
+    const h = mount(range(0, 20));
+    const before = h.viewport.scrollTop;
+
+    await expect(
+      h.list.scrollTo("m18", { pin: { key: "m18" } }),
+    ).rejects.toThrow("pin requires an end target");
+
+    expect(h.viewport.scrollTop).toBe(before);
+    expect(h.canvas().style.minHeight).toBe("");
+    h.list.dispose();
+  });
+
+  it("should own a reentrant end pin before the caller mutates it", async () => {
+    let current: Harness | undefined;
+    let command: Promise<boolean> | undefined;
+    const h = mount(range(0, 20), {
+      onState: () => {
+        if (!current || command) return;
+        const pin = { key: "m18", offset: 44 };
+        command = current.list.scrollTo("end", { pin });
+        pin.key = "m0";
+        pin.offset = 1000;
+      },
+    });
+    current = h;
+
+    h.list.updateItem("m19", message(19, "changed"));
+
+    await expect(command).resolves.toBe(true);
+    expect(h.viewport.scrollTop).toBe(1756);
+    expect(h.list.state.totalSize).toBe(2356);
+    h.list.dispose();
   });
 
   it("an inset pin remains at the end so streaming growth auto-follows", async () => {

@@ -244,7 +244,7 @@ p.ai-settings-note {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 44px;
+  height: 40px;
   /* Include the following message's 12px top padding in the visual gap:
      shifting the pill down 6px balances the space above and below it. */
   padding-top: 12px;
@@ -382,7 +382,7 @@ p.ai-settings-note {
 /* With the sticky day header on, the floating pill (edge loader "pill"
    mode) sits below it instead of on top of it. */
 .viewport-wrap.sticky-on .edge-overlay {
-  top: 54px;
+  top: 50px;
 }
 
 /* The in-flow scrollback slot (edge loader "slot" mode, the default): a

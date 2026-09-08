@@ -49,8 +49,8 @@ try {
           pill.bottom,
       };
     });
-    assert.ok(landing.prompt <= 44, JSON.stringify(landing));
-    assert.ok(landing.prompt >= 43, JSON.stringify(landing));
+    assert.ok(landing.prompt <= 40, JSON.stringify(landing));
+    assert.ok(landing.prompt >= 39, JSON.stringify(landing));
     assert.ok(landing.previousBottom <= 0, JSON.stringify(landing));
     assert.ok(
       Math.abs(landing.gapAbove - landing.gapBelow) <= 1,

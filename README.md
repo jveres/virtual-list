@@ -142,6 +142,7 @@ list.setItems(items, { anchor: "auto" }); // | "viewport" | "end" | "none"
 list.updateItem(key, nextItem); // same key, same anchor options as setItems
 await list.scrollTo(key, { align: "start", behavior: "smooth", duration, offset });
 await list.scrollTo("end", { behavior: "smooth" });
+await list.scrollTo("end", { pin: { key, offset: 44 } });
 list.remeasure(key, { anchor: "viewport" });
 list.setEdgeSlot("start", slot | null);
 list.setFollowMode("keep-start", 44);
@@ -182,6 +183,12 @@ list.dispose();
   after landing, without shortening the scroll range during the glide.
   A smooth command is interrupted by genuine user
   input and resolves `false`; a command to `"end"` re-engages end-follow.
+- `scrollTo("end", { pin: { key, offset? } })` establishes a persistent pin
+  and lands at the end in one command, without first scrolling to the pinned
+  row. A short tail leaves that row at its inset; a long tail lands at the
+  content's end. An older pin's unused reserve drains after landing. The
+  offset defaults to zero; non-finite offsets use zero. A missing pin key
+  resolves `false`. Supplying `pin` with a non-end target rejects the command.
 - `remeasure` is the intent-bearing path for a discrete user interaction
   that changes a row's height (opening a tool panel): it keeps the viewport
   anchored instead of re-gluing an end-positioned transcript.
@@ -205,6 +212,13 @@ ownership. In-place render rollback is best effort: the runtime cannot undo
 arbitrary DOM mutations or external side effects. For stronger isolation,
 return a fresh element instead of mutating `existing`. Failed initialization
 removes the runtime's DOM, observers, and listeners before rethrowing.
+
+When a disposed list is replaced on the same WebKit viewport, the runtime
+schedules one scrolling-layer repaint. This repairs stale paint after a
+replacement, including file-drop imports. First mounts and ordinary item
+updates do not force this repaint. Disposal cancels pending recovery; new
+input or an active glide suppresses it. The recovery preserves inline
+overflow styles and does not issue scroll-position writes.
 
 ## Validation
 

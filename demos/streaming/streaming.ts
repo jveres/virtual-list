@@ -65,7 +65,6 @@ import {
   saveOpenAIHistory,
   streamOpenAIChat,
 } from "./openai.js";
-import { repaintAfterReplacement } from "./repaint.js";
 import { sampleTimestamp } from "./sample-time.js";
 import {
   createTranscriptFile,
@@ -173,7 +172,7 @@ const MESSAGES_PER_DAY = 12;
 const EDGE_SLOT_HEIGHT = 52;
 // The day pill's row height; a send pins its message this far below the
 // viewport top when the sticky header is on, so the pill never covers it.
-const DAY_HEADER_HEIGHT = 44;
+const DAY_HEADER_HEIGHT = 40;
 const INITIAL_TRANSCRIPT_COUNT = 100;
 // The loaded data window over the transcript: how much is handed to the
 // virtualizer, and how much each scrollback load prepends.
@@ -1368,8 +1367,6 @@ function reloadConversation(importedTree?: TranscriptTree | null): void {
   setEdgeState("hidden");
   mountConversation();
   syncMetrics();
-  const epoch = conversationEpoch;
-  repaintAfterReplacement(viewport, () => epoch === conversationEpoch);
 }
 
 /**
@@ -1390,19 +1387,15 @@ function landConversation(): void {
       if (message?.role === "user") key = String(message.id);
     }
   }
-  if (key === null) {
+  if (key === null || !virtualList?.positionOf(key)) {
     void virtualList?.scrollTo("end");
     return;
   }
-  // The command settles held work before it resolves the key (a reload
-  // during a glide holds its snapshot until then), so the key needs no
-  // committed position here; a key outside the loaded window fails the
-  // command and leaves the end landing the snapshot made.
-  void virtualList?.scrollTo(key, {
-    align: "start",
-    offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+  // Configure the reserve and land at the end atomically. A long final
+  // reply never makes an intermediate trip to its prompt.
+  void virtualList.scrollTo("end", {
+    pin: { key, offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0 },
   });
-  void virtualList?.scrollTo("end");
 }
 
 // Name the visible row's replacement, not a surviving prefix or a removed

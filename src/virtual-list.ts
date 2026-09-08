@@ -39,6 +39,7 @@ import {
   slotKey,
   supersededRows,
 } from "./snapshot";
+import { scheduleReplacementRepaint } from "./viewport-repaint";
 
 export type { FollowMode } from "./follow";
 export type {
@@ -280,7 +281,7 @@ export type ScrollOptions = {
    * time of a one-viewport hop and the cap on the approach a longer trip
    * makes before that same landing, so a trip from the far end takes at
    * most twice it. A hop that should read as deliberate — a chat's
-   * pin-to-top on send — sets it; the default lands in 600ms.
+   * pin-to-top on send — sets it; the default lands in 280ms.
    */
   duration?: number;
   /**
@@ -289,6 +290,13 @@ export type ScrollOptions = {
    * the viewport, for centering or bottom-aligning a row taller than it.
    */
   offset?: number;
+  /**
+   * End targets only: establish a persistent pin and its trailing reserve,
+   * then land at the end in the same command, without visiting the pin first.
+   * The offset defaults to zero and has the same meaning as a keyed offset.
+   * A missing pin key resolves false without changing the pin or scrolling.
+   */
+  pin?: { key: string; offset?: number };
 };
 
 export type RemeasureOptions = {
@@ -414,6 +422,16 @@ function snapToDevicePixel(value: number): number {
   return Math.round(value * ratio) / ratio;
 }
 
+/**
+ * A deliberate boundary landing must survive engines that floor scrollTop
+ * writes to CSS pixels. Use this for commands, pins and end-follow, not for
+ * preserving an arbitrary reading anchor. Every path must agree: a later
+ * streaming commit must not undo a command's correctly rounded landing.
+ */
+function snapScrollBoundary(value: number): number {
+  return Math.ceil(value);
+}
+
 /** A rebase must also survive engines that round scroll writes to CSS pixels. */
 function positionedOrigin(top: number): number {
   const ratio = devicePixelRatioNow();
@@ -485,6 +503,10 @@ type Scope = Transaction[];
 
 /** Preparation bail-out: the host disposed the list from inside a callback. */
 class DisposedDuringPreparation extends Error {}
+
+// A replacement can inherit a stale WebKit scrolling layer. Keep only weak
+// viewport identities; ordinary updates and first mounts need no recovery.
+const disposedViewports = new WeakSet<HTMLElement>();
 
 export function createVirtualList<T>(
   viewport: HTMLElement,
@@ -573,7 +595,7 @@ export function createVirtualList<T>(
     // from the fractional CSS viewport height. Otherwise the browser can
     // clamp below that landing and expose a sliver of the preceding row.
     canvas.style.minHeight =
-      pinTop === null ? "" : `calc(100% + ${Math.ceil(pinTop)}px)`;
+      pinTop === null ? "" : `calc(100% + ${snapScrollBoundary(pinTop)}px)`;
   }
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
@@ -626,6 +648,7 @@ export function createVirtualList<T>(
   let remeasureFrame = 0;
   let remeasurePolicy: AnchorPolicy | undefined;
   let booting = true;
+  let cancelReplacementRepaint: (() => void) | undefined;
   // A landed glide resolves only once its phase settles and held work has
   // committed, revalidated against the final geometry.
   let awaitingSettle: {
@@ -1718,12 +1741,13 @@ export function createVirtualList<T>(
       // goes only as far as the follow mode allows.
       const derivedFollow =
         !booting && result.mode === "end" && policy === "auto";
-      const target = derivedFollow
-        ? followController.target(
-            snapToDevicePixel(before.scrollTop),
-            snapToDevicePixel(result.scrollTop),
-          )
-        : snapToDevicePixel(result.scrollTop);
+      const resolvedTop = derivedFollow
+        ? followController.target(before.scrollTop, result.scrollTop)
+        : result.scrollTop;
+      const target =
+        result.mode === "end"
+          ? snapScrollBoundary(resolvedTop)
+          : snapToDevicePixel(resolvedTop);
       const smoothFollow =
         motion === "smooth" &&
         !booting &&
@@ -2771,6 +2795,13 @@ export function createVirtualList<T>(
     scrollOptions: ScrollOptions = {},
   ): Promise<boolean> {
     if (disposed) return Promise.resolve(false);
+    const pin = scrollOptions.pin;
+    if (pin !== undefined) {
+      if (target !== "end")
+        return Promise.reject(new TypeError("pin requires an end target"));
+      if (pin === null || typeof pin.key !== "string")
+        return Promise.reject(new TypeError("pin key must be a string"));
+    }
     const owned: ScrollOptions = {
       align: scrollOptions.align,
       behavior: scrollOptions.behavior,
@@ -2785,6 +2816,16 @@ export function createVirtualList<T>(
         Number.isFinite(scrollOptions.offset)
           ? scrollOptions.offset
           : undefined,
+      pin:
+        pin === undefined
+          ? undefined
+          : {
+              key: pin.key,
+              offset:
+                pin.offset !== undefined && Number.isFinite(pin.offset)
+                  ? pin.offset
+                  : 0,
+            },
     };
     return new Promise((resolve, reject) => {
       if (
@@ -2802,22 +2843,43 @@ export function createVirtualList<T>(
   }
 
   /** The command's target scrollTop under current geometry; null once a keyed target is gone. */
-  function targetTop(target: ScrollTarget, below = 0): number | null {
+  function targetTop(
+    target: ScrollTarget,
+    below = 0,
+    pinnedEnd = false,
+  ): number | null {
     const maxTop = geometry.maxScrollTop(viewport.clientHeight);
     if (target === "start") return 0;
-    if (target === "end") return Math.ceil(maxTop);
+    if (target === "end") {
+      // Retargeting a pin may leave the previous reserve under the viewport
+      // until this command lands. Do not mistake that retained tail for the
+      // requested end; it drains after landing, never underneath the glide.
+      return snapScrollBoundary(
+        pinnedEnd
+          ? Math.max(
+              0,
+              geometry.contentSize - viewport.clientHeight,
+              geometry.pinTop ?? 0,
+            )
+          : maxTop,
+      );
+    }
     const offset = geometry.offsetOf(target);
     // Engines can floor fractional scrollTop writes even on Retina displays.
     // Land beyond the fractional boundary, so the preceding row cannot peek
     // into the viewport. The browser still clamps to its actual scroll range.
     return offset < 0
       ? null
-      : Math.ceil(Math.max(0, Math.min(offset - below, maxTop)));
+      : snapScrollBoundary(Math.max(0, Math.min(offset - below, maxTop)));
   }
 
   /** Whether the viewport is on the command's target under current geometry. */
-  function landedOn(target: ScrollTarget, below = 0): boolean {
-    const top = targetTop(target, below);
+  function landedOn(
+    target: ScrollTarget,
+    below = 0,
+    pinnedEnd = false,
+  ): boolean {
+    const top = targetTop(target, below, pinnedEnd);
     return (
       top !== null && Math.abs(viewport.scrollTop - top) <= AT_EDGE_EPSILON_PX
     );
@@ -2840,21 +2902,26 @@ export function createVirtualList<T>(
     settleParked(() => false);
     glide?.cancel();
     interruptNativeScroll();
-    if (disposed || (keyed && geometry.indexOf(target) < 0)) {
+    const pin = scrollOptions.pin;
+    if (
+      disposed ||
+      (keyed && geometry.indexOf(target) < 0) ||
+      (pin !== undefined && geometry.indexOf(pin.key) < 0)
+    ) {
       done(false);
       return;
     }
     // A keyed target with align:"start" reserves the shortfall (I5) — a
     // geometry change, committed now (the phase is idle).
-    if (keyed && scrollOptions.align === "start") {
-      geometry.pin(target, below);
+    if (pin !== undefined || (keyed && scrollOptions.align === "start")) {
+      geometry.pin(pin?.key ?? target, pin?.offset ?? below);
       commit(null, "none");
     }
 
     // A keyed target that disappears mid-glide holds position; the landing
     // revalidation then fails.
     const destination = (): number =>
-      targetTop(target, below) ?? viewport.scrollTop;
+      targetTop(target, below, pin !== undefined) ?? viewport.scrollTop;
 
     if (scrollOptions.behavior !== "smooth") {
       const top = Math.round(destination());
@@ -2867,7 +2934,7 @@ export function createVirtualList<T>(
       }
       reconcileAndPublish();
       trimUnusedReserve();
-      done(!disposed && landedOn(target, below));
+      done(!disposed && landedOn(target, below, pin !== undefined));
       return;
     }
 
@@ -2889,7 +2956,7 @@ export function createVirtualList<T>(
           }
           awaitingSettle = {
             done,
-            landed: () => landedOn(target, below),
+            landed: () => landedOn(target, below, pin !== undefined),
             followsEnd: target === "end",
           };
           controller.markSettlePending();
@@ -2924,7 +2991,7 @@ export function createVirtualList<T>(
       // A write and its reconcile are a transaction (I4): a host acting
       // from a mount hook or onState is queued, never re-entered.
       guarded(() => {
-        writeScrollTop(snapToDevicePixel(followController.target(current)));
+        writeScrollTop(snapScrollBoundary(followController.target(current)));
         reconcileAndPublish();
       });
       return;
@@ -2944,7 +3011,9 @@ export function createVirtualList<T>(
     if (disposed || glide !== null) return;
     controller.beginProgrammaticGesture();
     glide = startGlide(
-      glideHost(() => followController.target(viewport.scrollTop)),
+      glideHost(() =>
+        snapScrollBoundary(followController.target(viewport.scrollTop)),
+      ),
       // Follow legs are short and frequent: a quicker landing than a
       // command's, so the end keeps up with the stream.
       glidePace(viewport.clientHeight, FOLLOW_LANDING_MS),
@@ -3029,6 +3098,7 @@ export function createVirtualList<T>(
   function dispose(): void {
     if (disposed) return;
     disposed = true;
+    cancelReplacementRepaint?.();
     for (const cancel of [...cancelWindowUpdates]) cancel();
     // Every queued command in EVERY live scope settles (false): the open
     // transaction's, and each parent scope still holding undrained
@@ -3046,6 +3116,7 @@ export function createVirtualList<T>(
     viewportObserver.disconnect();
     measurer.dispose();
     canvas.remove();
+    if (!booting) disposedViewports.add(viewport);
     // Every retained node — committed or pending — is destroyed exactly
     // once (destroyRow is idempotent, so a host disposing from onDestroy
     // mid-commit cannot double-destroy).
@@ -3085,6 +3156,21 @@ export function createVirtualList<T>(
     throw error;
   }
   booting = false;
+  if (!disposed && disposedViewports.delete(viewport)) {
+    // This is engine-specific paint recovery, independent of an explicitly
+    // selected settle policy. Do not interrupt input or a new glide that
+    // started after boot: those already drive the scrolling layer themselves.
+    if (detectScrollSettleStrategy() === "safari-wheel") {
+      const epoch = inputEpoch;
+      cancelReplacementRepaint = scheduleReplacementRepaint(
+        viewport,
+        () =>
+          !disposed &&
+          inputEpoch === epoch &&
+          !controller.isScrollPhaseActive(),
+      );
+    }
+  }
 
   function setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void {
     if (disposed) return;

@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { repaintAfterReplacement } from "../../demos/streaming/repaint";
+import { scheduleReplacementRepaint } from "../../src/viewport-repaint";
 
 afterEach(() => document.body.replaceChildren());
 
@@ -13,6 +13,9 @@ function setup(overflow = "") {
   vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
     frame = callback;
     return 1;
+  });
+  vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {
+    frame = undefined;
   });
   const measuredOverflow: string[] = [];
   vi.spyOn(viewport, "offsetHeight", "get").mockImplementation(() => {
@@ -29,7 +32,7 @@ describe("replacement repaint", () => {
     (overflow) => {
       const { viewport, measuredOverflow, scrollWrite, paint } =
         setup(overflow);
-      repaintAfterReplacement(viewport, () => true);
+      scheduleReplacementRepaint(viewport, () => true);
       expect(measuredOverflow).toEqual([]);
       paint();
       expect(measuredOverflow).toEqual(["hidden"]);
@@ -42,7 +45,7 @@ describe("replacement repaint", () => {
   it("should ignore work belonging to a superseded conversation", () => {
     const { viewport, measuredOverflow, paint } = setup();
     let current = true;
-    repaintAfterReplacement(viewport, () => current);
+    scheduleReplacementRepaint(viewport, () => current);
     current = false;
     paint();
     expect(measuredOverflow).toEqual([]);
@@ -50,9 +53,30 @@ describe("replacement repaint", () => {
 
   it("should ignore a detached viewport", () => {
     const { viewport, measuredOverflow, paint } = setup();
-    repaintAfterReplacement(viewport, () => true);
+    scheduleReplacementRepaint(viewport, () => true);
     viewport.remove();
     paint();
     expect(measuredOverflow).toEqual([]);
+  });
+
+  it("should cancel pending work when its owner is disposed", () => {
+    const { viewport, measuredOverflow, paint } = setup();
+    const cancel = scheduleReplacementRepaint(viewport, () => true);
+
+    cancel();
+    paint();
+
+    expect(measuredOverflow).toEqual([]);
+  });
+
+  it("should preserve an important overflow declaration", () => {
+    const { viewport, paint } = setup();
+    viewport.style.setProperty("overflow-y", "scroll", "important");
+
+    scheduleReplacementRepaint(viewport, () => true);
+    paint();
+
+    expect(viewport.style.getPropertyValue("overflow-y")).toBe("scroll");
+    expect(viewport.style.getPropertyPriority("overflow-y")).toBe("important");
   });
 });

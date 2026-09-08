@@ -200,7 +200,7 @@ interaction; the [README](../README.md) lists the public options.
   third and then braked hard: a stutter one viewport before the end); its
   duration follows from the distance and is capped. A `scrollTo` `duration` is the landing time and the
   approach cap (a trip from the far end takes at most twice it); the
-  default lands in 600ms and bounds a trip by 1400ms; follow legs land in
+  default lands in 280ms and bounds a trip by 1080ms; follow legs land in
   320ms.
 - Runtime policy boundaries: `follow.ts` owns follow intent, destination
   limits, and visibility catch-up; `reach.ts` owns edge-load hysteresis and
@@ -209,6 +209,13 @@ interaction; the [README](../README.md) lists the public options.
   suppression. Only the selected engine's policy exists. Shared listeners,
   scroll sampling, and settle scheduling remain in `scroll-settle.ts`.
   These boundaries preserve the public API and existing timing windows.
+- `src/viewport-repaint.ts`: one-shot WebKit scrolling-layer recovery after
+  a disposed list is replaced on the same viewport. The runtime owns the
+  weak viewport identity and pending frame. First mounts and item updates
+  do not request recovery; disposal cancels it, and new input or an active
+  scroll phase prevents it from interrupting scrolling. Inline overflow
+  declarations, including their priority, are restored after the layout
+  flush. Recovery does not write the scroll position.
 - Snapshot bookkeeping: `snapshot.ts` validates and indexes item keys,
   resolves inherited anchor intent, identifies superseded rows, and merges
   successful targeted patches. It does not render, measure, destroy, or
@@ -229,7 +236,7 @@ interaction; the [README](../README.md) lists the public options.
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a
   missing key falls back to the captured anchor) —, `scrollTo(target, { align?, behavior?,
-  duration?, offset? })`, `updateItem(key, item, { anchor? })`,
+  duration?, offset?, pin? })`, `updateItem(key, item, { anchor? })`,
   `remeasure(key, { anchor? })`,
   `setEdgeSlot(edge, slot | null)`, `positionOf(key)`, `elementOf(key)`,
   `state`, `dispose()`; options add `edgeSlots`. An
@@ -243,6 +250,13 @@ interaction; the [README](../README.md) lists the public options.
   committed positions. `offset` lands a keyed target below such a header;
   an `align: "start"` pin includes that inset in its reserve, so the landing
   remains at the logical end and streaming auto-follow stays engaged.
+  `scrollTo("end", { pin: { key, offset? } })` establishes that reserve
+  without an intermediate scroll to the pin. Its destination is the greater
+  of the pinned position and the content's natural end, excluding an older
+  pin's temporarily retained reserve. That old reserve drains after landing,
+  never underneath the glide. The command resolves `false` if the pin key
+  is missing after takeover commits held work. `pin` is valid only with an
+  end target; its offset defaults to zero, including non-finite input.
   A hidden document follows by write (a glide started then would only
   play on return, the background growth as one slide), and so does one
   that just became visible, for a short window (300ms) in which growth
