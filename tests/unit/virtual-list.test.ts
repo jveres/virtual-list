@@ -1746,6 +1746,9 @@ describe("runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(4800);
     expect(h.list.state.following).toBe(true);
 
+    // Start a real new gesture even if the preceding glide is still in its
+    // scroll-end cooldown; do not depend on a particular easing duration.
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -100 }));
     h.userScroll(4500);
     expect(h.list.state.following).toBe(false);
     h.list.dispose();

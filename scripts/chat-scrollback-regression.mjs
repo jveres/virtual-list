@@ -165,7 +165,9 @@ for (const engine of [firefox, webkit, chromium]) {
         }
       });
       assert.ok(handoff.boundary > 0, "fixture retains its top slot");
-      assert.ok(handoff.samples.length > 8, "sampled the moving glide");
+      // WebKit may deliver fewer callbacks for a short glide. Coverage is
+      // established by crossing the boundary below, not assuming 60 Hz.
+      assert.ok(handoff.samples.length >= 4, "sampled the moving glide");
       assert.ok(
         handoff.samples.some(({ top }) => top > 1 && top < handoff.boundary),
         "glide crossed the header release before landing",

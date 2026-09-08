@@ -28,15 +28,13 @@ const SNAP_PX = 1;
 // External endpoint movement beyond this rebases the curve. Above the 1px
 // integer-floor noise of engines that floor scrollTop writes.
 const REBASE_PX = 2;
-const LANDING_MS = 600;
-const MAX_DURATION_MS = 1400;
-const TAIL_START = 0.35;
-const TAIL_DURATION = (1 - TAIL_START) * 0.5;
+const LANDING_MS = 280;
+const MAX_DURATION_MS = 1080;
 
 /**
  * A glide is two legs. The LANDING leg — the last `landingPx` of travel
- * (or the whole trip when shorter) — uses `landingMs` as its easing
- * timescale, with a shortened low-speed tail. A hop of one viewport and
+ * (or the whole trip when shorter) — uses a cubic ease-out over
+ * `landingMs`, with no separate low-speed tail. A hop of one viewport and
  * a jump across the whole list arrive identically. The APPROACH leg covers
  * the rest with constant braking to the landing leg's entry speed, its
  * duration derived from distance and capped at `approachCapMs`.
@@ -69,14 +67,8 @@ export function glidePace(
 }
 
 function easeOutLanding(t: number): number {
-  if (t <= TAIL_START) return 1 - (1 - t) ** 5;
-  // Keep the quintic's first 88% of travel, then spend half its remaining
-  // time on the tail. This polynomial matches position, speed and braking
-  // at the join and reaches zero speed/braking at the end, without a crawl
-  // or a larger snap threshold. The polynomial coefficients follow from
-  // that duration ratio; changing it requires re-deriving them.
-  const s = Math.min(1, (t - TAIL_START) / TAIL_DURATION);
-  return 1 - (1 - TAIL_START) ** 5 * (1 - s) ** 3 * (1 + 0.5 * s + s * s);
+  // Speed and braking both taper to zero at the landing.
+  return 1 - (1 - t) ** 3;
 }
 
 /** The legs of one trip of `distance` px (magnitude), all in px and ms. */
@@ -102,10 +94,9 @@ interface Legs {
 function planLegs(distance: number, pace: GlidePace): Legs {
   const landingPx = Math.min(distance, pace.landingPx);
   const approachPx = Math.max(0, distance - landingPx);
-  // The quintic prefix starts at slope 5: the landing's entry speed in px/ms;
-  // its speed is 5(1 - u)^4, so its initial braking is 20 L / T² px/ms².
-  const entrySpeed = landingPx > 0 ? (5 * landingPx) / pace.landingMs : 0;
-  const landingBraking = (20 * landingPx) / pace.landingMs ** 2;
+  // Cubic ease-out: entry speed 3 L / T and initial braking 6 L / T².
+  const entrySpeed = landingPx > 0 ? (3 * landingPx) / pace.landingMs : 0;
+  const landingBraking = (6 * landingPx) / pace.landingMs ** 2;
   // A linear decay at that braking covers approachPx in T ms when
   // (a/2) T² + v1 T = approachPx.
   const uncappedMs =
@@ -148,7 +139,7 @@ function travelled(legs: Legs, elapsed: number): number {
 }
 
 function totalMs(legs: Legs): number {
-  return legs.approachMs + legs.landingMs * (TAIL_START + TAIL_DURATION);
+  return legs.approachMs + legs.landingMs;
 }
 
 export function startGlide(

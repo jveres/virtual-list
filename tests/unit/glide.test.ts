@@ -82,14 +82,39 @@ describe("glide", () => {
     },
   );
 
-  it("should preserve the original deceleration before the low-speed tail", () => {
+  it("should ease off the braking through a short landing", () => {
     const host = harness(811, 0, false);
-    const glide = startGlide(host, glidePace(811), () => {});
+    const positions: number[] = [];
+    const write = host.write;
+    host.write = (top) => {
+      write(top);
+      positions.push(top);
+    };
+    startGlide(host, glidePace(811), () => {});
 
-    vi.advanceTimersByTime(208); // First callback at 16ms; 192ms elapsed.
+    vi.advanceTimersByTime(300);
 
-    expect(host.top).toBeCloseTo(811 * (1 - 192 / 600) ** 5, 6);
-    glide.cancel();
+    expect(host.top).toBe(0);
+    const steps = positions.slice(1).map((top, index) => {
+      const previous = positions[index];
+      if (previous === undefined) throw new Error("missing position");
+      return previous - top;
+    });
+    // Exclude the startup's minimum step and the final exact landing.
+    const braking = steps.slice(2, -2).map((step, index) => {
+      const previous = steps[index + 1];
+      if (previous === undefined) throw new Error("missing step");
+      return previous - step;
+    });
+    expect(braking.length).toBeGreaterThan(5);
+    for (let index = 1; index < braking.length; index++) {
+      const deceleration = braking[index];
+      const previous = braking[index - 1];
+      if (deceleration === undefined || previous === undefined)
+        throw new Error("missing braking sample");
+      expect(deceleration).toBeGreaterThan(0);
+      expect(deceleration).toBeLessThan(previous);
+    }
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -351,10 +376,10 @@ describe("glide", () => {
     const t0 = performance.now();
     vi.advanceTimersByTime(2000);
     expect(top).toBe(100_000);
-    // Nominal: 800ms approach cap + 600ms landing; the landing snaps to
+    // Nominal: 800ms approach cap + 280ms landing; the landing snaps to
     // the target within a pixel a little before its nominal end.
-    expect(doneAt - t0).toBeLessThanOrEqual(1400 + 32);
-    expect(doneAt - t0).toBeGreaterThanOrEqual(1200);
+    expect(doneAt - t0).toBeLessThanOrEqual(1080 + 32);
+    expect(doneAt - t0).toBeGreaterThanOrEqual(960);
   });
 
   it("a long trip never stops slowing down: the approach brakes straight into the landing", () => {

@@ -159,11 +159,11 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-// The send's pace: a one-viewport hop (a send from the bottom) lands in this
-// time, and a send from anywhere else — across the whole list — decelerates
-// through that very same landing after an approach of at most this long.
-// The buttons' glides use the runtime's quicker default landing.
-const SEND_SCROLL_DURATION_MS = 650;
+// Shared pace for pinning a new message and returning to the top: a
+// one-viewport hop uses this landing duration. Longer trips decelerate
+// through the same landing after an approach of at most this long.
+// The bottom button retains the runtime's quicker default landing.
+const CHAT_SCROLL_DURATION_MS = 650;
 // Synthetic days over the transcript: one separator per this many messages.
 const MESSAGES_PER_DAY = 12;
 // The in-flow scrollback slot's fixed height.
@@ -2086,7 +2086,7 @@ async function handleSend(): Promise<void> {
       virtualList?.scrollTo(String(userMessage.id), {
         align: "start",
         behavior: "smooth",
-        duration: SEND_SCROLL_DURATION_MS,
+        duration: CHAT_SCROLL_DURATION_MS,
         // Under the floating day pill, not behind it.
         offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
       }) ?? Promise.resolve(false);
@@ -2229,7 +2229,10 @@ scrollTopBtn.addEventListener("click", (event) => {
   // Targets the currently committed snapshot only. If older history loads
   // while the glide runs, the prepend commits — without movement — when
   // the phase settles; another press continues from there.
-  void virtualList?.scrollTo("start", { behavior: "smooth" });
+  void virtualList?.scrollTo("start", {
+    behavior: "smooth",
+    duration: CHAT_SCROLL_DURATION_MS,
+  });
 });
 
 scrollBottomBtn.addEventListener("click", (event) => {
