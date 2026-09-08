@@ -115,7 +115,8 @@ for (const engine of [firefox, chromium, webkit]) {
     );
 
     for (const distance of [
-      80, 60, 44, 43, 30, 10, 0.5, 0, -10, 0, 10, 30, 43, 44, 60,
+      100, 88, 87, 80, 60, 44, 33, 32, 31, 30, 10, 0.5, 0, -10, 0, 10, 30, 31,
+      32, 33, 44, 60, 80, 87, 88, 100,
     ]) {
       const result = await page.evaluate(async (distance) => {
         const v = document.querySelector("#viewport");
@@ -146,7 +147,10 @@ for (const engine of [firefox, chromium, webkit]) {
           actualDistance:
             today.getBoundingClientRect().top - v.getBoundingClientRect().top,
           active: slots[0].textContent,
+          activeVisibility: getComputedStyle(slots[0]).visibility,
+          activeOffset: a.top - top,
           incoming: slots[1].textContent,
+          incomingOffset: b.top - top,
           overlap: slots[1].textContent
             ? Math.max(
                 0,
@@ -174,15 +178,34 @@ for (const engine of [firefox, chromium, webkit]) {
         `incoming pill was clipped: ${JSON.stringify(result)}`,
       );
       assert.equal(
+        result.activeVisibility,
+        "visible",
+        `outgoing date must slide out, not disappear, at ${distance}`,
+      );
+      const expectedOffset =
+        result.active === "Yesterday"
+          ? Math.min(0, result.actualDistance - 44)
+          : 0;
+      assert.ok(
+        Math.abs(result.activeOffset - expectedOffset) <= 0.5,
+        `date handoff must track scrolling in both directions: ${JSON.stringify(result)}`,
+      );
+      assert.equal(
         result.inlineVisibility,
         distance < 44 ? "hidden" : "visible",
         `overlay owns today's header at ${distance}`,
       );
+      if (result.incoming === "Today") {
+        assert.ok(
+          Math.abs(result.incomingOffset - result.actualDistance) <= 0.5,
+          `incoming date must stay attached to its message: ${JSON.stringify(result)}`,
+        );
+      }
       if (distance <= 0) {
         assert.equal(result.active, "Today");
         assert.equal(result.incoming, "");
       }
-      if (distance === 30 || distance === 0) {
+      if (distance === 44 || distance === 30 || distance === 0) {
         const box = await page.locator(".viewport-wrap").boundingBox();
         await page.screenshot({
           path: `${artifacts}/${engine.name()}-${distance}.png`,

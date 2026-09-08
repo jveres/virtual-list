@@ -88,6 +88,16 @@ try {
   assert.equal(await page.evaluate(() => window.requests), 0);
   await editor.press("Enter");
   await page.waitForFunction(() => window.requests === 1);
+  const today = page
+    .locator("#viewport .section-header-pill")
+    .filter({ hasText: /^Today$/ });
+  const newPrompt = page
+    .locator(".message.user")
+    .filter({ hasText: "Changed question" });
+  assert.ok(
+    (await today.boundingBox()).y < (await newPrompt.boundingBox()).y,
+    "editing must place Today above the edited prompt and reply",
+  );
   assert.equal(await editor.count(), 0);
   assert.equal(
     await page.locator("#prompt").inputValue(),

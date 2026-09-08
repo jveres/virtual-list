@@ -165,6 +165,27 @@ describe("sticky headers", () => {
     expect(inline.get("day:1")?.style.visibility).toBe("");
   });
 
+  it("should keep the incoming date attached to its row in both scroll directions", () => {
+    const { sticky, active, incoming } = setup();
+
+    for (const [scroll, offset] of [
+      [57, -1],
+      [70, -14],
+      [90, -34],
+      [99, -43],
+      [90, -34],
+      [70, -14],
+      [57, -1],
+    ] as const) {
+      sticky.update(scroll);
+
+      expect(active.style.transform).toBe(`translateY(${offset}px)`);
+      expect(active.style.visibility).not.toBe("hidden");
+      expect(incoming.style.transform).toBe(`translateY(${100 - scroll}px)`);
+    }
+    sticky.destroy();
+  });
+
   it("should restore both inline pills when sticky headers are disabled during handoff", () => {
     const { sticky, inline } = setup();
     sticky.refresh(90);

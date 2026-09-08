@@ -185,9 +185,9 @@ export function createStickyHeaders(
     show();
     setActive(lo);
 
-    // While the next group's header is within one header-height of the top,
-    // push the old pill above the clip while the incoming slot rises. The binary
-    // search promotes it to `active` the moment it reaches the top.
+    // Keep the incoming pill attached to its in-flow row until it reaches
+    // the top. Within the sticky band it pushes the old pill out 1:1 with
+    // scrolling; reversing direction follows the same positions.
     const nxt = lo + 1;
     const top =
       nxt < groupCount ? headerTop(nxt) - scroll : Number.POSITIVE_INFINITY;

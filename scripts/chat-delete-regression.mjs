@@ -53,6 +53,33 @@ try {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await open(page);
+  await page.locator("#viewport").evaluate((el) => {
+    el.scrollTop -= 120;
+  });
+  await page.waitForTimeout(250);
+  const lastPrompt = page.locator(".message.user").last();
+  const promptTop = () =>
+    lastPrompt.evaluate((el) => el.getBoundingClientRect().top);
+  const readingTop = await promptTop();
+  const lastAnswer = page.locator(".message.assistant").last();
+  // Invoke controls without Playwright scrolling their footer into view.
+  await lastAnswer
+    .locator('.version-nav-btn[data-dir="prev"]')
+    .evaluate((el) => el.click());
+  await page.waitForTimeout(250);
+  assert.ok(
+    Math.abs((await promptTop()) - readingTop) < 1,
+    "switch preserves reading anchor",
+  );
+  await lastAnswer
+    .locator(".message-version-delete-btn")
+    .evaluate((el) => el.click());
+  await page.locator(".delete-message-confirm").click();
+  await page.waitForTimeout(350);
+  assert.ok(
+    Math.abs((await promptTop()) - readingTop) < 1,
+    "version deletion must preserve reading anchor instead of re-pinning the prompt",
+  );
   await importTurns(page, 6);
   const row = page.locator(".message.user").filter({ hasText: "Turn 2" });
   const button = row.locator(".message-delete-btn");
@@ -209,7 +236,12 @@ try {
   await open(touch);
   await importTurns(touch, 6);
   const touched = touch.locator(".message.user").filter({ hasText: "Turn 2" });
-  await touched.locator(".message-content").tap();
+  // Reveal actions from the bubble padding without entering text editing.
+  const bubble = touched.locator(".message-content");
+  const bubbleWidth = await bubble.evaluate(
+    (el) => el.getBoundingClientRect().width,
+  );
+  await bubble.tap({ position: { x: bubbleWidth / 2, y: 2 } });
   assert.equal(await touched.getAttribute("data-actions-visible"), "");
   await touched.locator(".message-delete-btn").tap();
   assert.equal(await touch.locator("#delete-message-dialog").isVisible(), true);

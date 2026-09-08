@@ -6,6 +6,42 @@ const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 try {
+  const simulated = await browser.newPage({
+    viewport: { width: 1420, height: 950 },
+  });
+  await simulated.goto(`${base}/demos/streaming/`);
+  await simulated.waitForFunction(
+    () => !document.documentElement.classList.contains("booting"),
+  );
+  await simulated.evaluate(() => {
+    const viewport = document.querySelector("#viewport");
+    const prompt = [...viewport.querySelectorAll(".message.user")].at(-1);
+    const top = () =>
+      prompt.getBoundingClientRect().top - viewport.getBoundingClientRect().top;
+    window.refreshPromptPositions = [top()];
+    window.sampleRefreshPrompt = true;
+    const sample = () => {
+      window.refreshPromptPositions.push(top());
+      if (window.sampleRefreshPrompt) requestAnimationFrame(sample);
+    };
+    requestAnimationFrame(sample);
+    [...viewport.querySelectorAll(".message-refresh-btn")].at(-1).click();
+    window.refreshPromptPositions.push(top());
+  });
+  await simulated.waitForTimeout(450);
+  const positions = await simulated.evaluate(() => {
+    window.sampleRefreshPrompt = false;
+    return window.refreshPromptPositions;
+  });
+  assert.ok(
+    Math.abs(positions[0] - 44) < 1,
+    "fixture starts with the prompt pinned below the date pill",
+  );
+  assert.ok(
+    positions.every((top) => Math.abs(top - positions[0]) < 1),
+    `refresh must keep an already-pinned prompt stationary: ${JSON.stringify(positions)}`,
+  );
+  await simulated.close();
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -99,6 +135,16 @@ try {
   await page.locator("#prompt").fill("Keep my draft");
   await refresh.click();
   await page.waitForFunction(() => window.requests === 1);
+  const today = page
+    .locator("#viewport .section-header-pill")
+    .filter({ hasText: /^Today$/ });
+  const refreshedPrompt = page
+    .locator(".message.user")
+    .filter({ hasText: "Last question" });
+  assert.ok(
+    (await today.boundingBox()).y < (await refreshedPrompt.boundingBox()).y,
+    "refresh must place Today above the prompt, not between prompt and reply",
+  );
   assert.equal(await refresh.count(), 1);
   assert.equal(await refresh.isDisabled(), true);
   assert.equal(await refresh.isVisible(), false);
@@ -136,6 +182,11 @@ try {
   );
   await lastRow.getByRole("button", { name: "Previous version" }).click();
   await page.getByText("Original answer", { exact: true }).waitFor();
+  assert.equal(
+    await today.count(),
+    0,
+    "old response version restores its original date grouping",
+  );
   assert.equal(await refresh.count(), 1);
   await lastRow.getByRole("button", { name: "Next version" }).click();
   await lastRow

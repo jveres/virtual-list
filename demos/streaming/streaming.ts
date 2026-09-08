@@ -1,5 +1,5 @@
 import {
-  type AnchorPolicy,
+  type AnchorRequest,
   createVirtualList,
   type EdgeSlot,
   type FollowMode,
@@ -726,6 +726,17 @@ function conversationIsDated(): boolean {
 }
 
 function dayOf(message: Message): number {
+  // Keep an exchange together when an old prompt gets a fresh reply. Derive
+  // its display day from the selected reply without rewriting the prompt's
+  // timestamp, so returning to an older version restores its original day.
+  if (message.role === "user") {
+    const node = tree.get(message.id);
+    const replyId = node && selectedChildId(node);
+    const reply =
+      replyId === undefined ? undefined : tree.get(replyId)?.message;
+    if (reply?.role === "assistant" && reply.sentAt !== undefined)
+      return localMidnight(reply.sentAt);
+  }
   if (message.sentAt !== undefined) return localMidnight(message.sentAt);
   if (conversationIsDated()) return UNDATED_DAY;
   return Math.floor(transcriptIndexOf(message) / MESSAGES_PER_DAY);
@@ -801,7 +812,7 @@ function dayHeaderKeys(): string[] {
 
 /** Submit a snapshot for conversation changes; scrollback uses updateWindow.
  * Returns the number of rows handed over (day separators included). */
-function pushItems(anchor?: AnchorPolicy): number {
+function pushItems(anchor?: AnchorRequest): number {
   refreshLoadedWindow();
   syncEdgeSlot();
   const rows = rowsForRuntime();
@@ -1362,8 +1373,8 @@ function switchMessageVersion(messageId: number, offset: number): void {
 }
 
 // Remove the selected version and descendants, preserving sibling versions.
-// Keep branches above the cut, and use the runtime's normal disposal/boot
-// lifecycle to cancel pending paging, measurements, and scroll commands.
+// Version deletion is a branch swap, like version navigation, and keeps the
+// live runtime's reading anchor. Removing an entire tail uses a fresh boot.
 function deleteMessagesFrom(messageId: number, epoch: number): void {
   if (epoch !== conversationEpoch || streamAbort) return;
   const index = transcriptIndexById.get(messageId);
@@ -1400,7 +1411,9 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
     htmlCache.delete(String(id));
   }
   rebuildActiveTranscript();
-  loadedStart = Math.max(0, transcript.length - loadChunkCount());
+  loadedStart = isVersion
+    ? Math.min(loadedStart, index)
+    : Math.max(0, transcript.length - loadChunkCount());
   refreshLoadedWindow();
   const turns = storedConversation();
   if (getAISettings().provider === "openai") {
@@ -1410,7 +1423,8 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
     importedConversation = turns;
   }
   setEdgeState("hidden");
-  mountConversation();
+  if (isVersion) pushItems();
+  else mountConversation();
   setStreamingUI(false);
   syncMetrics();
   promptInput.focus({ preventScroll: true });
@@ -2330,6 +2344,14 @@ async function handleSend(action?: SendAction): Promise<void> {
   cancelUserEdit();
   markConversationChanged();
 
+  const promptInset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const originalPosition = originalPrompt
+    ? virtualList?.positionOf(String(originalPrompt.id))
+    : undefined;
+  const alreadyPinned =
+    originalPosition != null &&
+    Math.abs(originalPosition.top - viewport.scrollTop - promptInset) < 1;
+
   if (!originalPrompt) {
     clearPendingAttachments();
     promptInput.value = "";
@@ -2393,9 +2415,14 @@ async function handleSend(action?: SendAction): Promise<void> {
     // Persist the user turn immediately so a reload mid-stream keeps it (the
     // still-empty assistant placeholder is filtered out).
     persistTurns();
-    // The append itself keeps the viewport put; the pinned glide below owns
-    // the motion.
-    pushItems("viewport");
+    // A new date row may be inserted above a refreshed/edited prompt. If it
+    // is already pinned, preserve that row rather than the preceding reply
+    // behind the sticky band, which would move the prompt down by a header.
+    pushItems(
+      alreadyPinned
+        ? { key: String(userMessage.id), offset: promptInset }
+        : "viewport",
+    );
     if (!shouldFlyIn) {
       fadeInRows(
         originalPrompt
@@ -2414,10 +2441,10 @@ async function handleSend(action?: SendAction): Promise<void> {
     const pinCommand =
       virtualList?.scrollTo(String(userMessage.id), {
         align: "start",
-        behavior: "smooth",
+        behavior: alreadyPinned ? "auto" : "smooth",
         duration: NEW_MESSAGE_SCROLL_DURATION_MS,
         // Under the floating day pill, not behind it.
-        offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+        offset: promptInset,
       }) ?? Promise.resolve(false);
     void pinCommand.then(() => {
       if (sendEpoch === conversationEpoch && streamAbort === abort)
