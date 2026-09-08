@@ -4325,6 +4325,32 @@ describe("runtime — edge slots", () => {
     expect(h.list.elementOf("m19")).toBeNull(); // Unmounted.
   });
 
+  it("should keep item indices independent of edge-slot changes and repeated snapshots", () => {
+    const initial = range(0, 10);
+    const h = mount(initial, {
+      edgeSlots: { start: loader(), end: loader("end") },
+    });
+    h.list.setItems(initial);
+    h.list.updateItem("m3", message(3, "with slots"));
+    h.list.setEdgeSlot("start", null);
+    h.list.updateItem("m4", message(4, "without start"));
+    h.list.setEdgeSlot("start", loader("replacement", 80));
+    h.list.updateItem("m5", message(5, "new start"));
+    h.list.setEdgeSlot("end", null);
+
+    expect(h.list.state.count).toBe(10);
+    for (const [id, body] of [
+      [3, "with slots"],
+      [4, "without start"],
+      [5, "new start"],
+    ] as const) {
+      void h.list.scrollTo(`m${id}`);
+      expect(h.rowElement(body).textContent).toBe(body);
+      expect(h.list.positionOf(`m${id}`)?.top).toBe(80 + id * ROW_H);
+    }
+    h.list.dispose();
+  });
+
   it("a prepend replaces the slot's strip with content while the first row keeps its place", () => {
     const initial = range(0, 40);
     const h = mount(initial, { edgeSlots: { start: loader() } });
@@ -4724,6 +4750,83 @@ describe("runtime — commands", () => {
     await expect(command).resolves.toBe(true);
   });
 
+  it("should retain only landing departures until the measured glide settles", async () => {
+    const unmounted: HTMLElement[] = [];
+    const h = mount(range(0, 100), {
+      overscanPx: 0,
+      onUnmount: (element) => unmounted.push(element),
+    });
+    const command = h.list.scrollTo("start", { behavior: "smooth" });
+    advanceFramesUntil(() => h.viewport.scrollTop <= 500);
+    const departing = h.rowElement("msg 9");
+    expect(h.list.elementOf("m99")).toBe(null);
+
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
+
+    expect(h.viewport.scrollTop).toBe(0);
+    expect(departing.isConnected).toBe(true);
+    expect(unmounted).not.toContain(departing);
+    expect(h.canvas().childElementCount).toBeLessThanOrEqual(13);
+    h.settle();
+    await expect(command).resolves.toBe(true);
+    expect(departing.isConnected).toBe(false);
+    expect(unmounted.filter((element) => element === departing)).toHaveLength(
+      1,
+    );
+    expect(h.canvas().childElementCount).toBe(6);
+  });
+
+  it.each(["wheel", "command", "dispose"] as const)(
+    "should release landing rows on %s interruption",
+    async (interruption) => {
+      const unmounted: HTMLElement[] = [];
+      const h = mount(range(0, 100), {
+        overscanPx: 0,
+        onUnmount: (element) => unmounted.push(element),
+      });
+      const command = h.list.scrollTo("start", { behavior: "smooth" });
+      advanceFramesUntil(() => h.viewport.scrollTop <= 500);
+      const departing = h.rowElement("msg 9");
+      advanceFramesUntil(() => h.viewport.scrollTop === 0);
+      expect(departing.isConnected).toBe(true);
+
+      if (interruption === "wheel") {
+        h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 40 }));
+        h.userScroll(2000);
+        h.settle();
+      } else if (interruption === "command") {
+        await expect(h.list.scrollTo("m20")).resolves.toBe(true);
+      } else {
+        h.list.dispose();
+      }
+
+      await expect(command).resolves.toBe(false);
+      expect(departing.isConnected).toBe(false);
+      expect(unmounted.filter((element) => element === departing)).toHaveLength(
+        1,
+      );
+      if (interruption === "dispose")
+        expect(
+          h.destroyedElements.filter((element) => element === departing),
+        ).toHaveLength(1);
+      else expect(h.canvas().childElementCount).toBe(6);
+    },
+  );
+
+  it("should keep declared-height glide windows strictly virtualized", async () => {
+    const h = mount(range(0, 100), { overscanPx: 0, itemHeight: () => ROW_H });
+    const command = h.list.scrollTo("start", { behavior: "smooth" });
+    advanceFramesUntil(() => h.viewport.scrollTop <= 500);
+    const departing = h.rowElement("msg 9");
+
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
+
+    expect(departing.isConnected).toBe(false);
+    expect(h.canvas().childElementCount).toBe(6);
+    h.settle();
+    await expect(command).resolves.toBe(true);
+  });
+
   it("glides as a programmatic phase: held work commits at the landing settle", async () => {
     const h = mount(range(0, 100));
     const command = h.list.scrollTo("start", { behavior: "smooth" });
@@ -5019,6 +5122,57 @@ describe("mount hooks", () => {
 });
 
 describe("targeted item updates", () => {
+  it.each([false, true])(
+    "should index repeated accepted snapshots independently of held geometry (declared=%s)",
+    (declared) => {
+      const h = mount(range(0, 50), {
+        scrollingUpdates: "freeze",
+        itemHeight: declared ? () => ROW_H : undefined,
+      });
+      h.userScroll(3000);
+      const reordered = [...range(-5, 0), ...range(0, 50).reverse()];
+      h.list.setItems(reordered);
+      h.list.setItems(
+        reordered.map((item) => message(item.id, `new ${item.id}`)),
+      );
+      h.list.updateItem("m-3", message(-3, "pending edit"));
+      h.list.updateItem("m32", message(32, "reordered edit"));
+
+      expect(h.list.state.count).toBe(50);
+      expect(h.list.state.held).toBe(true);
+      h.settle();
+      // Re-adopt the internally retained snapshot to expose a stale item
+      // index, even if the targeted row itself initially rendered correctly.
+      h.list.setEdgeSlot("start", null);
+
+      expect(h.list.state.count).toBe(55);
+      void h.list.scrollTo("m-3");
+      expect(h.rowElement("pending edit").textContent).toBe("pending edit");
+      void h.list.scrollTo("m32");
+      expect(h.rowElement("reordered edit").textContent).toBe("reordered edit");
+      expect(h.list.positionOf("m32")?.top).toBe(2200);
+      h.list.dispose();
+    },
+  );
+
+  it("should retain accepted input indexing after a rejected reordered snapshot", () => {
+    const h = mount(range(0, 10), { throwOn: "invalid" });
+    const accepted = range(0, 10).reverse();
+    h.list.setItems(accepted);
+    h.list.setItems(accepted.map((item) => message(item.id, `new ${item.id}`)));
+    expect(() =>
+      h.list.setItems([message(20, "invalid"), ...range(0, 10)]),
+    ).toThrow("render failed: invalid");
+
+    h.list.updateItem("m3", message(3, "accepted edit"));
+    h.list.setEdgeSlot("start", null);
+
+    expect(h.list.state.count).toBe(10);
+    expect(h.list.positionOf("m3")?.top).toBe(600);
+    expect(h.rowElement("accepted edit").textContent).toBe("accepted edit");
+    h.list.dispose();
+  });
+
   it("evaluates only the changed declaration while a large prepend is held", () => {
     const height = vi.fn(() => ROW_H);
     const initial = range(0, 10_000);

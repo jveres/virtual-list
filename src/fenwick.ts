@@ -74,28 +74,29 @@ export class FenwickTree {
   }
 
   indexAt(offset: number): number {
-    const index = this.descend((prefix) => prefix <= offset);
+    const index = this.descend(offset, true);
     return Math.max(0, Math.min(this.logicalSize - 1, index));
   }
 
   /** Smallest item count whose prefix reaches `offset` (lower bound). */
   lowerBound(offset: number): number {
     if (this.logicalSize === 0 || Number.isNaN(offset) || offset <= 0) return 0;
-    const index = this.descend((prefix) => prefix < offset);
+    const index = this.descend(offset, false);
     return Math.min(this.logicalSize, index + 1);
   }
 
-  /** The largest item count whose prefix sum still `fits`. */
-  private descend(fits: (prefix: number) => boolean): number {
+  /** Largest item count whose prefix is below the inclusive/exclusive bound. */
+  private descend(offset: number, inclusive: boolean): number {
     let index = 0;
     let sum = 0;
     for (let bit = this.searchBit; bit > 0; bit >>= 1) {
       const next = index + bit;
       if (next > this.logicalSize) continue;
       const nextValue = this.tree[next] ?? 0;
-      if (fits(sum + nextValue)) {
+      const nextSum = sum + nextValue;
+      if (inclusive ? nextSum <= offset : nextSum < offset) {
         index = next;
-        sum += nextValue;
+        sum = nextSum;
       }
     }
     return index;

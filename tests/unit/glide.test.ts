@@ -31,6 +31,40 @@ function harness(start: number, target: number, floorWrites: boolean) {
 }
 
 describe("glide", () => {
+  it("should expose the landing leg and reset it when the target rebases", () => {
+    const host = harness(6000, 0, false);
+    let target = 0;
+    host.target = () => target;
+    const glide = startGlide(host, glidePace(600), () => {});
+    expect(glide.landing).toBe(false);
+
+    for (let frame = 0; frame < 150 && !glide.landing; frame++)
+      vi.advanceTimersByTime(16);
+    expect(glide.active).toBe(true);
+    expect(glide.landing).toBe(true);
+    expect(host.top).toBeLessThanOrEqual(600);
+
+    target = 9000;
+    vi.advanceTimersByTime(16);
+    expect(glide.landing).toBe(false);
+    vi.advanceTimersByTime(3000);
+    expect(host.top).toBe(9000);
+    expect(glide.active).toBe(false);
+    expect(glide.landing).toBe(false);
+  });
+
+  it("should clear a short glide's landing state on cancellation", () => {
+    const host = harness(500, 0, false);
+    const glide = startGlide(host, glidePace(600), () => {});
+    vi.advanceTimersByTime(16);
+    expect(glide.landing).toBe(true);
+
+    glide.cancel();
+
+    expect(glide.landing).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each([
     { start: 9554, target: 0, floorWrites: false },
     { start: 0, target: 9554, floorWrites: false },

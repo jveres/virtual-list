@@ -523,6 +523,7 @@ export function createVirtualList<T>(
   /** The last snapshot handed in — what a slot change re-applies. */
   let lastItems: T[] = [...options.items];
   let lastIndexByKey = new Map<string, number>();
+  let lastIndexedKeys: readonly string[] = [];
   let committedKeys: readonly string[] = [];
   const mountedRows = new Set<Row<T>>();
   /** Committed rows whose size may differ from their committed height. */
@@ -1626,7 +1627,7 @@ export function createVirtualList<T>(
         const doomed: Row<T>[] = [];
         if (keysChanged) {
           const nextKeys = new Set(applying.keys);
-          for (const [key, row] of [...rows]) {
+          for (const [key, row] of rows) {
             if (nextKeys.has(key)) continue;
             rows.delete(key);
             doomed.push(row);
@@ -1804,11 +1805,19 @@ export function createVirtualList<T>(
 
   let lastReconcile = { scrollTop: Number.NaN, height: Number.NaN, epoch: -1 };
   let lastRange: GeometryWindow = { start: 0, end: 0 };
+  let holdLandingRows = false;
+  let deferredRetirements = false;
 
   function reconcileWindow(vp: GeometryViewport): GeometryWindow {
+    // Removing an off-screen measured slot can stall Safari's next paint.
+    // Keep the final viewport's departing rows through the landing/settle,
+    // not the whole trip. A rebased approach releases this bounded hold.
+    if (glide !== null)
+      holdLandingRows = !declared && !followGlide && glide.landing;
     // A glide write and the scroll event it produces both reconcile; the
     // second pass finds nothing to do.
     if (
+      !deferredRetirements &&
       lastReconcile.scrollTop === vp.scrollTop &&
       lastReconcile.height === vp.height &&
       lastReconcile.epoch === geometryEpoch
@@ -1819,6 +1828,7 @@ export function createVirtualList<T>(
     let complete = true;
     const range = geometry.window(vp, overscanPx);
     if (
+      !deferredRetirements &&
       !geometryChanged &&
       (range === lastRange ||
         (range.indices === undefined &&
@@ -1834,11 +1844,18 @@ export function createVirtualList<T>(
       return range;
     }
     const delta =
-      !geometryChanged && range.delta?.from === lastRange.indices
+      !deferredRetirements &&
+      !geometryChanged &&
+      range.delta?.from === lastRange.indices
         ? range.delta
         : undefined;
     lastRange = range;
+    deferredRetirements = false;
     function retire(row: Row<T>): void {
+      if (holdLandingRows && geometry.indexOf(row.key) >= 0) {
+        deferredRetirements = true;
+        return;
+      }
       if (declared && !row.edge) {
         rows.delete(row.key);
         deferTeardown(destroyAll([row]));
@@ -2043,6 +2060,7 @@ export function createVirtualList<T>(
     // command still parked for its settle resolves interrupted NOW — the
     // user owns the viewport from here, whatever the settle later finds.
     cancelActiveSmoothScroll: () => {
+      holdLandingRows = false;
       const wasFollowing = followController.stop();
       // Input that stops a glide onto the pin short (a tap, a scrollbar
       // press) owns the viewport where it stopped; no scroll event follows
@@ -2060,6 +2078,7 @@ export function createVirtualList<T>(
     noSmoothScrollInFlight: () => glide === null,
     onGestureStarted: () => {},
     onGestureSettled: () => {
+      holdLandingRows = false;
       for (const run of [...windowUpdates]) run();
       // The phase reached idle: everything held commits, once — and only
       // then does a landed command learn whether it is still on target.
@@ -2084,7 +2103,8 @@ export function createVirtualList<T>(
       } else if (resizeHeld !== null) {
         commit(null, resizeHeld, "allowed", "keep", "instant");
       } else {
-        publish();
+        if (deferredRetirements) reconcileAndPublish();
+        else publish();
       }
       resizeHeld = null;
       trimUnusedReserve();
@@ -2292,6 +2312,24 @@ export function createVirtualList<T>(
     applyItems(snapshot, anchor, interrupt);
   }
 
+  function adoptItems(snapshot: T[], keys: readonly string[]): void {
+    // Index the latest accepted input, not committed geometry: a prepend
+    // can remain pending while updateItem already addresses its new items.
+    if (
+      keys.length !== lastIndexedKeys.length ||
+      keys.some((key, index) => key !== lastIndexedKeys[index])
+    ) {
+      const indexByKey = new Map<string, number>();
+      let index = 0;
+      for (const key of keys) {
+        if (!isSlotKey(key)) indexByKey.set(key, index++);
+      }
+      lastIndexByKey = indexByKey;
+      lastIndexedKeys = keys;
+    }
+    lastItems = snapshot;
+  }
+
   function applyItems(
     snapshot: T[],
     anchor: AnchorRequest | undefined,
@@ -2323,12 +2361,7 @@ export function createVirtualList<T>(
       // can throw after adoption; keep the slots belonging to that snapshot.
       const { prepared, teardownFailures } = preparation;
       if (!disposed) {
-        lastItems = snapshot;
-        lastIndexByKey = new Map(
-          prepared.keys
-            .filter((key) => !isSlotKey(key))
-            .map((key, index) => [key, index]),
-        );
+        adoptItems(snapshot, prepared.keys);
       }
       // Hand-off happens regardless of supersession teardown failures;
       // they are deferred to the outermost guard, which surfaces them only
@@ -2784,11 +2817,7 @@ export function createVirtualList<T>(
         options.boot === "start" ? "none" : "end",
       );
       deferTeardown(teardownFailures);
-      lastIndexByKey = new Map(
-        prepared.keys
-          .filter((key) => !isSlotKey(key))
-          .map((key, index) => [key, index]),
-      );
+      adoptItems(lastItems, prepared.keys);
       commit(prepared);
     });
   } catch (error) {

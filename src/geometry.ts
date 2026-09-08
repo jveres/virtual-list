@@ -284,7 +284,10 @@ export class Geometry {
     // estimator or a duplicate key must leave the previous geometry fully
     // intact, never a half-updated one.
     const keys = [...nextKeys];
-    const indexByKey = new Map(keys.map((key, index) => [key, index]));
+    const indexByKey = new Map<string, number>();
+    for (let index = 0; index < keys.length; index++) {
+      indexByKey.set(keys[index] as string, index);
+    }
     if (indexByKey.size !== keys.length) {
       const seen = new Set<string>();
       for (const key of keys) {
@@ -316,7 +319,7 @@ export class Geometry {
     this.keys = keys;
     this.indexByKey = indexByKey;
     this.tree = tree;
-    for (const key of [...this.heightByKey.keys()]) {
+    for (const key of this.heightByKey.keys()) {
       if (!indexByKey.has(key)) this.heightByKey.delete(key);
     }
     this.pinnedKey = pinned;

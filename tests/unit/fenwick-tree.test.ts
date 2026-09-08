@@ -147,6 +147,27 @@ describe("FenwickTree.add", () => {
 });
 
 describe("FenwickTree edge cases", () => {
+  it.each([[], [0], [0, 0, 0], [0, 0.5, 0, 1.5, 0]])(
+    "should preserve inclusive and exclusive search boundaries for %j",
+    (...values) => {
+      const t = tree(values);
+      const boundaries = values.map((_, index) => t.prefix(index + 1));
+      const offsets = [
+        Number.NEGATIVE_INFINITY,
+        -1,
+        0,
+        ...boundaries.flatMap((value) => [value - 0.25, value, value + 0.25]),
+        Number.POSITIVE_INFINITY,
+        Number.NaN,
+      ];
+
+      for (const offset of offsets) {
+        expect(t.indexAt(offset)).toBe(oracleIndexAt(values, offset));
+        expect(t.lowerBound(offset)).toBe(oracleLowerBound(values, offset));
+      }
+    },
+  );
+
   it("reflects a negative delta (row shrink) in prefix sums", () => {
     const t = tree([10, 10, 10]);
     t.add(1, -4); // item 1 shrinks from 10 to 6

@@ -21,6 +21,8 @@ export interface GlideHost {
 
 export interface Glide {
   readonly active: boolean;
+  /** In the final landing leg; false after completion or cancellation. */
+  readonly landing: boolean;
   cancel(): void;
 }
 
@@ -160,6 +162,7 @@ export function startGlide(
   let frame = 0;
   let startTime = -1;
   let finished = false;
+  let landing = false;
   let startTop = host.read();
   let lastWritten: number | null = null;
   let lastTarget: number | null = null;
@@ -208,6 +211,7 @@ export function startGlide(
       legs = planLegs(Math.abs(target - current), resolved);
     }
     lastTarget = target;
+    landing = now - startTime >= legs.approachMs;
     const remaining = target - current;
     if (Math.abs(remaining) <= SNAP_PX) {
       host.write(target);
@@ -247,6 +251,9 @@ export function startGlide(
   return {
     get active() {
       return !finished;
+    },
+    get landing() {
+      return !finished && landing;
     },
     cancel(): void {
       finish(false);

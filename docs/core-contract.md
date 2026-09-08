@@ -293,7 +293,12 @@ interaction; the [README](../README.md) lists the public options.
   committed, pending snapshot superseded, or dispose), exactly once.
   `onMount`/`onUnmount`
   report an element joining or leaving the scroller's DOM (unmount
-  precedes destroy). `render(item, existing)` may mutate `existing` in
+  precedes destroy). During an explicit measured-row glide's final landing
+  leg, departing rows stay mounted until settle to avoid a Safari paint hitch
+  from removing slots just before arrival. This retains only landing
+  departures, not the whole trip; interruption or a rebased approach releases
+  the hold. Automatic follow and declared-height windows don't use this hold.
+  `render(item, existing)` may mutate `existing` in
   place or return a replacement, which is premeasured off-scroller and
   swapped in at commit; `existing` is offered when mutating it is safe
   (idle, an off-scroller pending replacement, or in `"live"` mode) —
