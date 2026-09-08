@@ -45,6 +45,8 @@ export interface ResponseContext {
 
 /** One persisted turn of the OpenAI conversation. */
 export interface StoredTurn {
+  /** A user-stopped assistant response, including one with no text yet. */
+  stopped?: true;
   attachments?: ChatAttachment[];
   responseState?: ResponseState;
   role: "user" | "assistant";
@@ -288,9 +290,11 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
         ? entry.responseState
         : undefined;
     const toolCalls = storedToolCalls(entry.toolCalls);
+    const stopped = entry.role === "assistant" && entry.stopped === true;
     if (
       typeof entry.markdown !== "string" ||
       (entry.markdown === "" &&
+        !stopped &&
         !responseState &&
         attachments.length === 0 &&
         !toolCalls?.length)
@@ -304,6 +308,7 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
     turns.push({
       role: entry.role,
       markdown: entry.markdown,
+      ...(stopped ? { stopped: true as const } : {}),
       ...(attachments.length ? { attachments } : {}),
       ...(toolCalls ? { toolCalls } : {}),
       ...(sentAt !== undefined ? { sentAt } : {}),

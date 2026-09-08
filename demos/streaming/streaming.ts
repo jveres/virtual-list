@@ -1291,6 +1291,7 @@ function seedStoredTurns(turns: readonly StoredTurn[]): void {
       createMessage({
         role: turn.role,
         markdown: turn.markdown,
+        ...(turn.stopped ? { status: "cancelled" as const } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         ...(turn.responseState ? { responseState: turn.responseState } : {}),
         ...(turn.toolCalls
@@ -1308,7 +1309,11 @@ function seedTranscriptTree(snapshot: TranscriptTree): void {
   // Restore nodes before their links so parents need not appear first in the file.
   for (const node of snapshot.nodes) {
     tree.set(node.id, {
-      message: { ...node.message, id: node.id },
+      message: {
+        ...node.message,
+        id: node.id,
+        ...(node.message.stopped ? { status: "cancelled" as const } : {}),
+      },
       parentId: node.parentId,
       childrenIds: [],
       selectedChildIndex: 0,
@@ -1690,6 +1695,7 @@ function buildRow(message: Message): HTMLElement {
   row.dataset.key = String(message.id);
   row.dataset.toolsig = toolSignature(message);
   syncMessageActions(row, message);
+  syncStoppedMarker(row, message);
   rowById.set(String(message.id), row);
   return row;
 }
@@ -1847,6 +1853,33 @@ function syncRoleLabel(element: HTMLElement, message: Message): void {
   }
 }
 
+function syncStoppedMarker(row: HTMLElement, message: Message): void {
+  row.querySelector(".message-stopped")?.remove();
+  if (message.role !== "assistant" || message.status !== "cancelled") return;
+  const content = row.querySelector<HTMLElement>(".message-content");
+  if (!content) return;
+  const marker = document.createElement("span");
+  marker.className = "message-stopped";
+  marker.textContent = "...stopped";
+  marker.setAttribute("role", "status");
+  // Stay outside inline formatting/links, but inside the final text block.
+  // Responses without any text get a standalone marker.
+  const markdown = Array.from(
+    content.querySelectorAll<HTMLElement>(".markdown"),
+  )
+    .filter((element) => !element.closest("[hidden]"))
+    .at(-1);
+  const blocks = markdown?.querySelectorAll<HTMLElement>(
+    "p, li, pre, td, th, h1, h2, h3, h4, h5, h6",
+  );
+  const lastBlock = blocks?.item(blocks.length - 1);
+  if (lastBlock?.tagName === "PRE") {
+    (lastBlock.querySelector("code") ?? lastBlock).append(marker);
+  } else {
+    (lastBlock ?? markdown ?? content).append(marker);
+  }
+}
+
 // In-place update for a mounted row whose message changed; returns null when
 // the row must be rebuilt (structure changed, or no live viewer to feed).
 function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
@@ -1874,6 +1907,7 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
   if (handle) {
     syncRoleLabel(element, message);
     handle.update(message, message.markdown, false);
+    syncStoppedMarker(element, message);
     return element;
   }
   return null;
@@ -2046,6 +2080,7 @@ function storedConversation(): StoredTurn[] {
   for (const message of transcript) {
     if (
       message.markdown === "" &&
+      message.status !== "cancelled" &&
       !message.responseState &&
       !message.attachments?.length &&
       !message.toolCalls?.length
@@ -2056,6 +2091,9 @@ function storedConversation(): StoredTurn[] {
     turns.push({
       role: message.role,
       markdown: message.markdown,
+      ...(message.role === "assistant" && message.status === "cancelled"
+        ? { stopped: true as const }
+        : {}),
       ...(message.attachments?.length
         ? { attachments: message.attachments }
         : {}),
@@ -2480,7 +2518,12 @@ async function handleSend(action?: SendAction): Promise<void> {
     // New turns use the real clock in both providers. The built-in sample
     // ends yesterday, so the first simulated send opens a Today section.
     const sentAt = Date.now();
+    const editUnanswered =
+      action?.kind === "edit" && previous?.childrenIds.length === 0;
     const userMessage =
+      (editUnanswered && originalPrompt
+        ? { ...originalPrompt, markdown: text }
+        : undefined) ??
       (action?.kind === "regenerate" ? originalPrompt : undefined) ??
       createMessage({
         role: "user",
@@ -2499,7 +2542,13 @@ async function handleSend(action?: SendAction): Promise<void> {
     });
     assistantId = assistantMessage.id;
     if (action?.kind === "edit" && previous && originalPrompt) {
-      addTreeChild(previous.parentId, userMessage);
+      if (editUnanswered) {
+        // No reply branch exists to preserve: edit this prompt in place.
+        previous.message = userMessage;
+        htmlCache.delete(String(userMessage.id));
+      } else {
+        addTreeChild(previous.parentId, userMessage);
+      }
       addTreeChild(userMessage.id, assistantMessage);
       loadedStart = Math.min(
         loadedStart,

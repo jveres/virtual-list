@@ -2801,9 +2801,14 @@ export function createVirtualList<T>(
   function targetTop(target: ScrollTarget, below = 0): number | null {
     const maxTop = geometry.maxScrollTop(viewport.clientHeight);
     if (target === "start") return 0;
-    if (target === "end") return maxTop;
+    if (target === "end") return Math.ceil(maxTop);
     const offset = geometry.offsetOf(target);
-    return offset < 0 ? null : Math.max(0, Math.min(offset - below, maxTop));
+    // Engines can floor fractional scrollTop writes even on Retina displays.
+    // Land beyond the fractional boundary, so the preceding row cannot peek
+    // into the viewport. The browser still clamps to its actual scroll range.
+    return offset < 0
+      ? null
+      : Math.ceil(Math.max(0, Math.min(offset - below, maxTop)));
   }
 
   /** Whether the viewport is on the command's target under current geometry. */

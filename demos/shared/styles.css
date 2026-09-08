@@ -245,6 +245,9 @@ p.ai-settings-note {
   align-items: center;
   justify-content: center;
   height: 44px;
+  /* Include the following message's 12px top padding in the visual gap:
+     shifting the pill down 6px balances the space above and below it. */
+  padding-top: 12px;
 }
 
 .section-header-pill {
@@ -808,6 +811,15 @@ p.ai-settings-note {
 
 .role-label .dot.cancelled {
   background-color: #ef4444;
+}
+
+.message-stopped {
+  color: #ef4444;
+  font-family: var(--font-sans, sans-serif);
+  font-style: normal;
+  font-weight: 400;
+  white-space: nowrap;
+  margin-inline-start: 0.25em;
 }
 
 .tool-calls {
