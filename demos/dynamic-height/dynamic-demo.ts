@@ -15,11 +15,11 @@ import {
 } from "../shared/lab.js";
 import { mustGet, setTextIfChanged } from "../shared/utils.js";
 
-// The dynamic-height lab: adversarial, size-changing content on the v2
+// The dynamic-height lab: adversarial, size-changing content on the
 // runtime, with telemetry that observes the runtime STRICTLY FROM OUTSIDE.
 // The lab generates content and reports violations; every dynamic-height
 // behavior — holding, clipping, premeasuring, committing at settle — lives
-// in the runtime (docs/lean-core.md, execution order step 4).
+// in the runtime (docs/core-contract.md, verification vehicles).
 //
 // Content (all generated here, all volatile):
 // - streaming rows grow word by word (several at once, near and far from

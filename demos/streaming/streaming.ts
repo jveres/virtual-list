@@ -86,7 +86,7 @@ import {
 // keyed renderer re-renders exactly the changed rows (render(item, existing)),
 // and end-compatible snapshots keep end-follow engaged while streaming.
 //
-// On the v2 runtime (docs/lean-core.md): every row is premeasured
+// On the runtime (docs/core-contract.md): every row is premeasured
 // off-scroller before it commits; a structural change above the anchor (a
 // scrollback prepend) commits only when the scroll phase settles, one below
 // it (a new turn, a version switch) at once; and the streaming reply runs
@@ -166,7 +166,7 @@ const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
 const SEND_SCROLL_DURATION_MS = 650;
 // Synthetic days over the transcript: one separator per this many messages.
 const MESSAGES_PER_DAY = 12;
-// The in-flow scrollback slot's fixed height (main's boundary slot).
+// The in-flow scrollback slot's fixed height.
 const EDGE_SLOT_HEIGHT = 52;
 // The day pill's row height; a send pins its message this far below the
 // viewport top when the sticky header is on, so the pill never covers it.
@@ -753,10 +753,12 @@ function dayHeader(day: number): DayHeader {
 }
 
 /** The loaded window with a day separator before each day's first message. */
-function rowsForRuntime(): ChatRow[] {
+function rowsForRuntime(
+  windowMessages: readonly Message[] = messages,
+): ChatRow[] {
   const rows: ChatRow[] = [];
   let current: number | undefined;
-  for (const message of messages) {
+  for (const message of windowMessages) {
     const day = dayOf(message);
     if (day !== current) {
       current = day;
@@ -775,7 +777,7 @@ function dayHeaderKeys(): string[] {
   return dayHeaderRows().map(rowKey);
 }
 
-/** One snapshot to the runtime; all data changes flow through here.
+/** Submit a snapshot for conversation changes; scrollback uses updateWindow.
  * Returns the number of rows handed over (day separators included). */
 function pushItems(anchor?: AnchorPolicy): number {
   refreshLoadedWindow();
@@ -844,7 +846,7 @@ let edgeSlotElement: HTMLElement | null = null;
 let edgeSlotRequested = false;
 
 function applyEdgeSlotState(element: HTMLElement, state: EdgeState): void {
-  // In the flow, "hidden" is an invisible strip (main's idle slot); "At the
+  // In the flow, "hidden" is an invisible strip; "At the
   // top" stays until the conversation changes.
   element.dataset.state = state === "hidden" ? "idle" : state;
   const label = element.querySelector<HTMLElement>(".boundary-slot-label");
@@ -927,13 +929,6 @@ function scheduleEdgeHide(): void {
 // The in-flight scrollback load, so concurrent reach-start signals share
 // one load instead of racing.
 let activeLoad: Promise<void> | null = null;
-// A prepend handed to the runtime but not yet committed (the runtime
-// defers structural updates while a scroll phase is active). The loader —
-// pill included — stays up until onState confirms the committed count;
-// hiding it earlier would let the user reach the old top with no loader in
-// sight and rubber-band against a ghost end.
-let pendingPrepend: { count: number; finish: () => void } | null = null;
-
 // Loads one older chunk; resolves once the prepend has actually been
 // COMMITTED by the runtime — which may hold it until the active scroll
 // phase settles. The prepend preserves the reading position (I1), and the
@@ -942,6 +937,7 @@ let pendingPrepend: { count: number; finish: () => void } | null = null;
 // Called by loadOlderMessages alone, which has already checked that no load
 // is active and that older messages remain.
 function loadOlderChunk(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
   loadingTop = true;
   topBoundaryLoadSeen = true;
   setEdgeState("loading");
@@ -951,13 +947,46 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
   // The epoch check discards a load that outlives its conversation (a
   // provider switch or history clear mid-timeout).
   const epoch = conversationEpoch;
-  activeLoad = new Promise((resolve) => {
-    const finish = () => {
+  const fetched = new Promise<boolean>((resolve) => {
+    const timer = window.setTimeout(() => {
       signal.removeEventListener("abort", cancel);
-      pendingPrepend = null;
-      loadingTop = false;
+      resolve(true);
+    }, LOAD_OLDER_DELAY_MS);
+    function cancel(): void {
+      window.clearTimeout(timer);
+      resolve(false);
+    }
+    signal.addEventListener("abort", cancel, { once: true });
+  });
+  const load = fetched
+    .then(async (ready) => {
+      if (!ready || epoch !== conversationEpoch) return;
+      // A boot-time reach callback can run before createVirtualList returns.
+      const list = virtualList;
+      if (!list) return;
+      // Fetching may finish during a glide. Delay rendering and measurement,
+      // not just the prepend commit: a large image-rich page can otherwise
+      // block animation frames even though its DOM is off the scroll surface.
+      await list.updateWindow(() => {
+        if (epoch !== conversationEpoch) return null;
+        const start = Math.max(0, loadedStart - loadChunkCount());
+        const nextStart = start - (start % MESSAGES_PER_DAY);
+        return {
+          items: rowsForRuntime(transcript.slice(nextStart)),
+          anchor: "viewport",
+          onCommit: () => {
+            loadedStart = nextStart;
+            refreshLoadedWindow();
+            stickyHeaders?.refresh();
+          },
+        };
+      }, signal);
+    })
+    .finally(() => {
+      if (activeLoad !== load) return;
       activeLoad = null;
       if (epoch === conversationEpoch) {
+        loadingTop = false;
         // History exhausted: the in-flow slot keeps its marker at the top
         // of the conversation, where it belongs; the floating pill would
         // announce it over whatever the user is reading (the load kept
@@ -971,42 +1000,13 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
         }
         syncMetrics();
       }
-      resolve();
-    };
-    const timer = window.setTimeout(() => {
-      if (epoch !== conversationEpoch) {
-        finish();
-        return;
-      }
-      loadedStart = Math.max(0, loadedStart - loadChunkCount());
-      // A page load preserves the reading position — never an end-follow,
-      // even when the viewport happens to sit at the bottom.
-      const handed = pushItems("viewport");
-      if (virtualList && virtualList.state.count < handed) {
-        // Deferred by the runtime: stay in the loading state until the
-        // commit is confirmed through onState.
-        pendingPrepend = { count: handed, finish };
-      } else {
-        finish();
-      }
-    }, LOAD_OLDER_DELAY_MS);
-    // The runtime aborts a reach's signal when the user reaches the other
-    // edge (or on dispose): the simulated fetch dies with it, exactly as a
-    // real fetch(url, { signal }) would, and the loader state clears.
-    function cancel(): void {
-      if (activeLoad === null) return;
-      window.clearTimeout(timer);
-      finish();
-    }
-    signal.addEventListener("abort", cancel, { once: true });
-  });
-  return activeLoad;
+    });
+  activeLoad = load;
+  return load;
 }
 
-// onReachStart initiates loading; the prepend itself flows through
-// setItems, which the runtime defers while a scroll phase (gesture or
-// glide) is active and commits — anchored, without movement — when the
-// phase truly settles. The demo never orchestrates scroll phases.
+// Fetch during scrolling; prepare and commit through the runtime's idle
+// window-update queue. The loader stays visible until that commit completes.
 function loadOlderMessages({ signal, complete }: ReachContext): void {
   if (activeLoad) {
     complete();
@@ -1017,7 +1017,11 @@ function loadOlderMessages({ signal, complete }: ReachContext): void {
     if (topBoundaryLoadSeen) setEdgeState("no-more");
     return;
   }
-  void loadOlderChunk(signal).finally(complete);
+  void loadOlderChunk(signal)
+    .catch((error: unknown) => {
+      console.error("Could not load older messages.", error);
+    })
+    .finally(complete);
 }
 
 // --- Conversations ----------------------------------------------------------
@@ -1162,6 +1166,9 @@ let conversationEpoch = 0;
 
 function resetConversationState(): void {
   conversationEpoch++;
+  // An old load's promise may finish after the replacement runtime mounts.
+  // Its identity/epoch guards must not clear or block the new chat's loader.
+  activeLoad = null;
   topBoundaryLoadSeen = false;
   tree.clear();
   tree.set(TREE_ROOT_ID, rootNode());
@@ -1411,9 +1418,10 @@ function streamingDisplayText(message: Message): string {
 // A finished row: the static markdown render plus, when the message has
 // sibling versions, the navigator that switches between them.
 function buildStaticRow(message: Message): HTMLElement {
+  // Use the streaming segment layout even for legacy/simulated calls without
+  // offsets. A grouped tool grid has different spacing and shifts on first text.
   const ordered =
-    message.role === "assistant" &&
-    message.toolCalls?.some((call) => call.markdownOffset !== undefined);
+    message.role === "assistant" && Boolean(message.toolCalls?.length);
   const row = ordered
     ? buildChatRow({ ...message, toolCalls: undefined }).row
     : buildChatItem(message, htmlForMessage(message));
@@ -2332,10 +2340,6 @@ function mountConversation(): void {
     followMode,
     followInset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
     onState: (state, snapshot) => {
-      // A deferred prepend committed: close out the load it belongs to.
-      if (pendingPrepend && state.count >= pendingPrepend.count) {
-        pendingPrepend.finish();
-      }
       syncScrollButtons(state);
       syncMetrics(state);
       // Publications also report mounted-range changes during scrolling.

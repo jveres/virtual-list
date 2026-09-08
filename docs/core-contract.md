@@ -1,14 +1,12 @@
-# lean-core-v2
+# Core contract
 
-The second from-scratch attempt. v1 (branch `lean-core`, kept for
-reference) proved the small API and the keyed geometry kernel, but its DOM
-runtime tried to compensate *after* mutations — estimates, ResizeObserver
-corrections, gesture translations, exceptions for "safe" updates — and
-thereby re-entered the browser-specific failure space `main` had already
-solved. v2 is built on the two cornerstones v1 missed, ported from `main`
-as preserved primitives, with the smaller API built around them.
+This document defines the runtime's geometry and scrolling contract, its
+browser-specific trade-offs, and the labs used to verify them. For the public
+API and demo setup, see the [README](../README.md).
 
 ## The two cornerstones
+
+The runtime combines browser-aware settling with known item geometry:
 
 1. **Cross-browser scrollend detection** — the scroll-settle controller:
    per-engine heuristics (Chromium wheel-idle windows and single-scrollend
@@ -18,30 +16,30 @@ as preserved primitives, with the smaller API built around them.
    included, and an unknown engine gets the Firefox contract) yielding the best
    obtainable settle signal for when structural changes to the scroller
    are safe — strong evidence, not proof, on wheel engines that expose no
-   fingers-down state (the accepted trade-off below). Ported from `main`
-   (`src/scroll-settle.ts`) and refined under lab traces: the unchanged
-   portions match `main`; the Firefox deviations (candidate edge
-   release, and Firefox alone retaining it across decaying momentum
-   input) are flagged in-source and documented here. Its engine knowledge
-   is empirically verified and is not re-derived.
+   fingers-down state (the accepted trade-off below). The controller lives in
+   `src/scroll-settle.ts`; its Firefox candidate-release policy is documented
+   below and tested against renewed input and decaying momentum tails.
 2. **Chunk premeasurement** — items are built and measured OFF-scroller
    (a detached, width-synced measurement root) before they ever enter the
-   scroll surface, so no DOM mutation of the scroller happens during
-   scrolling and heights are real, not estimated, at commit time. Ported
-   from `main`'s detached item measurer.
+   scroll surface. Heights are measured, not estimated, at commit time.
+   Hosts can instead supply declared heights. Mounting and unmounting known
+   rows continues during scrolling without changing their committed geometry.
 
 ## The core contract (normative)
+
+The following rules govern preparation, scrolling, and commits:
 
 1. During an active scroll phase (a native gesture or a programmatic
    glide), the scroll surface's **geometry is immutable**: key order,
    measured extents, offsets, canvas size, and the scroll range do not
-   change. Window reconciliation — mounting and
+   change, except for the explicit `"live"` policy below. Window
+   reconciliation — mounting and
    unmounting already-known, premeasured rows at their fixed positions —
    continues freely throughout the scroll; without it a long momentum
    scroll would run into blank gaps. Positioning within fixed geometry is
    not a structural change.
 2. New chunks may be fetched, rendered, and measured **off-scroller**.
-3. Only after the proven cross-browser settle signal may the runtime
+3. After the cross-browser settle signal, the runtime may
    **atomically commit**, in one frame:
    - keys,
    - pre-measured heights,
@@ -58,7 +56,7 @@ as preserved primitives, with the smaller API built around them.
    change; the complete updated content is always visible. Under
    `"same-height"` the committed elements are **frozen along with
    geometry**: the update is rendered fresh (`render(item)` without
-   `existing`) and premeasured off-scroller; if its whole-pixel height
+   `existing`) and premeasured off-scroller; if its device-pixel-rounded height
    equals the committed height (and the committed row has no measurement
    of its own waiting for the settle) it is **promoted** — swapped into the
    committed slot immediately, same height, same offset, no geometry
@@ -93,21 +91,19 @@ as preserved primitives, with the smaller API built around them.
    or gaps until then. Hosts route size changes through `setItems` and
    reserve dimensions for late resources.
 
-Corollaries: no ResizeObserver-driven mid-gesture geometry correction, no
-gesture-time canvas translation, no "safe update" exceptions. What v1
-handled with compensation machinery simply cannot occur: heights are known
-before mount, and geometry changes only at settle — the one deliberate
-exception being `"live"`'s no-write commits below the anchor, a product
-choice with its trade-off stated above.
+The runtime does not compensate for geometry changes with gesture-time
+anchor writes or canvas translations. Heights are measured or declared before
+mount, and geometry changes wait for settle except for `"live"`'s documented
+no-write commits at or below the anchor.
 
-Settles during active input or motion are defects, always. The v2
-Firefox deviation (in the preserved controller, flagged in-source) is a
+Settles during active input or motion are defects, always. The
+Firefox edge policy is a
 candidate-release design: a pending edge release is invalidated when a
 post-scrollend wheel adds energy (grows more than a pixel past its
 predecessor, with a 2px floor), reverses direction (new intent), or arrives from a
 line/page-delta device (discrete notches are deliberate input; momentum
 tails exist only on pixel-delta devices) — such a scrollend was a
-mid-momentum/mid-hold pause, not the release (`main` honored it on a
+mid-momentum/mid-hold pause, not the release (an earlier controller honored it on a
 single 1600ms timer and committed under actively-held fingers). A
 decaying pixel-mode tail merely postpones the 450ms confirmation window.
 Renewed input cancels the candidate and its scheduled checks. The controller
@@ -122,7 +118,7 @@ is strong evidence of release, not proof — a hold that pauses into a
 quiet scrollend and stays still is observably identical to a release
 and can commit under resting fingers after ~450ms if no renewed input is
 detectable.
-Retaining the long window universally would restore main's ~1.5s edge
+Retaining the long window universally would impose ~1.5s edge
 latency on every normal flick; the fast path was chosen. Standing lab
 watch items: the APZ re-grab race after fast commits (a ghost-edge
 bounce on fast re-grab means the 450ms buffer rises), and still-hold
@@ -184,12 +180,15 @@ The definition of correct, referenced by number throughout the code:
   between the canvas write and the slot moves froze a stale range (a blank
   gap below the last row after an iPad rotation).
 
-## Preserved from v1 (signed off there, carried forward)
+## Runtime components and API
+
+These components implement the contract. The API summary below explains their
+interaction; the [README](../README.md) lists the public options.
 
 - `src/fenwick.ts` + `src/geometry.ts`: the pure keyed geometry kernel
   (capture → mutate → resolve transactions, anchor policies, pin-to-top
-  reserve I5) with its oracle/property tests. Its role narrows: heights fed
-  to it are premeasured, not estimated-then-corrected.
+  reserve I5) with its oracle/property tests. Heights fed to it are measured
+  or declared, not estimated-then-corrected.
 - `src/glide.ts`: the programmatic glide (exact landing, ≥1px/frame on
   floored engines, endpoint rebase). Two legs: the LANDING — the last
   viewport of travel, or the whole trip when shorter — always takes the
@@ -220,7 +219,7 @@ The definition of correct, referenced by number throughout the code:
   after preparation succeeds, and failed restoration marks the render unknown.
   Fresh-row ownership, measurement, promotion, and commit scheduling remain
   in the runtime. Deferred declared-height rendering has its own commit phase.
-- The API, as built in the v2 runtime (`src/virtual-list.ts`):
+- The public API (`src/virtual-list.ts`):
   `createVirtualList(viewport, { items, key, render, height?, boot?, overscanPx?,
   onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
   settleStrategy?, scrollingUpdates?, followBehavior? })`,
@@ -287,13 +286,12 @@ The definition of correct, referenced by number throughout the code:
   missing or unmounted key is a no-op, and the later ResizeObserver delivery
   sees the committed height and does not duplicate the commit.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
-  waiting for settle). Changes from the v1 shape: `estimateSize` is gone — every
-  key is premeasured before it commits, so heights are never estimated
-  (hosts window their data; the chat demo hands the runtime a modest
-  loaded window); v1's `onUnmount` became `onDestroy(element, item)` —
-  with retained nodes, leaving the DOM is not the end of an element's
-  life; destruction (key removed, replacement committed, pending snapshot
-  superseded, dispose) is, exactly once — and v2's `onMount`/`onUnmount`
+  waiting for settle). Heights are measured or declared, never estimated.
+  Hosts window their data; the chat demo hands the runtime a modest loaded
+  window. Measured rows retain their nodes when leaving the DOM:
+  `onDestroy(element, item)` ends an element's life (key removed, replacement
+  committed, pending snapshot superseded, or dispose), exactly once.
+  `onMount`/`onUnmount`
   report an element joining or leaving the scroller's DOM (unmount
   precedes destroy). `render(item, existing)` may mutate `existing` in
   place or return a replacement, which is premeasured off-scroller and
@@ -323,7 +321,7 @@ The definition of correct, referenced by number throughout the code:
   Preparation preserves internal ownership and cleans up fresh elements on
   failure. Rollback of in-place host rendering is best effort, because the
   runtime cannot reverse arbitrary DOM mutations or external side effects.
-- v2 addition (lab-prototyped): the reach callbacks receive a context with
+- The reach callbacks receive a context with
   an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
   runtime aborts only on conditions it knows objectively: the user reached
   the OPPOSITE edge (their intent moved on; every started operation for
@@ -332,22 +330,23 @@ The definition of correct, referenced by number throughout the code:
   (`fetch(url, { signal })`); a host that wants a scrollback fetch to
   outlive the scroll-away simply ignores the signal. A re-approach refires
   the reach (hysteresis) and refetches.
-- Invariants I1–I6 stand as the definition of correct; their *mechanisms*
-  change (no mid-gesture ResizeObserver corrections: an idle observation
+- Invariants I0–I6 define correct behavior. An idle ResizeObserver observation
   commits in its own delivery, which is I6, and a phase-time one waits for
   the settle — or, under `"live"`, commits at once when no scroll write is
-  needed).
+  needed.
 
 ## Verification vehicles
+
+Use these demos to isolate controller behavior and exercise runtime contracts:
 
 - **demos/scroll-settle** — the settle lab: a plain (non-virtualized)
   natively scrolling list wired straight to the controller itself.
   Chunks load during scrolling but commit only at settle (prepend + one
   anchor-preserving write). Live panel: strategy, gesture state, settle
   lag, post-settle-motion counter (premature-settle detector), and an
-  exportable event/decision trace. The settle signal is validated per
-  browser HERE, before any runtime exists on top of it.
-- **demos/dynamic-height** — the dynamic-height lab: the v2 runtime under
+  exportable event/decision trace. This isolates the settle signal from
+  runtime behavior for per-browser validation.
+- **demos/dynamic-height** — the dynamic-height lab: the runtime under
   adversarial content (streaming rows, toggles, late-loading images,
   width-sensitive code, edge loads with abort, superseding bursts,
   deletions, width jitter), every change entering through setItems (in
@@ -365,7 +364,7 @@ The definition of correct, referenced by number throughout the code:
   clipped or gapped paint, held or not), T height re-committed without a
   change, D destroy-once or leak failures, and X a runtime throw that is
   not the lab's own chaos render failure (or an uncaught exception).
-- **demos/streaming** — the chat acceptance target, hosted on the v2
+- **demos/streaming** — the chat acceptance target, hosted on the
   runtime under `scrollingUpdates: "live"`: pin-to-top on send (I5 reserve
   plus a smooth `scrollTo`), end-follow through streams, scrollback loads
   wired to the reach signal, version branches, live tool panels.
@@ -374,7 +373,7 @@ The definition of correct, referenced by number throughout the code:
 
 The repository includes an opt-in Playwright runner for the dynamic-height
 lab. It starts a private Vite server, exercises every scrolling policy in
-Chromium, Firefox, and WebKit with real wheel input, and fails on a lab
+Chromium, Firefox, and WebKit with automated wheel input, and fails on a lab
 violation, clipped paint, teardown leak, page error, console error or
 unexpected console warning, or wrong settle strategy.
 
@@ -406,50 +405,27 @@ to test an already-running server. Set
 Playwright Chromium. This matrix is reproducible engine evidence; it does
 not replace the physical desktop Safari and iOS Safari acceptance pass.
 
-## Execution order
+## Development and verification
 
-1. Branch setup, clean slate, this contract. Port `scroll-settle.ts`
-   from `main`; build the settle lab. **Review + all-browser lab
-   checkpoint.** (Done; two lab-driven Firefox deviations ratified.)
-2. Port the detached premeasurement primitive (`src/premeasure.ts`) and
-   direct-host characterization tests for the settle controller's engine
-   strategies. **Review checkpoint.** (Done; retained-node ownership rule
-   ratified.)
-3. The v2 runtime on the contract above: off-scroller preparation
-   (render → premeasure → retain), dimensionally stable slots, settle-
-   gated atomic commits into the kernel and DOM, commands/glide via the
-   controller's programmatic gesture. **Review checkpoint.** (Done;
-   eleven review rounds of lifecycle invariants, each with discriminating
-   regressions, signed off at `2c540c9`/`15db729`.)
-4. A focused dynamic-height lab: adversarial content only (delayed
-   unknown-size images, expansion/shrinkage above/inside/below the
-   viewport, off-scroller changes, remounts, rapid superseding changes,
-   viewport-width changes) with telemetry that proves the invariants — no
-   structural geometry or `scrollTop` writes during native scrolling,
-   `"live"` commits limited to rows at or below the anchor with no explicit
-   write, no row overlap, latest held heights committing once at settle, a
-   stationary visual anchor outside the documented live-row changes,
-   immediate idle commits, held measurements invalidated by width or
-   resource changes, and aborted or superseded retained nodes destroyed
-   exactly once. All dynamic-height behavior lives in the runtime; the lab
-   only generates content and reports violations. **Pass in Chromium,
-   Firefox, desktop Safari, and iOS Safari.** (Done; signed off at
-   `d7ec716`: the standard matrix and 5-minute chaos runs clean in
-   WebKit, Chromium and Firefox; chaos with manual scrolling clean in
-   desktop Safari; iPadOS and iPhone runs reported through the device
-   channel and their findings fixed.)
-5. Only then: host the streaming chat demo; gauntlet against `main`.
-   (Hosted: `demos/streaming` runs on the v2 runtime in `"live"` mode —
-   pin-to-top, end-follow, scrollback with abort, branches, tool panels —
-   and is back in the typecheck and build. The gauntlet against `main` in
-   the four browsers is the remaining acceptance step.)
+After code changes, run `pnpm run check`, `pnpm test`, and the relevant browser
+regressions. The profiling tools also have a portable check:
+`pnpm run test:firefox-profile`.
+
+For performance investigations, start with the
+[Firefox-first profiling workflow](firefox-profiling.md). Use comparable
+baseline and repeat captures on the reported display. Automated wheel tests
+check correctness, but do not reproduce native trackpad release or prove smooth
+physical presentation. Preserve captures locally under ignored
+`browser-artifacts/`, and close the test processes you start.
 
 ## Lessons carried as law
+
+Earlier implementations and browser testing established these constraints:
 
 - jsdom has no layout engine: engine lifecycles and premeasurement are
   validated in real browsers (the lab), never asserted from jsdom.
 - WebKit floors scrollTop writes; Safari kills momentum on writes; Firefox
   keeps a pre-apply scroll-limit snapshot for the rest of a gesture
-  (ghost end) — the reasons the settle controller is ported, not rewritten.
-- Estimates are a scrollbar courtesy, not geometry: v1's ghost-top bounce
+  (ghost end) — reasons to preserve the controller's engine-specific contracts.
+- Estimates are a scrollbar courtesy, not geometry: an earlier ghost-top bounce
   came from letting estimate error into live scroll space.

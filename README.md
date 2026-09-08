@@ -2,18 +2,18 @@
 
 `virtual-list` is a dynamic-height virtualizer for chat-style interfaces: a
 native scrolling viewport, rows of unknown and changing height, streaming
-content, and scrollback loading, without visible jumps. This branch
-(`lean-core-v2`) is a from-scratch rewrite of the runtime on two cornerstones:
+content, and scrollback loading. The runtime rests on two cornerstones:
 
 - **Settle detection** (`src/scroll-settle.ts`): per-engine heuristics that
-  say when a user gesture has genuinely finished, so structural changes to
+  identify when a user gesture has likely finished, so structural changes to
   the scroller can land while nothing is moving.
 - **Premeasurement** (`src/premeasure.ts`): rows are rendered and measured
   off the scroller before they ever enter it, so committed geometry is
-  whole-pixel and exact, never estimated and corrected later.
+  rounded to whole device pixels, never estimated and corrected later.
+  Hosts can supply declared heights instead of measuring rows.
 
-The contract, its invariants (I1–I6), and the design decisions live in
-[`docs/lean-core.md`](docs/lean-core.md). This file covers running, using,
+The contract, its invariants (I0–I6), and the design decisions live in
+[`docs/core-contract.md`](docs/core-contract.md). This file covers running, using,
 and testing the code.
 
 ## Run the demos
@@ -52,9 +52,8 @@ pnpm run dev
   the current time, so the first new turn starts a **Today** section.
 
 - `/demos/gallery/index.html` — the gallery: the same photos as
-  justified rows or as masonry bands, each the virtualized item with a
-  declared height (`height`), so the runtime never measures and a band
-  that changes during a gesture is rendered in place at the settle. A
+  justified rows or individually positioned whole-photo masonry items, with
+  declared geometry, so the runtime never measures them. A
   width, size, or layout change names its anchor (`anchor: { key,
   offset }`): the item now holding the point under the viewport top, at
   the offset that keeps it there. Images load through a loader fed by the

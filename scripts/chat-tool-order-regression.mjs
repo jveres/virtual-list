@@ -6,6 +6,54 @@ const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
   const browser = await engine.launch();
   try {
+    // Simulated/legacy calls omit offsets: the thinking-to-streaming transition
+    // must use the same layout as calls that arrive with chronological offsets.
+    const simulated = await browser.newPage({
+      viewport: { width: 1200, height: 1000 },
+    });
+    await simulated.goto(`${base}/demos/streaming/index.html`);
+    await simulated.waitForFunction(
+      () => !document.documentElement.classList.contains("booting"),
+    );
+    await simulated.locator("#prompt").fill("Check tool spacing");
+    await simulated.locator("#send-btn").click();
+    const simulatedRow = simulated.locator("article.message.assistant").last();
+    await simulatedRow.locator('.role-label[data-status="thinking"]').waitFor();
+    const readTools = (row) => {
+      const origin = row.getBoundingClientRect();
+      // Ignore floating-point noise from subtracting viewport coordinates.
+      const round = (value) => Math.round(value * 1000) / 1000;
+      return Array.from(row.querySelectorAll(".tool-call")).map((tool) => {
+        const box = tool.getBoundingClientRect();
+        return {
+          x: round(box.x - origin.x),
+          y: round(box.y - origin.y),
+          width: round(box.width),
+          height: round(box.height),
+          padding: getComputedStyle(tool.querySelector("summary")).padding,
+        };
+      });
+    };
+    const thinkingTools = await simulatedRow.evaluate(readTools);
+    assert.equal(thinkingTools.length, 2);
+    await simulatedRow
+      .locator('.role-label[data-status="streaming"]')
+      .waitFor();
+    assert.deepEqual(
+      await simulatedRow.evaluate(readTools),
+      thinkingTools,
+      "simulated tools stay put when text streaming starts",
+    );
+    await simulated.locator("#send-btn").click();
+    await simulatedRow
+      .locator('.role-label[data-status="cancelled"]')
+      .waitFor();
+    assert.deepEqual(
+      await simulatedRow.evaluate(readTools),
+      thinkingTools,
+      "stopping streaming preserves tool spacing",
+    );
+    await simulated.close();
     const page = await browser.newPage({
       viewport: { width: 1200, height: 1000 },
     });
@@ -79,14 +127,23 @@ for (const engine of [firefox, webkit, chromium]) {
           )
           .filter(Boolean),
       );
+    const toolLayout = () => row.evaluate(readTools);
     await added(item("reasoning", "think-1"));
     await done(
       item("reasoning", "think-1", {
         summary: [{ type: "summary_text", text: "Ready" }],
       }),
     );
+    await row.getByText("thinking", { exact: true }).waitFor();
+    await row.locator(".tool-call-meta.done").waitFor();
+    const beforeText = await toolLayout();
     await delta("Before tool.\n\n");
     await row.getByText("Before tool.", { exact: true }).waitFor();
+    assert.deepEqual(
+      await toolLayout(),
+      beforeText,
+      "starting text preserves the preceding tool's spacing and position",
+    );
     await page.evaluate(() => {
       window.originalText = document.querySelector(
         "article.message.assistant .markdown p",

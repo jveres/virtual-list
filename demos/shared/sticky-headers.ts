@@ -10,10 +10,10 @@
  * pill is duplicated and a wider old label cannot peek behind the new one.
  *
  * Positions come from `positionOf` — the runtime's committed geometry, which
- * changes only at commits (docs/lean-core.md; under "live" some land
+ * changes only at commits (docs/core-contract.md; under "live" some land
  * mid-gesture), each of which publishes, where the host calls `refresh()`
- * (from onState). Between commits nothing moves, so the overlay never
- * jitters. Ported from `main`, keyed instead of indexed.
+ * (from onState). Committed header positions stay stable between commits.
+ * Headers are identified by stable keys rather than row indexes.
  */
 
 interface StickyHeadersConfig {

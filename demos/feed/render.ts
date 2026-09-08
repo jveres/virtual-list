@@ -10,7 +10,7 @@ const droppedTags = new Set(
   "embed iframe link math meta object script style svg".split(" "),
 );
 
-// Rebuild a small allowlisted DOM, as in main's public-feed demo. No remote
+// Rebuild a small allowlisted DOM. No remote
 // attributes, styles, handlers, or HTML images survive markdown rendering.
 function safeMarkdown(markdown: string): DocumentFragment {
   const template = document.createElement("template");

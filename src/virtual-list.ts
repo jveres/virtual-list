@@ -49,9 +49,9 @@ export type { Edge, ReachContext } from "./reach";
 /** How a snapshot resolves the viewport: a policy, or a host-named anchor. */
 export type { AnchorRequest } from "./snapshot";
 
-// The v2 runtime, built on the two preserved primitives — the browser-
+// The runtime, built on two primitives — the browser-
 // adaptive scroll-settle controller and detached premeasurement — under
-// the core contract (docs/lean-core.md):
+// the core contract (docs/core-contract.md):
 //
 // 1. While a scroll phase is active (native gesture OR programmatic glide),
 //    the scroll surface's GEOMETRY is immutable: key order, heights,
@@ -87,10 +87,9 @@ export type { AnchorRequest } from "./snapshot";
 //    delivery when idle — geometry never drifts, but such content clips
 //    or gaps until then, so hosts route size changes through setItems.
 //
-// There is no compensation machinery: no mid-gesture corrections, no
-// canvas translation, no "safe update" exceptions. What v1 patched cannot
-// occur here because geometry never changes under a live scroll — except
-// what "live" commits below the anchor by explicit product choice.
+// No gesture-time anchor compensation or canvas translation: geometry
+// changes wait for settle, except for the documented no-write commits
+// at or below the anchor under the "live" policy.
 
 export type ScrollingUpdates = "freeze" | "same-height" | "live";
 

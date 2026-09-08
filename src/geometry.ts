@@ -1,9 +1,9 @@
 import { FenwickTree } from "./fenwick";
 import type { GeometryWindow, PositionedGeometry } from "./positioned-geometry";
 
-// The lean core's geometry kernel: keyed items, learned heights, offsets,
+// The keyed geometry kernel: items, measured or declared heights, offsets,
 // anchoring, and the pin-to-top reserve — as pure math. No DOM, no
-// scheduling, no side effects; the runtime (step 3) feeds it measurements
+// scheduling, no side effects; the runtime feeds it heights
 // and applies the single scroll target it resolves. Identity is the key;
 // indexes are derived positions and never survive an update.
 //
@@ -19,7 +19,7 @@ import type { GeometryWindow, PositionedGeometry } from "./positioned-geometry";
 // transaction are fully reflected (end-follow reaches the *measured* end,
 // never an estimated one — I2).
 //
-// Invariants owned here (see docs/lean-core.md):
+// Invariants owned here (see docs/core-contract.md):
 //   I1  the resolved scroll target keeps the visible anchor's viewport
 //       coordinate stationary;
 //   I5  a pinned key can always be scrolled to the viewport top: the

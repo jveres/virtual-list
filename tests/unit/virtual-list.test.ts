@@ -1675,7 +1675,7 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-describe("v2 runtime — commits and slots", () => {
+describe("runtime — commits and slots", () => {
   it("boots at the end with premeasured heights in fixed-height slots", () => {
     const h = mount(range(0, 50));
     expect(h.list.state.count).toBe(50);
@@ -3768,7 +3768,7 @@ describe("v2 runtime — commits and slots", () => {
   });
 });
 
-describe("v2 runtime — retained nodes", () => {
+describe("runtime — retained nodes", () => {
   it("premeasures a replacement off-scroller and destroys the old element exactly once", () => {
     const initial = range(0, 20);
     const h = mount(initial, { replaceOnRerender: true });
@@ -4279,7 +4279,7 @@ describe("v2 runtime — retained nodes", () => {
   });
 });
 
-describe("v2 runtime — edge slots", () => {
+describe("runtime — edge slots", () => {
   function loader(
     key = "top",
     height = 52,
@@ -4468,7 +4468,7 @@ describe("v2 runtime — edge slots", () => {
   });
 });
 
-describe("v2 runtime — commands", () => {
+describe("runtime — commands", () => {
   it("scrolls instantly and resolves; missing targets resolve false", async () => {
     const h = mount(range(0, 100));
     await expect(h.list.scrollTo("start")).resolves.toBe(true);
@@ -4820,7 +4820,7 @@ describe("v2 runtime — commands", () => {
   });
 });
 
-describe("v2 runtime — reach signals", () => {
+describe("runtime — reach signals", () => {
   it("fires on entering an edge zone and aborts the opposite edge's signal", () => {
     const h = mount(range(0, 100), { reach: true });
     expect(h.reaches.map((r) => r.edge)).toEqual(["end"]); // Booted at the end.

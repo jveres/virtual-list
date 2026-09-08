@@ -22,30 +22,6 @@
   --np-rule: var(--border);
 }
 
-html[data-theme="dark"] .np-body {
-  --bg: #14120c;
-  --bg-surface: #1b180f;
-  --bg-bubble: #221e13;
-  --fg: #ece6d6;
-  --fg-muted: #9b9482;
-  --fg-dim: #6a6450;
-  --accent: #e27c70;
-  --border: #322d20;
-}
-
-@media (prefers-color-scheme: dark) {
-  html:not([data-theme="light"]) .np-body {
-    --bg: #14120c;
-    --bg-surface: #1b180f;
-    --bg-bubble: #221e13;
-    --fg: #ece6d6;
-    --fg-muted: #9b9482;
-    --fg-dim: #6a6450;
-    --accent: #e27c70;
-    --border: #322d20;
-  }
-}
-
 .np-viewport-wrap {
   background:
     radial-gradient(
@@ -131,16 +107,6 @@ html[data-theme="dark"] .np-body {
   .np-headline-xl {
     font-size: 42px;
   }
-}
-
-/* Headlines read as links. */
-.np-feature-inner:hover .np-headline,
-.np-split-text:hover .np-headline,
-.np-grid-card:hover .np-headline,
-.np-brief:hover .np-headline,
-.np-columns-inner:hover .np-headline {
-  color: var(--accent);
-  cursor: pointer;
 }
 
 .np-deck {
@@ -599,7 +565,12 @@ html[data-theme="dark"] .np-body {
   margin-bottom: 8px;
 }
 
-/* Hover affordances for the new templates. */
+/* Headlines read as links across all templates. */
+.np-feature-inner:hover .np-headline,
+.np-split-text:hover .np-headline,
+.np-grid-card:hover .np-headline,
+.np-brief:hover .np-headline,
+.np-columns-inner:hover .np-headline,
 .np-mosaic-main:hover .np-headline,
 .np-mosaic-item:hover .np-headline,
 .np-triptych-card:hover .np-headline,
@@ -615,6 +586,13 @@ html[data-theme="dark"] .np-body {
 .np-pair-card:hover .np-figure-img,
 .np-story-inner:hover .np-figure-img {
   filter: grayscale(0) contrast(1);
+}
+
+/* Radar blocks supply their own panels; masthead overrides follow below. */
+.np-body[data-variant="radar"] .np-card {
+  padding: 0;
+  border-top: none;
+  background: transparent;
 }
 
 /* --- Modular layout: bold grotesque, image-forward ------------------------ */
@@ -680,6 +658,31 @@ html[data-theme="dark"] .np-body {
   .np-triptych-inner,
   .np-pair-inner {
     flex-direction: column;
+  }
+}
+
+/* Paper palette overrides follow the base typography and layout rules. */
+html[data-theme="dark"] .np-body {
+  --bg: #14120c;
+  --bg-surface: #1b180f;
+  --bg-bubble: #221e13;
+  --fg: #ece6d6;
+  --fg-muted: #9b9482;
+  --fg-dim: #6a6450;
+  --accent: #e27c70;
+  --border: #322d20;
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]) .np-body {
+    --bg: #14120c;
+    --bg-surface: #1b180f;
+    --bg-bubble: #221e13;
+    --fg: #ece6d6;
+    --fg-muted: #9b9482;
+    --fg-dim: #6a6450;
+    --accent: #e27c70;
+    --border: #322d20;
   }
 }
 
@@ -797,13 +800,6 @@ html[data-theme="dark"] .np-body[data-variant="radar"] {
       transparent 60%
     ),
     var(--bg);
-}
-
-/* Each block brings its own bordered panel, so the shared card wrapper is flat. */
-.np-body[data-variant="radar"] .np-card {
-  padding: 0;
-  border-top: none;
-  background: transparent;
 }
 
 .np-body[data-variant="radar"] .np-headline {

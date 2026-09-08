@@ -31,8 +31,7 @@ import {
  *   (CHROMIUM_QUIET_SETTLE_MS + the cooldown); applying a list update
  *   mid-overscroll after that delay is fine because Chromium repaints the
  *   anchored content without a visible flash.
- * - **Firefox** (v2 deviation from main's single-window code; see the
- *   window constants): a scrollend at a protected edge is a *candidate*
+ * - **Firefox**: a scrollend at a protected edge is a *candidate*
  *   release. Post-scrollend wheel input classifies it: energy growth past
  *   the predecessor, a direction reversal, or any line/page-delta notch
  *   invalidates it (the scrollend was a mid-momentum/mid-hold pause), while

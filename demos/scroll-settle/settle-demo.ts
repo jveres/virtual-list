@@ -19,7 +19,7 @@ import { mustGet, setTextIfChanged } from "../shared/utils.js";
 // scrolls natively while the panel shows the controller's classification
 // live; scrollback chunks are fetched while scrolling but STRUCTURALLY
 // COMMITTED only at the settle signal — prepend + one anchor-preserving
-// scrollTop write in the same frame. This is the v2 core contract in
+// scrollTop write in the same frame. This is the core contract in
 // miniature: if this page scrolls clean on an engine (no ghost end, no
 // flash, no premature settle), the settle signal is trustworthy there.
 //
@@ -37,12 +37,12 @@ import { mustGet, setTextIfChanged } from "../shared/utils.js";
 // - the strategy dropdown forces another engine's heuristics to compare.
 // "copy trace" exports the full event/decision sequence for review.
 //
-// FIREFOX EDGE SEMANTICS (v2 deviation, see src/scroll-settle.ts): a
+// FIREFOX EDGE POLICY (see src/scroll-settle.ts): a
 // pending edge release is CONTESTED when post-scrollend wheel input adds
 // energy, reverses direction, or comes from a line/page device (a pause,
 // not the release); a decaying pixel-mode tail merely postpones the short
-// window. Uncontested releases settle ~450ms after the last wheel (main
-// took ~1.5s); contested ones need the full 1600ms of silence. THE
+// window. Uncontested releases settle ~450ms after the last wheel;
+// contested ones require a subsequent scrollend, not just silence. THE
 // TRADE-OFF, accepted and documented: wheel engines expose no
 // fingers-down state, so a hold that pauses into an uncontested
 // scrollend and stays still can commit under resting fingers after
@@ -225,7 +225,7 @@ function scheduleStatus(): void {
   });
 }
 
-// --- The settle-time structural commit (the v2 contract in miniature) -------
+// --- The settle-time structural commit (the core contract in miniature) -----
 
 function applyQueuedChunk(boundary: Boundary, reason: string): void {
   const pending = queuedChunks[boundary];
@@ -413,7 +413,7 @@ function buildController(): ScrollSettleController {
         const maxTop = viewport.scrollHeight - viewport.clientHeight;
         if (viewport.scrollTop < REACH_EDGE_PX) {
           // Reaching one edge aborts every started operation at the other:
-          // the user's intent moved on (the v2 reach-signal semantics).
+          // the user's intent moved on (the runtime's reach-signal semantics).
           abortBoundary("bottom", "opposite edge reached");
           startLoad("reach-top", "top");
         } else if (maxTop - viewport.scrollTop < REACH_EDGE_PX) {

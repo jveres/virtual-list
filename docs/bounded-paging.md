@@ -51,7 +51,8 @@ Configure these adapters for your content:
 
 - `key(item)` supplies stable source identity.
 - `project(items)` creates runtime rows. Use identity for a simple feed or
-  chat. A gallery converts photos into justified rows or masonry bands.
+  chat. A gallery converts photos into justified rows or whole-photo masonry
+  items.
 - `keysOf(row)` identifies every source item the row depends on. Include
   dependencies of separators, fragments, or layout guard pages.
 - Optional `anchor(rows)` maps the current reading point to the new layout.
@@ -106,7 +107,7 @@ A boundary must restore the immediately adjacent page. If your source cannot
 restore an evicted edge, mark that continuation unavailable. The companion
 doesn't retain an unbounded cursor history or synthesize reverse cursors.
 
-Bluesky and Lemmy on `main` distinguish forward pagination from head refresh
+The feed demo's Bluesky and Lemmy adapters distinguish pagination from head refresh
 in practice: their top request fetches the latest head, not the page just
 before the retained window. Don't pass that refresh operation as a restoration
 cursor. Use a separate refresh/reset flow or a source-specific replay bookmark.

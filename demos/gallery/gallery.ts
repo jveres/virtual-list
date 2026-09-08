@@ -26,7 +26,7 @@ import {
 import { createLayoutHistory } from "./layout-history.js";
 import { layoutDensity } from "./layout-manager.js";
 
-// The gallery: two layouts of the same photos on the v2 runtime.
+// The gallery: two layouts of the same photos on the runtime.
 //
 // - Rows: a justified row is the item. Photos that do not yet fill a row
 //   are held back while pages remain, so a row on screen never changes

@@ -21,7 +21,7 @@ export type FeedPost = {
   expanded: boolean;
 };
 
-// Adapted from main's dynamic-content demo. A continuation is pinned to the
+// A continuation is pinned to the
 // exact server AND API version that issued it; refresh starts a new session.
 const bskyEndpoint = "https://public.api.bsky.app/xrpc/app.bsky.feed.getFeed";
 const discoverFeed =

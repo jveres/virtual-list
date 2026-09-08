@@ -6,7 +6,7 @@ import {
   type GeometryViewport,
 } from "../../src/geometry";
 
-// The geometry kernel is judged by the lean-core invariants (docs/lean-core.md):
+// The geometry kernel is judged by the core invariants (docs/core-contract.md):
 // I1 — the resolved scroll target keeps the visible anchor's viewport
 //      coordinate stationary through splices and measures;
 // I2 — end-follow resolves against the FINAL geometry: measurements landing

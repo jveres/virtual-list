@@ -1,13 +1,11 @@
-// Detached premeasurement — the second preserved primitive from `main`
-// (its createVirtualListItemMeasurer), behavior kept intact; the keyed v2
-// runtime hands it elements instead of indexes.
+// Detached premeasurement — measures the runtime's elements before commit.
 //
 // Items are built and measured OFF-scroller: a hidden, fixed-position
 // measurement root appended to document.body, width-synced to the viewport
 // so wrapping matches the real canvas. The scroll surface is never touched;
 // heights are real before anything mounts (core contract, cornerstone 2).
 //
-// Known bound, carried from `main` as law: a detached measure cannot see
+// Measurement limit: a detached measure cannot see
 // what only materializes later — undecoded images, late syntax
 // highlighting, pending font loads. Premeasure is the commit-time truth for
 // everything layout can compute synchronously; late growers must be
