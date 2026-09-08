@@ -1,3 +1,5 @@
+import { renderMarkdown } from "./markdown.js";
+
 type ChatRole = "user" | "assistant";
 export type AssistantStatus = "thinking" | "streaming" | "done" | "cancelled";
 
@@ -91,8 +93,20 @@ export function buildToolCall(toolCall: ChatToolCall): HTMLDetailsElement {
   input.className = "tool-call-code";
   input.textContent = toolCall.input;
 
-  const output = document.createElement("p");
-  output.textContent = toolCall.output;
+  const output = document.createElement(
+    toolCall.name === "thinking" ? "div" : "p",
+  );
+  if (toolCall.name === "thinking") {
+    // Use the same sanitized, delegation-ready renderer as finished messages.
+    // Running calls are rendered again as their output snapshots change.
+    output.className = "markdown-viewer";
+    const markdown = document.createElement("div");
+    markdown.className = "markdown";
+    markdown.innerHTML = renderMarkdown(toolCall.output);
+    output.append(markdown);
+  } else {
+    output.textContent = toolCall.output;
+  }
 
   body.append(input, output);
   details.append(body);

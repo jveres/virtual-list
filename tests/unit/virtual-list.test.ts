@@ -4882,6 +4882,128 @@ describe("runtime — commands", () => {
     await expect(command).resolves.toBe(true);
   });
 
+  it("should resolve a landed command even when a settle-time observer throws", async () => {
+    let fail = false;
+    const h = mount(range(0, 100), {
+      onState: () => {
+        if (fail) throw new Error("settle observer failed");
+      },
+    });
+    const command = h.list.scrollTo("start", { behavior: "smooth" });
+    let result: boolean | null = null;
+    void command.then((value) => {
+      result = value;
+    });
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
+    h.list.setItems(range(-10, 100));
+    fail = true;
+
+    expect(() => vi.advanceTimersByTime(200)).toThrow("settle observer failed");
+    await Promise.resolve();
+
+    expect(h.list.state.count).toBe(110);
+    expect(result).toBe(false);
+    fail = false;
+    h.list.dispose();
+  });
+
+  it("should interrupt a landed command when its settle-time measurement fails", async () => {
+    let fail = false;
+    const h = mount(range(0, 100), {
+      onMeasure: () => {
+        if (fail) throw new Error("settle measurement failed");
+      },
+    });
+    const command = h.list.scrollTo("start", { behavior: "smooth" });
+    let result: boolean | null = null;
+    void command.then((value) => {
+      result = value;
+    });
+    advanceFramesUntil(() => h.viewport.scrollTop === 0);
+    h.list.setItems(range(-10, 100));
+    fail = true;
+
+    expect(() => vi.advanceTimersByTime(200)).toThrow(
+      "settle measurement failed",
+    );
+    await Promise.resolve();
+
+    expect(result).toBe(false);
+    fail = false;
+    h.list.dispose();
+  });
+
+  it("should finish settling before starting commands queued by a window commit", async () => {
+    const h = mount(range(0, 100), { scrollingUpdates: "freeze" });
+    h.userScroll(5000);
+    let command: Promise<boolean> | undefined;
+    const update = h.list.updateWindow(({ items }) => ({
+      items,
+      onCommit: () => {
+        command = h.list.scrollTo("start", { behavior: "smooth" });
+        h.list.setItems(range(-10, 100));
+      },
+    }));
+
+    h.settle();
+    await expect(update).resolves.toBe(true);
+
+    expect(h.list.state.count).toBe(100);
+    expect(h.list.state.held).toBe(true);
+    vi.advanceTimersByTime(4000);
+    await expect(command).resolves.toBe(false);
+    expect(h.list.state.count).toBe(110);
+    h.list.dispose();
+  });
+
+  it.each([false, true])(
+    "should isolate a failed held window job (interrupted=%s)",
+    async (interrupted) => {
+      const h = mount(range(0, 100));
+      h.userScroll(5000);
+      let failedCommand: Promise<boolean> | undefined;
+      const failed = h.list.updateWindow(() => {
+        failedCommand = h.list.scrollTo("start");
+        throw new Error("window job failed");
+      });
+      const succeeded = h.list.updateWindow(({ items }) => ({ items }));
+      const failure = expect(failed).rejects.toThrow("window job failed");
+
+      if (interrupted) await expect(h.list.scrollTo("m50")).resolves.toBe(true);
+      else h.settle();
+
+      await failure;
+      await expect(failedCommand).resolves.toBe(false);
+      await expect(succeeded).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(5000);
+      h.list.dispose();
+    },
+  );
+
+  it.each([false, true])(
+    "should reject a committed window job without discarding its callbacks (interrupted=%s)",
+    async (interrupted) => {
+      const h = mount(range(0, 40), { itemHeight: () => ROW_H });
+      h.userScroll(1000);
+      const update = h.list.updateWindow(({ items }) => ({
+        items,
+        onCommit: () => {
+          h.list.updateItem("m10", message(10, "committed edit"));
+          throw new Error("window observer failed");
+        },
+      }));
+      const failure = expect(update).rejects.toThrow("window observer failed");
+
+      if (interrupted) await expect(h.list.scrollTo("m10")).resolves.toBe(true);
+      else h.settle();
+
+      await failure;
+      expect(h.rowElement("committed edit").textContent).toBe("committed edit");
+      expect(h.list.state.count).toBe(40);
+      h.list.dispose();
+    },
+  );
+
   it("resolves a parked landed command false on genuine user input before its settle", async () => {
     const h = mount(range(0, 100));
     const command = h.list.scrollTo("start", { behavior: "smooth" });

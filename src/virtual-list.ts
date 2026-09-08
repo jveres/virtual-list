@@ -679,8 +679,8 @@ export function createVirtualList<T>(
     }
   }
 
-  function takeDeferredTeardown(): unknown[] {
-    return deferredTeardown.splice(0);
+  function takeDeferredTeardown(start = 0): unknown[] {
+    return deferredTeardown.splice(start);
   }
 
   function discardScope(scope: Scope): void {
@@ -688,11 +688,13 @@ export function createVirtualList<T>(
     scope.length = 0;
   }
 
-  function guarded(work: () => void): void {
-    if (inTransaction) {
+  function guarded(work: () => void, independent = false): void {
+    const nested = inTransaction;
+    if (nested && !independent) {
       work();
       return;
     }
+    const teardownStart = nested ? deferredTeardown.length : 0;
     const scope: Scope = [];
     const outer = afterCommit;
     afterCommit = scope;
@@ -702,23 +704,27 @@ export function createVirtualList<T>(
       try {
         work();
       } catch (error) {
-        inTransaction = false;
+        inTransaction = nested;
         // A genuine failure: what THIS transaction's callbacks queued would
         // run against a state that was never reached. Discard exactly that
         // scope — settling every queued command's promise (false) so nothing
         // hangs — and nothing outside it.
         discardScope(scope);
-        const deferred = takeDeferredTeardown();
+        const deferred = takeDeferredTeardown(teardownStart);
         if (deferred.length === 0) throw error;
         throw new AggregateError([error, ...deferred], "transaction failed");
       }
-      inTransaction = false;
-      const failures = takeDeferredTeardown();
+      inTransaction = nested;
+      const failures = takeDeferredTeardown(teardownStart);
+      // Independently caught jobs may run inside a command's takeover.
+      // Preserve their own rollback boundary, but drain successful callbacks
+      // only after the outer transaction has reached its terminal state.
+      if (nested) outer.push(...scope);
       // Drain this scope; each entry runs as its own top-level transaction
       // (with its own scope), and any failure it surfaces joins the report
       // instead of stranding the entries behind it. Disposal from a child
       // empties this scope in place (see dispose), which ends the drain.
-      while (!disposed && scope.length > 0) {
+      while (!nested && !disposed && scope.length > 0) {
         const entry = scope.shift();
         try {
           entry?.run();
@@ -2079,58 +2085,19 @@ export function createVirtualList<T>(
     onGestureStarted: () => {},
     onGestureSettled: () => {
       holdLandingRows = false;
+      // Window jobs own independent failure scopes. Their queued controls
+      // may start a new phase; that phase then owns the remaining held work.
       for (const run of [...windowUpdates]) run();
-      // The phase reached idle: everything held commits, once — and only
-      // then does a landed command learn whether it is still on target.
-      const remeasureReady =
-        remeasureRequests.size === 0 && remeasurePolicy !== undefined;
-      const explicitPolicy = remeasurePolicy;
-      if (remeasureReady) remeasurePolicy = undefined;
-      if (pending !== null || dirtyRows.size > 0) {
-        // Rows grown under a pinned landing (the reply streaming below the
-        // pinned prompt) commit on the pin's stance, not on a guess.
-        // A live structural commit may have removed the pinned row since
-        // the stance was held; a pending snapshot must keep it.
-        const pinnedKey = geometry.pinned;
-        const onPin =
-          explicitPolicy === undefined &&
-          resizeHeld === "pin" &&
-          pinnedKey !== null &&
-          (pending === null ||
-            (pending.anchor === "auto" && pending.keys.includes(pinnedKey)));
-        if (onPin) commit(null, "pin", "allowed", "keep", "instant");
-        else commit(null, explicitPolicy);
-      } else if (resizeHeld !== null) {
-        commit(null, resizeHeld, "allowed", "keep", "instant");
-      } else {
-        if (deferredRetirements) reconcileAndPublish();
-        else publish();
-      }
-      resizeHeld = null;
-      trimUnusedReserve();
-      // A completed command to the end is explicit follow intent: growth
-      // that outran its glide (fast streaming) must not read as "the user
-      // is not at the end" — a genuine interruption resolved it before this.
-      const endCommand = awaitingSettle?.followsEnd === true;
-      settleParked((landed) => !disposed && landed());
-      // A scheduled interaction owns the next frame/settle. Do not infer a
-      // fresh end-follow intent in the gap after cancelling its old glide.
-      if (
-        options.followBehavior === "smooth" &&
-        takingOver !== "resize" &&
-        !remeasureOwnsNextCommit()
-      ) {
-        const changed = followController.resolveSettle({
-          takingOver: takingOver !== null,
-          atEnd: lastState.atEnd,
-          endCommand,
-          gliding: followGlide,
-          position: viewport.scrollTop,
-        });
-        if (changed) publish();
-        // Following but not there: the end moved during the phase.
-        if (followController.armed) followIfBehindEnd();
-      }
+      if (disposed || !idle()) return;
+      guarded(() => {
+        try {
+          settleGesture();
+        } catch (error) {
+          // A failed measurement/commit must not strand a landed command.
+          settleParked(() => false);
+          throw error;
+        }
+      });
     },
     onGestureReset: () => {},
     onScrollEventObserved: () => {
@@ -2143,6 +2110,61 @@ export function createVirtualList<T>(
       guarded(onScrolled);
     },
   });
+
+  /** Complete the old phase before draining work queued by its host callbacks. */
+  function settleGesture(): void {
+    // The phase reached idle: everything held commits, once — and only
+    // then does a landed command learn whether it is still on target.
+    const remeasureReady =
+      remeasureRequests.size === 0 && remeasurePolicy !== undefined;
+    const explicitPolicy = remeasurePolicy;
+    if (remeasureReady) remeasurePolicy = undefined;
+    if (pending !== null || dirtyRows.size > 0) {
+      // Rows grown under a pinned landing (the reply streaming below the
+      // pinned prompt) commit on the pin's stance, not on a guess.
+      // A live structural commit may have removed the pinned row since
+      // the stance was held; a pending snapshot must keep it.
+      const pinnedKey = geometry.pinned;
+      const onPin =
+        explicitPolicy === undefined &&
+        resizeHeld === "pin" &&
+        pinnedKey !== null &&
+        (pending === null ||
+          (pending.anchor === "auto" && pending.keys.includes(pinnedKey)));
+      if (onPin) commit(null, "pin", "allowed", "keep", "instant");
+      else commit(null, explicitPolicy);
+    } else if (resizeHeld !== null) {
+      commit(null, resizeHeld, "allowed", "keep", "instant");
+    } else {
+      if (deferredRetirements) reconcileAndPublish();
+      else publish();
+    }
+    resizeHeld = null;
+    trimUnusedReserve();
+    // A completed command to the end is explicit follow intent: growth
+    // that outran its glide (fast streaming) must not read as "the user
+    // is not at the end" — a genuine interruption resolved it before this.
+    const endCommand = awaitingSettle?.followsEnd === true;
+    settleParked((landed) => !disposed && landed());
+    // A scheduled interaction owns the next frame/settle. Do not infer a
+    // fresh end-follow intent in the gap after cancelling its old glide.
+    if (
+      options.followBehavior === "smooth" &&
+      takingOver !== "resize" &&
+      !remeasureOwnsNextCommit()
+    ) {
+      const changed = followController.resolveSettle({
+        takingOver: takingOver !== null,
+        atEnd: lastState.atEnd,
+        endCommand,
+        gliding: followGlide,
+        position: viewport.scrollTop,
+      });
+      if (changed) publish();
+      // Following but not there: the end moved during the phase.
+      if (followController.armed) followIfBehindEnd();
+    }
+  }
 
   /**
    * Take the command parked for its settle, if any, and resolve it:
@@ -2251,7 +2273,7 @@ export function createVirtualList<T>(
             if (disposed) return;
             notifyCommitted(() => next.onCommit?.());
             applied = true;
-          });
+          }, true);
           resolve(applied);
         } catch (error) {
           reject(error);

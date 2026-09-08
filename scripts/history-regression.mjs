@@ -167,14 +167,17 @@ for (const engine of [firefox, chromium, webkit]) {
         },
         set(top) {
           descriptor.set.call(this, top);
+          // The engine can round across a header boundary. The companion
+          // follows the accepted position, not the requested fractional one.
+          const actualTop = descriptor.get.call(this);
           // The entire glide write/reconcile finishes before this sample.
           // Query committed geometry and inline styles, never frame layout.
           queueMicrotask(() => {
             const next = h.rows
               .filter((row) => row.kind === "header")
               .map((row) => h.virtualList.positionOf(row.key))
-              .find((position) => position && position.top > top);
-            const expected = next ? Math.min(0, next.top - top - 44) : 0;
+              .find((position) => position && position.top > actualTop);
+            const expected = next ? Math.min(0, next.top - actualTop - 44) : 0;
             const slot = document.querySelector(
               ".vl-sticky-header .sticky-group",
             );
@@ -183,7 +186,7 @@ for (const engine of [firefox, chromium, webkit]) {
             );
             if (expected < 0) handoffFrames++;
             if (Math.abs(actual - expected) > 1)
-              errors.push({ top, expected, actual });
+              errors.push({ top, actualTop, expected, actual });
           });
         },
       });
@@ -415,8 +418,10 @@ for (const engine of [firefox, chromium, webkit]) {
         `${edge} approach is bounded: ${distance}px`,
       );
       assert.ok(
-        last.time - first.time >= 550,
-        `${edge} includes travel before landing`,
+        // The shared default landing is 280 ms. This staged endpoint trip
+        // must include an approach too, without requiring the old 600 ms pace.
+        last.time - first.time >= 350,
+        `${edge} includes travel before landing (${last.time - first.time} ms)`,
       );
       assert.ok(
         motion.samples.length >= 25,

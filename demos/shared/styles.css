@@ -630,7 +630,7 @@ p.ai-settings-note {
   padding: 10px;
 }
 
-.tool-call-body p {
+.tool-call-body > p {
   margin: 0;
 }
 
@@ -665,6 +665,11 @@ p.ai-settings-note {
   max-width: 100%;
 }
 
+.tool-call-body > .markdown-viewer .markdown {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
 /* The padding swap: every assistant body ends in a constant breathing room —
    except while a line-owning streaming cursor (a direct child of .markdown,
    exactly 1em tall by markdown-viewer's bare-cursor rule) occupies that space
@@ -691,6 +696,11 @@ p.ai-settings-note {
 
 /* Only the final text segment reserves the streaming cursor's line. */
 .message.assistant .message-text-intermediate .markdown {
+  padding-bottom: 0;
+}
+
+/* Thinking panels never host the response's streaming cursor. */
+.message.assistant .tool-call-body .markdown {
   padding-bottom: 0;
 }
 

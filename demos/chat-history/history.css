@@ -51,6 +51,11 @@
   font-size: 12px;
 }
 
+/* Edge slots are part of the transcript, not filled toolbar buttons. */
+.history-edge:hover {
+  background: transparent;
+}
+
 #history-status {
   overflow: hidden;
   text-overflow: ellipsis;
