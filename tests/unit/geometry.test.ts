@@ -426,6 +426,60 @@ describe("auto policy", () => {
 });
 
 describe("I5 — pin-to-top reserve", () => {
+  it("should not create a pin from an explicit anchor when no pin existed", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, ["prefix", "old"]);
+    const target = { key: "new", offset: 44 };
+    const capture = geometry.capture(viewport(0), "viewport", target);
+
+    geometry.setKeys(["prefix", "new"], target);
+    geometry.resolve(capture);
+
+    expect(geometry.pinned).toBeNull();
+    expect(geometry.reserve).toBe(0);
+  });
+  it("should retain a surviving pin when a different explicit anchor is supplied", () => {
+    const { geometry } = pinnedAtEnd();
+
+    geometry.setKeys([...keysRange(0, 20), "new"], { key: "new", offset: 44 });
+
+    expect(geometry.pinned).toBe("m18");
+  });
+  it("should clear a removed pin when its explicit replacement is absent", () => {
+    const { geometry } = pinnedAtEnd();
+
+    geometry.setKeys(keysRange(0, 17), { key: "missing", offset: 44 });
+
+    expect(geometry.pinned).toBeNull();
+  });
+  it("should transfer a pin to an explicit replacement across header changes and regrow its reserve", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, ["prefix", "today", "v3", "reply3"]);
+    transact(geometry, viewport(0), "none", () => geometry.pin("v3", 44));
+    let vp = viewport(geometry.maxScrollTop(VIEWPORT_H));
+    const second = { key: "v2", offset: 44 };
+    const capture = geometry.capture(vp, "viewport", second);
+
+    geometry.setKeys(["prefix", "v2", "reply2"], second);
+    geometry.measure("reply2", VIEWPORT_H);
+    const result = geometry.resolve(capture);
+
+    expect(geometry.pinned).toBe("v2");
+    expect(geometry.offsetOf("v2") - result.scrollTop).toBe(44);
+    expect(geometry.reserve).toBe(0);
+
+    vp = viewport(result.scrollTop);
+    const first = { key: "v1", offset: 44 };
+    const shorter = geometry.capture(vp, "viewport", first);
+    geometry.setKeys(["prefix", "v1", "reply1"], first);
+    geometry.measure("v1", 100);
+    geometry.measure("reply1", 100);
+    const restored = geometry.resolve(shorter);
+
+    expect(geometry.pinned).toBe("v1");
+    expect(geometry.offsetOf("v1") - restored.scrollTop).toBe(44);
+    expect(geometry.reserve).toBe(VIEWPORT_H - 244);
+  });
   it("includes a host inset in the pinned end position", () => {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 20));

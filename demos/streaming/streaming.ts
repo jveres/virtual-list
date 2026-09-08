@@ -1421,12 +1421,26 @@ function switchMessageVersion(messageId: number, offset: number): void {
   cancelUserEdit();
   markConversationChanged();
   const branchIndex = transcriptIndexById.get(messageId) ?? -1;
+  const promptInset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const position = virtualList?.positionOf(String(messageId));
+  const pinnedPrompt =
+    node.message?.role === "user" &&
+    position != null &&
+    Math.abs(position.top - viewport.scrollTop - promptInset) < 1;
+  const replacementId = parent.childrenIds[nextSelected];
   parent.selectedChildIndex = nextSelected;
   rebuildActiveTranscript();
   // Keep the branch row inside the loaded window even if the new path is
   // shorter than the old loadedStart.
   if (branchIndex >= 0) loadedStart = Math.min(loadedStart, branchIndex);
-  pushItems();
+  // A date-boundary change can remove the header directly above this prompt.
+  // Keep its replacement below the sticky band instead of anchoring a prefix
+  // row whose position no longer determines the prompt's visible offset.
+  pushItems(
+    pinnedPrompt && replacementId !== undefined
+      ? { key: String(replacementId), offset: promptInset }
+      : undefined,
+  );
   syncMetrics();
 }
 

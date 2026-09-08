@@ -1665,7 +1665,7 @@ export function createVirtualList<T>(
         teardownFailures.push(...destroyAll(doomed));
         if (disposed) return;
         if (keysChanged) {
-          geometry.setKeys(applying.keys);
+          geometry.setKeys(applying.keys, applying.target);
           committedKeys = applying.keys;
         }
         if (applying.declaredItems) {

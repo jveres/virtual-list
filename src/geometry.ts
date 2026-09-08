@@ -288,9 +288,12 @@ export class Geometry {
   /**
    * Replace the item order. Keys are identity: duplicates are rejected.
    * Learned heights survive by key; heights of removed keys are dropped; a
-   * removed pin is cleared.
+   * removed pin transfers to a known replacement, otherwise it is cleared.
    */
-  setKeys(nextKeys: readonly string[]): void {
+  setKeys(
+    nextKeys: readonly string[],
+    replacementAnchor: ExplicitAnchor | null = null,
+  ): void {
     // Build and validate the entire candidate state first — a throwing
     // estimator or a duplicate key must leave the previous geometry fully
     // intact, never a half-updated one.
@@ -317,6 +320,7 @@ export class Geometry {
     // at the top (I5). A removal (a surviving row shifted up into the
     // index) drops the pin.
     let pinned = this.pinnedKey;
+    let pinnedInset = this.pinnedInsetPx;
     if (pinned !== null && !indexByKey.has(pinned)) {
       const index = this.indexByKey.get(pinned) ?? -1;
       const replacement = index >= 0 ? keys[index] : undefined;
@@ -325,6 +329,13 @@ export class Geometry {
         !this.indexByKey.has(replacement) &&
         this.keys.slice(0, index).every((key, i) => keys[i] === key);
       pinned = inPlace ? (replacement as string) : null;
+      // A host-named replacement is authoritative even when separators or
+      // other prefix rows changed. Preserve the pin, not just this commit's
+      // scroll offset, so later shorter versions can regrow trailing space.
+      if (replacementAnchor && indexByKey.has(replacementAnchor.key)) {
+        pinned = replacementAnchor.key;
+        pinnedInset = replacementAnchor.offset;
+      }
     }
 
     this.keys = keys;
@@ -333,8 +344,7 @@ export class Geometry {
     for (const key of this.heightByKey.keys()) {
       if (!indexByKey.has(key)) this.heightByKey.delete(key);
     }
-    this.pinnedKey = pinned;
-    if (pinned === null) this.pinnedInsetPx = 0;
+    this.pin(pinned, pinnedInset);
   }
 
   /**
