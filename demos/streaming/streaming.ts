@@ -1329,6 +1329,55 @@ function switchMessageVersion(messageId: number, offset: number): void {
   syncMetrics();
 }
 
+// Truncate at a user turn, including its alternate versions and descendants.
+// Keep branches above the cut, and use the runtime's normal disposal/boot
+// lifecycle to cancel pending paging, measurements, and scroll commands.
+function deleteMessagesFrom(messageId: number, epoch: number): void {
+  if (epoch !== conversationEpoch) return;
+  const index = transcriptIndexById.get(messageId);
+  const node = tree.get(messageId);
+  const parent = node && tree.get(node.parentId);
+  if (index === undefined || node?.message?.role !== "user" || !parent) return;
+
+  const removedCount = transcript.length - index;
+  conversationEpoch++;
+  const abort = streamAbort;
+  streamAbort = null;
+  if (abort) cancelStream(abort);
+  endSendGlide();
+  activeLoad = null;
+  loadingTop = false;
+  topBoundaryLoadSeen = false;
+
+  const removed = [...parent.childrenIds];
+  parent.childrenIds = [];
+  parent.selectedChildIndex = 0;
+  while (removed.length > 0) {
+    const id = removed.pop();
+    if (id === undefined) break;
+    const child = tree.get(id);
+    if (child) removed.push(...child.childrenIds);
+    tree.delete(id);
+    htmlCache.delete(String(id));
+  }
+  rebuildActiveTranscript();
+  loadedStart = Math.max(0, transcript.length - loadChunkCount());
+  refreshLoadedWindow();
+  const turns = storedConversation();
+  if (getAISettings().provider === "openai") {
+    openAIHistory = turns;
+    saveOpenAIHistory(turns);
+  } else {
+    importedConversation = turns;
+  }
+  setEdgeState("hidden");
+  mountConversation();
+  setStreamingUI(false);
+  syncMetrics();
+  promptInput.focus({ preventScroll: true });
+  deletionStatus.textContent = `${removedCount} ${removedCount === 1 ? "message" : "messages"} deleted.`;
+}
+
 // --- Rendering --------------------------------------------------------------
 
 function htmlForMessage(message: Message): string {
@@ -1455,6 +1504,17 @@ function buildRow(message: Message): HTMLElement {
     message.status === "streaming"
       ? buildStreamingRow(message)
       : buildStaticRow(message);
+  if (message.role === "user") {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "message-delete-btn";
+    button.title = "Delete this message and everything after it";
+    button.setAttribute("aria-label", button.title);
+    button.setAttribute("aria-haspopup", "dialog");
+    button.innerHTML =
+      '<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    row.prepend(button);
+  }
   row.dataset.key = String(message.id);
   row.dataset.toolsig = toolSignature(message);
   rowById.set(String(message.id), row);
@@ -1503,6 +1563,7 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
 // good (its key removed, the row replaced, the snapshot superseded, or the
 // list disposed) via onDestroy; the animation lookup is pruned there too.
 function handleRowDestroy(element: HTMLElement): void {
+  if (touchActionRow === element) touchActionRow = null;
   const handle = streamingViewers.get(element);
   if (handle) {
     handle.destroy();
@@ -1660,7 +1721,7 @@ function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
 
 // Persist the whole active branch, including API state, not the virtualized
 // window. Local message ids are reassigned on the next load.
-function persistOpenAIConversation(): void {
+function storedConversation(): StoredTurn[] {
   const turns: StoredTurn[] = [];
   for (const message of transcript) {
     if (
@@ -1685,7 +1746,11 @@ function persistOpenAIConversation(): void {
       ...(message.sentAt !== undefined ? { sentAt: message.sentAt } : {}),
     });
   }
-  saveOpenAIHistory(turns);
+  return turns;
+}
+
+function persistOpenAIConversation(): void {
+  saveOpenAIHistory(storedConversation());
 }
 
 async function streamOpenAIResponse(
@@ -2290,11 +2355,65 @@ sendBtn.addEventListener("click", () => {
   void handleSend();
 });
 document.addEventListener("keydown", (event) => {
+  if (deleteDialog.open) return;
   if (event.key === "Escape" && streamAbort) {
     event.preventDefault();
     cancelStream(streamAbort);
   }
 });
+
+const deleteDialog = mustGet("delete-message-dialog", HTMLDialogElement);
+const deletionStatus = mustGet("deletion-status", HTMLElement);
+let pendingDeletion: { id: number; epoch: number } | null = null;
+let touchActionRow: HTMLElement | null = null;
+
+viewport.addEventListener("click", (event) => {
+  if (!(event.target instanceof Element)) return;
+  const button = event.target.closest<HTMLButtonElement>(".message-delete-btn");
+  const row = button?.closest<HTMLElement>(".message.user");
+  if (!row || deleteDialog.open) return;
+  const id = Number(row.dataset.key);
+  const index = transcriptIndexById.get(id);
+  if (index === undefined) return;
+  const message = transcript[index];
+  if (message?.role !== "user") return;
+  pendingDeletion = { id, epoch: conversationEpoch };
+  const later = transcript.length - index - 1;
+  mustGet("delete-message-description", HTMLElement).textContent =
+    later > 0
+      ? `This deletes your message and the ${later} ${later === 1 ? "message" : "messages"} after it, including any alternate versions below this point. This cannot be undone.`
+      : "This deletes your message and any alternate versions below this point. This cannot be undone.";
+  deleteDialog.returnValue = "";
+  deleteDialog.showModal();
+  mustGet("delete-message-cancel", HTMLButtonElement).focus();
+});
+
+deleteDialog.addEventListener("close", () => {
+  const pending = pendingDeletion;
+  pendingDeletion = null;
+  if (deleteDialog.returnValue === "delete" && pending)
+    deleteMessagesFrom(pending.id, pending.epoch);
+});
+
+// Touch has no hover: reveal only the tapped message's action. Do not
+// prevent the gesture, text selection, or links inside the bubble.
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (event.pointerType === "mouse") return;
+    const row =
+      event.target instanceof Element
+        ? (event.target
+            .closest(".message-content, .message-delete-btn")
+            ?.closest<HTMLElement>(".message.user") ?? null)
+        : null;
+    if (row === touchActionRow) return;
+    touchActionRow?.removeAttribute("data-actions-visible");
+    touchActionRow = row;
+    row?.setAttribute("data-actions-visible", "");
+  },
+  { passive: true },
+);
 
 await Promise.all([initMarkdown(), document.fonts.ready]);
 applyDocumentTheme();

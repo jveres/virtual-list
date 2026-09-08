@@ -340,6 +340,17 @@
           every tool — unsupported combinations fail with an inline error.
         </p>
       </dialog>
+      <dialog id="delete-message-dialog" class="delete-message-dialog" aria-labelledby="delete-message-title" aria-describedby="delete-message-description">
+        <form method="dialog">
+          <h2 id="delete-message-title">Delete from here?</h2>
+          <p id="delete-message-description"></p>
+          <div class="delete-message-actions">
+            <button type="submit" id="delete-message-cancel" value="cancel">Cancel</button>
+            <button type="submit" class="delete-message-confirm" value="delete">Delete messages</button>
+          </div>
+        </form>
+      </dialog>
+      <span id="deletion-status" class="deletion-status" role="status"></span>
       <div class="statusbar">
         <div>
           <span id="window-status"></span>
