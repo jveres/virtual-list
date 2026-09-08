@@ -30,15 +30,16 @@ const SNAP_PX = 1;
 const REBASE_PX = 2;
 const LANDING_MS = 600;
 const MAX_DURATION_MS = 1400;
+const TAIL_START = 0.35;
+const TAIL_DURATION = (1 - TAIL_START) * 0.5;
 
 /**
  * A glide is two legs. The LANDING leg — the last `landingPx` of travel
- * (or the whole trip when shorter) — always takes `landingMs` on the same
- * ease-out curve, so a hop of one viewport and a jump across the whole
- * list arrive identically. The APPROACH leg covers the rest: a cubic from
- * rest to the landing leg's entry speed, its duration derived from the
- * distance and capped at `approachCapMs`, so a long trip cruises and then
- * decelerates through the very same landing.
+ * (or the whole trip when shorter) — uses `landingMs` as its easing
+ * timescale, with a shortened low-speed tail. A hop of one viewport and
+ * a jump across the whole list arrive identically. The APPROACH leg covers
+ * the rest with constant braking to the landing leg's entry speed, its
+ * duration derived from distance and capped at `approachCapMs`.
  */
 interface GlidePace {
   landingMs: number;
@@ -48,7 +49,7 @@ interface GlidePace {
 
 /**
  * The runtime's pace for a viewport: an explicit duration is the landing
- * time of a one-viewport hop and the cap on the approach (a trip from the
+ * timescale of a one-viewport hop and the cap on the approach (a trip from the
  * far end takes at most twice it); the default lands in LANDING_MS and
  * bounds the whole trip by MAX_DURATION_MS.
  */
@@ -67,8 +68,15 @@ export function glidePace(
   };
 }
 
-function easeOutQuint(t: number): number {
-  return 1 - (1 - t) ** 5;
+function easeOutLanding(t: number): number {
+  if (t <= TAIL_START) return 1 - (1 - t) ** 5;
+  // Keep the quintic's first 88% of travel, then spend half its remaining
+  // time on the tail. This polynomial matches position, speed and braking
+  // at the join and reaches zero speed/braking at the end, without a crawl
+  // or a larger snap threshold. The polynomial coefficients follow from
+  // that duration ratio; changing it requires re-deriving them.
+  const s = Math.min(1, (t - TAIL_START) / TAIL_DURATION);
+  return 1 - (1 - TAIL_START) ** 5 * (1 - s) ** 3 * (1 + 0.5 * s + s * s);
 }
 
 /** The legs of one trip of `distance` px (magnitude), all in px and ms. */
@@ -94,7 +102,7 @@ interface Legs {
 function planLegs(distance: number, pace: GlidePace): Legs {
   const landingPx = Math.min(distance, pace.landingPx);
   const approachPx = Math.max(0, distance - landingPx);
-  // easeOutQuint starts at slope 5: the landing's entry speed in px/ms;
+  // The quintic prefix starts at slope 5: the landing's entry speed in px/ms;
   // its speed is 5(1 - u)^4, so its initial braking is 20 L / T² px/ms².
   const entrySpeed = landingPx > 0 ? (5 * landingPx) / pace.landingMs : 0;
   const landingBraking = (20 * landingPx) / pace.landingMs ** 2;
@@ -136,11 +144,11 @@ function travelled(legs: Legs, elapsed: number): number {
     1,
     (elapsed - legs.approachMs) / Math.max(1, legs.landingMs),
   );
-  return legs.approachPx + legs.landingPx * easeOutQuint(u);
+  return legs.approachPx + legs.landingPx * easeOutLanding(u);
 }
 
 function totalMs(legs: Legs): number {
-  return legs.approachMs + legs.landingMs;
+  return legs.approachMs + legs.landingMs * (TAIL_START + TAIL_DURATION);
 }
 
 export function startGlide(

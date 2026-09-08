@@ -31,6 +31,68 @@ function harness(start: number, target: number, floorWrites: boolean) {
 }
 
 describe("glide", () => {
+  it.each([
+    { start: 9554, target: 0, floorWrites: false },
+    { start: 0, target: 9554, floorWrites: false },
+    { start: 9554, target: 0, floorWrites: true },
+    { start: 0, target: 9554, floorWrites: true },
+  ])(
+    "should finish the last 100px promptly from $start to $target (floored: $floorWrites)",
+    ({ start, target, floorWrites }) => {
+      const host = harness(start, target, floorWrites);
+      const samples: { at: number; remaining: number }[] = [];
+      const completed: boolean[] = [];
+      const write = host.write;
+      host.write = (value) => {
+        write(value);
+        samples.push({
+          at: performance.now(),
+          remaining: Math.abs(target - host.top),
+        });
+      };
+
+      startGlide(host, glidePace(811), (done) => completed.push(done));
+      vi.advanceTimersByTime(2000);
+
+      expect(host.top).toBe(target);
+      expect(completed).toEqual([true]);
+      const tail = samples.find((sample) => sample.remaining <= 100);
+      const last = samples.at(-1);
+      if (!tail || !last) throw new Error("missing landing samples");
+      expect(last.at - tail.at).toBeLessThanOrEqual(200);
+      // Shorter does not mean an abrupt snap or a reversal at the join.
+      const steps = samples.slice(1).map((sample, index) => {
+        const previous = samples[index];
+        if (!previous) throw new Error("missing previous sample");
+        const step = previous.remaining - sample.remaining;
+        // A floored engine can reach the exact target before the final
+        // confirming write. Only motion before arrival must keep advancing.
+        if (previous.remaining > 0) expect(step).toBeGreaterThan(0);
+        return step;
+      });
+      for (let index = 1; index < steps.length; index++) {
+        const step = steps[index];
+        const previous = steps[index - 1];
+        if (step === undefined || previous === undefined)
+          throw new Error("missing step");
+        expect(step).toBeGreaterThanOrEqual(0);
+        expect(step).toBeLessThanOrEqual(previous + 1);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it("should preserve the original deceleration before the low-speed tail", () => {
+    const host = harness(811, 0, false);
+    const glide = startGlide(host, glidePace(811), () => {});
+
+    vi.advanceTimersByTime(208); // First callback at 16ms; 192ms elapsed.
+
+    expect(host.top).toBeCloseTo(811 * (1 - 192 / 600) ** 5, 6);
+    glide.cancel();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it.each(["read", "target", "write"] as const)(
     "should finish an interrupted glide when %s throws",
     (callback) => {

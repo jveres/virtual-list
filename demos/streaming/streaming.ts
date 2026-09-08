@@ -2346,6 +2346,9 @@ function mountConversation(): void {
       // Reuse the runtime's read instead of flushing layout after DOM writes.
       stickyHeaders?.refresh(snapshot.scrollTop);
     },
+    // State can stay unchanged through a glide. Keep the header in the
+    // same frame as each scroll write, including its release above the slot.
+    onViewport: (snapshot) => stickyHeaders?.update(snapshot.scrollTop),
     onReachStart: loadOlderMessages,
     onDestroy: handleRowDestroy,
   });

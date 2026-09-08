@@ -100,6 +100,92 @@ for (const engine of [firefox, webkit, chromium]) {
       "the committed prepend preserves the old top's reading position",
     );
 
+    // With all history loaded, returning across the top slot must hand the
+    // pinned date pill back to its inline row in the glide's own frame.
+    await page.locator("#scroll-top-btn").click();
+    await page.waitForFunction(
+      () => document.querySelector("#viewport").scrollTop === 0,
+    );
+    for (const distance of [250, 600]) {
+      await page.locator("#viewport").evaluate((viewport, distance) => {
+        viewport.scrollTop = distance;
+        viewport.dispatchEvent(new Event("scroll"));
+      }, distance);
+      await page.waitForTimeout(250);
+      const handoff = await page.evaluate(async () => {
+        const viewport = document.querySelector("#viewport");
+        const inline = viewport.querySelector(".section-header");
+        const overlay = document.querySelector(".vl-sticky-header");
+        const boundary =
+          inline.getBoundingClientRect().top -
+          viewport.getBoundingClientRect().top +
+          viewport.scrollTop;
+        const originalFrame = window.requestAnimationFrame;
+        const descriptor = Object.getOwnPropertyDescriptor(
+          viewport,
+          "scrollTop",
+        );
+        let writes = 0;
+        const samples = [];
+        Object.defineProperty(viewport, "scrollTop", {
+          ...descriptor,
+          set(value) {
+            writes++;
+            descriptor.set.call(this, value);
+          },
+        });
+        window.requestAnimationFrame = (callback) =>
+          originalFrame.call(window, (time) => {
+            const before = writes;
+            callback(time);
+            if (writes !== before) {
+              samples.push({
+                top: viewport.scrollTop,
+                pinned: overlay.style.display !== "none",
+                inlineHidden: inline.style.visibility === "hidden",
+              });
+            }
+          });
+        try {
+          document.querySelector("#scroll-top-btn").click();
+          await new Promise((resolve, reject) => {
+            const deadline = performance.now() + 3000;
+            const poll = () => {
+              if (viewport.scrollTop === 0) resolve();
+              else if (performance.now() > deadline)
+                reject(new Error("return-to-top glide did not land"));
+              else originalFrame.call(window, poll);
+            };
+            originalFrame.call(window, poll);
+          });
+          return { boundary, samples };
+        } finally {
+          window.requestAnimationFrame = originalFrame;
+          Object.defineProperty(viewport, "scrollTop", descriptor);
+        }
+      });
+      assert.ok(handoff.boundary > 0, "fixture retains its top slot");
+      assert.ok(handoff.samples.length > 8, "sampled the moving glide");
+      assert.ok(
+        handoff.samples.some(({ top }) => top > 1 && top < handoff.boundary),
+        "glide crossed the header release before landing",
+      );
+      for (const sample of handoff.samples) {
+        const pinned = sample.top >= handoff.boundary;
+        assert.equal(
+          sample.pinned,
+          pinned,
+          `same-frame overlay: ${JSON.stringify(sample)}`,
+        );
+        assert.equal(
+          sample.inlineHidden,
+          pinned,
+          `same-frame inline header: ${JSON.stringify(sample)}`,
+        );
+      }
+      assert.equal(await initialStart(), 1, "return glide did not page");
+    }
+
     // Replacing a chat while its fetch/window update is pending cancels it;
     // the replacement still gets its own working loader.
     await importChat("Cancelled");
@@ -117,7 +203,7 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     assert.deepEqual(errors, []);
     console.log(
-      `${engine.name()}: preparation waits for top landing; paging and replacement cancellation passed`,
+      `${engine.name()}: scrollback scheduling, same-frame header release and replacement cancellation passed`,
     );
   } finally {
     await browser.close();
