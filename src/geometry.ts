@@ -254,6 +254,17 @@ export class Geometry {
     policy: CapturePolicy = "auto",
     target: ExplicitAnchor | null = null,
   ): Capture {
+    // Elastic overscroll is browser presentation, not a reading position.
+    // Capture the old legal range before measurements change it; otherwise
+    // streaming growth can retain spare reserve under a bottom bounce and
+    // permanently move the end farther down after each gesture.
+    viewport = {
+      ...viewport,
+      scrollTop: Math.max(
+        0,
+        Math.min(viewport.scrollTop, this.maxScrollTop(viewport.height)),
+      ),
+    };
     const anchor = this.anchorAt(viewport);
     return {
       viewport: { ...viewport },

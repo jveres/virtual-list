@@ -451,7 +451,24 @@ p.ai-settings-note {
   justify-content: flex-end;
 }
 
-.message-delete-btn {
+.message-user-actions {
+  display: flex;
+  align-self: center;
+  flex-shrink: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.message-user-actions:hover,
+.message.user:focus-within > .message-user-actions,
+.message.user[data-actions-visible] > .message-user-actions,
+.message.user:has(> .message-content:hover) > .message-user-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.message-delete-btn,
+.message-edit-btn {
   flex: 0 0 32px;
   align-self: center;
   display: inline-flex;
@@ -464,17 +481,7 @@ p.ai-settings-note {
   border: none;
   background: transparent;
   color: var(--fg-dim);
-  opacity: 0;
-  pointer-events: none;
   touch-action: manipulation;
-}
-
-.message-delete-btn:hover,
-.message.user:focus-within > .message-delete-btn,
-.message.user[data-actions-visible] > .message-delete-btn,
-.message.user:has(> .message-content:hover) > .message-delete-btn {
-  opacity: 1;
-  pointer-events: auto;
 }
 
 .message-delete-btn:hover {
@@ -482,18 +489,30 @@ p.ai-settings-note {
   color: #dc3545;
 }
 
+.message-edit-btn:hover {
+  background: transparent;
+  color: var(--fg);
+}
+
 .message-delete-btn:focus-visible,
+.message-edit-btn:focus-visible,
 .delete-message-dialog button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.message-delete-btn svg {
+.message-delete-btn svg,
+.message-edit-btn svg {
   pointer-events: none;
 }
 
+.message-edit-btn svg {
+  transform: translateY(1px);
+}
+
 @media (any-pointer: coarse) {
-  .message-delete-btn {
+  .message-delete-btn,
+  .message-edit-btn {
     flex-basis: 44px;
     width: 44px;
     height: 44px;
@@ -562,11 +581,115 @@ p.ai-settings-note {
   width: 100%;
 }
 
+.message.assistant {
+  flex-direction: column;
+}
+
+.message-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-top: 4px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.message-actions[data-latest],
+.message-actions:hover,
+.message.assistant:focus-within > .message-actions,
+.message.assistant[data-actions-visible] > .message-actions,
+.message.assistant:has(> .message-content:hover) > .message-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.message-refresh-btn,
+.message-version-delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 24px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--fg-dim);
+}
+
+.message-refresh-btn:hover,
+.message-version-delete-btn:hover {
+  background: transparent;
+  color: var(--fg);
+}
+
+.message-refresh-btn:disabled,
+.message-version-delete-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.message-refresh-btn:focus-visible,
+.message-version-delete-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.message-refresh-btn:only-child {
+  justify-content: flex-start;
+}
+
+@media (any-pointer: coarse) {
+  .message-refresh-btn,
+  .message-version-delete-btn {
+    width: 44px;
+    height: 44px;
+  }
+}
+
+:where(
+  .is-streaming .message-actions,
+  .is-streaming .message-delete-btn,
+  .is-streaming .message-edit-btn,
+  .is-streaming .version-nav
+) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .message.user .message-content {
   max-width: 78%;
   border-radius: 18px;
   padding: 12px 16px;
   background: var(--bg-bubble);
+}
+
+:where(.message.user.is-editing > .message-user-actions) {
+  visibility: hidden;
+}
+
+.message-edit-input {
+  min-height: 1.5em;
+  white-space: pre-wrap;
+  outline: none;
+}
+
+.message-edit-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-edit-controls button {
+  border-color: transparent;
+  background: var(--bg-surface);
+  color: var(--fg-muted);
+}
+
+.message-edit-controls button:hover {
+  background: var(--fg-muted);
+  color: var(--bg-surface);
 }
 
 /* Per-message version navigator for branched (edited / regenerated) turns. */
@@ -581,8 +704,16 @@ p.ai-settings-note {
   user-select: none;
 }
 
+.message-actions .version-nav {
+  margin-top: 0;
+}
+
 .message.user .version-nav {
   justify-content: flex-end;
+}
+
+.message.user.is-editing .version-nav {
+  display: none;
 }
 
 .version-nav-btn {
@@ -618,6 +749,22 @@ p.ai-settings-note {
   text-align: center;
   font-weight: 600;
   letter-spacing: 0.02em;
+}
+
+.message-actions .version-nav-btn,
+.message-actions .version-nav-count {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  line-height: 1;
+}
+
+@media (any-pointer: coarse) {
+  .message-actions .version-nav-btn {
+    width: 44px;
+    height: 44px;
+  }
 }
 
 .role-label {
@@ -779,8 +926,8 @@ p.ai-settings-note {
    preceding block's own margin, so without it the cursor hugs the block) plus
    the cursor's 1em line. Both states total gap + 1em and trade places
    atomically in one style recalc, so stream end never shifts the content
-   below: the space is permanent, only its occupant changes. Tune the rhythm
-   via --cursor-gap alone; the padding follows. */
+   below: the space is permanent, only its occupant changes. Rows with an
+   action footer use that footer as their reservation instead (see below). */
 .message.assistant .markdown {
   /* --cursor-line mirrors markdown-viewer's bare-cursor contract (a block
      cursor line of exactly 1em); --cursor-gap adds optional air above the
@@ -806,15 +953,21 @@ p.ai-settings-note {
   padding-bottom: 0;
 }
 
-/* A finished branched message has a real footer immediately after markdown.
-   The navigator supplies the breathing room, so retaining the phantom cursor
-   line here would separate the footer from the content it controls. */
-.message.assistant .markdown-viewer:has(+ .version-nav) .markdown {
+.message.assistant .markdown > .cursor {
+  margin-top: var(--cursor-gap);
+}
+
+/* Actions stay in normal flow, outside the markdown hit-test area. Their
+   hidden row reserves space during streaming; a bare cursor borrows that
+   space without adding another line. Inline cursors need no extra line. */
+.message.assistant:has(> .message-actions) .markdown {
   padding-bottom: 0;
 }
 
-.message.assistant .markdown > .cursor {
-  margin-top: var(--cursor-gap);
+.message.assistant:has(> .message-actions) .markdown > .cursor {
+  /* Override markdown-viewer's important last-child margin reset. */
+  /* biome-ignore lint/complexity/noImportantStyles: the upstream reset is important */
+  margin-bottom: calc(-1 * (var(--cursor-line) + var(--cursor-gap))) !important;
 }
 
 /* Code blocks and tables scroll horizontally, but markdown-viewer gives them

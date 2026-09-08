@@ -466,6 +466,24 @@ describe("I5 — pin-to-top reserve", () => {
     expect(geometry.totalSize).toBeCloseTo(total, 6);
   });
 
+  it.each(["none", "auto", "viewport"] as const)(
+    "should consume reserve during bottom overscroll with %s policy",
+    (policy) => {
+      const { geometry, vp } = pinnedAtEnd();
+      const total = geometry.totalSize;
+
+      for (let height = 110; height <= 180; height += 10) {
+        const bounced = viewport(geometry.maxScrollTop(VIEWPORT_H) + 24);
+        const result = transact(geometry, bounced, policy, () =>
+          geometry.measure("m19", height),
+        );
+
+        expect(result.totalSize).toBe(total);
+        expect(result.scrollTop).toBe(vp.scrollTop);
+      }
+    },
+  );
+
   it("passes the pin to a row replacing the pinned one in place; another removal drops it", () => {
     const { geometry, vp } = pinnedAtEnd();
     const total = geometry.totalSize;
@@ -588,7 +606,11 @@ describe("randomized against the oracle", () => {
     let nextId = 0;
 
     for (let step = 0; step < 400; step++) {
-      const vp = viewport(rng() * Math.max(0, oracle.contentSize()));
+      // Reading anchors live in the legal range; elastic offsets are covered
+      // separately and must not become positions preserved across updates.
+      const vp = viewport(
+        rng() * Math.max(0, oracle.contentSize() - VIEWPORT_H),
+      );
       const anchor = geometry.anchorAt(vp);
       const capture = geometry.capture(vp, "viewport");
 

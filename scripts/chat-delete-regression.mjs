@@ -59,19 +59,19 @@ try {
   await row.scrollIntoViewIfNeeded();
   await page.mouse.move(0, 0);
   assert.equal(
-    await button.evaluate((el) => getComputedStyle(el).opacity),
+    await button.evaluate((el) => getComputedStyle(el.parentElement).opacity),
     "0",
   );
   const before = await row.boundingBox();
   await row.hover({ position: { x: 1, y: 1 } });
   assert.equal(
-    await button.evaluate((el) => getComputedStyle(el).opacity),
+    await button.evaluate((el) => getComputedStyle(el.parentElement).opacity),
     "0",
     "empty row space must not reveal the delete icon",
   );
   await row.locator(".message-content").hover();
   assert.equal(
-    await button.evaluate((el) => getComputedStyle(el).opacity),
+    await button.evaluate((el) => getComputedStyle(el.parentElement).opacity),
     "1",
   );
   assert.ok(
@@ -86,7 +86,8 @@ try {
   );
   const centered = await button.evaluate((el) => {
     const icon = el.getBoundingClientRect();
-    const bubble = el.parentElement
+    const bubble = el
+      .closest(".message")
       .querySelector(".message-content")
       .getBoundingClientRect();
     return Math.abs(icon.y + icon.height / 2 - bubble.y - bubble.height / 2);
@@ -99,7 +100,7 @@ try {
   await page.mouse.move(0, 0);
   await button.focus();
   assert.equal(
-    await button.evaluate((el) => getComputedStyle(el).opacity),
+    await button.evaluate((el) => getComputedStyle(el.parentElement).opacity),
     "1",
   );
   await page.keyboard.press("Enter");
@@ -162,6 +163,15 @@ try {
   await streaming.waitForFunction(
     () => typeof window.finishOldRequest === "function",
   );
+  assert.equal(
+    await streaming.locator(".message-delete-btn:visible").count(),
+    0,
+  );
+  await streaming.locator("#send-btn").click();
+  await streaming.evaluate(() => window.finishOldRequest());
+  await streaming.waitForFunction(
+    () => document.getElementById("send-btn").textContent === "Send",
+  );
   await confirmDelete(streaming, "Old request");
   await streaming.locator("#prompt").fill("New request");
   await streaming.locator("#send-btn").click();
@@ -172,8 +182,12 @@ try {
   await streaming.waitForTimeout(100);
   assert.equal(await streaming.locator("#send-btn").textContent(), "Stop");
   assert.doesNotMatch(await exported(streaming), /Old request/);
-  await confirmDelete(streaming, "New request");
+  await streaming.locator("#send-btn").click();
   await streaming.evaluate(() => window.finishNewRequest());
+  await streaming.waitForFunction(
+    () => document.getElementById("send-btn").textContent === "Send",
+  );
+  await confirmDelete(streaming, "New request");
   await confirmDelete(streaming, "Turn 2");
   const saved = await streaming.evaluate(async () => {
     const api = await import("/demos/streaming/openai.ts");

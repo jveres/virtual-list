@@ -923,7 +923,7 @@ interface AISettingsPanelOptions {
   onProviderChange?: (provider: AIProvider) => void;
   /** Fires after the stored OpenAI history was cleared. */
   onClearHistory?: () => void;
-  /** Whether an import has replaced the simulated conversation. */
+  /** Whether the simulated conversation differs from its built-in history. */
   canRestoreConversation?: () => boolean;
   /** Fires when the user asks for the built-in conversation back. */
   onRestoreConversation?: () => void;
@@ -969,7 +969,7 @@ export function initAISettingsPanel(
   };
 
   // Under the simulated provider nothing but the provider choice shows —
-  // plus, once an import has replaced the built-in conversation, the way
+  // plus, once an edit or import has changed the built-in conversation, the way
   // back to it; every OpenAI-specific input, action, and note belongs to
   // OpenAI.
   const openAIFields = panel.querySelectorAll<HTMLElement>(

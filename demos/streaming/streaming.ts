@@ -649,7 +649,28 @@ function canLoadOlderMessages(): boolean {
 
 // Recomputes `messages` (the window handed to the virtualizer — always the
 // transcript's tail from loadedStart) and the id → transcript index lookup.
+let refreshMessageId: number | undefined;
+
 function refreshLoadedWindow(): void {
+  const last = transcript.at(-1);
+  const nextRefreshId = last?.role === "assistant" ? last.id : undefined;
+  if (nextRefreshId !== refreshMessageId) {
+    // Action eligibility is part of row rendering: invalidate both endpoints
+    // so the virtualizer also measures the footer appearing/disappearing.
+    for (let i = 0; i < transcript.length; i++) {
+      const message = transcript[i];
+      if (
+        message &&
+        (message.id === refreshMessageId || message.id === nextRefreshId)
+      ) {
+        const next = { ...message };
+        transcript[i] = next;
+        const node = tree.get(message.id);
+        if (node) node.message = next;
+      }
+    }
+    refreshMessageId = nextRefreshId;
+  }
   loadedStart = Math.min(Math.max(0, loadedStart), transcript.length);
   // The window starts on a day boundary: a scrollback load then prepends
   // whole days above the first loaded day's header, never between a header
@@ -1166,6 +1187,7 @@ function seedSyntheticBranches(
 let conversationEpoch = 0;
 
 function resetConversationState(): void {
+  userEdit = null;
   conversationEpoch++;
   // An old load's promise may finish after the replacement runtime mounts.
   // Its identity/epoch guards must not clear or block the new chat's loader.
@@ -1203,6 +1225,13 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
 let openAIHistory: readonly StoredTurn[] = [];
 // A transcript imported under the simulated provider; session-only.
 let importedConversation: readonly StoredTurn[] | null = null;
+let simulatedConversationChanged = false;
+let userEdit: { id: number; epoch: number; text: string } | null = null;
+
+function markConversationChanged(): void {
+  if (getAISettings().provider === "simulated")
+    simulatedConversationChanged = true;
+}
 
 // Loads the history snapshot and the fence languages its static render needs
 // (loadLanguages ignores unknown names, so the raw info strings are safe to
@@ -1245,6 +1274,7 @@ function seedActiveConversation(): void {
   } else if (importedConversation !== null) {
     seedStoredTurns(importedConversation);
   } else {
+    simulatedConversationChanged = false;
     seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
   }
   rebuildActiveTranscript();
@@ -1319,6 +1349,8 @@ function switchMessageVersion(messageId: number, offset: number): void {
   );
   if (nextSelected === parent.selectedChildIndex) return;
 
+  cancelUserEdit();
+  markConversationChanged();
   const branchIndex = transcriptIndexById.get(messageId) ?? -1;
   parent.selectedChildIndex = nextSelected;
   rebuildActiveTranscript();
@@ -1329,15 +1361,19 @@ function switchMessageVersion(messageId: number, offset: number): void {
   syncMetrics();
 }
 
-// Truncate at a user turn, including its alternate versions and descendants.
+// Remove the selected version and descendants, preserving sibling versions.
 // Keep branches above the cut, and use the runtime's normal disposal/boot
 // lifecycle to cancel pending paging, measurements, and scroll commands.
 function deleteMessagesFrom(messageId: number, epoch: number): void {
-  if (epoch !== conversationEpoch) return;
+  if (epoch !== conversationEpoch || streamAbort) return;
   const index = transcriptIndexById.get(messageId);
   const node = tree.get(messageId);
   const parent = node && tree.get(node.parentId);
-  if (index === undefined || node?.message?.role !== "user" || !parent) return;
+  if (index === undefined || !node?.message || !parent) return;
+  const isVersion = parent.childrenIds.length > 1;
+  if (node.message.role === "assistant" && !isVersion) return;
+  cancelUserEdit();
+  markConversationChanged();
 
   const removedCount = transcript.length - index;
   conversationEpoch++;
@@ -1349,9 +1385,12 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
   loadingTop = false;
   topBoundaryLoadSeen = false;
 
-  const removed = [...parent.childrenIds];
-  parent.childrenIds = [];
-  parent.selectedChildIndex = 0;
+  const removed = [messageId];
+  parent.childrenIds = parent.childrenIds.filter((id) => id !== messageId);
+  parent.selectedChildIndex = Math.max(
+    0,
+    Math.min(parent.selectedChildIndex, parent.childrenIds.length - 1),
+  );
   while (removed.length > 0) {
     const id = removed.pop();
     if (id === undefined) break;
@@ -1375,7 +1414,9 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
   setStreamingUI(false);
   syncMetrics();
   promptInput.focus({ preventScroll: true });
-  deletionStatus.textContent = `${removedCount} ${removedCount === 1 ? "message" : "messages"} deleted.`;
+  deletionStatus.textContent = isVersion
+    ? "Message version deleted."
+    : `${removedCount} ${removedCount === 1 ? "message" : "messages"} deleted.`;
 }
 
 // --- Rendering --------------------------------------------------------------
@@ -1487,7 +1528,7 @@ function buildStaticRow(message: Message): HTMLElement {
     list.append(...message.attachments.map(attachmentChip));
     row.querySelector(".message-content")?.append(list);
   }
-  appendVersionNav(row, message);
+  if (message.role === "user") appendVersionNav(row, message);
   return row;
 }
 
@@ -1508,17 +1549,177 @@ function buildRow(message: Message): HTMLElement {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "message-delete-btn";
-    button.title = "Delete this message and everything after it";
+    button.title = "Delete this message version and its replies";
     button.setAttribute("aria-label", button.title);
     button.setAttribute("aria-haspopup", "dialog");
     button.innerHTML =
       '<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    row.prepend(button);
+    const actions = document.createElement("div");
+    actions.className = "message-user-actions";
+    actions.append(button);
+    row.prepend(actions);
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "message-edit-btn";
+    edit.title = "Edit message";
+    edit.setAttribute("aria-label", edit.title);
+    edit.innerHTML =
+      '<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="m12.5 3.5 4 4M3 17l4.5-1 9-9a2.8 2.8 0 0 0-4-4l-9 9L3 17Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    button.after(edit);
+    if (userEdit?.id === message.id && userEdit.epoch === conversationEpoch)
+      buildUserEditor(row, message);
   }
   row.dataset.key = String(message.id);
   row.dataset.toolsig = toolSignature(message);
+  syncMessageActions(row, message);
   rowById.set(String(message.id), row);
   return row;
+}
+
+function cancelUserEdit(focus = false): void {
+  const edit = userEdit;
+  userEdit = null;
+  const row = edit && rowById.get(String(edit.id));
+  if (!row) return;
+  row.querySelector(".message-edit-controls")?.remove();
+  const editor = row.querySelector<HTMLElement>(".message-edit-input");
+  const message = edit && tree.get(edit.id)?.message;
+  if (editor && message) {
+    editor.removeAttribute("contenteditable");
+    editor.removeAttribute("role");
+    editor.removeAttribute("aria-label");
+    editor.removeAttribute("aria-multiline");
+    editor.classList.remove("message-edit-input");
+    editor.oninput = null;
+    editor.onkeydown = null;
+    editor.innerHTML = htmlForMessage(message);
+  }
+  row.classList.remove("is-editing");
+  if (focus)
+    row
+      .querySelector<HTMLButtonElement>(".message-edit-btn")
+      ?.focus({ preventScroll: true });
+}
+
+function buildUserEditor(row: HTMLElement, message: Message): HTMLElement {
+  const editor = row.querySelector<HTMLElement>(
+    ".message-content > .markdown-viewer > .markdown",
+  );
+  if (!editor) throw new Error("User message content is missing");
+  row.classList.add("is-editing");
+  editor.classList.add("message-edit-input");
+  editor.contentEditable = "plaintext-only";
+  editor.setAttribute("role", "textbox");
+  editor.setAttribute("aria-label", "Edit user message");
+  editor.setAttribute("aria-multiline", "true");
+  editor.textContent = userEdit?.text ?? message.markdown;
+  const submit = () => {
+    if (userEdit?.id !== message.id || userEdit.epoch !== conversationEpoch)
+      return;
+    if (!editor.innerText.trim() && !message.attachments?.length) return;
+    void handleSend({
+      kind: "edit",
+      messageId: message.id,
+      text: editor.innerText.trim(),
+    });
+  };
+  const controls = document.createElement("div");
+  controls.className = "message-edit-controls";
+  const cancel = document.createElement("button");
+  cancel.type = "button";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", () => cancelUserEdit(true));
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "Save";
+  save.addEventListener("click", submit);
+  controls.append(cancel, save);
+  editor.closest(".markdown-viewer")?.after(controls);
+  editor.oninput = () => {
+    if (userEdit?.id === message.id) userEdit.text = editor.innerText;
+  };
+  editor.onkeydown = (event) => {
+    if (event.isComposing) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelUserEdit(true);
+    } else if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      submit();
+    }
+  };
+  return editor;
+}
+
+function beginUserEdit(row: HTMLElement): void {
+  if (streamAbort || preparingConversation) return;
+  const id = Number(row.dataset.key);
+  const message = tree.get(id)?.message;
+  if (message?.role !== "user" || !transcriptIndexById.has(id)) return;
+  if (userEdit?.id === id) {
+    row.querySelector<HTMLElement>(".message-edit-input")?.focus();
+    return;
+  }
+  cancelUserEdit();
+  userEdit = { id, epoch: conversationEpoch, text: message.markdown };
+  const editor = buildUserEditor(row, message);
+  editor.focus({ preventScroll: true });
+  const range = document.createRange();
+  range.selectNodeContents(editor);
+  range.collapse(false);
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(range);
+}
+
+function syncMessageActions(row: HTMLElement, message: Message): void {
+  if (message.role !== "assistant") return;
+  const info = versionInfo(message.id);
+  let actions = row.querySelector<HTMLElement>(".message-actions");
+  if (!actions) {
+    actions = document.createElement("div");
+    actions.className = "message-actions";
+    const nav = buildVersionNav(message);
+    if (nav) actions.append(nav);
+    row.append(actions);
+  }
+  actions.toggleAttribute("data-latest", message.id === refreshMessageId);
+  const definitions = [
+    {
+      className: "message-refresh-btn",
+      label: "Regenerate response",
+      show: true,
+      path: "M16.5 8a6.5 6.5 0 1 0 .1 3M16.5 3.5V8H12",
+    },
+    {
+      className: "message-version-delete-btn",
+      label: "Delete response version",
+      show: info !== null,
+      path: "M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6",
+    },
+  ];
+  for (const action of definitions) {
+    const existing = actions.querySelector<HTMLButtonElement>(
+      `.${action.className}`,
+    );
+    if (!action.show) {
+      existing?.remove();
+      continue;
+    }
+    const button = existing ?? document.createElement("button");
+    button.disabled = streamAbort !== null || preparingConversation;
+    if (!existing) {
+      button.type = "button";
+      button.className = action.className;
+      button.title = action.label;
+      button.setAttribute("aria-label", action.label);
+      if (action.className === "message-version-delete-btn")
+        button.setAttribute("aria-haspopup", "dialog");
+      button.innerHTML = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="${action.path}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+      actions.append(button);
+    }
+  }
 }
 
 function syncRoleLabel(element: HTMLElement, message: Message): void {
@@ -1531,6 +1732,7 @@ function syncRoleLabel(element: HTMLElement, message: Message): void {
 // In-place update for a mounted row whose message changed; returns null when
 // the row must be rebuilt (structure changed, or no live viewer to feed).
 function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
+  syncMessageActions(element, message);
   const handle = streamingViewers.get(element);
   const signature = toolSignature(message);
   if (element.dataset.toolsig !== signature) {
@@ -1960,6 +2162,12 @@ function autosize(): void {
 }
 
 function setStreamingUI(streaming: boolean): void {
+  viewport.classList.toggle("is-streaming", streaming);
+  for (const button of viewport.querySelectorAll<HTMLButtonElement>(
+    ".message-refresh-btn, .message-version-delete-btn",
+  )) {
+    button.disabled = streaming || preparingConversation;
+  }
   sendBtn.textContent = streaming ? "Stop" : "Send";
   sendBtn.classList.toggle("stop-btn", streaming);
   sendBtn.disabled =
@@ -2085,21 +2293,49 @@ function fadeInRows(ids: readonly number[], abort: StreamAbort): void {
   void animateRowsClass(ids, "fade", abort);
 }
 
-async function handleSend(): Promise<void> {
+type SendAction =
+  | { kind: "regenerate"; messageId: number }
+  | { kind: "edit"; messageId: number; text: string };
+
+async function handleSend(action?: SendAction): Promise<void> {
   if (preparingConversation) return;
+  const previous = action ? tree.get(action.messageId) : undefined;
+  const originalPrompt =
+    action?.kind === "edit"
+      ? previous?.message
+      : previous
+        ? tree.get(previous.parentId)?.message
+        : undefined;
+  if (
+    action !== undefined &&
+    (streamAbort ||
+      !transcriptIndexById.has(action.messageId) ||
+      previous?.message?.role !==
+        (action.kind === "edit" ? "user" : "assistant") ||
+      originalPrompt?.role !== "user")
+  )
+    return;
   if (streamAbort) {
     cancelStream(streamAbort);
     return;
   }
 
-  const text = promptInput.value.trim();
-  if (readingAttachments || (!text && pendingAttachments.length === 0)) return;
-  const attachments = pendingAttachments;
-  clearPendingAttachments();
+  const text =
+    action?.kind === "edit"
+      ? action.text
+      : (originalPrompt?.markdown ?? promptInput.value.trim());
+  const attachments =
+    originalPrompt?.attachments ?? (originalPrompt ? [] : pendingAttachments);
+  if (readingAttachments || (!text && attachments.length === 0)) return;
+  cancelUserEdit();
+  markConversationChanged();
 
-  promptInput.value = "";
-  saveDraft();
-  autosize();
+  if (!originalPrompt) {
+    clearPendingAttachments();
+    promptInput.value = "";
+    saveDraft();
+    autosize();
+  }
 
   const abort: StreamAbort = { cancelled: false, onCancel: new Set() };
   streamAbort = abort;
@@ -2118,12 +2354,14 @@ async function handleSend(): Promise<void> {
     // New turns use the real clock in both providers. The built-in sample
     // ends yesterday, so the first simulated send opens a Today section.
     const sentAt = Date.now();
-    const userMessage = createMessage({
-      role: "user",
-      markdown: text,
-      ...(attachments.length ? { attachments } : {}),
-      sentAt,
-    });
+    const userMessage =
+      (action?.kind === "regenerate" ? originalPrompt : undefined) ??
+      createMessage({
+        role: "user",
+        markdown: text,
+        ...(attachments.length ? { attachments } : {}),
+        sentAt,
+      });
     const assistantMessage = createMessage({
       role: "assistant",
       markdown: "",
@@ -2134,7 +2372,24 @@ async function handleSend(): Promise<void> {
       sentAt,
     });
     assistantId = assistantMessage.id;
-    appendToActiveBranch([userMessage, assistantMessage]);
+    if (action?.kind === "edit" && previous && originalPrompt) {
+      addTreeChild(previous.parentId, userMessage);
+      addTreeChild(userMessage.id, assistantMessage);
+      loadedStart = Math.min(
+        loadedStart,
+        transcriptIndexById.get(originalPrompt.id) ?? loadedStart,
+      );
+      rebuildActiveTranscript();
+    } else if (originalPrompt) {
+      addTreeChild(originalPrompt.id, assistantMessage);
+      loadedStart = Math.min(
+        loadedStart,
+        transcriptIndexById.get(originalPrompt.id) ?? loadedStart,
+      );
+      rebuildActiveTranscript();
+    } else {
+      appendToActiveBranch([userMessage, assistantMessage]);
+    }
     // Persist the user turn immediately so a reload mid-stream keeps it (the
     // still-empty assistant placeholder is filtered out).
     persistTurns();
@@ -2142,7 +2397,12 @@ async function handleSend(): Promise<void> {
     // the motion.
     pushItems("viewport");
     if (!shouldFlyIn) {
-      fadeInRows([userMessage.id, assistantMessage.id], abort);
+      fadeInRows(
+        originalPrompt
+          ? [assistantMessage.id]
+          : [userMessage.id, assistantMessage.id],
+        abort,
+      );
     }
     // Pin-to-top (I5): the reserve holds scrollable space below the prompt
     // until the streamed reply consumes it, and the glide lands the prompt
@@ -2240,9 +2500,11 @@ initAISettingsPanel({
     // while the simulated transcript is showing needs no repaint.
     if (getAISettings().provider === "openai") reloadConversation();
   },
-  canRestoreConversation: () => importedConversation !== null,
+  canRestoreConversation: () =>
+    importedConversation !== null || simulatedConversationChanged,
   onRestoreConversation: () => {
     importedConversation = null;
+    simulatedConversationChanged = false;
     reloadConversation();
   },
 });
@@ -2367,20 +2629,76 @@ const deletionStatus = mustGet("deletion-status", HTMLElement);
 let pendingDeletion: { id: number; epoch: number } | null = null;
 let touchActionRow: HTMLElement | null = null;
 
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    if (!userEdit || !(event.target instanceof Node)) return;
+    const content = rowById
+      .get(String(userEdit.id))
+      ?.querySelector(".message-content");
+    if (!content?.contains(event.target)) cancelUserEdit();
+  },
+  { capture: true },
+);
+
 viewport.addEventListener("click", (event) => {
-  if (!(event.target instanceof Element)) return;
-  const button = event.target.closest<HTMLButtonElement>(".message-delete-btn");
-  const row = button?.closest<HTMLElement>(".message.user");
+  if (
+    !(event.target instanceof Element) ||
+    streamAbort ||
+    preparingConversation
+  )
+    return;
+  const refresh = event.target.closest<HTMLButtonElement>(
+    ".message-refresh-btn",
+  );
+  if (refresh && !refresh.disabled) {
+    const row = refresh.closest<HTMLElement>(".message.assistant");
+    if (row)
+      void handleSend({
+        kind: "regenerate",
+        messageId: Number(row.dataset.key),
+      });
+    return;
+  }
+  const edit = event.target.closest<HTMLButtonElement>(".message-edit-btn");
+  if (edit) {
+    const row = edit.closest<HTMLElement>(".message.user");
+    if (row) beginUserEdit(row);
+    return;
+  }
+  const userText = event.target.closest<HTMLElement>(".message.user .markdown");
+  if (
+    userText &&
+    !event.target.closest("a, button") &&
+    !userText.isContentEditable
+  ) {
+    const row = userText.closest<HTMLElement>(".message.user");
+    if (row) beginUserEdit(row);
+    return;
+  }
+  const button = event.target.closest<HTMLButtonElement>(
+    ".message-delete-btn, .message-version-delete-btn",
+  );
+  const row = button?.closest<HTMLElement>(".message");
   if (!row || deleteDialog.open) return;
   const id = Number(row.dataset.key);
   const index = transcriptIndexById.get(id);
   if (index === undefined) return;
   const message = transcript[index];
-  if (message?.role !== "user") return;
+  if (!message) return;
+  const isVersion = versionInfo(id) !== null;
+  if (message.role === "assistant" && !isVersion) return;
   pendingDeletion = { id, epoch: conversationEpoch };
   const later = transcript.length - index - 1;
-  mustGet("delete-message-description", HTMLElement).textContent =
-    later > 0
+  mustGet("delete-message-title", HTMLElement).textContent = isVersion
+    ? "Delete this version?"
+    : "Delete from here?";
+  mustGet("delete-message-dialog", HTMLDialogElement)
+    .querySelector<HTMLButtonElement>(".delete-message-confirm")
+    ?.replaceChildren(isVersion ? "Delete version" : "Delete messages");
+  mustGet("delete-message-description", HTMLElement).textContent = isVersion
+    ? "This deletes this message version and any messages following it on this branch. Other versions are kept. This cannot be undone."
+    : later > 0
       ? `This deletes your message and the ${later} ${later === 1 ? "message" : "messages"} after it, including any alternate versions below this point. This cannot be undone.`
       : "This deletes your message and any alternate versions below this point. This cannot be undone.";
   deleteDialog.returnValue = "";
@@ -2404,8 +2722,10 @@ document.addEventListener(
     const row =
       event.target instanceof Element
         ? (event.target
-            .closest(".message-content, .message-delete-btn")
-            ?.closest<HTMLElement>(".message.user") ?? null)
+            .closest(
+              ".message-content, .message-user-actions, .message-actions",
+            )
+            ?.closest<HTMLElement>(".message") ?? null)
         : null;
     if (row === touchActionRow) return;
     touchActionRow?.removeAttribute("data-actions-visible");
