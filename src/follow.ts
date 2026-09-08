@@ -12,6 +12,10 @@ type FollowHost = {
 const AT_EDGE_PX = 1;
 const RESUME_CATCH_UP_MS = 300;
 
+function normalizeInset(inset: number): number {
+  return Number.isFinite(inset) ? Math.max(0, inset) : 0;
+}
+
 /** Chat follow intent and destination policy. Motion and DOM writes belong to the runtime. */
 export class FollowController {
   private following = false;
@@ -36,12 +40,12 @@ export class FollowController {
     private mode: FollowMode = "end",
     private inset = 0,
   ) {
-    this.inset = Math.max(0, inset);
+    this.inset = normalizeInset(inset);
   }
 
   setMode(mode: FollowMode, inset = 0): void {
     this.mode = mode;
-    this.inset = Math.max(0, inset);
+    this.inset = normalizeInset(inset);
   }
 
   /** Stop at the last item's start, but never move backwards to reach it. */

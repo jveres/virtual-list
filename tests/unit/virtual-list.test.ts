@@ -122,6 +122,7 @@ function mount(
     anchorable?: (m: Msg) => boolean;
     followMode?: VirtualListOptions<Msg>["followMode"];
     followInset?: number;
+    overscanPx?: number;
     itemHeight?: (m: Msg) => number;
     position?: VirtualListOptions<Msg>["position"];
     boot?: "start" | "end";
@@ -207,6 +208,7 @@ function mount(
     anchorable: hooks.anchorable,
     followMode: hooks.followMode,
     followInset: hooks.followInset,
+    overscanPx: hooks.overscanPx,
     height: hooks.itemHeight,
     position: hooks.position,
     boot: hooks.boot,
@@ -282,6 +284,106 @@ beforeEach(() => {
 });
 
 describe("settle-time window updates", () => {
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
+    "should use default overscan for invalid configuration (%s)",
+    (overscanPx) => {
+      const h = mount(range(0, 50), { boot: "start", overscanPx });
+
+      expect(h.list.state.start).toBe(0);
+      expect(h.list.state.end).toBe(12);
+      expect(h.list.elementOf("m11")?.textContent).toBe("msg 11");
+      h.list.dispose();
+    },
+  );
+
+  it("should preserve an explicit zero overscan", () => {
+    const h = mount(range(0, 50), { boot: "start", overscanPx: 0 });
+
+    expect(h.list.state.start).toBe(0);
+    expect(h.list.state.end).toBe(6);
+    expect(h.list.elementOf("m6")).toBeNull();
+    h.list.dispose();
+  });
+
+  it("should retain rows within a stacked window and reconcile its boundaries", () => {
+    const positions: number[] = [];
+    const h = mount(range(0, 50), {
+      boot: "start",
+      onViewport: (vp) => positions.push(vp.scrollTop),
+    });
+    positions.length = 0;
+    h.userScroll(2001);
+    const retained = h.list.elementOf("m20");
+
+    for (const top of [2002, 2099, 2100, 2101, 2002]) {
+      h.userScroll(top);
+      const start = Math.floor((top - 600) / 100);
+      const end = Math.ceil((top + 1200) / 100);
+      expect(h.list.state.start).toBe(start);
+      expect(h.list.state.end).toBe(end);
+      expect(h.canvas().childElementCount).toBe(end - start);
+      expect(h.list.elementOf("m20")).toBe(retained);
+      expect(h.list.elementOf(`m${start - 1}`)).toBeNull();
+      expect(h.list.elementOf(`m${end}`)).toBeNull();
+    }
+    expect(positions).toEqual([2001, 2002, 2099, 2100, 2101, 2002]);
+    h.list.dispose();
+  });
+
+  it("should retry a failed stacked entry without a range change", () => {
+    let fail = true;
+    const failures: string[] = [];
+    const onError = (event: ErrorEvent): void => {
+      failures.push(event.message);
+      event.preventDefault();
+    };
+    const h = mount(range(0, 50), {
+      boot: "start",
+      itemHeight: () => ROW_H,
+      onRender: (m) => {
+        if (fail && m.id === 30) throw new Error("stacked entry failed");
+      },
+    });
+    window.addEventListener("error", onError);
+    try {
+      h.userScroll(2001);
+      expect(h.list.elementOf("m30")).toBeNull();
+      fail = false;
+      h.userScroll(2002);
+
+      expect(h.list.elementOf("m30")?.textContent).toBe("msg 30");
+      expect(failures).toEqual(["stacked entry failed"]);
+    } finally {
+      window.removeEventListener("error", onError);
+      h.list.dispose();
+    }
+  });
+
+  it("should position surviving rows after a live commit with unchanged window bounds", () => {
+    const h = mount(range(0, 50), { boot: "start", scrollingUpdates: "live" });
+    h.userScroll(2001);
+    const before = h.list.state;
+    const survivor = h.rowElement("msg 21");
+    h.heights.set(20, 150);
+    h.heights.set(23, 50);
+
+    fireResizes(0, [
+      [h.rowElement("msg 20"), 150],
+      [h.rowElement("msg 23"), 50],
+    ]);
+
+    expect(h.list.state.start).toBe(before.start);
+    expect(h.list.state.end).toBe(before.end);
+    expect(h.list.state.totalSize).toBe(before.totalSize);
+    expect(h.viewport.scrollTop).toBe(2001);
+    expect(h.list.elementOf("m21")).toBe(survivor);
+    expect(h.slotOf(survivor).style.transform).toBe("translateY(2150px)");
+    expect(h.slotOf(h.rowElement("msg 24")).style.transform).toBe(
+      "translateY(2400px)",
+    );
+    h.list.dispose();
+  });
+
   it("should reconcile the old viewport again after a lazy render fails elsewhere", () => {
     const failures: string[] = [];
     const onError = (event: ErrorEvent): void => {
@@ -4756,6 +4858,78 @@ describe("v2 runtime — reach signals", () => {
 });
 
 describe("host-named anchor", () => {
+  it("should preserve a held anchor when its caller reuses the object", () => {
+    const initial = range(0, 50);
+    const h = mount(initial);
+    h.userScroll(2000);
+    const anchor = { key: "m23", offset: 30 };
+
+    h.list.setItems([...range(-5, 0), ...initial], { anchor });
+    anchor.key = "m40";
+    anchor.offset = 900;
+    h.list.updateItem("m30", message(30, "updated"));
+    h.settle();
+
+    expect(h.viewport.scrollTop).toBe(2770);
+    expect(h.list.elementOf("m30")?.textContent).toBe("updated");
+    h.list.dispose();
+  });
+
+  it.each(["setItems", "updateItem"] as const)(
+    "should own an anchor before a reentrant %s is queued",
+    (method) => {
+      let current: Harness | null = null;
+      let queued = false;
+      const initial = range(0, 50);
+      const queueUpdate = {
+        setItems: (
+          list: VirtualList<Msg>,
+          anchor: { key: string; offset: number },
+        ) => list.setItems(initial, { anchor }),
+        updateItem: (
+          list: VirtualList<Msg>,
+          anchor: { key: string; offset: number },
+        ) => list.updateItem("m20", message(20, "queued"), { anchor }),
+      };
+      const h = mount(initial, {
+        onState: () => {
+          if (!current || queued) return;
+          queued = true;
+          const anchor = { key: "m20", offset: 25 };
+          queueUpdate[method](current.list, anchor);
+          anchor.key = "m30";
+          anchor.offset = 900;
+        },
+      });
+      current = h;
+
+      h.list.updateItem("m21", message(21, "trigger"));
+
+      expect(queued).toBe(true);
+      expect(h.viewport.scrollTop).toBe(1975);
+      h.list.dispose();
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "should reject an invalid anchor without replacing held work (%s)",
+    (offset) => {
+      const initial = range(0, 50);
+      const h = mount(initial);
+      h.userScroll(2000);
+      h.list.setItems([...range(-5, 0), ...initial], { anchor: "viewport" });
+
+      expect(() =>
+        h.list.setItems([], { anchor: { key: "m20", offset } }),
+      ).toThrow(new RangeError("anchor offset must be finite"));
+      h.settle();
+
+      expect(h.list.state.count).toBe(55);
+      expect(h.viewport.scrollTop).toBe(2500);
+      h.list.dispose();
+    },
+  );
+
   it("lands the named key at the named offset, and falls back when the key is gone", () => {
     const initial = range(0, 50);
     const h = mount(initial);

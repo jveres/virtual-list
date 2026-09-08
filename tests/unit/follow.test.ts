@@ -18,6 +18,32 @@ function setup() {
 }
 
 describe("follow policy", () => {
+  it.each([
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    -20,
+  ])("should use a zero inset for invalid configuration (%s)", (inset) => {
+    const follow = new FollowController(
+      {
+        maxScrollTop: () => 1000,
+        lastItemTop: () => 800,
+        hidden: () => false,
+        now: () => 0,
+      },
+      "keep-start",
+      inset,
+    );
+
+    expect(follow.target(0)).toBe(800);
+    expect(follow.needsMotion(0)).toBe(true);
+    follow.setMode("keep-start", 40);
+    expect(follow.target(0)).toBe(760);
+    follow.setMode("keep-start", inset);
+    expect(follow.target(0)).toBe(800);
+    expect(follow.needsMotion(0)).toBe(true);
+  });
+
   it("follows growth to the live end and ignores subpixel gaps", () => {
     const { state, follow } = setup();
     expect(follow.target(0)).toBe(1000);

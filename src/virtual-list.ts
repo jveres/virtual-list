@@ -32,6 +32,7 @@ import {
   indexItems,
   isSlotKey,
   mergePrepared,
+  ownAnchorRequest,
   type PreparedSnapshot,
   slotKey,
   supersededRows,
@@ -162,6 +163,7 @@ export interface VirtualListOptions<T> {
    * and abandon, a window of rows for nothing.
    */
   boot?: "start" | "end";
+  /** Non-negative finite pixels; invalid values use the automatic default. */
   overscanPx?: number;
   /**
    * Called whenever a state field changes, and after every commit even
@@ -240,7 +242,7 @@ export interface VirtualListOptions<T> {
    * boot lands at the end.
    */
   followMode?: FollowMode;
-  /** Pixels kept clear above the last row's top under "keep-start" (a floating header). */
+  /** Pixels kept clear above the last row's top under "keep-start"; negative or non-finite values use zero. */
   followInset?: number;
 }
 
@@ -494,8 +496,13 @@ export function createVirtualList<T>(
     );
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
+  const requestedOverscan = options.overscanPx;
   const overscanPx =
-    options.overscanPx ?? Math.max(MIN_OVERSCAN_PX, viewport.clientHeight);
+    requestedOverscan !== undefined &&
+    Number.isFinite(requestedOverscan) &&
+    requestedOverscan >= 0
+      ? requestedOverscan
+      : Math.max(MIN_OVERSCAN_PX, viewport.clientHeight);
 
   // --- Committed state --------------------------------------------------------
   // Heights are never estimated: every key is measured before it commits,
@@ -1812,7 +1819,14 @@ export function createVirtualList<T>(
     const geometryChanged = lastReconcile.epoch !== geometryEpoch;
     let complete = true;
     const range = geometry.window(vp, overscanPx);
-    if (!geometryChanged && range === lastRange) {
+    if (
+      !geometryChanged &&
+      (range === lastRange ||
+        (range.indices === undefined &&
+          lastRange.indices === undefined &&
+          range.start === lastRange.start &&
+          range.end === lastRange.end))
+    ) {
       lastReconcile = {
         scrollTop: vp.scrollTop,
         height: vp.height,
@@ -1882,9 +1896,9 @@ export function createVirtualList<T>(
       if (!row) continue;
       const entering = !row.mounted;
       if (entering) mountRow(row);
-      // Offsets cannot change during a plain scroll. Read the Fenwick tree
-      // only for rows entering the window or after a geometry commit.
-      if (entering || geometryChanged) placeRow(row);
+      // Every geometry commit already positioned surviving mounted rows
+      // before its layout reads. Only entrants still need an offset lookup.
+      if (entering) placeRow(row);
     }
     // Memoized only once the window is complete: nothing in the loop may
     // leave a partial window behind a memo.
@@ -2211,7 +2225,7 @@ export function createVirtualList<T>(
               : null;
             applyItems(
               [...next.items],
-              next.anchor ?? "viewport",
+              ownAnchorRequest(next.anchor ?? "viewport"),
               false,
               slots,
             );
@@ -2272,7 +2286,7 @@ export function createVirtualList<T>(
   ): void {
     if (disposed) return;
     const snapshot = [...next];
-    const anchor = setOptions.anchor;
+    const anchor = ownAnchorRequest(setOptions.anchor);
     const interrupt = setOptions.interrupt === true;
     if (enqueueDuringTransaction(() => applyItems(snapshot, anchor, interrupt)))
       return;
@@ -2331,7 +2345,7 @@ export function createVirtualList<T>(
     updateOptions: { anchor?: AnchorRequest } = {},
   ): void {
     if (disposed) return;
-    const anchor = updateOptions.anchor;
+    const anchor = ownAnchorRequest(updateOptions.anchor);
     if (enqueueDuringTransaction(() => updateItem(key, item, { anchor })))
       return;
     const index = lastIndexByKey.get(key);

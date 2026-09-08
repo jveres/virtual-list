@@ -8,6 +8,27 @@ import {
 } from "../../src/snapshot";
 
 describe("snapshot bookkeeping", () => {
+  it("should own a named anchor across inherited snapshots", () => {
+    const target = { key: "a", offset: -20 };
+    const previous = createPrepared(["a"], target);
+
+    target.key = "b";
+    target.offset = 900;
+    const inherited = createPrepared(["a"], undefined, previous, true);
+
+    expect(previous.target).toEqual({ key: "a", offset: -20 });
+    expect(inherited.target).toEqual({ key: "a", offset: -20 });
+  });
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "should reject a non-finite named anchor offset (%s)",
+    (offset) => {
+      expect(() => createPrepared(["a"], { key: "a", offset })).toThrow(
+        new RangeError("anchor offset must be finite"),
+      );
+    },
+  );
+
   it("inherits a named anchor until an explicit policy replaces it", () => {
     const target = { key: "a", offset: 20 };
     const previous = createPrepared(["a"], target);

@@ -5,6 +5,19 @@ import type { Edge } from "./reach";
 export type AnchorRequest = AnchorPolicy | ExplicitAnchor;
 export type DeclaredItem<T> = { item: T; height: number };
 
+/** Own host intent before callbacks or a scroll phase can defer its use. */
+export function ownAnchorRequest(
+  anchor: AnchorRequest | undefined,
+): AnchorRequest | undefined {
+  if (anchor === undefined || typeof anchor === "string") return anchor;
+  if (anchor === null || typeof anchor.key !== "string")
+    throw new TypeError("anchor key must be a string");
+  const { key, offset } = anchor;
+  if (!Number.isFinite(offset))
+    throw new RangeError("anchor offset must be finite");
+  return { key, offset };
+}
+
 /** Snapshot bookkeeping is independent of DOM rows and browser timing. */
 export interface PreparedSnapshot<T, R> {
   keys: readonly string[];
@@ -57,7 +70,8 @@ export function createPrepared<T, R>(
   previous: PreparedSnapshot<T, R> | null = null,
   partial = false,
 ): PreparedSnapshot<T, R> {
-  const named = typeof requested === "object" ? requested : null;
+  const owned = ownAnchorRequest(requested);
+  const named = typeof owned === "object" ? owned : null;
   return {
     keys,
     anchor:
