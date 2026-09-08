@@ -16,12 +16,12 @@ try {
   );
   await page.waitForSelector(".message");
 
-  async function importTurns(count) {
+  async function importTurns(count, dates = [1788508800000]) {
     const lines = ["# streaming-chat transcript", ""];
     for (let i = 0; i < count; i++) {
       lines.push(
         i % 2 ? "**Assistant**" : "**User**",
-        '<!-- turn {"sentAt":1788508800000} -->',
+        `<!-- turn ${JSON.stringify({ sentAt: dates[Math.floor(i / 2) % dates.length] })} -->`,
         "",
         `Imported turn ${i}. ${"Text content. ".repeat(20)}`,
         "",
@@ -72,6 +72,15 @@ try {
   const shortAgain = await importTurns(4);
   assert.equal(shortAgain.loaders, 0);
   assert.ok(Math.abs(shortAgain.gap) <= 1);
+  // A date can occur in multiple separate runs (imports or refreshed replies).
+  const repeatedDay = await importTurns(
+    6,
+    [1788508800000, 1788595200000, 1788508800000],
+  );
+  assert.equal(repeatedDay.loaders, 0);
+  await page.getByText("Imported turn 0.", { exact: false }).waitFor();
+  await importTurns(6, [1e100]);
+  await page.getByText("Imported turn 0.", { exact: false }).waitFor();
   assert.deepEqual(errors, []);
   console.log(JSON.stringify({ engine, result: "passed" }));
 } finally {

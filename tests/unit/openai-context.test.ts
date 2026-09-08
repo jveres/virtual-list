@@ -64,6 +64,14 @@ async function collect(
 }
 
 describe("OpenAI response context", () => {
+  it.each([1e100, -1e100, Number.NaN, Number.POSITIVE_INFINITY])(
+    "should discard unusable send timestamps (%s) without losing the turn",
+    (sentAt) => {
+      expect(
+        validateStoredTurns([{ role: "user", markdown: "Hello", sentAt }]),
+      ).toEqual([{ role: "user", markdown: "Hello" }]);
+    },
+  );
   it("should replay image results without response-only metadata and retain web-search actions", () => {
     const image = {
       ...state().output[0],

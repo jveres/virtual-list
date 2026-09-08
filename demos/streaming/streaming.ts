@@ -127,6 +127,7 @@ interface Message {
 interface DayHeader {
   kind: "day";
   day: number;
+  runStart: number;
   label: string;
 }
 
@@ -137,7 +138,7 @@ function isDayHeader(row: ChatRow): row is DayHeader {
 }
 
 function rowKey(row: ChatRow): string {
-  return isDayHeader(row) ? `day:${row.day}` : String(row.id);
+  return isDayHeader(row) ? `day:${row.day}:${row.runStart}` : String(row.id);
 }
 
 interface StreamAbort {
@@ -650,6 +651,7 @@ function canLoadOlderMessages(): boolean {
 // Recomputes `messages` (the window handed to the virtualizer — always the
 // transcript's tail from loadedStart) and the id → transcript index lookup.
 let refreshMessageId: number | undefined;
+const dayRunStartById = new Map<number, number>();
 
 function refreshLoadedWindow(): void {
   const last = transcript.at(-1);
@@ -681,8 +683,17 @@ function refreshLoadedWindow(): void {
     (message) => message.sentAt !== undefined,
   );
   transcriptIndexById.clear();
+  dayRunStartById.clear();
+  let currentDay: number | undefined;
+  let runStart = 0;
   transcript.forEach((message, index) => {
     transcriptIndexById.set(message.id, index);
+    const day = dayOf(message);
+    if (day !== currentDay) {
+      currentDay = day;
+      runStart = message.id;
+    }
+    dayRunStartById.set(message.id, runStart);
   });
 }
 
@@ -694,7 +705,7 @@ let stickyHeaders: StickyHeaders | undefined;
 
 // --- Day separators --------------------------------------------------------
 
-const dayHeaders = new Map<number, DayHeader>();
+const dayHeaders = new Map<string, DayHeader>();
 let labeledFor = "";
 let transcriptHasDates = false;
 
@@ -768,19 +779,23 @@ function dayLabel(day: number): string {
   return relativeDayLabel(back, date);
 }
 
-/** Header objects are cached per day so their identity is stable across
+/** Header objects are cached per contiguous day run so their identity is stable across
  * snapshots; labels are relative to the last synthetic day and to today, so
  * a new day re-labels. */
-function dayHeader(day: number): DayHeader {
+function dayHeader(day: number, firstMessage: Message): DayHeader {
   const labelBasis = `${lastDay()}:${localMidnight(Date.now())}`;
   if (labeledFor !== labelBasis) {
     dayHeaders.clear();
     labeledFor = labelBasis;
   }
-  let header = dayHeaders.get(day);
+  // The loaded window can begin inside a run. Use its true first message
+  // so prepending older messages does not change the existing header key.
+  const runStart = dayRunStartById.get(firstMessage.id) ?? firstMessage.id;
+  const key = `${day}:${runStart}`;
+  let header = dayHeaders.get(key);
   if (!header) {
-    header = { kind: "day", day, label: dayLabel(day) };
-    dayHeaders.set(day, header);
+    header = { kind: "day", day, runStart, label: dayLabel(day) };
+    dayHeaders.set(key, header);
   }
   return header;
 }
@@ -795,7 +810,7 @@ function rowsForRuntime(
     const day = dayOf(message);
     if (day !== current) {
       current = day;
-      rows.push(dayHeader(day));
+      rows.push(dayHeader(day, message));
     }
     rows.push(message);
   }

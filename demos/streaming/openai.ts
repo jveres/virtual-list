@@ -297,7 +297,8 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
     )
       continue;
     const sentAt =
-      typeof entry.sentAt === "number" && Number.isFinite(entry.sentAt)
+      typeof entry.sentAt === "number" &&
+      Number.isFinite(new Date(entry.sentAt).getTime())
         ? entry.sentAt
         : undefined;
     turns.push({
@@ -383,6 +384,9 @@ function historyDb(): Promise<IDBDatabase> {
 // Writes run strictly in call order; loads wait for pending writes so a
 // provider switch right after a send reads the just-persisted turns.
 let historyWriteChain: Promise<void> = Promise.resolve();
+// A failed write must not make a provider switch restore older persisted data.
+// Undefined means this session has not changed the conversation yet.
+let sessionHistory: readonly StoredTurn[] | undefined;
 
 function queueHistoryWrite(
   write: (db: IDBDatabase) => IDBRequest,
@@ -418,6 +422,7 @@ function queueHistoryWrite(
  */
 export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
   await historyWriteChain;
+  if (sessionHistory !== undefined) return validateStoredTurns(sessionHistory);
   try {
     const db = await historyDb();
     const stored = await new Promise<unknown>((resolve, reject) => {
@@ -429,6 +434,9 @@ export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
       request.onerror = () =>
         reject(request.error ?? new Error("IndexedDB read failed"));
     });
+    // A send may have happened while the database read was pending.
+    if (sessionHistory !== undefined)
+      return validateStoredTurns(sessionHistory);
     if (stored !== undefined) return validateStoredTurns(stored);
     const legacy = readLegacyHistory();
     if (legacy.length > 0) {
@@ -436,6 +444,8 @@ export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
     }
     return legacy;
   } catch {
+    if (sessionHistory !== undefined)
+      return validateStoredTurns(sessionHistory);
     return readLegacyHistory();
   }
 }
@@ -444,6 +454,7 @@ export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
 // Callers always pass freshly built arrays, so deferring the structured
 // clone into the queued write is safe.
 export function saveOpenAIHistory(turns: readonly StoredTurn[]): void {
+  sessionHistory = turns;
   queueHistorySave(turns);
 }
 
@@ -462,6 +473,7 @@ function queueHistorySave(
 }
 
 function clearOpenAIHistory(): void {
+  sessionHistory = [];
   removeLegacyHistory();
   queueHistoryWrite((db) =>
     db
