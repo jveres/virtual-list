@@ -2649,6 +2649,7 @@ export function createVirtualList<T>(
       return;
     }
     if (
+      prepared.target === null &&
       prepared.newRows.size === 0 &&
       prepared.deferred.size === 0 &&
       prepared.declaredItems === null &&
@@ -2661,6 +2662,9 @@ export function createVirtualList<T>(
       pending = null;
     } else if (
       liveUpdates &&
+      // A named target can require a write even if the automatic anchor
+      // would not move. Never consume it in a no-write live commit.
+      prepared.target === null &&
       prepared.anchor !== "end" &&
       confinedBelowAnchor(prepared)
     ) {

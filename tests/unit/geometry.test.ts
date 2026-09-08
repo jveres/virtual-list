@@ -436,7 +436,8 @@ describe("I5 — pin-to-top reserve", () => {
     geometry.resolve(capture);
 
     expect(geometry.pinned).toBeNull();
-    expect(geometry.reserve).toBe(0);
+    // A reading anchor can require temporary space without becoming a pin.
+    expect(geometry.reserve).toBe(456);
   });
   it("should retain a surviving pin when a different explicit anchor is supplied", () => {
     const { geometry } = pinnedAtEnd();
@@ -717,6 +718,73 @@ describe("randomized against the oracle", () => {
 });
 
 describe("host-named anchor", () => {
+  it.each([0, 44, 144])(
+    "should preserve a replacement at offset %i when a long tail becomes short",
+    (offset) => {
+      const geometry = new Geometry(100);
+      seed(geometry, [...keysRange(0, 10), "prompt", "long"]);
+      geometry.measure("long", 2000);
+      geometry.pin("prompt", 44);
+      geometry.resolve(geometry.capture(viewport(0), "none"));
+      const target = { key: "short", offset };
+      const before = viewport(geometry.offsetOf("long") - offset);
+      const capture = geometry.capture(before, "viewport", target);
+
+      geometry.setKeys([...keysRange(0, 10), "prompt", "short"], target);
+      const result = geometry.resolve(capture);
+
+      expect(geometry.offsetOf("short") - result.scrollTop).toBe(offset);
+      expect(geometry.pinned).toBe("prompt");
+      expect(geometry.reserve).toBe(VIEWPORT_H - 100 - offset);
+      const settled = geometry.resolve(
+        geometry.capture(viewport(result.scrollTop), "viewport"),
+      );
+      expect(settled.scrollTop).toBe(result.scrollTop);
+      // Extra reading reserve drains after leaving it; the prompt pin stays.
+      geometry.resolve(geometry.capture(viewport(0), "viewport"));
+      expect(geometry.reserve).toBe(VIEWPORT_H - 244);
+      expect(geometry.pinTop).toBe(956);
+    },
+  );
+
+  it.each([0, 44, 144])(
+    "should retain the top landing inset when replacing a descendant pin at reading offset %i",
+    (offset) => {
+      const geometry = new Geometry(100);
+      seed(geometry, [...keysRange(0, 10), "old", "reply", "later", "long"]);
+      geometry.measure("long", 2000);
+      geometry.pin("later", 44);
+      const target = { key: "new", offset };
+      const capture = geometry.capture(
+        viewport(geometry.offsetOf("old") - offset),
+        "viewport",
+        target,
+      );
+
+      geometry.setKeys([...keysRange(0, 10), "new", "short"], target);
+      const result = geometry.resolve(capture);
+
+      expect(geometry.offsetOf("new") - result.scrollTop).toBe(offset);
+      expect(geometry.pinned).toBe("new");
+      expect(geometry.pinTop).toBe(956);
+      expect(geometry.maxScrollTop(VIEWPORT_H)).toBeGreaterThanOrEqual(956);
+    },
+  );
+
+  it("should not reserve space for an absent explicit anchor", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, ["only"]);
+    const capture = geometry.capture(viewport(0), "viewport", {
+      key: "missing",
+      offset: -1000,
+    });
+
+    const result = geometry.resolve(capture);
+
+    expect(result.scrollTop).toBe(0);
+    expect(geometry.reserve).toBe(0);
+  });
+
   it("puts the named key's top at the named offset; a missing key falls back to the captured anchor", () => {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 40));

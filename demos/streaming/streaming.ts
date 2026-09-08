@@ -837,11 +837,11 @@ function dayHeaderKeys(): string[] {
 
 /** Submit a snapshot for conversation changes; scrollback uses updateWindow.
  * Returns the number of rows handed over (day separators included). */
-function pushItems(anchor?: AnchorRequest): number {
+function pushItems(anchor?: AnchorRequest, interrupt = false): number {
   refreshLoadedWindow();
   syncEdgeSlot();
   const rows = rowsForRuntime();
-  virtualList?.setItems(rows, anchor ? { anchor } : undefined);
+  virtualList?.setItems(rows, { anchor, interrupt });
   return rows.length;
 }
 
@@ -1401,10 +1401,48 @@ function landConversation(): void {
   void virtualList?.scrollTo("end");
 }
 
-// Switches the active version of a branched message: rewrites the active path
-// from that message down. Prefix keys are unchanged, so the runtime reuses
-// the DOM above the branch point and its surviving-anchor rule preserves the
-// reading position through the swap.
+// Name the visible row's replacement, not a surviving prefix or a removed
+// descendant. When a prompt is clipped but its reply is visible, the reply
+// is the reading anchor. Otherwise a clipped long row starts its shorter
+// version below the pill; a fully visible row retains its current position.
+function replacementAnchor(
+  messageId: number,
+  replacementId: number | undefined,
+): AnchorRequest | undefined {
+  if (replacementId === undefined) return undefined;
+  const position = virtualList?.positionOf(String(messageId));
+  if (!position) return undefined;
+  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const top = position.top - viewport.scrollTop;
+  if (top >= viewport.clientHeight || top + position.height <= inset)
+    return undefined;
+  const previous = tree.get(messageId);
+  const replacement = tree.get(replacementId);
+  if (top < inset && previous?.message?.role === "user" && replacement) {
+    const previousReplyId = selectedChildId(previous);
+    const nextReplyId = selectedChildId(replacement);
+    const previousReply =
+      previousReplyId === undefined ? undefined : tree.get(previousReplyId);
+    const nextReply =
+      nextReplyId === undefined ? undefined : tree.get(nextReplyId);
+    if (
+      previousReply?.message?.role === "assistant" &&
+      nextReply?.message?.role === "assistant"
+    ) {
+      const replyPosition = virtualList?.positionOf(
+        String(previousReply.message.id),
+      );
+      if (replyPosition) {
+        const replyTop = replyPosition.top - viewport.scrollTop;
+        if (replyTop >= inset && replyTop < viewport.clientHeight)
+          return { key: String(nextReply.message.id), offset: replyTop };
+      }
+    }
+  }
+  return { key: String(replacementId), offset: Math.max(inset, top) };
+}
+
+// Switch the active path while retaining the branch point's reading anchor.
 function switchMessageVersion(messageId: number, offset: number): void {
   // Mid-stream switches would fight the live update loop.
   if (streamAbort) return;
@@ -1421,26 +1459,14 @@ function switchMessageVersion(messageId: number, offset: number): void {
   cancelUserEdit();
   markConversationChanged();
   const branchIndex = transcriptIndexById.get(messageId) ?? -1;
-  const promptInset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
-  const position = virtualList?.positionOf(String(messageId));
-  const pinnedPrompt =
-    node.message?.role === "user" &&
-    position != null &&
-    Math.abs(position.top - viewport.scrollTop - promptInset) < 1;
   const replacementId = parent.childrenIds[nextSelected];
+  const anchor = replacementAnchor(messageId, replacementId);
   parent.selectedChildIndex = nextSelected;
   rebuildActiveTranscript();
   // Keep the branch row inside the loaded window even if the new path is
   // shorter than the old loadedStart.
   if (branchIndex >= 0) loadedStart = Math.min(loadedStart, branchIndex);
-  // A date-boundary change can remove the header directly above this prompt.
-  // Keep its replacement below the sticky band instead of anchoring a prefix
-  // row whose position no longer determines the prompt's visible offset.
-  pushItems(
-    pinnedPrompt && replacementId !== undefined
-      ? { key: String(replacementId), offset: promptInset }
-      : undefined,
-  );
+  pushItems(anchor, true);
   syncMetrics();
 }
 
@@ -1474,6 +1500,12 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
     0,
     Math.min(parent.selectedChildIndex, parent.childrenIds.length - 1),
   );
+  const anchor = isVersion
+    ? replacementAnchor(
+        messageId,
+        parent.childrenIds[parent.selectedChildIndex],
+      )
+    : undefined;
   while (removed.length > 0) {
     const id = removed.pop();
     if (id === undefined) break;
@@ -1495,7 +1527,7 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
     importedConversation = { turns, tree: null };
   }
   setEdgeState("hidden");
-  if (isVersion) pushItems();
+  if (isVersion) pushItems(anchor, true);
   else mountConversation();
   setStreamingUI(false);
   syncMetrics();

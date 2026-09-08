@@ -4855,6 +4855,32 @@ describe("runtime — edge slots", () => {
 });
 
 describe("runtime — commands", () => {
+  it.each([
+    "default",
+    "firefox-wheel",
+    "safari-wheel",
+    "chromium-wheel",
+  ] as const)(
+    "should resolve a stationary smooth command without new input (%s)",
+    async (settleStrategy) => {
+      const h = mount(range(0, 20), { settleStrategy });
+      await h.list.scrollTo("m18", { align: "start", offset: 44 });
+      const top = h.viewport.scrollTop;
+
+      const command = h.list.scrollTo("m18", {
+        align: "start",
+        offset: 44,
+        behavior: "smooth",
+      });
+      vi.advanceTimersByTime(32);
+      h.viewport.dispatchEvent(new Event("scrollend"));
+      vi.advanceTimersByTime(1000);
+
+      await expect(command).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(top);
+    },
+  );
+
   it("scrolls instantly and resolves; missing targets resolve false", async () => {
     const h = mount(range(0, 100));
     await expect(h.list.scrollTo("start")).resolves.toBe(true);
@@ -5443,6 +5469,64 @@ describe("runtime — reach signals", () => {
 });
 
 describe("host-named anchor", () => {
+  it.each(["live", "freeze", "same-height"] as const)(
+    "should honor a tail replacement anchor after a %s gesture settles",
+    (scrollingUpdates) => {
+      const h = mount(range(0, 20), {
+        scrollingUpdates,
+        itemHeight: (item) => (item.id === 19 ? 2000 : 100),
+      });
+      void h.list.scrollTo("m18", { align: "start", offset: 44 });
+      h.userScroll(1740);
+
+      h.list.setItems([...range(0, 19), message(30), message(31)], {
+        anchor: { key: "m31", offset: 144 },
+      });
+
+      expect(h.viewport.scrollTop).toBe(1740);
+      expect(h.list.positionOf("m31")).toBeNull();
+      h.settle();
+      expect(h.list.positionOf("m31")?.top).toBe(2000);
+      expect(h.viewport.scrollTop).toBe(1856);
+      expect(h.list.state.totalSize).toBe(2456);
+    },
+  );
+
+  it("should honor an explicit anchor on an unchanged snapshot after a gesture", () => {
+    const initial = range(0, 20);
+    const h = mount(initial, { scrollingUpdates: "live" });
+    h.userScroll(1200);
+
+    h.list.setItems(initial, { anchor: { key: "m19", offset: 44 } });
+
+    expect(h.viewport.scrollTop).toBe(1200);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(1856);
+    expect(h.list.state.totalSize).toBe(2456);
+  });
+
+  it("should atomically interrupt a gesture and preserve a shorter branch at its reading offset", () => {
+    const h = mount(range(0, 23), {
+      scrollingUpdates: "live",
+      itemHeight: (item) => (item.id === 22 ? 2000 : 100),
+    });
+    void h.list.scrollTo("m21", { align: "start", offset: 44 });
+    h.userScroll(1756);
+
+    h.list.setItems([...range(0, 19), message(30), message(31)], {
+      anchor: { key: "m30", offset: 144 },
+      interrupt: true,
+    });
+
+    expect(h.viewport.scrollTop).toBe(1756);
+    expect(h.list.positionOf("m30")?.top).toBe(1900);
+    // The reading anchor is 144, but the new prompt can still scroll to 44.
+    expect(h.list.state.totalSize).toBe(2456);
+    h.userScroll(1856);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(1856);
+  });
+
   it("should preserve a held anchor when its caller reuses the object", () => {
     const initial = range(0, 50);
     const h = mount(initial);

@@ -1171,8 +1171,8 @@ p.ai-settings-note {
 /* Lucide move-up / move-down: one thin line, centred in the circle. */
 .scroll-jump svg {
   display: block;
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
 }
 
 .scroll-jump-top {

@@ -738,6 +738,30 @@ describe("safari sequences (trace replay)", () => {
 });
 
 describe("programmatic gestures", () => {
+  it.each([
+    "firefox-wheel",
+    "safari-wheel",
+    "chromium-wheel",
+    "default",
+  ] as const)(
+    "should finish a stationary programmatic landing despite a trailing scrollend (%s)",
+    (strategy) => {
+      const harness = mount(strategy);
+      harness.setSmoothActive(true);
+      harness.controller.beginProgrammaticGesture();
+      harness.controller.recordProgrammaticScrollTop(0);
+      harness.scrollTo(0);
+      harness.setSmoothActive(false);
+      harness.controller.markSettlePending();
+
+      harness.scrollEnd();
+      vi.advanceTimersByTime(1000);
+
+      expect(harness.settled()).toBe(1);
+      expect(harness.controller.isScrollPhaseActive()).toBe(false);
+    },
+  );
+
   it("a glide's trailing scrollend at a loadable edge settles on the plain cooldown (firefox)", () => {
     // Firefox fires a scrollend after every programmatic write. The one that
     // trails a follow glide's last frame near a loadable edge must not be

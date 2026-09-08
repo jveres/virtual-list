@@ -648,7 +648,12 @@ export function createScrollSettleController(
         // live the gesture stays; the wheel-idle timer cancels a gesture
         // that never moved.
         if (hasActiveWheelInput()) return;
-        cancelScrollPhase();
+        // A replacement can clamp onto a glide's destination before its
+        // first frame. Its trailing scrollend then has no movement, but
+        // the host still has a command waiting for completion. Silently
+        // cancelling here stranded that promise until another user input.
+        // Keep the normal cooldown and input guards, and notify on settle.
+        armPendingNativeScrollEnd();
         return;
       }
       if (

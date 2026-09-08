@@ -320,7 +320,7 @@ export class Geometry {
     // at the top (I5). A removal (a surviving row shifted up into the
     // index) drops the pin.
     let pinned = this.pinnedKey;
-    let pinnedInset = this.pinnedInsetPx;
+    const pinnedInset = this.pinnedInsetPx;
     if (pinned !== null && !indexByKey.has(pinned)) {
       const index = this.indexByKey.get(pinned) ?? -1;
       const replacement = index >= 0 ? keys[index] : undefined;
@@ -333,8 +333,10 @@ export class Geometry {
       // other prefix rows changed. Preserve the pin, not just this commit's
       // scroll offset, so later shorter versions can regrow trailing space.
       if (replacementAnchor && indexByKey.has(replacementAnchor.key)) {
+        // The reading offset can be lower than the pin's landing inset.
+        // Preserve the latter so the replacement can still scroll to the
+        // top even when the user switched it halfway down the viewport.
         pinned = replacementAnchor.key;
-        pinnedInset = replacementAnchor.offset;
       }
     }
 
@@ -406,6 +408,20 @@ export class Geometry {
       target = this.pinTop ?? viewport.scrollTop;
     }
     this.recomputeReserve(viewport.height, target);
+    // An explicit replacement is a host-named reading position. A shorter
+    // tail may need more reserve than the existing pin supplies (for example
+    // an assistant at the top while its prompt remains pinned above it).
+    // Keep the pin independent; this extra reserve drains once out of view.
+    if (
+      mode === "anchor" &&
+      capture.target !== null &&
+      this.indexByKey.has(capture.target.key)
+    ) {
+      this.reservePx = Math.max(
+        this.reservePx,
+        Math.max(0, target) + viewport.height - this.contentSize,
+      );
+    }
     return {
       scrollTop: Math.max(
         0,
