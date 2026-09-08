@@ -4,10 +4,19 @@ import { firefox, webkit } from "playwright";
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
 try {
-  for (const partial of [false, true]) {
+  for (const { partial, width, height, scale } of [
+    { partial: false, width: 1420, height: 1000, scale: 2 },
+    { partial: true, width: 1420, height: 1000, scale: 2 },
+    // Fractional CSS viewport heights and non-integral row offsets used to
+    // clamp below the rounded target despite the command's correct write.
+    { partial: false, width: 390, height: 844, scale: 1.25 },
+    { partial: false, width: 390, height: 844, scale: 2 },
+    { partial: false, width: 390, height: 844, scale: 3 },
+    { partial: false, width: 700, height: 844, scale: 3 },
+  ]) {
     const page = await browser.newPage({
-      viewport: { width: 1420, height: 1000 },
-      deviceScaleFactor: 2,
+      viewport: { width, height },
+      deviceScaleFactor: scale,
     });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -84,7 +93,8 @@ try {
         viewport.scrollTop -= 150;
       });
       await page.locator("#scroll-bottom-btn").click();
-      await page.waitForTimeout(800);
+      await page.locator("#scroll-bottom-btn").waitFor({ state: "hidden" });
+      await page.waitForTimeout(200);
       const bottomLanding = await page.evaluate(() => {
         const viewport = document.getElementById("viewport");
         const rows = [...viewport.querySelectorAll(".message")];
@@ -115,7 +125,15 @@ try {
       .waitFor();
     assert.deepEqual(errors, []);
     console.log(
-      JSON.stringify({ engine, partial, landing, stopped: "passed" }),
+      JSON.stringify({
+        engine,
+        partial,
+        width,
+        height,
+        scale,
+        landing,
+        stopped: "passed",
+      }),
     );
     await page.close();
   }

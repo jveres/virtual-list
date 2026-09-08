@@ -569,7 +569,11 @@ export function createVirtualList<T>(
     // The pixel height still owns measured content/retained reserve; this
     // viewport-relative floor only supplies the pin's current shortfall.
     const pinTop = geometry.pinTop;
-    canvas.style.minHeight = pinTop === null ? "" : `calc(100% + ${pinTop}px)`;
+    // Match the command's rounded landing even when clientHeight differs
+    // from the fractional CSS viewport height. Otherwise the browser can
+    // clamp below that landing and expose a sliver of the preceding row.
+    canvas.style.minHeight =
+      pinTop === null ? "" : `calc(100% + ${Math.ceil(pinTop)}px)`;
   }
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
