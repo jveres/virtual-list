@@ -2,6 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
+    <script>
+      document.documentElement.classList.add("booting");
+      let savedTheme;
+      try {
+        savedTheme = localStorage.getItem("virtual-list-theme");
+      } catch {
+        // Storage may be disabled; use the system scheme in that case.
+      }
+      const initialTheme =
+        savedTheme === "dark" || savedTheme === "light"
+          ? savedTheme
+          : matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light";
+      document.documentElement.dataset.theme = initialTheme;
+      document.documentElement.style.colorScheme = initialTheme;
+    </script>
     <meta
       name="viewport"
       content="width=device-width, initial-scale=1"
@@ -48,13 +65,6 @@
         color-scheme: dark;
       }
     </style>
-    <script>
-      document.documentElement.classList.add("booting");
-      document.documentElement.setAttribute(
-        "data-theme",
-        matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light",
-      );
-    </script>
     <link rel="stylesheet" href="../shared/styles.css" />
     <link rel="stylesheet" href="./newspaper.css" />
     <title>virtual-list · newspaper</title>
