@@ -197,25 +197,29 @@ export function createChatImagePreview(
 
   const observer = new MutationObserver((records) => {
     // Editing or moving one image changes the ordinal of surviving siblings.
-    // Reconcile against final DOM order, after all records in this delivery.
-    if (
-      records.some(
-        (record) =>
-          record.type === "childList" || record.attributeName === "data-key",
-      )
-    ) {
-      for (const image of bound) if (!viewport.contains(image)) unbind(image);
-      for (const image of viewport.querySelectorAll<HTMLImageElement>("img"))
-        bind(image);
-      return;
-    }
+    // Reconcile affected rows against final DOM order, not every mounted image:
+    // unrelated virtual rows must not repeatedly read large data-URL strings.
+    const affected = new Set<HTMLImageElement>();
+    const collect = (node: Node): void => {
+      if (!(node instanceof Element)) return;
+      if (node instanceof HTMLImageElement) affected.add(node);
+      for (const image of node.querySelectorAll<HTMLImageElement>("img"))
+        affected.add(image);
+    };
     for (const record of records) {
-      if (
-        record.type === "attributes" &&
-        record.target instanceof HTMLImageElement
-      )
-        bind(record.target);
+      if (record.type === "childList" || record.attributeName === "data-key") {
+        if (record.target instanceof Element) {
+          const row = record.target.closest("[data-key], .attachment-chip");
+          if (row) collect(row);
+        }
+        if (record.attributeName === "data-key") collect(record.target);
+        for (const node of record.addedNodes) collect(node);
+        for (const node of record.removedNodes) collect(node);
+      } else if (record.target instanceof HTMLImageElement) {
+        affected.add(record.target);
+      }
     }
+    for (const image of affected) bind(image);
   });
   observer.observe(viewport, {
     subtree: true,
