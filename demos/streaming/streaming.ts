@@ -1682,6 +1682,8 @@ function buildStreamingRow(message: Message): HTMLElement {
   return row;
 }
 
+const MESSAGE_DELETE_PATH = "M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6";
+
 function buildRow(message: Message): HTMLElement {
   const row =
     message.status === "streaming"
@@ -1694,8 +1696,7 @@ function buildRow(message: Message): HTMLElement {
     button.title = "Delete this message version and its replies";
     button.setAttribute("aria-label", button.title);
     button.setAttribute("aria-haspopup", "dialog");
-    button.innerHTML =
-      '<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    button.innerHTML = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="${MESSAGE_DELETE_PATH}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     const actions = document.createElement("div");
     actions.className = "message-user-actions";
     row.prepend(actions);
@@ -1866,11 +1867,21 @@ function syncMessageActions(row: HTMLElement, message: Message): void {
       label: "Copy message",
       path: MESSAGE_COPY_PATH,
     },
+    {
+      className: "message-delete-btn",
+      label: "Delete this response version and its replies",
+      path: MESSAGE_DELETE_PATH,
+      visible: versionInfo(message.id) !== null,
+    },
   ];
   for (const action of definitions) {
     const existing = actions.querySelector<HTMLButtonElement>(
       `.${action.className}`,
     );
+    if (action.visible === false) {
+      existing?.remove();
+      continue;
+    }
     const button = existing ?? document.createElement("button");
     button.disabled =
       streamAbort !== null ||
@@ -1882,6 +1893,8 @@ function syncMessageActions(row: HTMLElement, message: Message): void {
       button.className = action.className;
       button.title = action.label;
       button.setAttribute("aria-label", action.label);
+      if (action.className === "message-delete-btn")
+        button.setAttribute("aria-haspopup", "dialog");
       button.innerHTML = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="${action.path}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
       actions.append(button);
     }
@@ -2383,7 +2396,7 @@ function autosize(): void {
 function setStreamingUI(streaming: boolean): void {
   viewport.classList.toggle("is-streaming", streaming);
   for (const button of viewport.querySelectorAll<HTMLButtonElement>(
-    ".message-refresh-btn, .message-actions .message-copy-btn",
+    ".message-actions > button",
   )) {
     const message = tree.get(
       Number(button.closest<HTMLElement>(".message")?.dataset.key),
@@ -2989,11 +3002,28 @@ deleteDialog.addEventListener("close", () => {
     deleteMessagesFrom(pending.id, pending.epoch);
 });
 
+// A Pencil or mouse can hover even when the primary input is touch. Track
+// input changes only; pointer movement does not read layout or rewrite styles.
+let actionHoverInput = false;
+function syncActionHoverInput(event: PointerEvent): void {
+  const hover = event.pointerType === "mouse" || event.pointerType === "pen";
+  if (hover === actionHoverInput) return;
+  actionHoverInput = hover;
+  viewport.toggleAttribute("data-hover-input", hover);
+}
+document.addEventListener("pointerover", syncActionHoverInput, {
+  passive: true,
+});
+document.addEventListener("pointermove", syncActionHoverInput, {
+  passive: true,
+});
+
 // Touch has no hover: reveal the tapped bubble's actions, but not when
 // operating its version navigator. Do not prevent gestures or text selection.
 document.addEventListener(
   "pointerdown",
   (event) => {
+    syncActionHoverInput(event);
     if (event.pointerType === "mouse") return;
     const row =
       event.target instanceof Element && !event.target.closest(".version-nav")

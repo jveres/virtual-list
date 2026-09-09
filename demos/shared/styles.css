@@ -472,6 +472,11 @@ p.ai-settings-note {
   justify-content: flex-end;
 }
 
+.message-user-actions,
+.message-actions {
+  gap: 4px;
+}
+
 .message-user-actions {
   display: flex;
   align-self: center;
@@ -486,16 +491,17 @@ p.ai-settings-note {
   pointer-events: auto;
 }
 
-/* Touch can synthesize sticky hover while operating the navigator. */
-@media (hover: hover) {
-  .message-user-actions:hover,
-  .message.user:has(> .message-content:hover) > .message-user-actions {
-    opacity: 1;
-    pointer-events: auto;
-  }
+/* Use the actual pointer, not the primary-input media query: Pencil can
+   hover on a touch-primary iPad. Touch's sticky hover stays suppressed. */
+:where([data-hover-input]) .message-user-actions:hover,
+:where([data-hover-input])
+  .message.user:has(> .message-content:hover)
+  > .message-user-actions {
+  opacity: 1;
+  pointer-events: auto;
 }
 
-.message-delete-btn,
+.message-user-actions .message-delete-btn,
 .message-edit-btn,
 .message-user-actions .message-copy-btn {
   flex: 0 0 32px;
@@ -513,7 +519,9 @@ p.ai-settings-note {
   touch-action: manipulation;
 }
 
-.message-delete-btn:hover {
+.message-delete-btn:hover,
+.message-actions .message-delete-btn:hover,
+.message-actions .message-delete-btn:active {
   background: transparent;
   color: #dc3545;
 }
@@ -544,11 +552,10 @@ p.ai-settings-note {
 }
 
 @media (any-pointer: coarse) {
-  .message-delete-btn,
+  .message-user-actions .message-delete-btn,
   .message-edit-btn,
   .message-user-actions .message-copy-btn {
-    flex-basis: 44px;
-    width: 44px;
+    /* Keep a taller tap target without widening the shared icon spacing. */
     height: 44px;
   }
 }
@@ -641,7 +648,6 @@ p.ai-settings-note {
   height: var(--message-footer-height);
   display: flex;
   align-items: flex-start;
-  gap: 4px;
   padding-top: 4px;
   opacity: 0;
   pointer-events: none;
@@ -658,7 +664,8 @@ p.ai-settings-note {
 }
 
 .message-refresh-btn,
-.message-actions .message-copy-btn {
+.message-actions .message-copy-btn,
+.message-actions .message-delete-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -680,7 +687,8 @@ p.ai-settings-note {
 }
 
 .message-refresh-btn:disabled,
-.message-copy-btn:disabled {
+.message-copy-btn:disabled,
+.message-actions .message-delete-btn:disabled {
   opacity: 0.4;
   cursor: default;
 }

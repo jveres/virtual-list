@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
-for (const engine of [chromium, firefox, webkit]) {
+for (const engine of [firefox, chromium, webkit]) {
   const browser = await engine.launch();
   try {
     for (const device of [
@@ -64,12 +64,38 @@ for (const engine of [chromium, firefox, webkit]) {
           const actions = message.querySelector(".message-actions");
           const style = getComputedStyle(actions);
           const bounds = actions.getBoundingClientRect();
+          const spacing = (toolbar) => {
+            const buttons = [...toolbar.querySelectorAll(":scope > button")];
+            const boxes = buttons.map((button) =>
+              button.getBoundingClientRect(),
+            );
+            const icons = buttons.map((button) =>
+              button.querySelector("svg").getBoundingClientRect(),
+            );
+            return {
+              gap: getComputedStyle(toolbar).columnGap,
+              widths: boxes.map((box) => box.width),
+              buttonGaps: boxes
+                .slice(1)
+                .map((box, i) => box.left - boxes[i].right),
+              iconGaps: icons
+                .slice(1)
+                .map((box, i) => box.left - icons[i].right),
+            };
+          };
           return {
+            userSpacing: spacing(
+              document.querySelector(".message-user-actions"),
+            ),
+            assistantSpacing: spacing(actions),
             latest: actions.hasAttribute("data-latest"),
             opacity: style.opacity,
             visibility: style.visibility,
             pointerEvents: style.pointerEvents,
             actionGap: style.gap,
+            actionOrder: [...actions.querySelectorAll(":scope > button")].map(
+              (button) => button.className,
+            ),
             buttons: [...actions.querySelectorAll("button")].map((button) => {
               const buttonStyle = getComputedStyle(button);
               const rect = button.getBoundingClientRect();
@@ -92,6 +118,22 @@ for (const engine of [chromium, firefox, webkit]) {
         assert.equal(state.visibility, "visible");
         assert.equal(state.pointerEvents, "auto");
         assert.equal(state.actionGap, "4px");
+        assert.deepEqual(
+          state.userSpacing,
+          state.assistantSpacing,
+          "user and assistant icons have identical horizontal spacing",
+        );
+        assert.deepEqual(state.userSpacing, {
+          gap: "4px",
+          widths: [32, 32, 32],
+          buttonGaps: [4, 4],
+          iconGaps: [20, 20],
+        });
+        assert.deepEqual(state.actionOrder, [
+          "message-refresh-btn",
+          "message-copy-btn",
+          "message-delete-btn",
+        ]);
         assert.ok(state.buttons.length >= 3);
         for (const button of state.buttons) {
           assert.equal(button.height, 24);
@@ -125,6 +167,7 @@ for (const engine of [chromium, firefox, webkit]) {
           for (const selector of [
             ".message-refresh-btn",
             ".message-copy-btn",
+            ".message-delete-btn",
           ]) {
             const action = row.locator(selector);
             const background = () =>
@@ -157,6 +200,56 @@ for (const engine of [chromium, firefox, webkit]) {
           else await next.click();
         }
       }
+      const second = page.locator(".message.assistant").filter({
+        has: page.getByText("Second version", { exact: true }),
+      });
+      const remove = second.locator(".message-delete-btn");
+      assert.equal(await remove.getAttribute("aria-haspopup"), "dialog");
+      if (hasTouch) await remove.tap();
+      else await remove.click();
+      assert.equal(
+        await page.locator("#delete-message-dialog").isVisible(),
+        true,
+      );
+      assert.equal(
+        await page.locator("#delete-message-title").textContent(),
+        "Delete this version?",
+      );
+      await page.locator("#delete-message-cancel").click();
+      assert.equal(
+        await second.locator(".version-nav-count").textContent(),
+        "2 / 2",
+      );
+      await remove.click();
+      await page.locator(".delete-message-confirm").click();
+      await page.getByText("Latest one", { exact: true }).waitFor();
+      assert.equal(
+        await page.getByText("Second version", { exact: true }).count(),
+        0,
+      );
+      assert.equal(
+        await page.getByText("Follow up two", { exact: true }).count(),
+        0,
+      );
+      assert.equal(
+        await page.getByText("Latest two", { exact: true }).count(),
+        0,
+      );
+      const remaining = page.locator(".message.assistant").filter({
+        has: page.getByText("First version", { exact: true }),
+      });
+      assert.equal(await remaining.locator(".version-nav").count(), 0);
+      assert.deepEqual(
+        await remaining
+          .locator(".message-actions > button")
+          .evaluateAll((buttons) => buttons.map((button) => button.className)),
+        ["message-refresh-btn", "message-copy-btn"],
+        "delete disappears when only one assistant version remains",
+      );
+      assert.equal(
+        await page.locator(".message.assistant .message-delete-btn").count(),
+        0,
+      );
       await page.close();
       console.log(
         JSON.stringify({
