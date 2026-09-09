@@ -270,6 +270,64 @@ describe("glide", () => {
     expect(top).toBe(900);
   });
 
+  it.each([
+    { duration: 280, growthWrite: 1 },
+    { duration: 16, growthWrite: 2 },
+  ])(
+    "should keep gliding when landing write $growthWrite moves the target",
+    ({ duration, growthWrite }) => {
+      let top = 0;
+      let target = 100;
+      let landingWrites = 0;
+      const completed: boolean[] = [];
+      const glide = startGlide(
+        {
+          read: () => top,
+          target: () => target,
+          write: (value) => {
+            top = value;
+            if (value === 100 && ++landingWrites === growthWrite) {
+              target = 300;
+            }
+          },
+        },
+        duration,
+        (done) => completed.push(done),
+      );
+
+      vi.advanceTimersByTime(1500);
+
+      expect(landingWrites).toBeGreaterThanOrEqual(growthWrite);
+      expect(top).toBe(300);
+      expect(glide.active).toBe(false);
+      expect(completed).toEqual([true]);
+    },
+  );
+
+  it("should honor cancellation during the exact landing write", () => {
+    let top = 0;
+    const completed: boolean[] = [];
+    const glide = startGlide(
+      {
+        read: () => top,
+        target: () => 100,
+        write: (value) => {
+          top = value;
+          if (value === 100) glide.cancel();
+        },
+      },
+      280,
+      (done) => completed.push(done),
+    );
+
+    vi.advanceTimersByTime(1500);
+
+    expect(top).toBe(100);
+    expect(glide.active).toBe(false);
+    expect(completed).toEqual([false]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("rebases when the position moves externally — no full-distance snap", () => {
     // The top-navigation scenario: mid-glide toward 0, an anchor-preserving
     // prepend jumps the position far down. The old curve would snap back in

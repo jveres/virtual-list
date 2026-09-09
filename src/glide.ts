@@ -193,6 +193,24 @@ export function startGlide(
     }
   }
 
+  function land(target: number): void {
+    host.write(target);
+    if (finished) return;
+    lastWritten = target;
+    // The write publishes host callbacks. Streaming can move the target
+    // inside that same transaction, so arriving at the old end is not a
+    // completed glide. Keep ownership and rebase on the next frame.
+    const latestTarget = host.target();
+    if (
+      latestTarget === target &&
+      Math.abs(latestTarget - host.read()) <= SNAP_PX
+    ) {
+      finish(true);
+    } else {
+      frame = requestAnimationFrame(tick);
+    }
+  }
+
   function advance(now: number): void {
     if (startTime < 0) startTime = now;
     const target = host.target();
@@ -214,8 +232,7 @@ export function startGlide(
     landing = now - startTime >= legs.approachMs;
     const remaining = target - current;
     if (Math.abs(remaining) <= SNAP_PX) {
-      host.write(target);
-      finish(true);
+      land(target);
       return;
     }
     const elapsed = now - startTime;
@@ -240,8 +257,7 @@ export function startGlide(
       elapsed >= totalMs(legs) &&
       Math.abs(host.target() - host.read()) <= SNAP_PX
     ) {
-      host.write(host.target());
-      finish(true);
+      land(host.target());
       return;
     }
     frame = requestAnimationFrame(tick);

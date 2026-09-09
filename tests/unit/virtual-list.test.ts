@@ -2556,6 +2556,35 @@ describe("runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it("should retain following when streaming grows in the final glide write", () => {
+    let grew = false;
+    const h = mount(range(0, 50), {
+      followBehavior: "smooth",
+      scrollingUpdates: "live",
+      onViewport: (snapshot) => {
+        if (!grew && snapshot.scrollTop === 4500) {
+          grew = true;
+          h.heights.set(49, 400);
+          h.list.updateItem("m49", message(49, "growth on landing"));
+        }
+      },
+    });
+    h.heights.set(49, 200);
+
+    h.list.updateItem("m49", message(49, "start following"));
+    vi.advanceTimersByTime(1800);
+
+    expect(grew).toBe(true);
+    expect(h.viewport.scrollTop).toBe(4700);
+    expect(h.list.state.following).toBe(true);
+    h.heights.set(49, 500);
+    h.list.updateItem("m49", message(49, "next streaming burst"));
+    vi.advanceTimersByTime(1000);
+    expect(h.viewport.scrollTop).toBe(4800);
+    expect(h.list.state.following).toBe(true);
+    h.list.dispose();
+  });
+
   it("a command's own pin commit never arms following", () => {
     const initial = range(0, 50);
     const h = mount(initial, {
