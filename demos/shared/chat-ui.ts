@@ -1,6 +1,12 @@
 import { renderMarkdown } from "./markdown.js";
 
 type ChatRole = "user" | "assistant";
+
+export function chevronIcon(direction: "left" | "right" | "down"): string {
+  const rotation = { left: 180, right: 0, down: 90 }[direction];
+  return `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true"><path d="m6 3 5 5-5 5" transform="rotate(${rotation} 8 8)" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+
 export type AssistantStatus = "thinking" | "streaming" | "done" | "cancelled";
 
 export interface ChatToolCall {

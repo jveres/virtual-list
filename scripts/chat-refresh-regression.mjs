@@ -154,7 +154,7 @@ try {
   assert.equal(await refresh.isVisible(), false);
   assert.equal(await page.locator(".message-delete-btn:visible").count(), 0);
   assert.equal(
-    await page.locator(".message-version-delete-btn:visible").count(),
+    await page.locator(".message-actions .message-copy-btn:visible").count(),
     0,
   );
   assert.equal(await page.locator("#prompt").inputValue(), "Keep my draft");
@@ -168,9 +168,9 @@ try {
   assert.equal(await refresh.isEnabled(), true);
   const lastRow = page.locator(".message.assistant").filter({ has: refresh });
   assert.equal(
-    await lastRow.locator(".message-version-delete-btn").isEnabled(),
+    await lastRow.locator(".message-copy-btn").isDisabled(),
     true,
-    "version deletion must be re-enabled immediately after streaming",
+    "an empty cancelled reply has no text to copy",
   );
   const centers = await lastRow
     .locator(".message-actions button, .version-nav-count")
@@ -193,17 +193,14 @@ try {
   );
   assert.equal(await refresh.count(), 1);
   await lastRow.getByRole("button", { name: "Next version" }).click();
-  await lastRow
-    .getByRole("button", { name: "Delete response version" })
-    .click();
-  await page.locator(".delete-message-confirm").click();
-  await page.getByText("Original answer", { exact: true }).waitFor();
   assert.equal(
     await page.locator(".message-version-delete-btn").count(),
     0,
-    "the last remaining version cannot be deleted",
+    "assistant actions contain refresh and copy, not deletion",
   );
-  assert.equal(await lastRow.locator(".version-nav").count(), 0);
+  await lastRow.getByRole("button", { name: "Previous version" }).click();
+  await page.getByText("Original answer", { exact: true }).waitFor();
+  assert.equal(await lastRow.locator(".message-copy-btn").isEnabled(), true);
   await page.locator("#send-btn").click();
   await page.waitForFunction(() => window.requests === 2);
   assert.equal(

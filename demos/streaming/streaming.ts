@@ -14,6 +14,7 @@ import {
   buildChatRow,
   buildSectionHeader,
   type ChatToolCall,
+  chevronIcon,
   setRoleLabel,
 } from "../shared/chat-ui.js";
 import {
@@ -57,6 +58,11 @@ import {
   type MessageContentHandle,
 } from "./message-content.js";
 import {
+  clearMessageCopyFeedback,
+  copyMessageText,
+  MESSAGE_COPY_PATH,
+} from "./message-copy.js";
+import {
   buildResponseContext,
   GENERATED_IMAGE_PATTERN,
   getAISettings,
@@ -72,6 +78,12 @@ import {
   shareChatFile,
   supportsChatSharing,
 } from "./share.js";
+import {
+  mountUserMessageCollapse,
+  prepareUserMessageCollapse,
+  syncUserMessageCollapse,
+  unmountUserMessageCollapse,
+} from "./user-message-collapse.js";
 
 import "../shared/styles.css";
 
@@ -287,6 +299,7 @@ const streamingViewers = new WeakMap<HTMLElement, MessageContentHandle>();
 // Row elements by message id, for the send animations. Pruned by the same
 // onDestroy callback.
 const rowById = new Map<string, HTMLElement>();
+const expandedUserMessages = new Set<number>();
 // The transcript is the *active path* through the message tree: the linear
 // list the virtualizer renders. `messages` is the loaded window over its tail.
 const transcript: Message[] = [];
@@ -1088,8 +1101,19 @@ function loadOlderMessages({ signal, complete }: ReachContext): void {
 // without first having to edit or regenerate anything.
 const BRANCH_BRIDGE_REPLY =
   "Sure — what would you like to dig into next? I can compare rendering strategies, walk through the windowing math, or sketch an API.";
-const BRANCH_USER_V1 =
-  "Can you summarize the trade-offs between **virtual scrolling** and **pagination** for a long chat log?";
+const BRANCH_USER_V1 = `Can you summarize the trade-offs between **virtual scrolling** and **pagination** for a long chat log?
+
+Here is the context for our project: conversations can run for months, and people often return to an earlier message while a new response is still streaming. Some prompts are only a sentence, but others contain a complete project brief like this one.
+
+Please consider these requirements:
+
+- Keep scrolling natural on desktop, iPhone, and iPad.
+- Let readers expand long prompts without losing their place.
+- Preserve the full original text when editing, copying, or exporting a chat.
+- Make it easy to switch between edited prompts and regenerated replies.
+- Keep memory bounded even when the conversation contains thousands of messages.
+
+Finish with a recommendation for a small team and explain which implementation details you would prioritize first.`;
 const BRANCH_USER_V2 =
   "Actually — compare virtual scrolling, pagination, and **infinite scroll** for a long chat log, and tell me which you'd reach for.";
 const BRANCH_REPLY_V2 = `Three options, roughly from most to least seamless:
@@ -1224,6 +1248,7 @@ let conversationEpoch = 0;
 
 function resetConversationState(): void {
   userEdit = null;
+  expandedUserMessages.clear();
   conversationEpoch++;
   // An old load's promise may finish after the replacement runtime mounts.
   // Its identity/epoch guards must not clear or block the new chat's loader.
@@ -1576,10 +1601,7 @@ function versionNavButton(
     "aria-label",
     dir === "prev" ? "Previous version" : "Next version",
   );
-  button.innerHTML =
-    dir === "prev"
-      ? '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true"><path d="M10 3 5 8l5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-      : '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" aria-hidden="true"><path d="m6 3 5 5-5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+  button.innerHTML = chevronIcon(dir === "prev" ? "left" : "right");
   return button;
 }
 
@@ -1666,6 +1688,19 @@ function buildRow(message: Message): HTMLElement {
       ? buildStreamingRow(message)
       : buildStaticRow(message);
   if (message.role === "user") {
+    prepareUserMessageCollapse(
+      row,
+      message.id,
+      expandedUserMessages.has(message.id),
+      (expanded) => {
+        if (expanded) expandedUserMessages.add(message.id);
+        else expandedUserMessages.delete(message.id);
+        // A reader expanding text is explicit viewport intent, not a stream
+        // appending content. Stop end-follow before the bubble changes size.
+        virtualList?.remeasure(String(message.id), { anchor: "viewport" });
+      },
+      viewport.clientWidth,
+    );
     const button = document.createElement("button");
     button.type = "button";
     button.className = "message-delete-btn";
@@ -1676,7 +1711,6 @@ function buildRow(message: Message): HTMLElement {
       '<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
     const actions = document.createElement("div");
     actions.className = "message-user-actions";
-    actions.append(button);
     row.prepend(actions);
     const edit = document.createElement("button");
     edit.type = "button";
@@ -1685,7 +1719,14 @@ function buildRow(message: Message): HTMLElement {
     edit.setAttribute("aria-label", edit.title);
     edit.innerHTML =
       '<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="m12.5 3.5 4 4M3 17l4.5-1 9-9a2.8 2.8 0 0 0-4-4l-9 9L3 17Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-    button.after(edit);
+    const copy = document.createElement("button");
+    copy.type = "button";
+    copy.className = "message-copy-btn";
+    copy.title = "Copy message";
+    copy.setAttribute("aria-label", copy.title);
+    copy.disabled = message.markdown.length === 0;
+    copy.innerHTML = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="${MESSAGE_COPY_PATH}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    actions.append(button, copy, edit);
     if (userEdit?.id === message.id && userEdit.epoch === conversationEpoch)
       buildUserEditor(row, message);
   }
@@ -1721,6 +1762,7 @@ function cancelUserEdit(focus = false): void {
     editor.innerHTML = htmlForMessage(message);
   }
   row.classList.remove("is-editing");
+  syncUserMessageCollapse(row);
   if (focus)
     row
       .querySelector<HTMLButtonElement>(".message-edit-btn")
@@ -1739,6 +1781,7 @@ function buildUserEditor(row: HTMLElement, message: Message): HTMLElement {
   editor.setAttribute("aria-label", "Edit user message");
   editor.setAttribute("aria-multiline", "true");
   editor.textContent = userEdit?.text ?? message.markdown;
+  syncUserMessageCollapse(row);
   const submit = () => {
     if (userEdit?.id !== message.id || userEdit.epoch !== conversationEpoch)
       return;
@@ -1801,7 +1844,6 @@ function beginUserEdit(row: HTMLElement): void {
 
 function syncMessageActions(row: HTMLElement, message: Message): void {
   if (message.role !== "assistant") return;
-  const info = versionInfo(message.id);
   let actions = row.querySelector<HTMLElement>(".message-actions");
   if (!actions) {
     actions = document.createElement("div");
@@ -1815,33 +1857,29 @@ function syncMessageActions(row: HTMLElement, message: Message): void {
     {
       className: "message-refresh-btn",
       label: "Regenerate response",
-      show: true,
       path: "M16.5 8a6.5 6.5 0 1 0 .1 3M16.5 3.5V8H12",
     },
     {
-      className: "message-version-delete-btn",
-      label: "Delete response version",
-      show: info !== null,
-      path: "M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6",
+      className: "message-copy-btn",
+      label: "Copy message",
+      path: MESSAGE_COPY_PATH,
     },
   ];
   for (const action of definitions) {
     const existing = actions.querySelector<HTMLButtonElement>(
       `.${action.className}`,
     );
-    if (!action.show) {
-      existing?.remove();
-      continue;
-    }
     const button = existing ?? document.createElement("button");
-    button.disabled = streamAbort !== null || preparingConversation;
+    button.disabled =
+      streamAbort !== null ||
+      preparingConversation ||
+      (action.className === "message-copy-btn" &&
+        message.markdown.length === 0);
     if (!existing) {
       button.type = "button";
       button.className = action.className;
       button.title = action.label;
       button.setAttribute("aria-label", action.label);
-      if (action.className === "message-version-delete-btn")
-        button.setAttribute("aria-haspopup", "dialog");
       button.innerHTML = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="${action.path}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
       actions.append(button);
     }
@@ -1929,6 +1967,7 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
 // good (its key removed, the row replaced, the snapshot superseded, or the
 // list disposed) via onDestroy; the animation lookup is pruned there too.
 function handleRowDestroy(element: HTMLElement): void {
+  clearMessageCopyFeedback(element);
   if (touchActionRow === element) touchActionRow = null;
   const handle = streamingViewers.get(element);
   if (handle) {
@@ -2342,9 +2381,15 @@ function autosize(): void {
 function setStreamingUI(streaming: boolean): void {
   viewport.classList.toggle("is-streaming", streaming);
   for (const button of viewport.querySelectorAll<HTMLButtonElement>(
-    ".message-refresh-btn, .message-version-delete-btn",
+    ".message-refresh-btn, .message-actions .message-copy-btn",
   )) {
-    button.disabled = streaming || preparingConversation;
+    const message = tree.get(
+      Number(button.closest<HTMLElement>(".message")?.dataset.key),
+    )?.message;
+    button.disabled =
+      streaming ||
+      preparingConversation ||
+      (button.classList.contains("message-copy-btn") && !message?.markdown);
   }
   sendBtn.textContent = streaming ? "Stop" : "Send";
   sendBtn.classList.toggle("stop-btn", streaming);
@@ -2858,6 +2903,7 @@ document.addEventListener("keydown", (event) => {
 
 const deleteDialog = mustGet("delete-message-dialog", HTMLDialogElement);
 const deletionStatus = mustGet("deletion-status", HTMLElement);
+const copyStatus = mustGet("message-copy-status", HTMLElement);
 let pendingDeletion: { id: number; epoch: number } | null = null;
 let touchActionRow: HTMLElement | null = null;
 
@@ -2880,6 +2926,14 @@ viewport.addEventListener("click", (event) => {
     preparingConversation
   )
     return;
+  const copy = event.target.closest<HTMLButtonElement>(".message-copy-btn");
+  if (copy && !copy.disabled) {
+    const id = Number(copy.closest<HTMLElement>(".message")?.dataset.key);
+    const message = tree.get(id)?.message;
+    if (message && transcriptIndexById.has(id))
+      void copyMessageText(copy, message.markdown, copyStatus);
+    return;
+  }
   const refresh = event.target.closest<HTMLButtonElement>(
     ".message-refresh-btn",
   );
@@ -2898,9 +2952,7 @@ viewport.addEventListener("click", (event) => {
     if (row) beginUserEdit(row);
     return;
   }
-  const button = event.target.closest<HTMLButtonElement>(
-    ".message-delete-btn, .message-version-delete-btn",
-  );
+  const button = event.target.closest<HTMLButtonElement>(".message-delete-btn");
   const row = button?.closest<HTMLElement>(".message");
   if (!row || deleteDialog.open) return;
   const id = Number(row.dataset.key);
@@ -3018,6 +3070,8 @@ function mountConversation(): void {
     // same frame as each scroll write, including its release above the slot.
     onViewport: (snapshot) => stickyHeaders?.update(snapshot.scrollTop),
     onReachStart: loadOlderMessages,
+    onMount: mountUserMessageCollapse,
+    onUnmount: unmountUserMessageCollapse,
     onDestroy: handleRowDestroy,
   });
   landConversation();

@@ -71,15 +71,11 @@ try {
     Math.abs((await promptTop()) - readingTop) < 1,
     "switch preserves reading anchor",
   );
-  await lastAnswer
-    .locator(".message-version-delete-btn")
-    .evaluate((el) => el.click());
-  await page.locator(".delete-message-confirm").click();
-  await page.waitForTimeout(350);
-  assert.ok(
-    Math.abs((await promptTop()) - readingTop) < 1,
-    "version deletion must preserve reading anchor instead of re-pinning the prompt",
+  assert.equal(
+    await lastAnswer.locator(".message-version-delete-btn").count(),
+    0,
   );
+  assert.equal(await lastAnswer.locator(".message-copy-btn").count(), 1);
   await importTurns(page, 6);
   const row = page.locator(".message.user").filter({ hasText: "Turn 2" });
   const button = row.locator(".message-delete-btn");

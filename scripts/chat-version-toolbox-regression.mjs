@@ -101,6 +101,56 @@ for (const engine of [chromium, firefox, webkit]) {
         }
         assert.ok(Math.abs(state.bottom) < 1, JSON.stringify(state));
         assert.ok(state.gap >= -1, JSON.stringify(state));
+        const disabled = row.getByRole("button", {
+          name: text === "First version" ? "Previous version" : "Next version",
+          exact: true,
+        });
+        assert.equal(await disabled.isDisabled(), true);
+        const appearance = () =>
+          disabled.evaluate((button) => {
+            const style = getComputedStyle(button);
+            return { color: style.color, background: style.backgroundColor };
+          });
+        const normal = await appearance();
+        await disabled.hover();
+        assert.deepEqual(
+          await appearance(),
+          normal,
+          "disabled arrows have no hover ink",
+        );
+        for (const theme of ["Light", "Dark"]) {
+          await page
+            .getByRole("button", { name: `${theme} theme`, exact: true })
+            .click();
+          for (const selector of [
+            ".message-refresh-btn",
+            ".message-copy-btn",
+          ]) {
+            const action = row.locator(selector);
+            const background = () =>
+              action.evaluate(
+                (button) => getComputedStyle(button).backgroundColor,
+              );
+            await action.hover();
+            assert.equal(
+              await background(),
+              "rgba(0, 0, 0, 0)",
+              `${theme} assistant hover stays transparent`,
+            );
+            await page.mouse.down();
+            try {
+              assert.equal(
+                await background(),
+                "rgba(0, 0, 0, 0)",
+                `${theme} assistant press stays transparent`,
+              );
+            } finally {
+              // Release away from the button: styling checks must not activate it.
+              await page.mouse.move(0, 0);
+              await page.mouse.up();
+            }
+          }
+        }
         if (text === "First version") {
           const next = row.getByRole("button", { name: "Next version" });
           if (hasTouch) await next.tap();
