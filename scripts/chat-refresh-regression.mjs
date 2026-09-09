@@ -1,9 +1,9 @@
 // Offline regeneration checks; no API requests leave the browser.
 import assert from "node:assert/strict";
-import { firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
-const browser = await { firefox, webkit }[engine].launch();
+const browser = await { chromium, firefox, webkit }[engine].launch();
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 try {
   const simulated = await browser.newPage({
@@ -13,6 +13,10 @@ try {
   await simulated.waitForFunction(
     () => !document.documentElement.classList.contains("booting"),
   );
+  const inset = await simulated
+    .locator(".section-header")
+    .first()
+    .evaluate((el) => el.getBoundingClientRect().height);
   await simulated.evaluate(() => {
     const viewport = document.querySelector("#viewport");
     const prompt = [...viewport.querySelectorAll(".message.user")].at(-1);
@@ -34,7 +38,7 @@ try {
     return window.refreshPromptPositions;
   });
   assert.ok(
-    Math.abs(positions[0] - 44) < 1,
+    Math.abs(positions[0] - inset) < 1,
     "fixture starts with the prompt pinned below the date pill",
   );
   assert.ok(

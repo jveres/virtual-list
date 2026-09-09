@@ -2482,9 +2482,15 @@ async function handleSend(action?: SendAction): Promise<void> {
   const originalPosition = originalPrompt
     ? virtualList?.positionOf(String(originalPrompt.id))
     : undefined;
+  const originalOffset = originalPosition
+    ? originalPosition.top - viewport.scrollTop
+    : undefined;
   const alreadyPinned =
-    originalPosition != null &&
-    Math.abs(originalPosition.top - viewport.scrollTop - promptInset) < 1;
+    originalOffset !== undefined && Math.abs(originalOffset - promptInset) < 1;
+  const pinInstantly =
+    alreadyPinned ||
+    (originalPosition != null &&
+      originalPosition.top + originalPosition.height <= viewport.scrollTop);
 
   if (!originalPrompt) {
     clearPendingAttachments();
@@ -2560,13 +2566,21 @@ async function handleSend(action?: SendAction): Promise<void> {
     // Persist the user turn immediately so a reload mid-stream keeps it (the
     // still-empty assistant placeholder is filtered out).
     persistTurns();
-    // A new date row may be inserted above a refreshed/edited prompt. If it
-    // is already pinned, preserve that row rather than the preceding reply
-    // behind the sticky band, which would move the prompt down by a header.
+    // A prompt fully above the viewport appears directly at its pinned
+    // destination. A visible prompt keeps its old coordinate until the glide.
+    // The date pill is not a full-width occluder: content inside its band is
+    // still visible, so visibility uses the viewport edge, not promptInset.
+    // Name that anchor before removing the reply: a surviving-row fallback
+    // can otherwise clamp an offscreen prompt into the middle of the screen.
+    // This also keeps inserted date headers from moving a pinned prompt.
     pushItems(
-      alreadyPinned
-        ? { key: String(userMessage.id), offset: promptInset }
+      originalOffset !== undefined
+        ? {
+            key: String(userMessage.id),
+            offset: pinInstantly ? promptInset : originalOffset,
+          }
         : "viewport",
+      originalOffset !== undefined,
     );
     if (!shouldFlyIn) {
       fadeInRows(
@@ -2586,7 +2600,7 @@ async function handleSend(action?: SendAction): Promise<void> {
     const pinCommand =
       virtualList?.scrollTo(String(userMessage.id), {
         align: "start",
-        behavior: alreadyPinned ? "auto" : "smooth",
+        behavior: pinInstantly ? "auto" : "smooth",
         duration: NEW_MESSAGE_SCROLL_DURATION_MS,
         // Under the floating day pill, not behind it.
         offset: promptInset,

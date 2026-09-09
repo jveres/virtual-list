@@ -1,10 +1,11 @@
 // Opt-in real-engine gate: the dynamic-height lab (contract violations
 // counted from outside the runtime) and the streaming chat's product-level
-// invariants (scripts/chat-invariants.mjs).
+// invariants (scripts/chat-invariants.mjs), plus refresh anchoring transitions.
 //
 // Usage:
 //   pnpm run test:browser                       (lab and chat, every engine)
 //   pnpm run test:browser -- --suite=chat --engine=webkit
+//   pnpm run test:browser -- --suite=refresh-anchors --engine=firefox
 //   pnpm run test:browser -- --quick --engine=webkit --mode=live
 //   pnpm run test:browser -- --chaos=300 --engine=webkit   (seconds of chaos)
 //   --seed=<n> makes the chaos wheel input reproducible; --headed shows the browser
@@ -48,7 +49,7 @@ function selected(value, choices, label) {
 }
 
 const engines = selected(option("engine"), ALL_ENGINES, "engine");
-const ALL_SUITES = ["lab", "chat"];
+const ALL_SUITES = ["lab", "chat", "refresh-anchors"];
 const suites =
   option("suite") === undefined || option("suite") === "all"
     ? ALL_SUITES
@@ -443,6 +444,32 @@ async function runChat(engine) {
   }
 }
 
+async function runRefreshAnchors(engine) {
+  await new Promise((resolveRun, reject) => {
+    const child = spawn(
+      process.execPath,
+      [resolve("scripts/chat-refresh-anchor-regression.mjs")],
+      {
+        stdio: "inherit",
+        env: {
+          ...process.env,
+          BROWSER_ENGINE: engine,
+          BROWSER_MATRIX_URL: baseUrl,
+          BROWSER_MATRIX_HEADED: headed ? "1" : "",
+        },
+      },
+    );
+    child.once("error", reject);
+    child.once("exit", (code, signal) => {
+      if (code === 0) resolveRun();
+      else
+        reject(
+          new Error(`${engine}/refresh-anchors exited with ${signal ?? code}`),
+        );
+    });
+  });
+}
+
 let server;
 try {
   server = await startServer();
@@ -451,6 +478,7 @@ try {
       for (const mode of modes) await runCase(engine, mode);
     }
     if (suites.includes("chat")) await runChat(engine);
+    if (suites.includes("refresh-anchors")) await runRefreshAnchors(engine);
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

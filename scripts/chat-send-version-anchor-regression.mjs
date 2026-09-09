@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
-const browser = await { firefox, webkit }[engine].launch();
+const browser = await { chromium, firefox, webkit }[engine].launch();
 try {
-  for (const inset of [44, 144]) {
+  for (const extraOffset of [0, 100]) {
     const page = await browser.newPage({
       viewport: { width: 1420, height: 1200 },
     });
@@ -14,6 +14,11 @@ try {
     await page.waitForFunction(
       () => !document.documentElement.classList.contains("booting"),
     );
+    const pinnedInset = await page
+      .locator(".section-header")
+      .first()
+      .evaluate((el) => el.getBoundingClientRect().height);
+    const inset = pinnedInset + extraOffset;
     const key = await page
       .locator(".message.user")
       .last()
@@ -67,13 +72,13 @@ try {
     });
     await page.waitForTimeout(200);
     assert.ok(
-      Math.abs((await top(restored)) - 44) < 1,
+      Math.abs((await top(restored)) - pinnedInset) < 1,
       "the replacement must still be scrollable to the top using its reserve",
     );
     await page.setViewportSize({ width: 1420, height: 1320 });
     await page.waitForTimeout(200);
     assert.ok(
-      Math.abs((await top(restored)) - 44) < 1,
+      Math.abs((await top(restored)) - pinnedInset) < 1,
       "the replacement pin must survive a taller viewport",
     );
     await page.setViewportSize({ width: 1420, height: 1200 });

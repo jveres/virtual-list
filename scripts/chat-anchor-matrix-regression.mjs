@@ -108,6 +108,12 @@ try {
           const key = role === "user" ? 21 : 22;
           const row = page.locator(`.message[data-key="${key}"]`);
           await row.waitFor();
+          const inset = layout.sticky
+            ? await page
+                .locator(".section-header")
+                .first()
+                .evaluate((el) => el.getBoundingClientRect().height)
+            : 0;
           const state = () =>
             page.evaluate(() => {
               const vp = document.getElementById("viewport");
@@ -135,7 +141,7 @@ try {
                   vp.getBoundingClientRect().top -
                   inset;
               },
-              (layout.sticky ? 44 : 0) + (placement === "below" ? 100 : 0),
+              inset + (placement === "below" ? 100 : 0),
             );
           } else {
             await row
@@ -145,7 +151,7 @@ try {
           await page.waitForTimeout(150);
           const before = await state();
           const oldTop = before.rows.find((r) => r.key === String(key)).top;
-          let expected = Math.max(layout.sticky ? 44 : 0, oldTop);
+          let expected = Math.max(inset, oldTop);
           const visibleReply = before.rows.find(
             (r) => r.key === String(key + 1),
           );
@@ -159,7 +165,7 @@ try {
               firstSwitch &&
               role === "user" &&
               placement === "footer" &&
-              visibleReply?.top >= (layout.sticky ? 44 : 0) &&
+              visibleReply?.top >= inset &&
               visibleReply.top < before.height &&
               oldTop < 0;
             const anchorKey = readingReply ? nextKey + 1 : nextKey;

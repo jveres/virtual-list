@@ -1,9 +1,9 @@
 // Regression for a pinned prompt changing dates after edit/stop/version-back.
 import assert from "node:assert/strict";
-import { firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
-const browser = await { firefox, webkit }[engine].launch();
+const browser = await { chromium, firefox, webkit }[engine].launch();
 try {
   const page = await browser.newPage({
     viewport: { width: 1420, height: 950 },
@@ -27,8 +27,12 @@ try {
           document.getElementById("viewport").getBoundingClientRect().top,
       );
   const before = await offset(originalKey);
+  const inset = await page
+    .locator(".section-header")
+    .first()
+    .evaluate((el) => el.getBoundingClientRect().height);
   assert.ok(
-    Math.abs(before - 44) < 1,
+    Math.abs(before - inset) < 1,
     `fixture prompt must start below sticky band: ${before}`,
   );
   await prompt.locator(".message-content").hover();
