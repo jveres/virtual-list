@@ -17,6 +17,8 @@ body {
 :root {
   --chat-width: 860px;
   --chat-gutter: 24px;
+  --message-block-padding: 12px;
+  --day-header-height: 40px;
   --bg: #ffffff;
   --bg-surface: #f7f8fa;
   --bg-bubble: #e8ebf0;
@@ -244,10 +246,10 @@ p.ai-settings-note {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 40px;
+  height: var(--day-header-height);
   /* Include the following message's 12px top padding in the visual gap:
      shifting the pill down 6px balances the space above and below it. */
-  padding-top: 12px;
+  padding-top: var(--message-block-padding);
 }
 
 .section-header-pill {
@@ -263,8 +265,24 @@ p.ai-settings-note {
 
 /* The floating overlay's recycled slots (layout/visibility only; the header
    content reuses .section-header above). */
+.vl-sticky-header {
+  /* The pill is centered over the date row plus the next message's top
+     padding. Let its border and shadow paint into that existing gap. The
+     row's scroll geometry and the top clip used during handoff stay intact. */
+  box-sizing: content-box;
+  padding-bottom: var(--message-block-padding);
+}
+
 .vl-sticky-header .sticky-group {
   top: 0;
+}
+
+.viewport div:has(> .section-header) {
+  /* Static date separators paint into the following message's top padding.
+     Unlike changing message bodies, they do not need the runtime slot's
+     committed-height clip. Keep this exception off every message slot. */
+  /* biome-ignore lint/complexity/noImportantStyles: override only the date slot's runtime-owned inline clip */
+  overflow: visible !important;
 }
 
 .icon-btn {
@@ -382,7 +400,7 @@ p.ai-settings-note {
 /* With the sticky day header on, the floating pill (edge loader "pill"
    mode) sits below it instead of on top of it. */
 .viewport-wrap.sticky-on .edge-overlay {
-  top: 50px;
+  top: calc(var(--day-header-height) + 10px);
 }
 
 /* The in-flow scrollback slot (edge loader "slot" mode, the default): a
@@ -419,7 +437,7 @@ p.ai-settings-note {
   display: flex;
   width: min(100%, var(--chat-width));
   margin: 0 auto;
-  padding: 12px var(--chat-gutter);
+  padding: var(--message-block-padding) var(--chat-gutter);
   /* No paint containment: a paint-contained row inside a transformed,
      clipped slot intermittently went unpainted on iPad Safari after load
      (blank rows above the last two until any layout read), and the slot
@@ -593,11 +611,30 @@ p.ai-settings-note {
 
 .message.assistant {
   flex-direction: column;
+  --message-action-height: 24px;
+}
+
+.message.assistant:has(> .message-actions) {
+  /* One permanent footer, owned by row padding. Cursor and toolbar use the
+     same space, never two stacked reservations. Keep text above the floating
+     date strip when the following prompt is pinned; touch controls may need
+     more room, but do not add another message-padding block beneath them. */
+  --message-footer-height: max(
+    var(--day-header-height),
+    calc(var(--message-action-height) + 4px),
+    1em
+  );
+  padding-bottom: var(--message-footer-height);
 }
 
 .message-actions {
+  position: absolute;
+  left: var(--chat-gutter);
+  right: var(--chat-gutter);
+  bottom: 0;
+  height: var(--message-footer-height);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 4px;
   padding-top: 4px;
   opacity: 0;
@@ -619,7 +656,7 @@ p.ai-settings-note {
   align-items: center;
   justify-content: center;
   width: 32px;
-  height: 24px;
+  height: var(--message-action-height);
   margin: 0;
   padding: 0;
   border: none;
@@ -650,10 +687,13 @@ p.ai-settings-note {
 }
 
 @media (any-pointer: coarse) {
+  .message.assistant {
+    --message-action-height: 44px;
+  }
+
   .message-refresh-btn,
   .message-version-delete-btn {
     width: 44px;
-    height: 44px;
   }
 }
 
@@ -766,14 +806,13 @@ p.ai-settings-note {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  height: 24px;
+  height: var(--message-action-height);
   line-height: 1;
 }
 
 @media (any-pointer: coarse) {
   .message-actions .version-nav-btn {
     width: 44px;
-    height: 44px;
   }
 }
 
@@ -976,9 +1015,10 @@ p.ai-settings-note {
   margin-top: var(--cursor-gap);
 }
 
-/* Actions stay in normal flow, outside the markdown hit-test area. Their
-   hidden row reserves space during streaming; a bare cursor borrows that
-   space without adding another line. Inline cursors need no extra line. */
+/* The footer is row padding, outside the markdown hit-test area. A bare
+   cursor paints into it without adding a line to the measured body. At
+   stream end the toolbar occupies that same footer; its size never depends
+   on cursor presence, hover, or whether the last text ends with a block. */
 .message.assistant:has(> .message-actions) .markdown {
   padding-bottom: 0;
 }

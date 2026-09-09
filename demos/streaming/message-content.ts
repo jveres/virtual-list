@@ -89,6 +89,7 @@ export function createMessageContent(
               handle: createMarkdownViewer(wrapper, {
                 text: part.text,
                 isStreaming: streaming,
+                preserveStreamingHeight: true,
                 cursor,
                 unfocusedCursorStyle: "block",
               }),

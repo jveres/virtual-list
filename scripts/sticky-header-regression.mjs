@@ -115,8 +115,8 @@ for (const engine of [firefox, chromium, webkit]) {
     );
 
     for (const distance of [
-      100, 88, 87, 80, 60, 44, 33, 32, 31, 30, 10, 0.5, 0, -10, 0, 10, 30, 31,
-      32, 33, 44, 60, 80, 87, 88, 100,
+      100, 88, 87, 80, 60, 41, 40, 39, 33, 32, 31, 30, 10, 0.5, 0, -10, 0, 10,
+      30, 31, 32, 33, 39, 40, 41, 60, 80, 87, 88, 100,
     ]) {
       const result = await page.evaluate(async (distance) => {
         const v = document.querySelector("#viewport");
@@ -140,10 +140,12 @@ for (const engine of [firefox, chromium, webkit]) {
         const b = slots[1].getBoundingClientRect();
         const overlayBox = overlay.getBoundingClientRect();
         const top = overlayBox.top;
+        const headerHeight = today.getBoundingClientRect().height;
         const incomingPill = slots[1]
           .querySelector(".section-header-pill")
           ?.getBoundingClientRect();
         return {
+          headerHeight,
           actualDistance:
             today.getBoundingClientRect().top - v.getBoundingClientRect().top,
           active: slots[0].textContent,
@@ -154,7 +156,7 @@ for (const engine of [firefox, chromium, webkit]) {
           overlap: slots[1].textContent
             ? Math.max(
                 0,
-                Math.min(a.bottom, b.bottom, top + 44) -
+                Math.min(a.bottom, b.bottom, top + headerHeight) -
                   Math.max(a.top, b.top, top),
               )
             : 0,
@@ -184,7 +186,7 @@ for (const engine of [firefox, chromium, webkit]) {
       );
       const expectedOffset =
         result.active === "Yesterday"
-          ? Math.min(0, result.actualDistance - 44)
+          ? Math.min(0, result.actualDistance - result.headerHeight)
           : 0;
       assert.ok(
         Math.abs(result.activeOffset - expectedOffset) <= 0.5,
@@ -192,7 +194,7 @@ for (const engine of [firefox, chromium, webkit]) {
       );
       assert.equal(
         result.inlineVisibility,
-        distance < 44 ? "hidden" : "visible",
+        distance < result.headerHeight ? "hidden" : "visible",
         `overlay owns today's header at ${distance}`,
       );
       if (result.incoming === "Today") {
@@ -205,7 +207,7 @@ for (const engine of [firefox, chromium, webkit]) {
         assert.equal(result.active, "Today");
         assert.equal(result.incoming, "");
       }
-      if (distance === 44 || distance === 30 || distance === 0) {
+      if (distance === 40 || distance === 30 || distance === 0) {
         const box = await page.locator(".viewport-wrap").boundingBox();
         await page.screenshot({
           path: `${artifacts}/${engine.name()}-${distance}.png`,
