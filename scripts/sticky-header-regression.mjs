@@ -114,6 +114,16 @@ for (const engine of [firefox, chromium, webkit]) {
       "new simulated reply is dated today",
     );
 
+    // This fixture must scroll the new day's header above the viewport, not
+    // merely reach the keep-start reserve. Long prompts now collapse by
+    // default; expand this one so the full handoff has real scroll range.
+    await page
+      .locator(".message.user")
+      .filter({ hasText: "A new message today." })
+      .getByRole("button", { name: "Expand message", exact: true })
+      .evaluate((button) => button.click());
+    await page.waitForTimeout(150);
+
     for (const distance of [
       100, 88, 87, 80, 60, 41, 40, 39, 33, 32, 31, 30, 10, 0.5, 0, -10, 0, 10,
       30, 31, 32, 33, 39, 40, 41, 60, 80, 87, 88, 100,
@@ -145,6 +155,10 @@ for (const engine of [firefox, chromium, webkit]) {
           .querySelector(".section-header-pill")
           ?.getBoundingClientRect();
         return {
+          requestedDistance: distance,
+          scrollTop: v.scrollTop,
+          scrollHeight: v.scrollHeight,
+          viewportHeight: v.clientHeight,
           headerHeight,
           actualDistance:
             today.getBoundingClientRect().top - v.getBoundingClientRect().top,

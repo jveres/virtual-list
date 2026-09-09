@@ -1,9 +1,11 @@
 import { chevronIcon } from "../shared/chat-ui.js";
-import { setHiddenIfChanged } from "../shared/utils.js";
+import { setAttributeIfChanged, setHiddenIfChanged } from "../shared/utils.js";
 
 type TextLayout = {
   content: HTMLElement;
-  update: () => void;
+  update: (size?: ResizeObserverSize) => void;
+  width: number;
+  height: number;
   observer?: ResizeObserver;
   frame?: number;
 };
@@ -37,22 +39,25 @@ export function prepareUserMessageCollapse(
   if (versions) footer.append(versions);
   body.parentElement?.append(footer);
   let expanded = initiallyExpanded;
-  const update = (): void => {
+  const update = (size?: ResizeObserverSize): void => {
     if (!content.isConnected) return;
     const editing = row.classList.contains("is-editing");
     const limit = Number.parseFloat(getComputedStyle(content).lineHeight) * 5;
-    const overflows = content.getBoundingClientRect().height > limit + 1;
+    const bounds = size
+      ? { width: size.inlineSize, height: size.blockSize }
+      : content.getBoundingClientRect();
+    layout.width = bounds.width;
+    layout.height = bounds.height;
+    const overflows = bounds.height > limit + 1;
     const height = `${limit}px`;
     if (body.style.getPropertyValue("--user-message-limit") !== height)
       body.style.setProperty("--user-message-limit", height);
     body.classList.toggle("is-collapsed", overflows && !expanded && !editing);
     setHiddenIfChanged(button, !overflows || editing);
-    button.setAttribute("aria-expanded", String(expanded));
-    button.setAttribute(
-      "aria-label",
-      expanded ? "Collapse message" : "Expand message",
-    );
-    button.title = expanded ? "Collapse message" : "Expand message";
+    const label = expanded ? "Collapse message" : "Expand message";
+    setAttributeIfChanged(button, "aria-expanded", String(expanded));
+    setAttributeIfChanged(button, "aria-label", label);
+    setAttributeIfChanged(button, "title", label);
   };
   button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -70,6 +75,7 @@ export function prepareUserMessageCollapse(
 
   // Match feed premeasurement: decide before the virtual list measures the row,
   // without briefly showing a full-height bubble or a toggle on short text.
+  const layout: TextLayout = { content, update, width: 0, height: 0 };
   const probe = document.createElement("div");
   Object.assign(probe.style, {
     position: "fixed",
@@ -87,7 +93,7 @@ export function prepareUserMessageCollapse(
     row.remove();
     probe.remove();
   }
-  layouts.set(row, { content, update });
+  layouts.set(row, layout);
 }
 
 export function syncUserMessageCollapse(row: HTMLElement): void {
@@ -97,17 +103,27 @@ export function syncUserMessageCollapse(row: HTMLElement): void {
 export function mountUserMessageCollapse(row: HTMLElement): void {
   const layout = layouts.get(row);
   if (!layout) return;
-  layout.update();
   layout.observer?.disconnect();
-  // As in the feed, defer ancestor-size writes out of ResizeObserver delivery.
-  layout.observer = new ResizeObserver(() => {
-    if (layout.frame !== undefined) return;
+  // Retained rows keep their prepared size. Initial notifications on mount or
+  // remount need no layout reads or writes when that size is unchanged.
+  layout.observer = new ResizeObserver((entries) => {
+    const size = entries[0]?.borderBoxSize[0];
+    if (layout.frame !== undefined) cancelAnimationFrame(layout.frame);
+    layout.frame = undefined;
+    if (
+      size &&
+      Math.abs(size.inlineSize - layout.width) < 0.1 &&
+      Math.abs(size.blockSize - layout.height) < 0.1
+    )
+      return;
+    // Defer ancestor-size writes out of observer delivery, using its measured
+    // dimensions rather than flushing layout again in the following frame.
     layout.frame = requestAnimationFrame(() => {
       layout.frame = undefined;
-      layout.update();
+      layout.update(size);
     });
   });
-  layout.observer.observe(layout.content);
+  layout.observer.observe(layout.content, { box: "border-box" });
 }
 
 export function unmountUserMessageCollapse(row: HTMLElement): void {

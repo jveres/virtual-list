@@ -89,6 +89,7 @@ export function createStickyHeaders(
   let visible = false;
   let enabled = true;
   let hiddenInline: HTMLElement[] = [];
+  let lastScroll: number | undefined;
 
   const headerTop = (ordinal: number): number => tops[ordinal] ?? 0;
   const headerHeight = (ordinal: number): number => heights[ordinal] ?? 0;
@@ -207,13 +208,15 @@ export function createStickyHeaders(
     }
   };
 
-  const updatePosition = (scrollTop: number): void => {
+  const updatePosition = (scrollTop: number, refresh = false): void => {
     // A runtime publication is newer than a queued native scroll sample.
     // In particular, a glide can advance again before that rAF executes.
     if (frame) {
       cancelAnimationFrame(frame);
       frame = 0;
     }
+    if (!refresh && scrollTop === lastScroll) return;
+    lastScroll = scrollTop;
     update(scrollTop);
   };
 
@@ -238,7 +241,9 @@ export function createStickyHeaders(
     groupCount = keys.length;
     // A mounted-range publication need not change geometry. Still update the
     // position and hidden inline node, but retain the existing header content.
-    updatePosition(scrollTop);
+    // A refresh must reconcile replaced inline nodes even at the same offset.
+    // The matching onViewport publication that follows can then be a no-op.
+    updatePosition(scrollTop, true);
   };
 
   let frame = 0;
@@ -252,14 +257,14 @@ export function createStickyHeaders(
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
-      update(pendingScroll);
+      updatePosition(pendingScroll);
     });
   };
 
   const setEnabled = (next: boolean): void => {
     if (next === enabled) return;
     enabled = next;
-    if (next) update(viewport.scrollTop);
+    if (next) updatePosition(viewport.scrollTop, true);
     else hide();
   };
 

@@ -1688,19 +1688,6 @@ function buildRow(message: Message): HTMLElement {
       ? buildStreamingRow(message)
       : buildStaticRow(message);
   if (message.role === "user") {
-    prepareUserMessageCollapse(
-      row,
-      message.id,
-      expandedUserMessages.has(message.id),
-      (expanded) => {
-        if (expanded) expandedUserMessages.add(message.id);
-        else expandedUserMessages.delete(message.id);
-        // A reader expanding text is explicit viewport intent, not a stream
-        // appending content. Stop end-follow before the bubble changes size.
-        virtualList?.remeasure(String(message.id), { anchor: "viewport" });
-      },
-      viewport.clientWidth,
-    );
     const button = document.createElement("button");
     button.type = "button";
     button.className = "message-delete-btn";
@@ -1727,6 +1714,21 @@ function buildRow(message: Message): HTMLElement {
     copy.disabled = message.markdown.length === 0;
     copy.innerHTML = `<svg viewBox="0 0 20 20" width="16" height="16" fill="none" aria-hidden="true"><path d="${MESSAGE_COPY_PATH}" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     actions.append(button, copy, edit);
+    // Include the action column in the probe's width budget, especially on
+    // phones; the prepared collapse state must match the eventual row layout.
+    prepareUserMessageCollapse(
+      row,
+      message.id,
+      expandedUserMessages.has(message.id),
+      (expanded) => {
+        if (expanded) expandedUserMessages.add(message.id);
+        else expandedUserMessages.delete(message.id);
+        // A reader expanding text is explicit viewport intent, not a stream
+        // appending content. Stop end-follow before the bubble changes size.
+        virtualList?.remeasure(String(message.id), { anchor: "viewport" });
+      },
+      viewport.clientWidth,
+    );
     if (userEdit?.id === message.id && userEdit.epoch === conversationEpoch)
       buildUserEditor(row, message);
   }

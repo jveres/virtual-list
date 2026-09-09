@@ -42,12 +42,12 @@ export function createChatImagePreview(
         const index = messages.findIndex(
           (message) => message.id === photo.messageId,
         );
-        if (index < 0) return null;
+        if (index < 0) return adjacentMountedPhoto(photo, direction);
         const current = messages[index];
-        if (!current) return null;
+        if (!current) return adjacentMountedPhoto(photo, direction);
         const images = messageImages(current);
         const imageIndex = images.findIndex((image) => image.id === photo.id);
-        if (imageIndex < 0) return null;
+        if (imageIndex < 0) return adjacentMountedPhoto(photo, direction);
         const sibling = images[imageIndex + direction];
         if (sibling) return sibling;
         for (
@@ -63,19 +63,19 @@ export function createChatImagePreview(
         }
         return null;
       }
-      const ordered = Array.from(
-        viewport.querySelectorAll<HTMLImageElement>("img"),
-      ).flatMap((image) => {
-        const entry = photos.get(image);
-        return entry ? [entry] : [];
-      });
-      const index = ordered.findIndex((entry) => entry.id === photo.id);
-      return index < 0 ? null : (ordered[index + direction] ?? null);
+      return adjacentMountedPhoto(photo, direction);
     },
   });
   const photos = new WeakMap<HTMLImageElement, ChatImage>();
   const bound = new Set<HTMLImageElement>();
   let nextId = 1;
+  // Binding already-rendered DOM must not parse Markdown on the scroll path.
+  // Share identities with the lazy navigation index so an image first found
+  // offscreen still closes onto the correct thumbnail when it later mounts.
+  const identities = new WeakMap<
+    ImageMessage,
+    Map<number, { url: string; id: number }>
+  >();
   const cache = new WeakMap<
     ImageMessage,
     {
@@ -85,6 +85,41 @@ export function createChatImagePreview(
     }
   >();
 
+  function adjacentMountedPhoto(
+    photo: ChatImage,
+    direction: -1 | 1,
+  ): ChatImage | null {
+    const ordered = Array.from(
+      viewport.querySelectorAll<HTMLImageElement>("img"),
+    ).flatMap((image) => {
+      const entry = photos.get(image);
+      return entry ? [entry] : [];
+    });
+    const index = ordered.findIndex((entry) => entry.id === photo.id);
+    return index < 0 ? null : (ordered[index + direction] ?? null);
+  }
+
+  function imageId(
+    message: ImageMessage,
+    ordinal: number,
+    url: string,
+  ): number {
+    let entries = identities.get(message);
+    if (!entries) {
+      entries = new Map();
+      identities.set(message, entries);
+    }
+    const previous = entries.get(ordinal);
+    if (previous?.url === url) return previous.id;
+    const id = nextId++;
+    entries.set(ordinal, { url, id });
+    // DOM edits can replace an image and then restore it without changing the
+    // stored Markdown. A cached navigation index must use the new binding ID.
+    cache.delete(message);
+    return id;
+  }
+
+  // Called only by explicit preview navigation, never by image binding.
   function messageImages(message: ImageMessage): ChatImage[] {
     const cached = cache.get(message);
     if (
@@ -113,10 +148,9 @@ export function createChatImagePreview(
       }
       if (!["https:", "http:", "blob:", "data:"].includes(url.protocol))
         return [];
-      const old = cached?.images.find((image) => image.ordinal === ordinal);
       return [
         {
-          id: old?.url === url.href ? old.id : nextId++,
+          id: imageId(message, ordinal, url.href),
           url: url.href,
           label: entry.label,
           messageId: message.id,
@@ -154,15 +188,16 @@ export function createChatImagePreview(
     const ordinal = row
       ? Array.from(row.querySelectorAll("img")).indexOf(image)
       : -1;
-    const candidate = message
-      ? messageImages(message).find((photo) => photo.ordinal === ordinal)
-      : undefined;
-    // A live Markdown renderer can expose a new image before its model catches
-    // up. Preview it locally, but never attach another image's navigation ID.
-    const entry = candidate?.url === image.src ? candidate : undefined;
     const photo: ChatImage = {
-      ...entry,
-      id: entry?.id ?? previous?.id ?? nextId++,
+      // Navigation checks this identity against sanitized message content.
+      // A live DOM image ahead of the model cannot match another image's ID.
+      ...(message && ordinal >= 0
+        ? {
+            id: imageId(message, ordinal, image.src),
+            messageId: message.id,
+            ordinal,
+          }
+        : { id: previous?.id ?? nextId++ }),
       url,
       label:
         image.alt ||
