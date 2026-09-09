@@ -124,6 +124,7 @@ const list = createVirtualList(viewport, {
   key: (item) => item.id,
   render: (item, existing) => element,
   overscanPx: 600,
+  pinning: true, // false: clamp commands to content without trailing pin space
   scrollingUpdates: "live", // | "same-height" | "freeze"
   followBehavior: "smooth", // | "instant"
   followMode: "end", // | "keep-start": stop when the last row's top reaches the viewport top
@@ -177,9 +178,15 @@ list.dispose();
   ancestor classes. The hidden measurement root inherits from that element.
   The default is `document.body`; width matching alone does not reproduce
   styles scoped to a viewport ancestor.
-- `scrollTo` with `align: "start"` on a key pins it to the viewport top and
-  reserves the shortfall below (a chat's send flow); `offset` lands it
-  below a floating header. Realigning a pin removes unused trailing space
+- `pinning` defaults to `true`. Set `pinning: false` for a history or feed
+  view: keyed alignment clamps to the content's scroll range, end commands
+  land at the content bottom, and end-command `pin` requests are ignored.
+  Temporary space needed to preserve a reading anchor during content changes
+  still drains safely after scrolling. The chat-history demo uses this option.
+- With pinning enabled, `scrollTo` with `align: "start"` on a key pins it to
+  the viewport top and reserves the shortfall below (a chat's send flow);
+  `offset` lands it below a floating header. Realigning a pin removes unused
+  trailing space
   after landing, without shortening the scroll range during the glide.
   A smooth command is interrupted by genuine user
   input and resolves `false`; a command to `"end"` re-engages end-follow.

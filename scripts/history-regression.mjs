@@ -44,7 +44,7 @@ for (const engine of [firefox, chromium, webkit]) {
           const row = v.querySelector(`[data-message-index="${index}"]`);
           if (!row) return null;
           const rect = row.getBoundingClientRect();
-          const expected =
+          const offset =
             align === "center"
               ? (v.clientHeight - rect.height) / 2
               : align === "bottom"
@@ -52,6 +52,16 @@ for (const engine of [firefox, chromium, webkit]) {
                 : sticky || index % 8 === 0
                   ? 44
                   : 0;
+          const h = window.chatHistory;
+          const position = h.virtualList.positionOf(`message:${index}`);
+          // History has pinning disabled: alignment cannot manufacture space
+          // beyond either content edge, even for the last message.
+          const maxTop = Math.max(
+            0,
+            h.virtualList.state.totalSize - v.clientHeight,
+          );
+          const expected =
+            position.top - Math.max(0, Math.min(position.top - offset, maxTop));
           return { actual: rect.top - v.getBoundingClientRect().top, expected };
         },
         { index, align, sticky },
@@ -173,11 +183,19 @@ for (const engine of [firefox, chromium, webkit]) {
           // The entire glide write/reconcile finishes before this sample.
           // Query committed geometry and inline styles, never frame layout.
           queueMicrotask(() => {
-            const next = h.rows
+            const headers = h.rows
               .filter((row) => row.kind === "header")
-              .map((row) => h.virtualList.positionOf(row.key))
-              .find((position) => position && position.top > actualTop);
-            const expected = next ? Math.min(0, next.top - actualTop - 44) : 0;
+              .map((row) => h.virtualList.positionOf(row.key));
+            const next = headers.find(
+              (position) => position && position.top > actualTop,
+            );
+            const active = headers.findLast(
+              (position) => position && position.top <= actualTop,
+            );
+            const expected =
+              next && active
+                ? Math.min(0, next.top - actualTop - active.height)
+                : 0;
             const slot = document.querySelector(
               ".vl-sticky-header .sticky-group",
             );
@@ -339,10 +357,32 @@ for (const engine of [firefox, chromium, webkit]) {
 
     await jump(853);
     await aligned(853);
+    const readingBeforeResize = await page.evaluate(() => {
+      const h = window.chatHistory;
+      const top = document.querySelector("#viewport").scrollTop;
+      const message = h.items.find((message) => {
+        const position = h.virtualList.positionOf(message.key);
+        return position && position.top + position.height > top;
+      });
+      return {
+        key: message.key,
+        top: h.virtualList.positionOf(message.key).top - top,
+      };
+    });
     await page.setViewportSize({ width: 390, height: 844 });
     await idle();
     await page.waitForTimeout(150);
-    await aligned(853);
+    const readingAfterResize = await page.evaluate((key) => {
+      const v = document.querySelector("#viewport");
+      return (
+        window.chatHistory.virtualList.elementOf(key).getBoundingClientRect()
+          .top - v.getBoundingClientRect().top
+      );
+    }, readingBeforeResize.key);
+    assert.ok(
+      Math.abs(readingAfterResize - readingBeforeResize.top) <= 1,
+      "without a persistent pin, resize preserves the current reading anchor",
+    );
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,

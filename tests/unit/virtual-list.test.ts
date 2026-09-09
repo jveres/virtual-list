@@ -126,6 +126,7 @@ function mount(
     itemHeight?: (m: Msg) => number;
     position?: VirtualListOptions<Msg>["position"];
     boot?: "start" | "end";
+    pinning?: boolean;
     onMount?: (element: HTMLElement, m: Msg) => void;
     onUnmount?: (element: HTMLElement, m: Msg) => void;
     /** Runs at the start of every render (probe hook). */
@@ -216,6 +217,7 @@ function mount(
     height: hooks.itemHeight,
     position: hooks.position,
     boot: hooks.boot,
+    pinning: hooks.pinning,
     onMount: hooks.onMount,
     onUnmount: hooks.onUnmount,
     render: (m, existing) => {
@@ -5281,6 +5283,104 @@ describe("runtime — commands", () => {
       h.list.dispose();
     },
   );
+
+  it.each(["auto", "smooth"] as const)(
+    "should clamp %s start alignment without pinning or growing a reserve",
+    async (behavior) => {
+      let height = VIEWPORT_H;
+      const h = mount(range(0, 20), {
+        boot: "start",
+        pinning: false,
+        height: () => height,
+      });
+
+      const command = h.list.scrollTo("m19", { align: "start", behavior });
+      if (behavior === "smooth") {
+        advanceFramesUntil(() => h.viewport.scrollTop === 1400);
+        h.settle();
+      }
+
+      await expect(command).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(1400);
+      expect(h.list.state.totalSize).toBe(2000);
+      expect(h.list.state.atEnd).toBe(true);
+      expect(h.canvas().style.minHeight).toBe("");
+
+      // No pin can regrow space when the viewport gets taller.
+      height = 800;
+      fireResize(1, h.viewport, height);
+      expect(h.viewport.scrollTop).toBe(1200);
+      expect(h.list.state.totalSize).toBe(2000);
+      expect(h.list.state.atEnd).toBe(true);
+      h.list.dispose();
+    },
+  );
+
+  it.each(["auto", "smooth"] as const)(
+    "should ignore explicit end pins when pinning is disabled (%s)",
+    async (behavior) => {
+      const h = mount(range(0, 20), { boot: "start", pinning: false });
+
+      const command = h.list.scrollTo("end", {
+        pin: { key: "m18", offset: 44 },
+        behavior,
+      });
+      if (behavior === "smooth") {
+        advanceFramesUntil(() => h.viewport.scrollTop === 1400);
+        h.settle();
+      }
+
+      await expect(command).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(1400);
+      expect(h.list.state.totalSize).toBe(2000);
+      expect(h.canvas().style.minHeight).toBe("");
+      h.list.dispose();
+    },
+  );
+
+  it.each([
+    { target: "end", behavior: "auto" },
+    { target: "end", behavior: "smooth" },
+    { target: "m19", behavior: "auto" },
+    { target: "m19", behavior: "smooth" },
+  ] as const)(
+    "should drain temporary anchor space after $behavior navigation to $target with pinning off",
+    async ({ target, behavior }) => {
+      const h = mount(range(0, 20), { pinning: false });
+      h.list.setItems(range(0, 20), { anchor: { key: "m19", offset: 0 } });
+      expect(h.viewport.scrollTop).toBe(1900);
+      expect(h.list.state.totalSize).toBe(2500);
+
+      const command = h.list.scrollTo(target, { align: "start", behavior });
+      if (behavior === "smooth") {
+        // Safety space stays under the viewport until the glide lands.
+        expect(h.viewport.scrollTop).toBe(1900);
+        expect(h.list.state.totalSize).toBe(2500);
+        advanceFramesUntil(() => h.viewport.scrollTop === 1400);
+        h.settle();
+      }
+
+      await expect(command).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(1400);
+      expect(h.list.state.totalSize).toBe(2000);
+      expect(h.list.state.atEnd).toBe(true);
+      expect(h.canvas().style.minHeight).toBe("");
+      h.list.dispose();
+    },
+  );
+
+  it("should retain an existing pin when an end command omits pin", async () => {
+    const h = mount(range(0, 20));
+    await h.list.scrollTo("end", { pin: { key: "m18", offset: 44 } });
+    await h.list.scrollTo("m10");
+
+    await expect(h.list.scrollTo("end")).resolves.toBe(true);
+
+    expect(h.viewport.scrollTop).toBe(1756);
+    expect(h.list.state.totalSize).toBe(2356);
+    expect(h.list.state.atEnd).toBe(true);
+    h.list.dispose();
+  });
 
   it("should absorb growth under an atomic pin and follow once the tail outgrows it", async () => {
     const h = mount(range(0, 20));

@@ -165,6 +165,14 @@ export interface VirtualListOptions<T> {
    * and abandon, a window of rows for nothing.
    */
   boot?: "start" | "end";
+  /**
+   * Allow scroll commands to pin a row and reserve trailing space (default:
+   * true). Set false for history/feed views: keyed start alignment clamps to
+   * the content's scroll range, end commands land at the content bottom, and
+   * ScrollOptions.pin is ignored. Temporary space needed to preserve a reading
+   * anchor during a content change still drains safely after scrolling.
+   */
+  pinning?: boolean;
   /** Non-negative finite pixels; invalid values use the automatic default. */
   overscanPx?: number;
   /**
@@ -295,6 +303,7 @@ export type ScrollOptions = {
    * then land at the end in the same command, without visiting the pin first.
    * The offset defaults to zero and has the same meaning as a keyed offset.
    * A missing pin key resolves false without changing the pin or scrolling.
+   * Ignored when the list is created with `pinning: false`.
    */
   pin?: { key: string; offset?: number };
 };
@@ -522,6 +531,7 @@ export function createVirtualList<T>(
     );
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
+  const pinning = options.pinning !== false;
   const requestedOverscan = options.overscanPx;
   const overscanPx =
     requestedOverscan !== undefined &&
@@ -2848,7 +2858,11 @@ export function createVirtualList<T>(
     below = 0,
     pinnedEnd = false,
   ): number | null {
-    const maxTop = geometry.maxScrollTop(viewport.clientHeight);
+    // Without pinning, commands target content rather than temporary space
+    // retained for an earlier reading anchor. It drains after landing.
+    const maxTop = pinning
+      ? geometry.maxScrollTop(viewport.clientHeight)
+      : Math.max(0, geometry.contentSize - viewport.clientHeight);
     if (target === "start") return 0;
     if (target === "end") {
       // Retargeting a pin may leave the previous reserve under the viewport
@@ -2902,7 +2916,7 @@ export function createVirtualList<T>(
     settleParked(() => false);
     glide?.cancel();
     interruptNativeScroll();
-    const pin = scrollOptions.pin;
+    const pin = pinning ? scrollOptions.pin : undefined;
     if (
       disposed ||
       (keyed && geometry.indexOf(target) < 0) ||
@@ -2913,7 +2927,10 @@ export function createVirtualList<T>(
     }
     // A keyed target with align:"start" reserves the shortfall (I5) — a
     // geometry change, committed now (the phase is idle).
-    if (pin !== undefined || (keyed && scrollOptions.align === "start")) {
+    if (
+      pinning &&
+      (pin !== undefined || (keyed && scrollOptions.align === "start"))
+    ) {
       geometry.pin(pin?.key ?? target, pin?.offset ?? below);
       commit(null, "none");
     }
@@ -2962,7 +2979,7 @@ export function createVirtualList<T>(
           controller.markSettlePending();
         }),
     );
-    glideToPin = keyed && scrollOptions.align === "start";
+    glideToPin = pinning && keyed && scrollOptions.align === "start";
   }
 
   /**

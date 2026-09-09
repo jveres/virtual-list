@@ -227,8 +227,8 @@ interaction; the [README](../README.md) lists the public options.
   Fresh-row ownership, measurement, promotion, and commit scheduling remain
   in the runtime. Deferred declared-height rendering has its own commit phase.
 - The public API (`src/virtual-list.ts`):
-  `createVirtualList(viewport, { items, key, render, height?, boot?, overscanPx?,
-  onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
+  `createVirtualList(viewport, { items, key, render, height?, boot?, pinning?,
+  overscanPx?, onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
   settleStrategy?, scrollingUpdates?, followBehavior? })`,
   `boot` chooses where the list opens: `"end"` (the default, following
   armed) or `"start"` (the initial position, never follow intent).
@@ -257,6 +257,12 @@ interaction; the [README](../README.md) lists the public options.
   never underneath the glide. The command resolves `false` if the pin key
   is missing after takeover commits held work. `pin` is valid only with an
   end target; its offset defaults to zero, including non-finite input.
+  The list option `pinning: false` disables command-created pins; the default
+  is `true`. Keyed alignment then clamps to the content's scroll range, end
+  commands target the content bottom, and end-command `pin` requests are
+  ignored. Explicit reading anchors can still retain temporary space for
+  continuity; commands exclude that space from their targets, and it drains
+  after landing without collapsing the surface during a glide.
   A hidden document follows by write (a glide started then would only
   play on return, the background growth as one slide), and so does one
   that just became visible, for a short window (300ms) in which growth
