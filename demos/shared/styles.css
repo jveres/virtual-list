@@ -642,6 +642,7 @@ p.ai-settings-note {
 }
 
 .message-actions[data-latest],
+.message-actions:has(> .version-nav),
 .message-actions:hover,
 .message.assistant:focus-within > .message-actions,
 .message.assistant[data-actions-visible] > .message-actions,
