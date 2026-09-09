@@ -49,6 +49,7 @@ import {
   parseBranchingTranscript,
   type TranscriptTree,
 } from "./branching-transcript.js";
+import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
 import { createChatImagePreview } from "./image-preview.js";
 import {
   appendStaticMessageContent,
@@ -110,6 +111,7 @@ import "../shared/styles.css";
 
 interface Message {
   attachments?: ChatAttachment[];
+  generatedFiles?: StoredTurn["generatedFiles"];
   responseState?: StoredTurn["responseState"];
   id: number;
   role: "user" | "assistant";
@@ -1292,6 +1294,9 @@ function seedStoredTurns(turns: readonly StoredTurn[]): void {
         ...(turn.stopped ? { status: "cancelled" as const } : {}),
         ...(turn.attachments?.length ? { attachments: turn.attachments } : {}),
         ...(turn.responseState ? { responseState: turn.responseState } : {}),
+        ...(turn.generatedFiles?.length
+          ? { generatedFiles: turn.generatedFiles }
+          : {}),
         ...(turn.toolCalls
           ? { toolCalls: cloneToolCalls(turn.toolCalls) }
           : {}),
@@ -1688,6 +1693,11 @@ function buildRow(message: Message): HTMLElement {
   row.dataset.toolsig = toolSignature(message);
   syncMessageActions(row, message);
   syncStoppedMarker(row, message);
+  syncGeneratedFiles(
+    row,
+    message.generatedFiles ?? [],
+    () => getAISettings().apiKey,
+  );
   rowById.set(String(message.id), row);
   return row;
 }
@@ -1890,6 +1900,11 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
     if (!handle) return null;
     syncRoleLabel(element, message);
     handle.update(message, streamingDisplayText(message), true);
+    syncGeneratedFiles(
+      element,
+      message.generatedFiles ?? [],
+      () => getAISettings().apiKey,
+    );
     return element;
   }
   // Stream just ended on a still-live row: finalize the viewer in place
@@ -1899,6 +1914,11 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
   if (handle) {
     syncRoleLabel(element, message);
     handle.update(message, message.markdown, false);
+    syncGeneratedFiles(
+      element,
+      message.generatedFiles ?? [],
+      () => getAISettings().apiKey,
+    );
     syncStoppedMarker(element, message);
     return element;
   }
@@ -2074,6 +2094,7 @@ function storedConversation(): StoredTurn[] {
       message.markdown === "" &&
       message.status !== "cancelled" &&
       !message.responseState &&
+      !message.generatedFiles?.length &&
       !message.attachments?.length &&
       !message.toolCalls?.length
     )
@@ -2091,6 +2112,9 @@ function storedConversation(): StoredTurn[] {
         : {}),
       ...(message.responseState
         ? { responseState: message.responseState }
+        : {}),
+      ...(message.generatedFiles?.length
+        ? { generatedFiles: message.generatedFiles }
         : {}),
       ...(toolCalls?.length ? { toolCalls } : {}),
       ...(message.sentAt !== undefined ? { sentAt: message.sentAt } : {}),
@@ -2129,6 +2153,12 @@ async function streamOpenAIResponse(
         // The row stays "thinking" until the first real activity arrives.
         if (!started) message.status = "streaming";
         switch (chunk.kind) {
+          case "files":
+            message.generatedFiles = storedGeneratedFiles([
+              ...(message.generatedFiles ?? []),
+              ...chunk.files,
+            ]);
+            break;
           case "response-completed":
             message.responseState = chunk.state;
             break;

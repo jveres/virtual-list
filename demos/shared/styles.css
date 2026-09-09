@@ -1132,6 +1132,31 @@ p.ai-settings-note {
   margin-top: 8px;
 }
 
+.message-generated-files {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.generated-files-hint,
+.generated-file-status {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.generated-file-download {
+  color: inherit;
+  cursor: pointer;
+  text-align: start;
+  overflow-wrap: anywhere;
+}
+
+.generated-file-download:disabled {
+  cursor: wait;
+}
+
 .attachment-chip {
   display: flex;
   align-items: center;

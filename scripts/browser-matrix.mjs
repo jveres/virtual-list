@@ -6,6 +6,7 @@
 //   pnpm run test:browser                       (lab and chat, every engine)
 //   pnpm run test:browser -- --suite=chat --engine=webkit
 //   pnpm run test:browser -- --suite=refresh-anchors --engine=firefox
+//   pnpm run test:browser -- --suite=generated-files --engine=firefox
 //   pnpm run test:browser -- --quick --engine=webkit --mode=live
 //   pnpm run test:browser -- --chaos=300 --engine=webkit   (seconds of chaos)
 //   --seed=<n> makes the chaos wheel input reproducible; --headed shows the browser
@@ -49,7 +50,7 @@ function selected(value, choices, label) {
 }
 
 const engines = selected(option("engine"), ALL_ENGINES, "engine");
-const ALL_SUITES = ["lab", "chat", "refresh-anchors"];
+const ALL_SUITES = ["lab", "chat", "refresh-anchors", "generated-files"];
 const suites =
   option("suite") === undefined || option("suite") === "all"
     ? ALL_SUITES
@@ -444,28 +445,26 @@ async function runChat(engine) {
   }
 }
 
-async function runRefreshAnchors(engine) {
+async function runChatRegression(engine, suite) {
+  const script =
+    suite === "refresh-anchors"
+      ? "scripts/chat-refresh-anchor-regression.mjs"
+      : "scripts/chat-generated-files-regression.mjs";
   await new Promise((resolveRun, reject) => {
-    const child = spawn(
-      process.execPath,
-      [resolve("scripts/chat-refresh-anchor-regression.mjs")],
-      {
-        stdio: "inherit",
-        env: {
-          ...process.env,
-          BROWSER_ENGINE: engine,
-          BROWSER_MATRIX_URL: baseUrl,
-          BROWSER_MATRIX_HEADED: headed ? "1" : "",
-        },
+    const child = spawn(process.execPath, [resolve(script)], {
+      stdio: "inherit",
+      env: {
+        ...process.env,
+        BROWSER_ENGINE: engine,
+        BROWSER_MATRIX_URL: baseUrl,
+        BROWSER_MATRIX_HEADED: headed ? "1" : "",
       },
-    );
+    });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
       if (code === 0) resolveRun();
       else
-        reject(
-          new Error(`${engine}/refresh-anchors exited with ${signal ?? code}`),
-        );
+        reject(new Error(`${engine}/${suite} exited with ${signal ?? code}`));
     });
   });
 }
@@ -478,7 +477,9 @@ try {
       for (const mode of modes) await runCase(engine, mode);
     }
     if (suites.includes("chat")) await runChat(engine);
-    if (suites.includes("refresh-anchors")) await runRefreshAnchors(engine);
+    for (const suite of ["refresh-anchors", "generated-files"]) {
+      if (suites.includes(suite)) await runChatRegression(engine, suite);
+    }
   }
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);

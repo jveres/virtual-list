@@ -462,7 +462,10 @@ async function promptLanding(page) {
     const sticky = document.getElementById("sticky-toggle")?.checked ?? true;
     return {
       top: last ? last.getBoundingClientRect().top - rect.top : null,
-      expected: sticky ? 44 : 0,
+      expected: sticky
+        ? (document.querySelector(".section-header")?.getBoundingClientRect()
+            .height ?? 0)
+        : 0,
       gapToEnd,
     };
   });
@@ -546,7 +549,8 @@ async function checkKeepStart(page, label) {
       a.getBoundingClientRect().top > b.getBoundingClientRect().top ? a : b,
     );
     const inset = viewport.parentElement.classList.contains("sticky-on")
-      ? 44
+      ? (document.querySelector(".section-header")?.getBoundingClientRect()
+          .height ?? 0)
       : 0;
     return {
       top: Math.round((last.getBoundingClientRect().top - rect.top) * 10) / 10,

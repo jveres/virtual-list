@@ -5,6 +5,12 @@ import {
   type ChatAttachment,
   storedAttachments,
 } from "./attachments.js";
+import {
+  filesFromAnnotations,
+  filesFromOutput,
+  type GeneratedFile,
+  storedGeneratedFiles,
+} from "./generated-files.js";
 
 type AIProvider = "simulated" | "openai";
 
@@ -48,6 +54,7 @@ export interface StoredTurn {
   /** A user-stopped assistant response, including one with no text yet. */
   stopped?: true;
   attachments?: ChatAttachment[];
+  generatedFiles?: GeneratedFile[];
   responseState?: ResponseState;
   role: "user" | "assistant";
   markdown: string;
@@ -289,6 +296,13 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
       entry.role === "assistant" && validResponseState(entry.responseState)
         ? entry.responseState
         : undefined;
+    const generatedFiles =
+      entry.role === "assistant"
+        ? storedGeneratedFiles([
+            ...storedGeneratedFiles(entry.generatedFiles),
+            ...filesFromOutput(responseState?.output),
+          ])
+        : [];
     const toolCalls = storedToolCalls(entry.toolCalls);
     const stopped = entry.role === "assistant" && entry.stopped === true;
     if (
@@ -296,6 +310,7 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
       (entry.markdown === "" &&
         !stopped &&
         !responseState &&
+        generatedFiles.length === 0 &&
         attachments.length === 0 &&
         !toolCalls?.length)
     )
@@ -313,6 +328,7 @@ export function validateStoredTurns(value: unknown): StoredTurn[] {
       ...(toolCalls ? { toolCalls } : {}),
       ...(sentAt !== undefined ? { sentAt } : {}),
       ...(responseState ? { responseState } : {}),
+      ...(generatedFiles.length ? { generatedFiles } : {}),
     });
   }
   return turns;
@@ -518,6 +534,7 @@ async function errorDetail(response: Response): Promise<string> {
 
 type OpenAIStreamChunk =
   | { kind: "response-completed"; state: ResponseState }
+  | { kind: "files"; files: GeneratedFile[] }
   | { kind: "text"; text: string }
   | { kind: "image"; id: string; markdown: string }
   | { kind: "image-partial"; id: string; markdown: string }
@@ -596,6 +613,17 @@ function codeInterpreterLogs(item: Record<string, unknown>): string {
 // Failure events throw so the caller surfaces them like request errors.
 function chunksFromEvent(parsed: unknown): OpenAIStreamChunk[] {
   if (!isRecord(parsed) || typeof parsed.type !== "string") return [];
+
+  if (parsed.type === "response.output_text.annotation.added") {
+    const files = filesFromAnnotations([parsed.annotation]);
+    return files.length ? [{ kind: "files", files }] : [];
+  }
+  if (parsed.type === "response.content_part.done") {
+    const files = isRecord(parsed.part)
+      ? filesFromAnnotations(parsed.part.annotations)
+      : [];
+    return files.length ? [{ kind: "files", files }] : [];
+  }
 
   if (parsed.type === "response.output_text.delta") {
     return typeof parsed.delta === "string" && parsed.delta !== ""
@@ -679,6 +707,11 @@ function chunksFromEvent(parsed: unknown): OpenAIStreamChunk[] {
     if (!isRecord(item) || typeof item.type !== "string") return [];
     const id = toolCallId(item);
     const ok = item.status !== "failed";
+
+    if (item.type === "message") {
+      const files = filesFromOutput([item]);
+      return files.length ? [{ kind: "files", files }] : [];
+    }
 
     if (item.type === "image_generation_call") {
       const result = typeof item.result === "string" ? item.result : "";
@@ -893,6 +926,8 @@ export async function* streamOpenAIChat(
             output: event.response.output,
           };
           if (validResponseState(state)) {
+            const files = filesFromOutput(state.output);
+            if (files.length) yield { kind: "files", files };
             yield { kind: "response-completed", state };
             return;
           }
