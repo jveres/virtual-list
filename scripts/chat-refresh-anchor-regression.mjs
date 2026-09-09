@@ -1,5 +1,4 @@
-// Refresh pins an offscreen prompt instantly. Visible prompts glide from their
-// old coordinate, never a fallback chosen after removing the long reply.
+// Refresh always glides before replacing the old reply or requesting a new one.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 
@@ -265,6 +264,7 @@ try {
               (el) => el.textContent.includes("Refresh anchor prompt"),
             );
             return {
+              scrollTop: vp.scrollTop,
               promptTop: prompt
                 ? prompt.getBoundingClientRect().top -
                   vp.getBoundingClientRect().top
@@ -306,6 +306,11 @@ try {
               );
               window.refreshAnchorSamples.push({
                 afterClick: window.refreshActivated,
+                scrollTop: vp.scrollTop,
+                generating: !!vp.querySelector(
+                  ".message.assistant.is-streaming",
+                ),
+                requested: (window.refreshRequests ?? 0) > 0,
                 top: prompt
                   ? prompt.getBoundingClientRect().top -
                     vp.getBoundingClientRect().top
@@ -339,12 +344,15 @@ try {
             { timeout: 4000 },
           );
           await page.waitForTimeout(100);
-          const positions = await page.evaluate(() => {
+          const samples = await page.evaluate(() => {
             window.sampleRefreshAnchor = false;
-            return window.refreshAnchorSamples
-              .filter((sample) => sample.afterClick)
-              .map((sample) => sample.top);
+            return window.refreshAnchorSamples.filter(
+              (sample) => sample.afterClick,
+            );
           });
+          const positions = samples
+            .map((sample) => sample.top)
+            .filter((top) => top !== null);
           console.log(
             JSON.stringify({
               engine,
@@ -364,8 +372,12 @@ try {
             "the refreshed prompt is observed during its scroll",
           );
           assert.ok(
-            positions.every((top) => top !== null),
-            "the prompt stays mounted after refresh",
+            samples.every(
+              (sample) =>
+                !(sample.generating || sample.requested) ||
+                (sample.top !== null && Math.abs(sample.top - inset) < 1),
+            ),
+            "the old reply is replaced and generation starts only after landing",
           );
           assert.ok(
             positions.every((top) => top <= Math.max(inset, start) + 1),
@@ -380,40 +392,27 @@ try {
               positions.every((top) => Math.abs(top - inset) < 1),
               "an already pinned prompt remains stationary",
             );
-          if (placement === "footer" || placement === "above")
+          if (placement !== "pinned") {
             assert.ok(
-              positions.every((top) => Math.abs(top - inset) < 1),
-              "a fully offscreen prompt must appear instantly pinned, with no animation",
+              Math.abs(samples[0].scrollTop - before.scrollTop) < 1,
+              "refresh starts at the exact old scroll coordinate",
             );
-          if (
-            placement === "below" ||
-            placement === "partial" ||
-            placement === "under-pill" ||
-            placement === "edge-visible"
-          ) {
-            assert.ok(
-              before.promptBottom > 0,
-              "the prompt is initially at least partially visible",
-            );
-            assert.ok(
-              Math.abs(positions[0] - before.promptTop) < 1,
-              "a visible prompt starts at its exact old coordinate",
-            );
-            const direction = before.promptTop < inset ? 1 : -1;
+            // Virtualization can rebase absolute scrollTop when the reply is
+            // replaced. Check the visible prompt coordinate, not that origin.
+            const direction = positions[0] < inset ? 1 : -1;
             assert.ok(
               positions.every(
                 (top, index) =>
                   index === 0 || direction * (top - positions[index - 1]) >= -1,
               ),
-              "visible prompt motion must be monotonic toward the inset",
+              "refresh motion must be monotonic toward the inset",
             );
             assert.ok(
               positions.some(
                 (top) =>
-                  Math.abs(top - inset) > 2 &&
-                  Math.abs(top - before.promptTop) > 2,
+                  Math.abs(top - inset) > 2 && Math.abs(top - positions[0]) > 2,
               ),
-              "visible prompts still animate rather than snap",
+              "both visible and offscreen prompts animate rather than snap",
             );
           }
           assert.deepEqual(errors, []);

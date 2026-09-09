@@ -5,12 +5,15 @@ const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [chromium, firefox, webkit]) {
   const browser = await engine.launch();
   try {
-    for (const hasTouch of [false, true]) {
+    for (const device of [
+      { name: "desktop", hasTouch: false, width: 1200, height: 900 },
+      { name: "phone", hasTouch: true, width: 390, height: 844 },
+      { name: "tablet", hasTouch: true, width: 820, height: 1180 },
+    ]) {
+      const { hasTouch } = device;
       const page = await browser.newPage({
         hasTouch,
-        viewport: hasTouch
-          ? { width: 390, height: 844 }
-          : { width: 1200, height: 900 },
+        viewport: { width: device.width, height: device.height },
       });
       page.on("dialog", (dialog) => dialog.accept());
       await page.goto(`${base}/demos/streaming/`);
@@ -66,6 +69,17 @@ for (const engine of [chromium, firefox, webkit]) {
             opacity: style.opacity,
             visibility: style.visibility,
             pointerEvents: style.pointerEvents,
+            actionGap: style.gap,
+            buttons: [...actions.querySelectorAll("button")].map((button) => {
+              const buttonStyle = getComputedStyle(button);
+              const rect = button.getBoundingClientRect();
+              return {
+                width: rect.width,
+                height: rect.height,
+                version: button.classList.contains("version-nav-btn"),
+                tapHighlight: buttonStyle.webkitTapHighlightColor,
+              };
+            }),
             bottom: bounds.bottom - message.getBoundingClientRect().bottom,
             gap:
               bounds.top -
@@ -77,16 +91,29 @@ for (const engine of [chromium, firefox, webkit]) {
         assert.equal(state.opacity, "1");
         assert.equal(state.visibility, "visible");
         assert.equal(state.pointerEvents, "auto");
+        assert.equal(state.actionGap, "4px");
+        assert.ok(state.buttons.length >= 3);
+        for (const button of state.buttons) {
+          assert.equal(button.height, 24);
+          assert.equal(button.width, button.version ? 22 : 32);
+          if (engine !== firefox)
+            assert.equal(button.tapHighlight, "rgba(0, 0, 0, 0)");
+        }
         assert.ok(Math.abs(state.bottom) < 1, JSON.stringify(state));
         assert.ok(state.gap >= -1, JSON.stringify(state));
-        if (text === "First version")
-          await row
-            .getByRole("button", { name: "Next version" })
-            .evaluate((button) => button.click());
+        if (text === "First version") {
+          const next = row.getByRole("button", { name: "Next version" });
+          if (hasTouch) await next.tap();
+          else await next.click();
+        }
       }
       await page.close();
       console.log(
-        JSON.stringify({ engine: engine.name(), hasTouch, passed: true }),
+        JSON.stringify({
+          engine: engine.name(),
+          device: device.name,
+          passed: true,
+        }),
       );
     }
   } finally {

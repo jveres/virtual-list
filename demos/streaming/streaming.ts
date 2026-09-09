@@ -2509,9 +2509,11 @@ async function handleSend(action?: SendAction): Promise<void> {
   markConversationChanged();
 
   const promptInset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
-  const originalPosition = originalPrompt
-    ? virtualList?.positionOf(String(originalPrompt.id))
-    : undefined;
+  const regenerating = action?.kind === "regenerate";
+  const originalPosition =
+    originalPrompt && !regenerating
+      ? virtualList?.positionOf(String(originalPrompt.id))
+      : undefined;
   const originalOffset = originalPosition
     ? originalPosition.top - viewport.scrollTop
     : undefined;
@@ -2543,6 +2545,18 @@ async function handleSend(action?: SendAction): Promise<void> {
   };
 
   try {
+    if (regenerating && originalPrompt) {
+      // Keep the existing reply intact for the entire scroll. Refresh has
+      // one path regardless of where its prompt starts in the viewport.
+      sendGlideActive = true;
+      const landed = await virtualList?.scrollTo(String(originalPrompt.id), {
+        align: "start",
+        behavior: "smooth",
+        duration: NEW_MESSAGE_SCROLL_DURATION_MS,
+        offset: promptInset,
+      });
+      if (!landed || abort.cancelled || sendEpoch !== conversationEpoch) return;
+    }
     // New turns use the real clock in both providers. The built-in sample
     // ends yesterday, so the first simulated send opens a Today section.
     const sentAt = Date.now();
@@ -2596,20 +2610,18 @@ async function handleSend(action?: SendAction): Promise<void> {
     // Persist the user turn immediately so a reload mid-stream keeps it (the
     // still-empty assistant placeholder is filtered out).
     persistTurns();
-    // A prompt fully above the viewport appears directly at its pinned
-    // destination. A visible prompt keeps its old coordinate until the glide.
-    // The date pill is not a full-width occluder: content inside its band is
-    // still visible, so visibility uses the viewport edge, not promptInset.
-    // Name that anchor before removing the reply: a surviving-row fallback
-    // can otherwise clamp an offscreen prompt into the middle of the screen.
-    // This also keeps inserted date headers from moving a pinned prompt.
+    // Refresh has already landed; preserve that pin while replacing its reply.
+    // Edits keep their existing policy: pin an offscreen prompt immediately,
+    // or retain its visible coordinate until the subsequent glide.
     pushItems(
-      originalOffset !== undefined
-        ? {
-            key: String(userMessage.id),
-            offset: pinInstantly ? promptInset : originalOffset,
-          }
-        : "viewport",
+      regenerating
+        ? { key: String(userMessage.id), offset: promptInset }
+        : originalOffset !== undefined
+          ? {
+              key: String(userMessage.id),
+              offset: pinInstantly ? promptInset : originalOffset,
+            }
+          : "viewport",
       originalOffset !== undefined,
     );
     if (!shouldFlyIn) {
@@ -2627,14 +2639,15 @@ async function handleSend(action?: SendAction): Promise<void> {
     // user scroll during the stream disengages it (their intent wins).
     // The bottom button stays hidden until the glide settles either way.
     sendGlideActive = true;
-    const pinCommand =
-      virtualList?.scrollTo(String(userMessage.id), {
-        align: "start",
-        behavior: pinInstantly ? "auto" : "smooth",
-        duration: NEW_MESSAGE_SCROLL_DURATION_MS,
-        // Under the floating day pill, not behind it.
-        offset: promptInset,
-      }) ?? Promise.resolve(false);
+    const pinCommand = regenerating
+      ? Promise.resolve(true)
+      : (virtualList?.scrollTo(String(userMessage.id), {
+          align: "start",
+          behavior: pinInstantly ? "auto" : "smooth",
+          duration: NEW_MESSAGE_SCROLL_DURATION_MS,
+          // Under the floating day pill, not behind it.
+          offset: promptInset,
+        }) ?? Promise.resolve(false));
     void pinCommand.then(() => {
       if (sendEpoch === conversationEpoch && streamAbort === abort)
         endSendGlide();

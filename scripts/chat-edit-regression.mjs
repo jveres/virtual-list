@@ -1,9 +1,9 @@
 // Offline inline-editing checks; no API requests leave the browser.
 import assert from "node:assert/strict";
-import { firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
-const browser = await { firefox, webkit }[engine].launch();
+const browser = await { chromium, firefox, webkit }[engine].launch();
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 try {
   const page = await browser.newPage();

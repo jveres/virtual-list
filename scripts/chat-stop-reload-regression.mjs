@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
-const browser = await { firefox, webkit }[engine].launch();
+const browser = await { chromium, firefox, webkit }[engine].launch();
 try {
   for (const partial of [false, true]) {
     const page = await browser.newPage();

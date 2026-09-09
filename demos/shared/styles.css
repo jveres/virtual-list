@@ -687,17 +687,6 @@ p.ai-settings-note {
   justify-content: flex-start;
 }
 
-@media (any-pointer: coarse) {
-  .message.assistant {
-    --message-action-height: 44px;
-  }
-
-  .message-refresh-btn,
-  .message-version-delete-btn {
-    width: 44px;
-  }
-}
-
 :where(
   .is-streaming .message-actions,
   .is-streaming .message-delete-btn,
@@ -811,10 +800,21 @@ p.ai-settings-note {
   line-height: 1;
 }
 
-@media (any-pointer: coarse) {
-  .message-actions .version-nav-btn {
-    width: 44px;
+.message-actions button {
+  flex-shrink: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+@media (hover: none) {
+  .message-actions .version-nav-btn:hover:not(:disabled) {
+    background: transparent;
   }
+}
+
+.message-actions button:active:not(:disabled),
+.message-actions .version-nav-btn:active:not(:disabled) {
+  background: var(--bg-surface);
+  color: var(--fg);
 }
 
 .role-label {

@@ -148,7 +148,6 @@ try {
           footerHeight: actions.height,
           footerBottom: actions.bottom - el.getBoundingClientRect().bottom,
           buttonHeight: firstButton.height,
-          coarse: matchMedia("(any-pointer: coarse)").matches,
           position: getComputedStyle(el.querySelector(".message-actions"))
             .position,
         };
@@ -165,8 +164,8 @@ try {
       assert.equal(settled.position, "absolute");
       assert.equal(settled.footerHeight, settled.footerPadding);
       assert.ok(Math.abs(settled.footerBottom) < 0.01, JSON.stringify(settled));
-      assert.equal(settled.buttonHeight, settled.coarse ? 44 : 24);
-      assert.equal(settled.footerPadding, settled.coarse ? 48 : 40);
+      assert.equal(settled.buttonHeight, 24);
+      assert.equal(settled.footerPadding, 40);
       assert.ok(
         Math.abs(settled.overlap) < 1 && Math.abs(settled.buttonGap - 4) < 1,
         "actions have a compact, hoverable gap and do not overlap markdown",
