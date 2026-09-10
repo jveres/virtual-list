@@ -131,7 +131,8 @@
 .conversation-tree-node:has(.conversation-tree-count) {
   height: 68px;
 }
-.conversation-tree-node:hover {
+.conversation-tree-node:hover,
+.conversation-tree-heading:hover {
   background: transparent;
   color: var(--accent);
 }
@@ -263,10 +264,6 @@
 }
 .conversation-tree-heading[data-loaded="false"] {
   color: var(--fg-muted);
-}
-.conversation-tree-heading:hover {
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 5%, transparent);
 }
 .conversation-tree-heading:focus-visible {
   outline: 2px solid var(--accent);

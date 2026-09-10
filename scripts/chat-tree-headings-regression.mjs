@@ -163,6 +163,28 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.equal(await node(201).getAttribute("data-active"), "true");
     await jump(2, 0);
     assert.equal(await node(2).getAttribute("data-active"), "true");
+    const appearance = (target) =>
+      target.evaluate((button) => {
+        const style = getComputedStyle(button);
+        return { color: style.color, background: style.backgroundColor };
+      });
+    await node(2).hover();
+    const nodeHover = await appearance(node(2));
+    assert.equal(nodeHover.background, "rgba(0, 0, 0, 0)");
+    for (const index of [0, 1]) {
+      const heading = headings(2).nth(index);
+      assert.equal(
+        (await appearance(heading)).background,
+        "rgba(0, 0, 0, 0)",
+        "active-branch headings have no selection background",
+      );
+      await heading.hover();
+      assert.deepEqual(
+        await appearance(heading),
+        nodeHover,
+        "H1 and H2 hover styles match message nodes",
+      );
+    }
     await page.screenshot({
       path: `browser-artifacts/conversation-tree/${engine.name()}-headings-desktop.png`,
     });

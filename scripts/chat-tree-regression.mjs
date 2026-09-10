@@ -18,6 +18,55 @@ for (const engine of [firefox, webkit, chromium]) {
     await page.waitForFunction(
       () => !document.documentElement.classList.contains("booting"),
     );
+    // The default chat starts with the last prompt pinned. Selecting its
+    // alternate short reply must not add another reserve for the reply.
+    const initialHeight = await page
+      .locator("#viewport")
+      .evaluate((viewport) => viewport.scrollHeight);
+    await page.locator("#viewport").evaluate((viewport) => {
+      viewport.scrollTop -= 600;
+    });
+    await page
+      .getByRole("button", { name: "Conversation tree", exact: true })
+      .click();
+    await page
+      .locator(".conversation-tree-node")
+      .filter({ hasText: "Here's the trade-off as a table:" })
+      .click();
+    await page.waitForFunction(
+      () =>
+        !document
+          .querySelector(".conversation-tree-panel")
+          .hasAttribute("aria-busy"),
+    );
+    const alternateFinal = await page
+      .locator('#viewport [data-key="105"]')
+      .evaluate((row) => {
+        const viewport = document.querySelector("#viewport");
+        return {
+          height: viewport.scrollHeight,
+          top: viewport.scrollTop,
+          client: viewport.clientHeight,
+          offset:
+            row.getBoundingClientRect().top -
+            viewport.getBoundingClientRect().top,
+        };
+      });
+    assert.ok(
+      alternateFinal.offset > 40,
+      `alternate short final response must clamp, not align at ${alternateFinal.offset}`,
+    );
+    assert.ok(
+      Math.abs(alternateFinal.height - initialHeight) <= 2,
+      "switching short replies must retain the prompt reserve without adding a reply reserve",
+    );
+    assert.ok(
+      Math.abs(
+        alternateFinal.top + alternateFinal.client - alternateFinal.height,
+      ) <= 2,
+      "alternate short final response must land at the bottom limit",
+    );
+    await page.locator("#prompt").click();
     const markdown = await page.evaluate(async () => {
       const { branchingTranscriptMarkdown } = await import(
         "/demos/streaming/branching-transcript.ts"

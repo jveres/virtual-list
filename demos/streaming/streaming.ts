@@ -782,10 +782,11 @@ async function navigateTreeMessage(
         return {
           items: rowsForTreeNavigation(nextTranscript, nextStart),
           edgeSlots: { start: needsScrollbackSlot ? edgeSlotSpec : null },
-          anchor: {
-            key: String(messageId),
-            offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
-          },
+          // Stage the branch without forcing the selected row to the top:
+          // an explicit keyed anchor can create trailing reserve even when
+          // the subsequent scrollTo omits align/pin. The keyed jump below
+          // owns selection; the snapshot only preserves the current view.
+          anchor: "viewport",
           onCommit: () => {
             let parentId = TREE_ROOT_ID;
             for (const childId of ancestors) {

@@ -44,9 +44,10 @@ The final behavior resulted from resolving two different meanings of
 2. Forcing every selected node to the top with `align: "start"` solved the
    long-response case, but requested a runtime pin. A short final message then
    gained artificial trailing space so its top could reach the header.
-3. A keyed jump with only `offset` gives both intended outcomes. The runtime
-   already implements this; no runtime change or host-side height workaround
-   is necessary.
+3. A keyed jump with only `offset` gives both intended outcomes, provided the
+   preceding branch update doesn't force a top-aligned reading anchor. The
+   runtime already implements this; no runtime change or host-side height
+   workaround is necessary.
 
 Do not remove or disable the runtime's pinning feature globally. Sending and
 streaming use it deliberately. Tree selection must not create a new pin, but
@@ -76,10 +77,20 @@ behavior; search by symbol if line numbers change:
 ## Unloaded history and branch changes
 
 Selecting an unloaded message or another branch requires a staged snapshot
-before the keyed jump. Use `updateWindow` with `{ interrupt: true }`, a keyed
-anchor, and cancellation guards. Publish the selected branch and loaded
-window in `onCommit`, then issue the same keyed jump shown above. See the
+before the keyed jump. Use `updateWindow` with `{ interrupt: true }`,
+`anchor: "viewport"`, and cancellation guards. Publish the selected branch and
+loaded window in `onCommit`, then issue the same keyed jump shown above. See the
 [bounded-paging runtime boundary](bounded-paging.md#runtime-boundary).
+
+Don't use `{ key: selectedMessageId, offset: inset }` as the snapshot anchor.
+Unlike a naturally clamped scroll command, an explicit replacement anchor
+asks `Geometry.resolve` to preserve that exact reading position, including
+adding reserve beneath a short final response. The later keyed scroll then
+clamps against the enlarged range and cannot undo the forced alignment.
+This caused the default simulated chat's second final-response version to
+land at the top after scrolling up, while same-branch selection worked.
+The viewport policy avoids requesting that extra reserve; existing prompt
+pins and the runtime's safe reserve-release behavior remain intact.
 
 Derive day grouping from the **destination snapshot**, including whether that
 path contains timestamps. The old active branch's dated/undated flag is not
@@ -145,6 +156,9 @@ The following checks cover the decision at both the runtime and host layers:
 - [`scripts/chat-tree-regression.mjs`](../scripts/chat-tree-regression.mjs):
   the final short/long response cases check the actual message offset,
   clamped scroll position, and unchanged `scrollHeight`. The same suite
+  reproduces scrolling up in the default simulated chat and selecting the
+  final response's second version: it must stop at the bottom limit without
+  adding a reply reserve on top of the existing prompt reserve. It also
   checks unloaded history, branch selection, and tree-panel bottom-click
   stability at desktop and narrow widths in Firefox, WebKit, and Chromium.
   Review regressions also cover keyboard focus, dated/undated branch changes,
