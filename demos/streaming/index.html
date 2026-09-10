@@ -360,6 +360,17 @@
           </div>
         </form>
       </dialog>
+      <dialog id="large-paste-dialog" class="large-paste-dialog" aria-labelledby="large-paste-title" aria-describedby="large-paste-description">
+        <form method="dialog">
+          <h2 id="large-paste-title">Attach this text instead?</h2>
+          <p id="large-paste-description">This text is over 500 characters. Attach it as a .txt file to keep your message short, or paste it into the message.</p>
+          <div class="large-paste-actions">
+            <button type="submit" value="cancel">Cancel</button>
+            <button type="submit" value="paste">Paste text</button>
+            <button type="submit" id="large-paste-attach" value="attach" autofocus>Attach as .txt</button>
+          </div>
+        </form>
+      </dialog>
       <span id="deletion-status" class="deletion-status" role="status"></span>
       <span id="message-copy-status" class="deletion-status" role="status"></span>
       <div class="statusbar">

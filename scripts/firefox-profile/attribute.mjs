@@ -1,54 +1,31 @@
-// Attribute a capture's content-thread samples and synchronous reflows to
-// JavaScript functions. Complements analyze.mjs (timing and marker totals)
-// with "where does the runtime's time go" and "which call forced layout".
+// Attribute content-thread samples to JavaScript functions and reflow
+// invalidations to their captured cause stacks. A cause is not necessarily
+// the call that later flushes layout; "sync" means non-interruptible reflow.
 //
 //   node scripts/firefox-profile/attribute.mjs RUN_DIR [--filter=/src/] [--top=25]
 //
 // Inclusive counts add a sample to every distinct function on its stack;
 // self counts credit the innermost JavaScript frame. At the runner's 1ms
-// sampling interval a count approximates milliseconds. Reflow causes come
-// from the "Reflow (sync)" markers' captured stacks: the innermost
-// JavaScript frame, the DOM API it called, and the nested marker duration.
+// sampling interval a count approximates milliseconds, including native
+// work beneath that JS frame. Reflow durations are nested wall-clock times,
+// not time spent in the earlier invalidating call.
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import { gunzipSync } from "node:zlib";
 import { markers, stats } from "./analyze.mjs";
 
-const { values: options, positionals } = parseArgs({
-  allowPositionals: true,
-  options: {
-    filter: { type: "string", default: "/src/" },
-    top: { type: "string", default: "25" },
-  },
-});
-const directory = positionals[0];
-if (!directory) {
-  throw new Error(
-    "Usage: node scripts/firefox-profile/attribute.mjs RUN_DIR [--filter=/src/] [--top=25]",
-  );
-}
-const top = Number(options.top);
-if (!Number.isInteger(top) || top < 1) throw new Error("Invalid --top");
-
-let bytes;
-try {
-  bytes = await readFile(resolve(directory, "profile.json"));
-} catch (error) {
-  if (error.code !== "ENOENT") throw error;
-  bytes = gunzipSync(await readFile(resolve(directory, "profile.json.gz")));
-}
-const profile = JSON.parse(bytes);
-const processes = [];
-const visit = (process) => {
-  processes.push(process);
-  process.processes?.forEach(visit);
-};
-visit(profile);
-
 const location = (name) =>
   name.replace(/https?:\/\/[^/]+/, "").replace(/\?t=\d+/, "");
-const isScript = (name) => /^[^(]*\(?https?:\/\//.test(name);
+// Match Gecko's JS function/location syntax, not native labels such as
+// "Reflow http://...". Root evaluation can carry only a URI and source ID.
+const isScript = (name) =>
+  /^.+ \(.+:\d+(?::\d+)?\)(?:\[\d+\])?$/.test(name) ||
+  /^\S+:\d+(?::\d+)?(?:\[\d+\])?$/.test(name) ||
+  /^(?:https?|file|blob|data|resource|chrome|moz-extension):\S+\[\d+\]$/.test(
+    name,
+  );
 
 function framesOf(thread, stack) {
   const stackSchema = thread.stackTable.schema;
@@ -64,7 +41,39 @@ function framesOf(thread, stack) {
   return frames;
 }
 
-function attribute(thread) {
+function stylePassesPerRefreshInterval(entries) {
+  const ticks = entries
+    .filter((entry) => entry.name === "RefreshDriverTick")
+    .toSorted((a, b) => a.start - b.start);
+  const styles = entries
+    .filter(
+      (entry) => entry.name === "Styles" && entry.data?.elementsStyled > 0,
+    )
+    .toSorted((a, b) => a.start - b.start);
+  const counts = [];
+  let next = 0;
+  for (let index = 0; index + 1 < ticks.length; index++) {
+    while (next < styles.length && styles[next].start < ticks[index].start)
+      next++;
+    let count = 0;
+    while (
+      next < styles.length &&
+      styles[next].start < ticks[index + 1].start
+    ) {
+      count++;
+      next++;
+    }
+    counts.push(count);
+  }
+  return {
+    intervals: counts.length,
+    nonemptyPasses: counts.reduce((sum, count) => sum + count, 0),
+    intervalsWithMultiplePasses: counts.filter((count) => count > 1).length,
+    maxPasses: counts.length ? Math.max(...counts) : null,
+  };
+}
+
+function attribute(thread, { filter, top }) {
   const entries = markers(thread);
   const start = entries.find(
     (entry) => entry.data?.name === "ff-profile-start",
@@ -118,12 +127,15 @@ function attribute(thread) {
         scriptIndex < 0 ? "(native)" : location(frames[scriptIndex]);
       key = `${caller} via ${api}`;
     }
-    if (!causes.has(key)) causes.set(key, []);
-    causes.get(key).push(entry.end - entry.start);
+    if (!causes.has(key)) causes.set(key, { durations: [], delays: [] });
+    const group = causes.get(key);
+    group.durations.push(entry.end - entry.start);
+    const time = first?.[sampleSchema?.time];
+    if (typeof time === "number") group.delays.push(entry.start - time);
   }
   const rank = (map) =>
     [...map]
-      .filter(([name]) => name.includes(options.filter))
+      .filter(([name]) => name.includes(filter))
       .sort((a, b) => b[1] - a[1])
       .slice(0, top)
       .map(([name, count]) => ({ name, count }));
@@ -132,21 +144,88 @@ function attribute(thread) {
     windowMs: end.start - start.start,
     samples,
     samplesWithScript: withScript,
-    filter: options.filter,
+    filter,
     inclusive: rank(inclusive),
     self: rank(self),
-    reflowCauses: [...causes]
-      .map(([name, durations]) => ({ name, ...stats(durations) }))
+    reflowInvalidations: [...causes]
+      .map(([name, { durations, delays }]) => ({
+        name,
+        ...stats(durations),
+        invalidationToReflowMs: stats(delays),
+      }))
       .sort((a, b) => b.total - a.total)
       .slice(0, top),
+    stylePassesPerRefreshInterval: stylePassesPerRefreshInterval(
+      entries.filter(
+        (entry) => entry.start >= start.start && entry.end <= end.start,
+      ),
+    ),
+    limitations: [
+      "Self samples credit the nearest JavaScript frame, including native work beneath it.",
+      "Reflow stacks record earlier invalidations, not necessarily calls that force layout.",
+      "Reflow (sync) means non-interruptible, not necessarily JavaScript-forced layout.",
+      "Reflow durations are nested wall-clock times, not CPU cost of the invalidating call.",
+      "Style passes count nonempty Styles markers between consecutive refresh tick starts, not physical display frames.",
+    ],
   };
 }
 
-const threads = processes
-  .flatMap((process) => process.threads ?? [])
-  .filter((thread) => thread.name === "GeckoMain")
-  .map(attribute)
-  .filter(Boolean);
-if (threads.length === 0)
-  throw new Error("No complete ff-profile-start/end measurement");
-console.log(JSON.stringify(threads, null, 2));
+export function attributeProfile(profile, { filter = "/src/", top = 25 } = {}) {
+  if (!Number.isInteger(top) || top < 1) throw new Error("Invalid --top");
+  const processes = [];
+  const visit = (process) => {
+    processes.push(process);
+    process.processes?.forEach(visit);
+  };
+  visit(profile);
+  const threads = processes.flatMap((process) => process.threads ?? []);
+  if (threads.some((thread) => !thread.markers?.schema))
+    throw new Error(
+      "Expected a raw Firefox profile, not a processed share export",
+    );
+  const results = threads
+    .filter((thread) => thread.name === "GeckoMain")
+    .map((thread) => attribute(thread, { filter, top }))
+    .filter(Boolean);
+  if (results.length === 0)
+    throw new Error("No complete ff-profile-start/end measurement");
+  return results;
+}
+
+export async function attributeDirectory(directory, options) {
+  let bytes;
+  try {
+    bytes = await readFile(resolve(directory, "profile.json"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    bytes = gunzipSync(await readFile(resolve(directory, "profile.json.gz")));
+  }
+  return attributeProfile(JSON.parse(bytes), options);
+}
+
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: {
+      filter: { type: "string", default: "/src/" },
+      top: { type: "string", default: "25" },
+    },
+  });
+  if (!positionals[0])
+    throw new Error(
+      "Usage: node scripts/firefox-profile/attribute.mjs RUN_DIR [--filter=/src/] [--top=25]",
+    );
+  console.log(
+    JSON.stringify(
+      await attributeDirectory(positionals[0], {
+        filter: values.filter,
+        top: Number(values.top),
+      }),
+      null,
+      2,
+    ),
+  );
+}

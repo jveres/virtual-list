@@ -129,18 +129,21 @@ node scripts/firefox-profile/analyze.mjs browser-artifacts/firefox/run-EXAMPLE
 pnpm run test:firefox-profile
 ```
 
-To see which functions the content thread spent its samples in and which
-calls forced synchronous reflows, run the attribution script. It filters
-function names by a path fragment (default `/src/`, the runtime) and lists
-reflow causes by the innermost JavaScript frame and the DOM API it called:
+To attribute content-thread samples and inspect captured layout
+invalidations, run the attribution script. It filters function names by a
+path fragment (default `/src/`, the runtime). Self samples include native
+work beneath the nearest JavaScript frame, but native labels containing
+page URLs do not count as JavaScript. Reflow groups identify earlier
+invalidation stacks, not necessarily calls that force layout; "sync" means
+non-interruptible reflow. The output includes invalidation-to-reflow delays
+and counts nonempty style passes between consecutive refresh tick starts.
 
 ```sh
 node scripts/firefox-profile/attribute.mjs browser-artifacts/firefox/run-EXAMPLE --filter=/src/
 ```
 
-The [runtime hot path profile](runtime-hot-path-profile.md) shows how these
-numbers were used to separate inherent measurement cost from avoidable
-work.
+The [runtime hot path profile](runtime-hot-path-profile.md) records the
+corrected attribution and the limits on what it can establish.
 
 The analyzer accepts this runner's raw live and shutdown profiles, including
 compressed ones. It does not accept processed exports from Firefox Profiler

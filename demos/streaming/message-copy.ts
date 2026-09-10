@@ -55,6 +55,7 @@ function resetFeedback(button: HTMLButtonElement): void {
   feedbackTimers.delete(button);
   button.title = "Copy message";
   button.setAttribute("aria-label", "Copy message");
+  button.removeAttribute("data-copied");
   button.querySelector("path")?.setAttribute("d", MESSAGE_COPY_PATH);
 }
 
@@ -77,6 +78,7 @@ export async function copyMessageText(
     if (!button.isConnected) return;
     button.title = "Copied";
     button.setAttribute("aria-label", "Copied");
+    button.setAttribute("data-copied", "");
     button.querySelector("path")?.setAttribute("d", "m4 10 4 4 8-9");
     status.textContent = "Message copied to clipboard.";
   } catch {

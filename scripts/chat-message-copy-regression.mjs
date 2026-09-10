@@ -98,6 +98,13 @@ for (const engine of [chromium, firefox, webkit]) {
           );
           assert.equal(await button.getAttribute("aria-label"), "Copied");
           assert.equal(
+            await button
+              .locator("svg")
+              .evaluate((el) => getComputedStyle(el).color),
+            "rgb(34, 197, 94)",
+            "copy checkmark matches markdown-viewer green even on hover",
+          );
+          assert.equal(
             await page.evaluate(() => window.copiedMessages.at(-1)),
             text,
           );
@@ -116,6 +123,18 @@ for (const engine of [chromium, firefox, webkit]) {
           await page.locator("textarea[readonly]").count(),
           0,
           "fallback input is removed",
+        );
+        await page.waitForFunction(
+          (el) => el.getAttribute("aria-label") === "Copy message",
+          await button.elementHandle(),
+        );
+        assert.equal(await button.getAttribute("data-copied"), null);
+        assert.notEqual(
+          await button
+            .locator("svg")
+            .evaluate((el) => getComputedStyle(el).color),
+          "rgb(34, 197, 94)",
+          "success color resets with the icon",
         );
       }
       assert.deepEqual(errors, []);

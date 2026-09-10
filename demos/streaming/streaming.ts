@@ -262,6 +262,15 @@ const forceFastLongReply =
 const viewport = mustGet("viewport");
 const viewportWrap = viewport.parentElement as HTMLElement;
 const promptInput = mustGet("prompt", HTMLTextAreaElement);
+const largePasteDialog = mustGet("large-paste-dialog", HTMLDialogElement);
+const largePasteAttach = mustGet("large-paste-attach", HTMLButtonElement);
+let pendingPaste: {
+  text: string;
+  draft: string;
+  start: number;
+  end: number;
+  epoch: number;
+} | null = null;
 const attachmentInput = mustGet("attachment-files", HTMLInputElement);
 const attachBtn = mustGet("attach-btn", HTMLButtonElement);
 const pendingAttachmentList = mustGet("pending-attachments", HTMLDivElement);
@@ -1831,9 +1840,14 @@ function beginUserEdit(row: HTMLElement): void {
   const message = tree.get(id)?.message;
   if (message?.role !== "user" || !transcriptIndexById.has(id)) return;
   if (userEdit?.id === id) {
-    row.querySelector<HTMLElement>(".message-edit-input")?.focus();
+    row
+      .querySelector<HTMLElement>(".message-edit-input")
+      ?.focus({ preventScroll: true });
     return;
   }
+  // Editing expands the bubble just like its disclosure control. Stop
+  // end-follow before changing its height so the prompt stays in place.
+  virtualList?.remeasure(String(id), { anchor: "viewport" });
   cancelUserEdit();
   userEdit = { id, epoch: conversationEpoch, text: message.markdown };
   const editor = buildUserEditor(row, message);
@@ -2411,6 +2425,7 @@ function setStreamingUI(streaming: boolean): void {
   sendBtn.disabled =
     !streaming && (readingAttachments || preparingConversation);
   attachBtn.disabled = streaming || readingAttachments || preparingConversation;
+  largePasteAttach.disabled = attachBtn.disabled;
 }
 
 function renderPendingAttachments(): void {
@@ -2874,7 +2889,24 @@ promptInput.addEventListener("paste", (event) => {
   const files = Array.from(event.clipboardData?.files ?? []).filter((file) =>
     file.type.startsWith("image/"),
   );
-  if (files.length === 0) return;
+  if (files.length === 0) {
+    const text = event.clipboardData?.getData("text/plain") ?? "";
+    if (text.length <= 500) return;
+    event.preventDefault();
+    if (largePasteDialog.open) return;
+    pendingPaste = {
+      text,
+      draft: promptInput.value,
+      start: promptInput.selectionStart,
+      end: promptInput.selectionEnd,
+      epoch: conversationEpoch,
+    };
+    largePasteAttach.disabled =
+      readingAttachments || preparingConversation || streamAbort !== null;
+    largePasteDialog.returnValue = "";
+    largePasteDialog.showModal();
+    return;
+  }
   event.preventDefault();
   // Clipboard images can have no filename; validation still uses the same
   // supported formats and limits as the file picker.
@@ -2891,6 +2923,26 @@ promptInput.addEventListener("paste", (event) => {
         : file;
     }),
   );
+});
+largePasteDialog.addEventListener("close", () => {
+  const paste = pendingPaste;
+  pendingPaste = null;
+  if (
+    !paste ||
+    paste.epoch !== conversationEpoch ||
+    paste.draft !== promptInput.value
+  )
+    return;
+  promptInput.focus({ preventScroll: true });
+  promptInput.setSelectionRange(paste.start, paste.end);
+  if (largePasteDialog.returnValue === "paste") {
+    promptInput.setRangeText(paste.text, paste.start, paste.end, "end");
+    promptInput.dispatchEvent(new Event("input", { bubbles: true }));
+  } else if (largePasteDialog.returnValue === "attach") {
+    void selectAttachments([
+      new File([paste.text], "pasted-text.txt", { type: "text/plain" }),
+    ]);
+  }
 });
 attachmentInput.accept = ATTACHMENT_ACCEPT;
 attachBtn.addEventListener("click", () => attachmentInput.click());
@@ -2909,7 +2961,7 @@ sendBtn.addEventListener("click", () => {
   void handleSend();
 });
 document.addEventListener("keydown", (event) => {
-  if (deleteDialog.open) return;
+  if (deleteDialog.open || largePasteDialog.open) return;
   if (event.key === "Escape" && streamAbort) {
     event.preventDefault();
     cancelStream(streamAbort);

@@ -536,7 +536,8 @@ p.ai-settings-note {
 .message-delete-btn:focus-visible,
 .message-edit-btn:focus-visible,
 .message-copy-btn:focus-visible,
-.delete-message-dialog button:focus-visible {
+.delete-message-dialog button:focus-visible,
+.large-paste-dialog button:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -560,7 +561,8 @@ p.ai-settings-note {
   }
 }
 
-.delete-message-dialog {
+.delete-message-dialog,
+.large-paste-dialog {
   margin: auto;
   width: min(420px, calc(100vw - 32px));
   max-height: calc(100dvh - 32px);
@@ -574,23 +576,28 @@ p.ai-settings-note {
   box-shadow: 0 12px 40px rgb(0 0 0 / 0.22);
 }
 
-.delete-message-dialog::backdrop {
+.delete-message-dialog::backdrop,
+.large-paste-dialog::backdrop {
   background: rgb(0 0 0 / 0.4);
 }
 
-.delete-message-dialog h2 {
+.delete-message-dialog h2,
+.large-paste-dialog h2 {
   margin-bottom: 12px;
   font-size: 18px;
 }
 
-.delete-message-dialog p {
+.delete-message-dialog p,
+.large-paste-dialog p {
   color: var(--fg-muted);
   font-size: 14px;
   line-height: 1.5;
 }
 
-.delete-message-actions {
+.delete-message-actions,
+.large-paste-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 20px;
@@ -691,6 +698,11 @@ p.ai-settings-note {
 .message-actions .message-delete-btn:disabled {
   opacity: 0.4;
   cursor: default;
+}
+
+/* Match markdown-viewer's code/table copy checkmark, including on hover. */
+.message-copy-btn:where([data-copied]) svg {
+  color: #22c55e;
 }
 
 .message-refresh-btn:focus-visible,

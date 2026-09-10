@@ -141,8 +141,42 @@ for (const engine of [chromium, firefox, webkit]) {
         }
       }
 
-      // The default chat boots at its end with follow armed. Expansion must
-      // retain the prompt on every frame, not merely return there afterward.
+      // Edit first, before any disclosure has disengaged end-follow.
+      await page.evaluate((key) => {
+        window.editSamples = [];
+        window.sampleEdit = true;
+        const sample = () => {
+          const message = document.querySelector(`.message[data-key="${key}"]`);
+          if (message)
+            window.editSamples.push(message.getBoundingClientRect().top);
+          if (window.sampleEdit) requestAnimationFrame(sample);
+        };
+        sample();
+      }, key);
+      await row
+        .locator(".message-edit-btn")
+        .evaluate((button) => button.click());
+      await page.waitForTimeout(650);
+      assert.equal(await row.locator(".message-edit-input").count(), 1);
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(350);
+      const editTops = await page.evaluate(() => {
+        window.sampleEdit = false;
+        return window.editSamples;
+      });
+      assert.ok(editTops.length > 10);
+      assert.ok(
+        editTops.every((top) => Math.abs(top - initial.top) < 1),
+        `opening/cancelling edit moved the prompt: ${JSON.stringify({ initial: initial.top, editTops })}`,
+      );
+
+      // Re-arm end-follow so the disclosure check still covers the boot policy.
+      await page
+        .locator("#scroll-bottom-btn")
+        .evaluate((button) => button.click());
+      await page.waitForTimeout(500);
+      // Expansion must retain the prompt on every frame, not merely return
+      // there afterward.
       await page.evaluate((key) => {
         window.collapseSamples = [];
         window.sampleCollapse = true;
