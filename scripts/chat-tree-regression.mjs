@@ -267,6 +267,8 @@ for (const engine of [firefox, webkit, chromium]) {
       "none",
     );
     await page.emulateMedia({ reducedMotion: "no-preference" });
+    // Labels use their side of the branch band. Long text keeps its full
+    // accessible label while the visible summary is clamped to two lines.
     const wideLabel = await node(5)
       .locator(".conversation-tree-label")
       .evaluate((element) => ({
@@ -274,16 +276,30 @@ for (const engine of [firefox, webkit, chromium]) {
         height: element.clientHeight,
         scrollHeight: element.scrollHeight,
         text: element.textContent,
+        available: element.closest(".conversation-tree-node").clientWidth - 49,
       }));
     assert.ok(
-      wideLabel.width > 250,
-      `single-node row should use available space: ${wideLabel.width}`,
+      Math.abs(wideLabel.width - wideLabel.available) < 1,
+      `message labels use the available side of their band: ${JSON.stringify(wideLabel)}`,
     );
     assert.equal(
       wideLabel.text,
       "A detailed summary that should use the free space to the right instead of being cut off early.",
     );
-    assert.equal(wideLabel.scrollHeight, wideLabel.height);
+    assert.equal(wideLabel.height, 32);
+    assert.ok(wideLabel.scrollHeight > wideLabel.height);
+    const equalRows = await panel
+      .locator(".conversation-tree-node")
+      .evaluateAll((nodes) => {
+        const widths = new Map();
+        return nodes.every((node) => {
+          const width = node.getBoundingClientRect().width;
+          const previous = widths.get(node.dataset.row) ?? width;
+          widths.set(node.dataset.row, width);
+          return Math.abs(previous - width) < 0.1;
+        });
+      });
+    assert.equal(equalRows, true, "versions within each row have equal widths");
     const closeGeometry = await page
       .getByRole("button", { name: "Close conversation tree", exact: true })
       .evaluate((element) => ({
@@ -322,7 +338,7 @@ for (const engine of [firefox, webkit, chromium]) {
           const next = element.querySelector(`[data-row="${row + 1}"]`);
           return next
             ? [
-                Number.parseFloat(next.style.top) -
+                Number.parseFloat(next.style.top) +
                   8 -
                   (badge.getBoundingClientRect().bottom - canvasTop),
               ]
@@ -405,6 +421,13 @@ for (const engine of [firefox, webkit, chromium]) {
         }));
       for (const width of [1200, 390]) {
         await page.setViewportSize({ width, height: 820 });
+        await page.waitForFunction(
+          (mobile) =>
+            (document.querySelector(".conversation-tree-panel").style.width ===
+              "") ===
+            mobile,
+          width === 390,
+        );
         await panel.locator(".conversation-tree-scroll").evaluate((element) => {
           element.scrollTop = element.scrollHeight;
         });
@@ -700,18 +723,13 @@ for (const engine of [firefox, webkit, chromium]) {
       assert.equal(
         after.height,
         before.height,
-        "tree navigation must not create trailing space",
+        "tree navigation must restore the page-load bottom geometry",
       );
-      assert.ok(
-        Math.abs(
-          after.top -
-            Math.min(before.absoluteTop - 40, before.height - before.client),
-        ) <= 2,
-      );
+      assert.ok(Math.abs(after.top - (before.height - before.client)) <= 2);
       if (long)
         assert.ok(
-          Math.abs(after.offset - 40) <= 2,
-          `long response should land at its top: ${after.offset}`,
+          after.offset < 40,
+          `long response should land at the conversation bottom: ${after.offset}`,
         );
       else
         assert.ok(

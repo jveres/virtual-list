@@ -126,7 +126,7 @@ function mount(
     itemHeight?: (m: Msg) => number;
     position?: VirtualListOptions<Msg>["position"];
     boot?: "start" | "end";
-    pinning?: boolean;
+    pinning?: VirtualListOptions<Msg>["pinning"];
     onMount?: (element: HTMLElement, m: Msg) => void;
     onUnmount?: (element: HTMLElement, m: Msg) => void;
     /** Runs at the start of every render (probe hook). */
@@ -5434,6 +5434,185 @@ describe("runtime — commands", () => {
     expect(h.viewport.scrollTop).toBe(1756);
     expect(h.list.state.totalSize).toBe(2356);
     expect(h.list.state.atEnd).toBe(true);
+    h.list.dispose();
+  });
+
+  it.each(["start", "end"] as const)(
+    "should reserve the last matching item at %s boot without a scroll command",
+    (boot) => {
+      const h = mount(range(0, 20), {
+        boot,
+        pinning: { match: (item) => item.id % 2 === 0, offset: 40 },
+      });
+
+      expect(h.list.state.totalSize).toBe(2360);
+      expect(h.viewport.scrollTop).toBe(boot === "start" ? 0 : 1760);
+      h.list.dispose();
+    },
+  );
+
+  it("should restore a branch pin before manual scrolling from an earlier item", async () => {
+    const items = range(0, 20);
+    const h = mount(items, {
+      pinning: { match: (item) => item.id % 2 === 0, offset: 40 },
+    });
+    await h.list.scrollTo("m10");
+    h.list.setItems(range(0, 16), { anchor: "viewport" });
+    h.list.setItems(items, { anchor: "viewport" });
+    await h.list.scrollTo("m17", { offset: 40 });
+
+    h.userScroll(h.list.state.totalSize - VIEWPORT_H);
+    h.settle();
+
+    expect(h.list.positionOf("m18")?.top).toBe(1800);
+    expect(h.viewport.scrollTop).toBe(1760);
+    expect(h.list.state.totalSize).toBe(2360);
+    h.list.dispose();
+  });
+
+  it("should keep the declarative pin when commands align another item", async () => {
+    const h = mount(range(0, 20), {
+      pinning: { match: (item) => item.id === 18, offset: 40 },
+    });
+
+    await h.list.scrollTo("m10", { align: "start" });
+    await h.list.scrollTo("end", { pin: { key: "m19" } });
+
+    expect(h.viewport.scrollTop).toBe(1760);
+    expect(h.list.state.totalSize).toBe(2360);
+    h.list.dispose();
+  });
+
+  it("should refresh a declarative inset without changing its target or rows", async () => {
+    const items = range(0, 20);
+    let offset = 40;
+    const h = mount(items, {
+      pinning: {
+        match: (item) => item.id === 18,
+        get offset() {
+          return offset;
+        },
+      },
+    });
+    await h.list.scrollTo("m10");
+
+    offset = 0;
+    h.list.setItems(items, { anchor: "viewport" });
+
+    expect(h.list.state.totalSize).toBe(2400);
+    expect(h.viewport.scrollTop).toBe(1000);
+    await h.list.scrollTo("end");
+    expect(h.viewport.scrollTop).toBe(1800);
+    h.list.dispose();
+  });
+
+  it("should retain the prepared inset while a snapshot is held", () => {
+    let offset = 40;
+    const h = mount(range(0, 20), {
+      pinning: {
+        match: (item) => item.id === 18,
+        get offset() {
+          return offset;
+        },
+      },
+    });
+    h.userScroll(1000);
+
+    offset = 0;
+    h.list.updateItem("m19", message(19, "Changed reply"));
+    offset = 80;
+    h.settle();
+
+    expect(h.list.state.totalSize).toBe(2400);
+    expect(h.viewport.scrollTop).toBe(1000);
+    h.list.dispose();
+  });
+
+  it("should recompute a declarative pin after targeted item changes", async () => {
+    const h = mount(range(0, 20), {
+      pinning: { match: (item) => item.body === "prompt", offset: 40 },
+    });
+    await h.list.scrollTo("m10");
+
+    h.list.updateItem("m18", message(18, "prompt"));
+
+    expect(h.viewport.scrollTop).toBe(1000);
+    expect(h.list.state.totalSize).toBe(2360);
+    h.list.updateItem("m19", message(19, "new response"));
+    expect(h.list.state.totalSize).toBe(2360);
+    h.list.updateItem("m18", message(18));
+    expect(h.list.state.totalSize).toBe(2000);
+    h.list.dispose();
+  });
+
+  it("should commit a changed declarative pin with a held snapshot", () => {
+    const h = mount(range(0, 20), {
+      pinning: { match: (item) => item.body === "prompt", offset: 40 },
+    });
+    h.userScroll(1000);
+
+    h.list.updateItem("m18", message(18, "prompt"));
+    h.list.updateItem("m19", message(19, "response"));
+
+    expect(h.list.state.totalSize).toBe(2000);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(1000);
+    expect(h.list.state.totalSize).toBe(2360);
+    h.list.dispose();
+  });
+
+  it("should preserve a pin change when a live update needs no new row", () => {
+    const h = mount(range(0, 20), {
+      scrollingUpdates: "live",
+      pinning: { match: (item) => item.body === "prompt", offset: 40 },
+    });
+    h.userScroll(1000);
+
+    h.list.updateItem("m18", message(18, "prompt"));
+    h.settle();
+
+    expect(h.list.state.totalSize).toBe(2360);
+    expect(h.viewport.scrollTop).toBe(1000);
+    h.list.dispose();
+  });
+
+  it("should keep the declarative pin through response growth and shrinkage", async () => {
+    const h = mount(range(0, 20), {
+      pinning: { match: (item) => item.id === 18, offset: 40 },
+    });
+    await h.list.scrollTo("m17");
+    const tail = h.rowElement("msg 19");
+
+    h.heights.set(19, 900);
+    fireResize(0, tail, 900);
+    expect(h.list.state.totalSize).toBe(2800);
+    h.heights.set(19, 100);
+    fireResize(0, tail, 100);
+
+    expect(h.viewport.scrollTop).toBe(1700);
+    expect(h.list.state.totalSize).toBe(2360);
+    h.list.dispose();
+  });
+
+  it("should leave the committed pin intact when its predicate throws", async () => {
+    const h = mount(range(0, 20), {
+      pinning: {
+        match: (item) => {
+          if (item.body === "invalid") throw new Error("invalid pin item");
+          return item.id === 18;
+        },
+        offset: 40,
+      },
+    });
+    await h.list.scrollTo("m10");
+
+    expect(() => h.list.updateItem("m19", message(19, "invalid"))).toThrow(
+      "invalid pin item",
+    );
+
+    expect(h.viewport.scrollTop).toBe(1000);
+    expect(h.list.state.totalSize).toBe(2360);
+    expect(h.list.positionOf("m18")).toEqual({ top: 1800, height: 100 });
     h.list.dispose();
   });
 

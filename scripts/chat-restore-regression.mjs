@@ -27,7 +27,10 @@ try {
       await latest.getByRole("button", { name: "Next version" }).click();
     } else if (mutation === "delete") {
       await latest
-        .getByRole("button", { name: "Delete response version" })
+        .getByRole("button", {
+          name: "Delete this response version and its replies",
+          exact: true,
+        })
         .click();
       await page.locator(".delete-message-confirm").click();
       await page.waitForFunction(

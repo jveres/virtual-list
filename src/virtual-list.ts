@@ -171,8 +171,13 @@ export interface VirtualListOptions<T> {
    * the content's scroll range, end commands land at the content bottom, and
    * ScrollOptions.pin is ignored. Temporary space needed to preserve a reading
    * anchor during a content change still drains safely after scrolling.
+   * With { match, offset }, the runtime always pins the last matching item
+   * in the committed snapshot. Commands navigate within that scroll range
+   * without replacing its pin; no match means no pin. The predicate runs
+   * during snapshot preparation, never during scrolling or measurement.
+   * The offset is read with each snapshot; a getter can supply a live inset.
    */
-  pinning?: boolean;
+  pinning?: boolean | { match: (item: T) => boolean; offset?: number };
   /** Non-negative finite pixels; invalid values use the automatic default. */
   overscanPx?: number;
   /**
@@ -303,7 +308,7 @@ export type ScrollOptions = {
    * then land at the end in the same command, without visiting the pin first.
    * The offset defaults to zero and has the same meaning as a keyed offset.
    * A missing pin key resolves false without changing the pin or scrolling.
-   * Ignored when the list is created with `pinning: false`.
+   * Ignored with `pinning: false` or a declarative `pinning.match` target.
    */
   pin?: { key: string; offset?: number };
 };
@@ -510,7 +515,10 @@ interface Row<T> {
   destroyed: boolean;
 }
 
-type Prepared<T> = PreparedSnapshot<T, Row<T>>;
+type Prepared<T> = PreparedSnapshot<T, Row<T>> & {
+  pinKey?: string | null;
+  pinOffset?: number;
+};
 
 type Transaction = { run: () => void; discard?: () => void };
 type Scope = Transaction[];
@@ -537,6 +545,10 @@ export function createVirtualList<T>(
   const promoteSameHeight = scrollingUpdates === "same-height";
   const liveUpdates = scrollingUpdates === "live";
   const pinning = options.pinning !== false;
+  const pinPolicy =
+    typeof options.pinning === "object" ? options.pinning : null;
+  const pinMatch = pinPolicy?.match;
+  let committedPinOffset = 0;
   const requestedOverscan = options.overscanPx;
   const overscanPx =
     requestedOverscan !== undefined &&
@@ -610,7 +622,9 @@ export function createVirtualList<T>(
     // from the fractional CSS viewport height. Otherwise the browser can
     // clamp below that landing and expose a sliver of the preceding row.
     canvas.style.minHeight =
-      pinTop === null ? "" : `calc(100% + ${snapScrollBoundary(pinTop)}px)`;
+      pinTop === null || pinTop === 0
+        ? ""
+        : `calc(100% + ${snapScrollBoundary(pinTop)}px)`;
   }
   // The measurer's width comes from the viewport observer, not a layout
   // read per measurement.
@@ -1205,12 +1219,32 @@ export function createVirtualList<T>(
     // later failure they are rolled back by re-rendering the row's own
     // item, and a row whose rollback fails stays marked so the next
     // preparation re-renders it regardless of item identity.
-    const prepared = createPrepared<T, Row<T>>(
+    const prepared: Prepared<T> = createPrepared<T, Row<T>>(
       keys,
       requested,
       previous,
       partial,
     );
+    if (pinMatch) {
+      const offset = pinPolicy?.offset ?? 0;
+      prepared.pinOffset = Number.isFinite(offset) ? offset : 0;
+      prepared.pinKey = null;
+      for (let index = keys.length - 1; index >= 0; index--) {
+        const key = keys[index];
+        if (key === undefined || isSlotKey(key)) continue;
+        const item =
+          itemByKey.get(key) ??
+          previous?.deferred.get(key) ??
+          previous?.newRows.get(key)?.item ??
+          previous?.declaredItems?.get(key)?.item ??
+          declaredItems.get(key)?.item ??
+          rows.get(key)?.item;
+        if (item !== undefined && pinMatch(item)) {
+          prepared.pinKey = key;
+          break;
+        }
+      }
+    }
     prepared.declaredItems = nextDeclared;
     prepared.positioned = preparePositioned(nextDeclared, startSlot, endSlot);
     const { newRows, deferred, anchor } = prepared;
@@ -1449,7 +1483,11 @@ export function createVirtualList<T>(
       };
     }
     return {
-      prepared: mergePrepared(previous, prepared, itemKeys),
+      prepared: {
+        ...mergePrepared(previous, prepared, itemKeys),
+        pinKey: prepared.pinKey,
+        pinOffset: prepared.pinOffset,
+      },
       teardownFailures,
     };
   }
@@ -1712,6 +1750,10 @@ export function createVirtualList<T>(
         if (keysChanged) {
           geometry.setKeys(applying.keys, applying.target);
           committedKeys = applying.keys;
+        }
+        if (pinMatch) {
+          committedPinOffset = applying.pinOffset ?? 0;
+          geometry.pin(applying.pinKey ?? null, committedPinOffset);
         }
         if (applying.declaredItems) {
           for (const [key, entry] of applying.declaredItems) {
@@ -2699,6 +2741,9 @@ export function createVirtualList<T>(
       prepared.newRows.size === 0 &&
       prepared.deferred.size === 0 &&
       prepared.declaredItems === null &&
+      (!pinMatch ||
+        (prepared.pinKey === geometry.pinned &&
+          prepared.pinOffset === committedPinOffset)) &&
       sameKeysAsCommitted(prepared.keys)
     ) {
       // No structural change and no retained replacement: the snapshot
@@ -2924,7 +2969,7 @@ export function createVirtualList<T>(
     settleParked(() => false);
     glide?.cancel();
     interruptNativeScroll();
-    const pin = pinning ? scrollOptions.pin : undefined;
+    const pin = pinning && !pinMatch ? scrollOptions.pin : undefined;
     if (
       disposed ||
       (keyed && geometry.indexOf(target) < 0) ||
@@ -2937,6 +2982,7 @@ export function createVirtualList<T>(
     // geometry change, committed now (the phase is idle).
     if (
       pinning &&
+      !pinMatch &&
       (pin !== undefined || (keyed && scrollOptions.align === "start"))
     ) {
       geometry.pin(pin?.key ?? target, pin?.offset ?? below);
@@ -2987,7 +3033,11 @@ export function createVirtualList<T>(
           controller.markSettlePending();
         }),
     );
-    glideToPin = pinning && keyed && scrollOptions.align === "start";
+    glideToPin =
+      pinning &&
+      keyed &&
+      scrollOptions.align === "start" &&
+      (!pinMatch || target === geometry.pinned);
   }
 
   /**

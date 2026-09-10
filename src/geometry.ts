@@ -504,11 +504,9 @@ export class Geometry {
     if (this.pinnedKey !== null) {
       const pinnedTop = this.offsetOf(this.pinnedKey);
       const targetTop = Math.max(0, pinnedTop - this.pinnedInsetPx);
-      if (targetTop <= EPSILON) {
-        // Anchoring the very start needs no reserve; drop the stale pin.
-        this.pinnedKey = null;
-        this.pinnedInsetPx = 0;
-      } else {
+      // Reaching the start needs no new reserve, but doesn't release the
+      // pin: later prepends or height changes can move the same key again.
+      if (targetTop > EPSILON) {
         target = Math.max(0, targetTop + viewportHeight - content);
       }
     }

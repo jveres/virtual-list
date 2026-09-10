@@ -173,6 +173,29 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.equal(nodeHover.background, "rgba(0, 0, 0, 0)");
     for (const index of [0, 1]) {
       const heading = headings(2).nth(index);
+      const ring = await heading.evaluate((button) => {
+        const style = getComputedStyle(button, "::before");
+        const spine = document.querySelector(".conversation-tree-edge.active");
+        return {
+          border: style.borderTopWidth,
+          borderStyle: style.borderTopStyle,
+          ink: style.borderTopColor,
+          spine: getComputedStyle(spine).stroke,
+          fill: style.backgroundColor,
+          background: getComputedStyle(document.body).backgroundColor,
+          width: style.width,
+          height: style.height,
+          radius: style.borderRadius,
+        };
+      });
+      assert.equal(ring.border, "1px");
+      assert.equal(ring.borderStyle, "solid");
+      assert.equal(ring.ink, ring.spine);
+      assert.equal(ring.fill, ring.background, "ring center masks the spine");
+      assert.notEqual(ring.fill, ring.ink, "ToC markers are hollow");
+      assert.equal(ring.width, index === 0 ? "6px" : "4px");
+      assert.equal(ring.height, ring.width);
+      assert.equal(ring.radius, "50%");
       assert.equal(
         (await appearance(heading)).background,
         "rgba(0, 0, 0, 0)",

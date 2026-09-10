@@ -71,6 +71,19 @@ function conversation(): TranscriptTree {
 }
 
 describe("branching Markdown transcripts", () => {
+  it("should retain stopped status on active and folded versions", () => {
+    const tree = conversation();
+    message(tree, 2).stopped = true;
+    message(tree, 3).stopped = true;
+
+    const restored = parseBranchingTranscript(
+      branchingTranscriptMarkdown(tree, days),
+    );
+
+    expect(restored.tree).toEqual(tree);
+    expect(restored.turns[1]?.stopped).toBe(true);
+  });
+
   it("should round-trip all versions, sibling order, and inactive branch selections", () => {
     const tree = conversation();
 

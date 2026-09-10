@@ -1,15 +1,63 @@
 # Conversation tree navigation
 
-Use a naturally clamped keyed jump when you select a conversation-tree node.
-This applies to the final message too. Don't create trailing space to force a
-short final message to the top, and don't jump to the end of a long final
-message. This document records the decision made on September 10, 2026, and
-the runtime contracts that prevent the same regression from returning.
+Use one definition of the conversation bottom everywhere: the position shown
+after page load. Trailing space keeps the last user message below the sticky
+header when needed. When the answer fills the viewport, no trailing space is
+needed. The runtime owns this geometry; don't calculate it in the demo.
+
+## Tree layout
+
+The initial path is centered in the tree canvas. Each fork divides its
+parent's band into equal-width bands: two versions sit left and right, three
+sit left, center, and right, and larger forks follow the same rule. A single
+child stays on its parent's branch instead of returning to the root spine.
+Selecting a version never reorders its siblings. User labels sit to the left
+of their glyphs; assistant labels and response sections sit to the right.
+
+Bands have a 208-pixel minimum width. The panel uses the available left gutter,
+up to 664 pixels wide, and covers at most 15% of the chat column on desktop.
+Wide forks scroll horizontally. Canvas extents remain stable while branches
+fold; resizing the panel recalculates the width. Long labels wrap to two lines,
+and section titles use an ellipsis within their band. A folded branch's count
+sits above its continuation line. Message nodes have no hover tooltips.
+
+After successful navigation, a partially clipped node or section smoothly
+scrolls into view inside the tree panel, moving only as far as needed. Fully
+visible items stay put. Reduced-motion preferences make this reveal immediate.
+This does not change the chat viewport's immediate navigation behavior.
+Pointer selections retain focus without a keyboard outline; keyboard navigation
+keeps its visible focus indicator.
 
 ## Final-node behavior
 
-The tree selects a message, not an edge of the conversation. Its destination
-uses the message key and the sticky-header inset:
+The runtime establishes the last-user pin from the committed conversation,
+not from a navigation command. Configure it once when mounting the list:
+
+```ts
+pinning: {
+  match: (row) => !isDayHeader(row) && row.role === "user",
+  get offset() {
+    return stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  },
+}
+```
+
+Every snapshot establishes its last matching row's reserve atomically. The
+space remains available after selecting an earlier node and when scrolling
+manually. A stopped response follows the same rule as a completed response.
+Don't pin the assistant message, depend on a previous visit's reserve, or
+re-pin in navigation handlers. The existing bare-end landing setting uses
+`pinning: false`.
+
+The runtime reads the offset during snapshot preparation, together with the
+matching key. A held snapshot retains both values until commit. When you
+change the sticky-header setting, submit the current items again so the
+runtime captures the new inset; don't adjust trailing space in the host.
+
+Boot already lands at the runtime's end. The final tree node and bottom arrow
+use ordinary `scrollTo("end")` commands, with no demo-owned bottom helper.
+
+Earlier messages use a keyed jump with the sticky-header inset:
 
 ```ts
 await list.scrollTo(String(messageId), {
@@ -18,41 +66,37 @@ await list.scrollTo(String(messageId), {
 });
 ```
 
-Omit `align` and `pin`. The runtime resolves the message's top minus the inset
-and clamps that destination to its available scroll range. The host must not
-calculate a second destination from DOM heights or add a last-item exception.
+For these earlier-message jumps, omit `align` and `pin`. The runtime resolves
+the message's top minus the inset and clamps it to the available scroll range.
+The host must not calculate a second destination from DOM heights.
 In the streaming demo, the enabled sticky-header inset is 40 pixels.
 
 | Selected message | Expected result |
 | --- | --- |
 | Earlier message with enough content below it | Its top lands below the sticky header. |
-| Short final message | The jump stops at the existing bottom limit; its top can remain below the header. |
-| Long final message with enough scroll range | Its top lands below the header; selection does not skip to the response's ending. |
+| Short final response | The last user message stays below the header, with trailing space after its response as needed. |
+| Long final response | The conversation lands at its end without unnecessary trailing space. |
 
 Tree jumps are immediate: `ScrollOptions.behavior` uses `"auto"`, not
 `"instant"`. The scroll-arrow buttons remain separate controls and retain
-their own smooth edge-navigation behavior.
+their smooth animation, but the bottom destination belongs to the runtime.
 
 ## Why the earlier approaches failed
 
-The final behavior resulted from resolving two different meanings of
-"select the last message." Keep these distinctions when changing navigation:
+The previous rule treated the final tree node as a separate keyed destination.
+It relied on whatever reserve remained after earlier navigation, so returning
+to the bottom didn't explicitly restore the page-load geometry. That rule is
+superseded: reserve is a runtime invariant, independent of navigation.
 
-1. Treating the last node like the bottom arrow used `scrollTo("end")`. It
-   produced the expected bottom position for a short response, but skipped
-   the beginning of a long response. That is edge navigation, not selection.
-2. Forcing every selected node to the top with `align: "start"` solved the
-   long-response case, but requested a runtime pin. A short final message then
-   gained artificial trailing space so its top could reach the header.
-3. A keyed jump with only `offset` gives both intended outcomes, provided the
-   preceding branch update doesn't force a top-aligned reading anchor. The
-   runtime already implements this; no runtime change or host-side height
-   workaround is necessary.
+Re-pinning only when clicking the final node also failed. Switching branches
+could remove the pinned key; returning through an earlier node restored the
+rows but not the pin. Manual scrolling then stopped with the last prompt far
+below the header. Declarative pinning restores the destination snapshot's
+pin even when no bottom command is issued.
 
-Do not remove or disable the runtime's pinning feature globally. Sending and
-streaming use it deliberately. Tree selection must not create a new pin, but
-the runtime still owns any existing reserve and its safe release. Don't clear
-that reserve manually as a side effect of selecting a node.
+Forcing the assistant row to the top with `align: "start"` is also incorrect:
+the reserve belongs to the last user message. Don't clear reserve manually or
+add special cases for stopped, short, or long responses.
 
 ## Runtime references
 
@@ -61,9 +105,9 @@ behavior; search by symbol if line numbers change:
 
 - [`ScrollOptions`, `targetTop`, and `performScrollTo`](../src/virtual-list.ts)
   define the command. `targetTop` subtracts the keyed offset and clamps it.
-  `performScrollTo` calls `geometry.pin` for a keyed `align: "start"` request
-  when pinning is enabled. An omitted alignment does not request that pin.
-  Its non-smooth path lands immediately and calls `trimUnusedReserve`.
+  Boolean `pinning: true` allows command-created pins. Declarative pinning
+  selects its key during preparation and applies it with the snapshot;
+  commands cannot replace it. Its reserve survives `trimUnusedReserve`.
 - [`Geometry.pin` and the I5 reserve invariant](../src/geometry.ts) explain why
   forced top alignment can increase the scroll surface for a short last row.
   This is intentional runtime behavior, not a geometry defect.
@@ -72,14 +116,14 @@ behavior; search by symbol if line numbers change:
   different option from `ScrollOptions.behavior`.
 - [`navigateTreeMessage`](../demos/streaming/streaming.ts) is the host adapter.
   Both its loaded-message path and its staged-history path finish with the
-  same naturally clamped keyed jump.
+  same navigation helper, including the canonical bottom for a final node.
 
 ## Unloaded history and branch changes
 
 Selecting an unloaded message or another branch requires a staged snapshot
 before the keyed jump. Use `updateWindow` with `{ interrupt: true }`,
 `anchor: "viewport"`, and cancellation guards. Publish the selected branch and
-loaded window in `onCommit`, then issue the same keyed jump shown above. See the
+loaded window in `onCommit`, then navigate using the helper above. See the
 [bounded-paging runtime boundary](bounded-paging.md#runtime-boundary).
 
 Don't use `{ key: selectedMessageId, offset: inset }` as the snapshot anchor.
@@ -90,7 +134,9 @@ clamps against the enlarged range and cannot undo the forced alignment.
 This caused the default simulated chat's second final-response version to
 land at the top after scrolling up, while same-branch selection worked.
 The viewport policy avoids requesting that extra reserve; existing prompt
-pins and the runtime's safe reserve-release behavior remain intact.
+pins and the runtime's safe reserve-release behavior remain intact. The
+runtime establishes the destination branch's last-user pin in that same
+snapshot commit, before any subsequent navigation.
 
 Derive day grouping from the **destination snapshot**, including whether that
 path contains timestamps. The old active branch's dated/undated flag is not
@@ -114,11 +160,12 @@ doesn't remove that geometry. Keep the host's loader state consistent with
 the committed slot change.
 
 The tree panel's own scrolling is separate from the chat viewport. Selecting
-an already-active node must not move the tree's scroll position. In WebKit,
+a fully visible, already-active node must not move its scroll position. In WebKit,
 replacing the footer's text node briefly collapsed its line box and clamped
 the tree scroller 18 pixels upward at the bottom, moving the visible nodes
-down. Keep the footer text node and update its `data` instead. This issue was
-reproduced with an isolated tree component without a virtual-list runtime.
+down. Transient status now overlays the panel without changing its height;
+update its persistent text node's `data`. This issue was reproduced with an
+isolated tree component without a virtual-list runtime.
 
 Replacing a focused tree node can also emit `focusout` in Chromium. Suppress
 the panel's outside-focus dismissal during that synchronous replacement, then
@@ -144,6 +191,15 @@ offsets are part of `ScrollOptions`; don't add `align: "start"`, a pin, or a
 second host-owned scroll calculation. The runtime still clamps sections near
 the end to the available scroll range.
 
+## History persistence
+
+The simulated and OpenAI providers store their histories separately. Simulated
+history preserves the entire branch tree, selected versions, stopped-response
+markers, and the next canned-response index. Sending, stopping, importing,
+switching versions, and deleting versions persist the updated history locally.
+Reloading restores that history and uses the same runtime bottom geometry.
+The settings dialog can restore the built-in simulated conversation.
+
 ## Regression checks
 
 The following checks cover the decision at both the runtime and host layers:
@@ -153,9 +209,12 @@ The following checks cover the decision at both the runtime and host layers:
   100-pixel and 900-pixel final rows, the clamped destination, and unchanged
   total size. `should atomically remove the loader slot when a staged jump
   loads the beginning` checks the loader and first-message geometry.
+  Declarative-pin cases cover boot, branch restoration before manual
+  scrolling, command independence, targeted and held updates, growth and
+  shrinkage, live inset changes, held inset capture, and predicate failure.
 - [`scripts/chat-tree-regression.mjs`](../scripts/chat-tree-regression.mjs):
-  the final short/long response cases check the actual message offset,
-  clamped scroll position, and unchanged `scrollHeight`. The same suite
+  the final short/long response cases check the page-load bottom position and
+  matching `scrollHeight`. The same suite
   reproduces scrolling up in the default simulated chat and selecting the
   final response's second version: it must stop at the bottom limit without
   adding a reply reserve on top of the existing prompt reserve. It also
@@ -168,6 +227,16 @@ The following checks cover the decision at both the runtime and host layers:
   checks H1/H2 hierarchy, duplicate-title removal, original heading ordinals,
   safe labels, clickable path dots, spacing, keyboard focus, unloaded history,
   and branch changes in Firefox, WebKit, and Chromium.
+- [`scripts/chat-tree-placement-regression.mjs`](../scripts/chat-tree-placement-regression.mjs):
+  checks one through five equal-width version bands, parent alignment,
+  role-aware labels, edge endpoints, resizing, and narrow-screen placement.
+- [`scripts/chat-tree-reveal-regression.mjs`](../scripts/chat-tree-reveal-regression.mjs):
+  checks clipped nodes on all four edges, section links, reduced motion, and
+  fully visible selections that must not move the panel.
+- [`scripts/chat-bottom-regression.mjs`](../scripts/chat-bottom-regression.mjs):
+  checks stopped-response persistence, branch return followed by manual
+  scrolling, bottom-arrow equivalence, live sticky insets, and short and long
+  responses across reloads in Firefox, WebKit, and Chromium.
 
 Run these checks after changing tree navigation, alignment, pinning, or
 staged-history integration. Start a local Vite server for the browser script,
@@ -176,8 +245,7 @@ or set `BROWSER_MATRIX_URL` to an existing server:
 ```sh
 pnpm run check
 pnpm test
-node scripts/chat-tree-regression.mjs
-node scripts/chat-tree-headings-regression.mjs
+pnpm run test:chat-tree
 ```
 
 Close any test browsers and servers you start. These are correctness checks,

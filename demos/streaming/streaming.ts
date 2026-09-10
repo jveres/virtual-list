@@ -69,8 +69,10 @@ import {
   getAISettings,
   initAISettingsPanel,
   loadOpenAIHistory,
+  loadSimulatedHistory,
   type StoredTurn,
   saveOpenAIHistory,
+  saveSimulatedHistory,
   streamOpenAIChat,
 } from "./openai.js";
 import { type ResponseHeading, responseHeadings } from "./response-headings.js";
@@ -690,12 +692,13 @@ function currentTreeMessage(): number | null {
 }
 
 // Selection semantics and runtime references: docs/conversation-tree-navigation.md.
-// A final node is still a keyed jump, not an end target or a forced start pin.
 async function scrollToTreeTarget(
   list: VirtualList<ChatRow>,
   messageId: number,
   headingIndex?: number,
 ): Promise<boolean> {
+  if (headingIndex === undefined && transcript.at(-1)?.id === messageId)
+    return list.scrollTo("end", { behavior: "auto" });
   const key = String(messageId);
   const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
   const epoch = conversationEpoch;
@@ -784,7 +787,7 @@ async function navigateTreeMessage(
           edgeSlots: { start: needsScrollbackSlot ? edgeSlotSpec : null },
           // Stage the branch without forcing the selected row to the top:
           // an explicit keyed anchor can create trailing reserve even when
-          // the subsequent scrollTo omits align/pin. The keyed jump below
+          // the subsequent scrollTo omits align/pin. Navigation below
           // owns selection; the snapshot only preserves the current view.
           anchor: "viewport",
           onCommit: () => {
@@ -807,6 +810,7 @@ async function navigateTreeMessage(
               markConversationChanged();
               if (getAISettings().provider === "openai")
                 persistOpenAIConversation();
+              else persistSimulatedConversation();
             }
             syncMetrics();
           },
@@ -1465,9 +1469,8 @@ function seedSyntheticBranches(
   });
 }
 
-// Each provider owns a fully separate conversation: the simulated side reseeds
-// the template spine + synthetic branches, the OpenAI side reloads the history
-// persisted in IndexedDB as a linear chain. Switching swaps all of it.
+// Each provider owns a separate persisted conversation. The simulated side
+// seeds its template only when no saved history exists or Restore is requested.
 // Bumped on every conversation swap so an in-flight send's finally block can
 // tell it is finishing against a conversation that no longer exists — its
 // persistence must not write the other provider's transcript into the history.
@@ -1511,14 +1514,45 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
 // the async IndexedDB read happens up front — at boot and before a provider
 // switch — into this cache; an import replaces it outright.
 let openAIHistory: readonly StoredTurn[] = [];
-// A transcript imported under the simulated provider; session-only.
+// The latest saved or imported simulated conversation, including all versions.
 let importedConversation: ImportedTranscript | null = null;
+let simulatedNextResponse = 0;
 let simulatedConversationChanged = false;
 let userEdit: { id: number; epoch: number; text: string } | null = null;
 
 function markConversationChanged(): void {
   if (getAISettings().provider === "simulated")
     simulatedConversationChanged = true;
+}
+
+async function prepareSimulatedConversation(): Promise<void> {
+  const history = await loadSimulatedHistory();
+  if (!history) return;
+  try {
+    const imported = parseBranchingTranscript(history.markdown);
+    await loadLanguages(
+      historyFenceLanguages(
+        imported.tree?.nodes.map((node) => node.message) ?? imported.turns,
+      ),
+    );
+    importedConversation = imported;
+    simulatedNextResponse = history.nextResponse;
+    simulatedConversationChanged = history.changed;
+  } catch {
+    // An invalid saved transcript must not prevent the demo from opening.
+  }
+}
+
+function persistSimulatedConversation(): void {
+  if (getAISettings().provider !== "simulated") return;
+  const markdown = transcriptMarkdown();
+  importedConversation = parseBranchingTranscript(markdown);
+  simulatedNextResponse = nextResponse;
+  saveSimulatedHistory({
+    markdown,
+    nextResponse,
+    changed: simulatedConversationChanged,
+  });
 }
 
 // Loads the history snapshot and the fence languages its static render needs
@@ -1606,6 +1640,8 @@ function seedActiveConversation(importedTree?: TranscriptTree | null): void {
     simulatedConversationChanged = false;
     seedConversationTree(INITIAL_TRANSCRIPT_COUNT);
   }
+  if (simulated && importedConversation !== null)
+    nextResponse = simulatedNextResponse;
   rebuildActiveTranscript();
   loadedStart = Math.max(0, transcript.length - loadChunkCount());
   refreshLoadedWindow();
@@ -1624,35 +1660,7 @@ function reloadConversation(importedTree?: TranscriptTree | null): void {
   setEdgeState("hidden");
   mountConversation();
   syncMetrics();
-}
-
-/**
- * Where a loaded conversation lands — at boot and after every reload (a
- * provider switch, an import, a restore, a history clear). The default is
- * the end of the last exchange as a finished stream leaves it: the last
- * prompt pinned (I5: the reserve holds space under a short reply, so the
- * end is the prompt at the top with its reply below), then the end — a
- * reply taller than the viewport needs no reserve, and the end is its
- * bottom, the prompt above. The alternative, and a conversation without
- * a prompt, land at the bare end.
- */
-function landConversation(): void {
-  let key: string | null = null;
-  if (landingMode === "prompt") {
-    for (let i = transcript.length - 1; i >= 0 && key === null; i--) {
-      const message = transcript[i];
-      if (message?.role === "user") key = String(message.id);
-    }
-  }
-  if (key === null || !virtualList?.positionOf(key)) {
-    void virtualList?.scrollTo("end");
-    return;
-  }
-  // Configure the reserve and land at the end atomically. A long final
-  // reply never makes an intermediate trip to its prompt.
-  void virtualList.scrollTo("end", {
-    pin: { key, offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0 },
-  });
+  persistSimulatedConversation();
 }
 
 // Name the visible row's replacement, not a surviving prefix or a removed
@@ -1722,6 +1730,7 @@ function switchMessageVersion(messageId: number, offset: number): void {
   if (branchIndex >= 0) loadedStart = Math.min(loadedStart, branchIndex);
   pushItems(anchor, true);
   syncMetrics();
+  persistSimulatedConversation();
 }
 
 // Remove the selected version and descendants, preserving sibling versions.
@@ -1778,7 +1787,7 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
     openAIHistory = turns;
     saveOpenAIHistory(turns);
   } else {
-    importedConversation = { turns, tree: null };
+    persistSimulatedConversation();
   }
   setEdgeState("hidden");
   if (isVersion) pushItems(anchor, true);
@@ -2833,8 +2842,9 @@ async function handleSend(action?: SendAction): Promise<void> {
   const useOpenAI = getAISettings().provider === "openai";
   const sendEpoch = conversationEpoch;
   const persistTurns = () => {
-    if (useOpenAI && sendEpoch === conversationEpoch) {
-      persistOpenAIConversation();
+    if (sendEpoch === conversationEpoch) {
+      if (useOpenAI) persistOpenAIConversation();
+      else persistSimulatedConversation();
     }
   };
 
@@ -3023,10 +3033,10 @@ initAISettingsPanel({
     // while the simulated transcript is showing needs no repaint.
     if (getAISettings().provider === "openai") reloadConversation();
   },
-  canRestoreConversation: () =>
-    importedConversation !== null || simulatedConversationChanged,
+  canRestoreConversation: () => simulatedConversationChanged,
   onRestoreConversation: () => {
     importedConversation = null;
+    simulatedNextResponse = 0;
     simulatedConversationChanged = false;
     reloadConversation();
   },
@@ -3317,7 +3327,9 @@ applyDocumentTheme();
 syncThemeButtons();
 autosize();
 if (getAISettings().provider === "openai") await prepareOpenAIConversation();
+await prepareSimulatedConversation();
 seedActiveConversation();
+persistSimulatedConversation();
 
 /**
  * The one way a conversation is presented: a fresh runtime over the seeded
@@ -3335,6 +3347,16 @@ function mountConversation(): void {
   virtualList = createVirtualList<ChatRow>(viewport, {
     items: rowsForRuntime(),
     key: rowKey,
+    // Reserve is a runtime invariant, independent of how a row is reached.
+    pinning:
+      landingMode === "prompt"
+        ? {
+            match: (row) => !isDayHeader(row) && row.role === "user",
+            get offset() {
+              return stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+            },
+          }
+        : false,
     anchorable: (row) => !isDayHeader(row),
     render: (row, existing) => {
       if (isDayHeader(row)) {
@@ -3377,7 +3399,6 @@ function mountConversation(): void {
     onUnmount: unmountUserMessageCollapse,
     onDestroy: handleRowDestroy,
   });
-  landConversation();
 }
 
 mountConversation();
@@ -3467,7 +3488,7 @@ shareBtn.addEventListener("click", async () => {
 });
 
 // Import replaces the conversation: the stored OpenAI history in this
-// browser, or the simulated transcript for this session.
+// browser, or the separately stored simulated transcript.
 // One import at a time: a second file dropped while the first is being
 // read, confirmed, or having its languages loaded is ignored, never
 // interleaved with it.
@@ -3500,7 +3521,7 @@ async function importTranscriptNow(file: File): Promise<void> {
   const useOpenAI = getAISettings().provider === "openai";
   const target = useOpenAI
     ? "the OpenAI history stored in this browser"
-    : "the simulated conversation for this session";
+    : "the simulated history stored in this browser";
   if (
     !window.confirm(
       `Replace ${target} with the ${importedTree?.nodes.length ?? turns.length} turns${importedTree ? " (including all versions)" : ""} in ${file.name}?`,
@@ -3519,6 +3540,8 @@ async function importTranscriptNow(file: File): Promise<void> {
     saveOpenAIHistory(turns);
   } else {
     importedConversation = imported;
+    simulatedNextResponse = 0;
+    simulatedConversationChanged = true;
   }
   reloadConversation(importedTree);
 }
@@ -3609,6 +3632,8 @@ function syncSticky(): void {
 stickyToggle.addEventListener("change", () => {
   stickyEnabled = stickyToggle.checked;
   syncSticky();
+  // Snapshot the new inset through the runtime's declarative pin policy.
+  pushItems("viewport");
   saveChatOptions();
 });
 syncSticky();

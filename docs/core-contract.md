@@ -157,7 +157,10 @@ The definition of correct, referenced by number throughout the code:
   shrinkage, and never collapses out from under the viewport. A pinned row
   replaced in place (a version switch, an edit: a new key at its index,
   everything before it unchanged) passes the pin to its replacement; a
-  removal of the pinned key drops the pin. A viewport
+  removal of the pinned key drops the pin. A surviving key that reaches
+  the start remains pinned, even when it needs no new reserve. Declarative
+  pinning selects the destination snapshot's last matching item in the same
+  commit, so a branch change needs no host re-pinning command. A viewport
   height change while the viewport stands on the pin (a window resize, a
   device rotation) re-resolves to the pin: the row stays at the top and the
   reserve is sized to the new height. A viewport WIDTH change ends a scroll
@@ -263,6 +266,19 @@ interaction; the [README](../README.md) lists the public options.
   ignored. Explicit reading anchors can still retain temporary space for
   continuity; commands exclude that space from their targets, and it drains
   after landing without collapsing the surface during a glide.
+  `pinning: { match: (item) => boolean, offset?: number }` instead makes
+  the pin part of each committed snapshot: the last matching item remains
+  scrollable to its inset regardless of navigation, manual scrolling,
+  content growth/shrinkage, or viewport resizing. No match clears the pin.
+  The predicate runs during preparation, including targeted updates; failure
+  leaves committed geometry intact. The offset is also read during preparation;
+  a getter can supply a live inset. Submit a snapshot after changing that inset.
+  Held snapshots carry their selected key and offset until commit.
+  Commands navigate within this geometry without replacing its
+  pin (`align: "start"` and end-command `pin` don't select another pin).
+  The offset defaults to zero; non-finite values use zero. The streaming demo
+  supplies only the user-row predicate and sticky-header inset, not custom
+  bottom-space calculations or navigation-triggered re-pinning.
   A hidden document follows by write (a glide started then would only
   play on return, the background growth as one slide), and so does one
   that just became visible, for a short window (300ms) in which growth

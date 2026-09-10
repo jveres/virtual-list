@@ -504,6 +504,57 @@ function clearOpenAIHistory(): void {
   );
 }
 
+export interface SimulatedHistory {
+  markdown: string;
+  nextResponse: number;
+  changed: boolean;
+}
+
+// A separate record preserves the simulated version tree without touching
+// the real-provider history or requiring an IndexedDB schema migration.
+const SIMULATED_HISTORY_RECORD_KEY = "simulated-history";
+let sessionSimulatedHistory: SimulatedHistory | undefined;
+
+export async function loadSimulatedHistory(): Promise<SimulatedHistory | null> {
+  await historyWriteChain;
+  if (sessionSimulatedHistory) return sessionSimulatedHistory;
+  try {
+    const db = await historyDb();
+    const stored = await new Promise<unknown>((resolve, reject) => {
+      const request = db
+        .transaction(HISTORY_STORE, "readonly")
+        .objectStore(HISTORY_STORE)
+        .get(SIMULATED_HISTORY_RECORD_KEY);
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+    if (sessionSimulatedHistory) return sessionSimulatedHistory;
+    if (!isRecord(stored) || typeof stored.markdown !== "string") return null;
+    return {
+      markdown: stored.markdown,
+      nextResponse:
+        typeof stored.nextResponse === "number" &&
+        Number.isSafeInteger(stored.nextResponse) &&
+        stored.nextResponse >= 0
+          ? stored.nextResponse
+          : 0,
+      changed: stored.changed === true,
+    };
+  } catch {
+    return sessionSimulatedHistory ?? null;
+  }
+}
+
+export function saveSimulatedHistory(history: SimulatedHistory): void {
+  sessionSimulatedHistory = history;
+  queueHistoryWrite((db) =>
+    db
+      .transaction(HISTORY_STORE, "readwrite")
+      .objectStore(HISTORY_STORE)
+      .put(history, SIMULATED_HISTORY_RECORD_KEY),
+  );
+}
+
 /**
  * The message and code of an API error object, wherever the event put
  * them: `{message, code}` at the top level, or nested under `error`.

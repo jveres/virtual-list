@@ -108,6 +108,7 @@ function portableTurn(value: unknown): StoredTurn {
       role: value.role,
       markdown: value.markdown || "-",
       sentAt: value.sentAt,
+      stopped: value.stopped === true || value.status === "cancelled",
       attachments: value.attachments,
       toolCalls: value.toolCalls,
     },

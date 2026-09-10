@@ -604,19 +604,23 @@ describe("I5 — pin-to-top reserve", () => {
     expect(geometry.reserve).toBe(0);
   });
 
-  it("drops a pin whose key reached the very start", () => {
+  it("should retain a pin whose key reaches the start and later moves down", () => {
     const { geometry } = pinnedAtEnd(); // m18 pinned, reserve 400.
     expect(geometry.pinned).toBe("m18");
     expect(geometry.reserve).toBeGreaterThan(0);
     // Everything above the pinned key goes: it is the first row now, and
-    // anchoring the start needs no reserve — the pin is stale.
+    // anchoring the start needs no new reserve, but the key is still pinned.
     transact(geometry, viewport(0), "viewport", () =>
       geometry.setKeys(keysRange(18, 20)),
     );
-    expect(geometry.pinned).toBeNull();
-    // No pin target any more; only the floor (two rows under a 600px
-    // viewport) keeps what the viewport still stands on.
+    expect(geometry.pinned).toBe("m18");
+    // The floor keeps the two rows under the 600px viewport covered.
     expect(geometry.reserve).toBe(VIEWPORT_H - 2 * 100);
+    transact(geometry, viewport(0), "viewport", () =>
+      geometry.setKeys(keysRange(0, 20)),
+    );
+    expect(geometry.maxScrollTop(VIEWPORT_H)).toBe(1800);
+    expect(geometry.pinned).toBe("m18");
   });
 
   it("re-evaluates the reserve on viewport resize", () => {

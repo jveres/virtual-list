@@ -17,6 +17,8 @@ interface TreeOptions {
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
+const MIN_BAND_WIDTH = 208;
+const HEADING_ROW_HEIGHT = 24;
 const ICONS = {
   user: "M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2v-10a9.5 9.5 0 1 1 19 0Z",
   assistant: "M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8",
@@ -101,10 +103,16 @@ export function createConversationTree(options: TreeOptions): {
   const status = document.createElement("p");
   status.className = "conversation-tree-status";
   status.setAttribute("role", "status");
-  // Keep the line box alive when changing the text. Replacing its text node
-  // briefly collapses the footer in WebKit and clamps the scroller at bottom.
+  status.hidden = true;
+  const statusMessage = document.createElement("span");
+  // Transient navigation status overlays the tree without changing its height.
   const statusText = document.createTextNode("");
-  status.append(statusText);
+  statusMessage.append(statusText);
+  status.append(statusMessage);
+  function setStatus(message: string): void {
+    statusText.data = message;
+    status.hidden = message.length === 0;
+  }
   panel.append(header, scroller, status);
   // One continuous stroke avoids the hairline seam where rotated CSS
   // borders meet at the tip, especially at fractional display scales.
@@ -127,7 +135,11 @@ export function createConversationTree(options: TreeOptions): {
   let navigating = false;
   let replacingNodes = false;
   let closeTimer = 0;
-  let preferredWidth = 320;
+  // Retain the scroll extent while alternative branches fold.
+  let stableHalfWidth = 0;
+  let stableCanvasHeight = 0;
+  let layoutWidth = 0;
+  let layout = (): void => {};
   let current: HTMLButtonElement | undefined;
   const buttons = new Map<number, HTMLButtonElement>();
   const headingButtons = new Map<string, HTMLButtonElement>();
@@ -136,23 +148,25 @@ export function createConversationTree(options: TreeOptions): {
   function placePanel(): void {
     if (panel.hidden) return;
     // Keep the compact-screen popover usable. On desktop, spend the free
-    // left gutter first and never extend beyond the chat column's midpoint.
+    // left gutter first and never cover more than 15% of the chat column.
     if (window.matchMedia("(max-width: 984px)").matches) {
       panel.style.removeProperty("left");
       panel.style.removeProperty("width");
+      layout();
       return;
     }
     const chat = options.host.getBoundingClientRect();
     const origin = root.getBoundingClientRect();
     const margin = 16;
     const rightLimit = Math.min(
-      chat.left + chat.width / 2,
+      chat.left + chat.width * 0.15,
       document.documentElement.clientWidth - margin,
     );
-    const width = Math.min(preferredWidth, Math.max(0, rightLimit - margin));
+    const width = Math.min(664, Math.max(0, rightLimit - margin));
     const left = Math.max(margin, origin.right - width);
     panel.style.width = `${width}px`;
     panel.style.left = `${left - origin.left}px`;
+    layout();
   }
 
   // Placement reads geometry only on opening, tree changes, and resizing;
@@ -186,12 +200,54 @@ export function createConversationTree(options: TreeOptions): {
       );
       scroller.scrollLeft = Math.max(
         0,
-        Number.parseFloat(current.style.left) - 80,
+        (canvas.offsetWidth - scroller.clientWidth) / 2 + 12,
       );
     }
   }
 
+  function revealSelection(button: HTMLButtonElement | undefined): void {
+    if (!button) return;
+    const item = button.getBoundingClientRect();
+    const view = scroller.getBoundingClientRect();
+    const inset = 14;
+    const nearest = (
+      start: number,
+      end: number,
+      low: number,
+      high: number,
+    ): number => {
+      // Oversized items that already span the viewport need no movement.
+      if (start < low && end > high) return 0;
+      if (start < low) return start - low;
+      if (end > high) return end - high;
+      return 0;
+    };
+    const left = nearest(
+      item.left,
+      item.right,
+      view.left + inset,
+      view.left + scroller.clientWidth - inset,
+    );
+    const top = nearest(
+      item.top,
+      item.bottom,
+      view.top + inset,
+      view.top + scroller.clientHeight - inset,
+    );
+    if (Math.abs(left) < 1 && Math.abs(top) < 1) return;
+    scroller.scrollBy({
+      left,
+      top,
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ? "auto"
+        : "smooth",
+    });
+  }
+
   function render(): void {
+    const scrollTop = scroller.scrollTop;
+    const scrollLeft = scroller.scrollLeft;
+    const previousCenter = stableHalfWidth;
     const focusedHeading =
       document.activeElement instanceof HTMLElement
         ? document.activeElement.dataset.headingIndex
@@ -216,65 +272,29 @@ export function createConversationTree(options: TreeOptions): {
         ] as const;
       }),
     );
-    const rows = entries.reduce(
-      (max, entry) => Math.max(max, entry.row + 1),
-      0,
-    );
-    const columns = entries.reduce(
-      (max, entry) => Math.max(max, entry.column + 1),
-      1,
-    );
-    // Include panel borders, scroller padding, and a non-overlay scrollbar.
-    preferredWidth = Math.max(320, columns * 208 + 40);
-    // A folded-branch badge belongs to its node, above the next junction.
-    // Reserve extra space only on rows with badges so the connector never
-    // crosses the label or makes it look like a count on the active path.
-    const badgeRows = new Set(
-      entries
-        .filter((entry) => entry.hiddenCount > 0)
-        .map((entry) => entry.row),
-    );
-    const rowTops: number[] = [];
-    const entryById = new Map(entries.map((entry) => [entry.id, entry]));
-    const junctionRows = new Set(
+    const entriesByRow = new Map<number, typeof entries>();
+    for (const entry of entries) {
+      const siblings = entriesByRow.get(entry.row) ?? [];
+      siblings.push(entry);
+      entriesByRow.set(entry.row, siblings);
+    }
+    // Siblings share one depth row; selection changes the blue path, not
+    // the position of a version within its parent's fork.
+    const displayRows = Array.from(entriesByRow.values());
+    // Allow a compact badge line for branches that can be folded. Measure
+    // it with its own title, so switching versions doesn't move later rows.
+    const badgeEntries = new Set(
       entries
         .filter(
           (entry) =>
-            entry.row > 0 &&
-            entry.column !== entryById.get(entry.parentId)?.column,
+            entry.hiddenCount > 0 ||
+            ((entriesByRow.get(entry.row)?.length ?? 0) > 1 &&
+              (options.tree.get(entry.id)?.childrenIds.length ?? 0) > 0),
         )
-        .map((entry) => entry.row - 1),
+        .map((entry) => entry.id),
     );
-    const headingRows = new Map<number, number>();
-    for (const entry of entries)
-      headingRows.set(
-        entry.row,
-        Math.max(
-          headingRows.get(entry.row) ?? 0,
-          headings.get(entry.id)?.length ?? 0,
-        ),
-      );
-    let canvasHeight = 0;
-    for (let row = 0; row < Math.max(1, rows); row++) {
-      rowTops.push(canvasHeight);
-      const count = headingRows.get(row) ?? 0;
-      if (count) {
-        const tocTop = badgeRows.has(row) ? 72 : 48;
-        canvasHeight += tocTop + count * 24 + (junctionRows.has(row) ? 24 : 8);
-      } else {
-        canvasHeight += badgeRows.has(row)
-          ? 88
-          : junctionRows.has(row)
-            ? 64
-            : 48;
-      }
-    }
-    canvas.style.height = `${canvasHeight}px`;
-    canvas.style.width = `${columns * 208}px`;
     const edges = document.createElementNS(SVG_NS, "svg");
     edges.classList.add("conversation-tree-edges");
-    edges.setAttribute("width", String(columns * 208));
-    edges.setAttribute("height", String(canvasHeight));
     edges.setAttribute("aria-hidden", "true");
     const inactiveEdges = document.createElementNS(SVG_NS, "g");
     const activeEdges = document.createElementNS(SVG_NS, "g");
@@ -283,38 +303,15 @@ export function createConversationTree(options: TreeOptions): {
     edges.append(inactiveEdges, activeEdges);
     const content = document.createDocumentFragment();
     content.append(edges);
-    const lastColumnByRow = new Map<number, number>();
-    for (const entry of entries) lastColumnByRow.set(entry.row, entry.column);
+    const tocs = new Map<number, HTMLUListElement>();
     for (const entry of entries) {
-      const x = entry.column * 208;
-      const y = rowTops[entry.row] ?? 0;
-      if (entry.row > 0) {
-        const parentX = (entryById.get(entry.parentId)?.column ?? 0) * 208;
-        const parentY = rowTops[entry.row - 1] ?? 0;
-        const edge = document.createElementNS(SVG_NS, "path");
-        edge.setAttribute(
-          "d",
-          x === parentX
-            ? `M${parentX + 26} ${parentY + 36}V${y + 8}`
-            : `M${parentX + 26} ${parentY + 36}V${y - 16}Q${parentX + 26} ${y - 8} ${parentX + 34} ${y - 8}H${x + 18}Q${x + 26} ${y - 8} ${x + 26} ${y}V${y + 8}`,
-        );
-        edge.setAttribute(
-          "class",
-          `conversation-tree-edge${entry.active ? " active" : ""}`,
-        );
-        (entry.active ? activeEdges : inactiveEdges).append(edge);
-      }
       const button = document.createElement("button");
       button.type = "button";
       button.className = "conversation-tree-node";
-      button.style.left = `${x}px`;
-      button.style.top = `${y}px`;
-      if (entry.column === lastColumnByRow.get(entry.row)) {
-        button.style.width = `calc(100% - ${x + 8}px)`;
-      }
       button.dataset.messageId = String(entry.id);
       button.dataset.row = String(entry.row);
       button.dataset.active = String(entry.active);
+      button.dataset.role = entry.role;
       const glyph = document.createElement("span");
       glyph.className = "conversation-tree-glyph";
       const imageIcon = entry.imageCount > 1 ? ICONS.images : ICONS.image;
@@ -363,25 +360,10 @@ export function createConversationTree(options: TreeOptions): {
       content.append(button);
       const sections = headings.get(entry.id) ?? [];
       if (sections.length) {
-        const tocTop = y + (badgeRows.has(entry.row) ? 72 : 48);
-        // Terminal and folded responses also need a spine for their sections.
-        const stem = document.createElementNS(SVG_NS, "path");
-        stem.setAttribute(
-          "d",
-          `M${x + 26} ${y + 36}V${tocTop + (sections.length - 1) * 24 + 12}`,
-        );
-        stem.setAttribute(
-          "class",
-          `conversation-tree-edge${entry.active ? " active" : ""}`,
-        );
-        (entry.active ? activeEdges : inactiveEdges).append(stem);
         const toc = document.createElement("ul");
         toc.className = "conversation-tree-toc";
         toc.setAttribute("aria-label", `Sections in ${entry.label}`);
-        toc.style.left = `${x + 20}px`;
-        toc.style.top = `${tocTop}px`;
-        if (entry.column === lastColumnByRow.get(entry.row))
-          toc.style.width = `calc(100% - ${x + 28}px)`;
+        tocs.set(entry.id, toc);
         for (const section of sections) {
           const item = document.createElement("li");
           const heading = document.createElement("button");
@@ -408,9 +390,149 @@ export function createConversationTree(options: TreeOptions): {
     } finally {
       replacingNodes = false;
     }
-    statusText.data = entries.length
-      ? "Blue line: active branch · Blue border: reading position"
-      : "Send a message to start a conversation.";
+    layout = () => {
+      const previousCenter = stableHalfWidth;
+      const previousScrollLeft = scroller.scrollLeft;
+      const availableWidth = Math.max(0, scroller.clientWidth - 24);
+      // Keep extents stable for branch switches, but refit on real resizes.
+      if (layoutWidth !== availableWidth) stableHalfWidth = 0;
+      layoutWidth = availableWidth;
+      const bands = new Map<number, { center: number; width: number }>([
+        [0, { center: 0, width: availableWidth }],
+      ]);
+      for (const siblings of displayRows) {
+        siblings.forEach((entry, index) => {
+          const parent = bands.get(entry.parentId) ?? {
+            center: 0,
+            width: availableWidth,
+          };
+          // Split the parent band evenly around its spine. A single child
+          // inherits that band's center, so a fork never snaps back to root.
+          const width = Math.max(
+            MIN_BAND_WIDTH,
+            parent.width / siblings.length,
+          );
+          bands.set(entry.id, {
+            center: parent.center + (index - (siblings.length - 1) / 2) * width,
+            width,
+          });
+        });
+      }
+      stableHalfWidth = Math.max(stableHalfWidth, availableWidth / 2);
+      for (const band of bands.values()) {
+        stableHalfWidth = Math.max(
+          stableHalfWidth,
+          Math.abs(band.center) + band.width / 2,
+        );
+      }
+      const canvasWidth = stableHalfWidth * 2;
+      const centerX = stableHalfWidth;
+      canvas.style.width = `${canvasWidth}px`;
+      const positions = new Map<number, { x: number; y: number }>();
+      for (const entry of entries) {
+        const band = bands.get(entry.id);
+        if (!band) continue;
+        const x = centerX + band.center;
+        const width = band.width / 2 + 18;
+        const left = entry.role === "user" ? x + 26 - width : x - 26;
+        positions.set(entry.id, { x, y: 0 });
+        const button = buttons.get(entry.id);
+        if (button) {
+          button.style.left = `${left}px`;
+          button.style.width = `${width}px`;
+        }
+        const toc = tocs.get(entry.id);
+        if (toc) {
+          toc.style.left = `${x - 6}px`;
+          toc.style.width = `${width - 20}px`;
+        }
+      }
+      const tocOffsets = new Map<number, number>();
+      let canvasHeight = 0;
+      displayRows.forEach((row, rowIndex) => {
+        let contentBottom = 36;
+        let headingCount = 0;
+        for (const entry of row) {
+          const button = buttons.get(entry.id);
+          const label = button?.querySelector<HTMLElement>(
+            ".conversation-tree-label",
+          );
+          const bottom = Math.max(
+            36,
+            13 +
+              (label?.offsetHeight ?? 0) +
+              (badgeEntries.has(entry.id) ? 20 : 0),
+          );
+          contentBottom = Math.max(contentBottom, bottom);
+          headingCount = Math.max(
+            headingCount,
+            headings.get(entry.id)?.length ?? 0,
+          );
+          const position = positions.get(entry.id);
+          if (position) position.y = canvasHeight;
+          if (button) {
+            button.style.top = `${canvasHeight}px`;
+            button.style.height = `${Math.max(48, bottom)}px`;
+          }
+        }
+        const tocOffset = contentBottom > 36 ? contentBottom + 4 : 36;
+        for (const entry of row) tocOffsets.set(entry.id, tocOffset);
+        const nextRowBranches = displayRows[rowIndex + 1]?.some(
+          (entry) => !entry.active,
+        );
+        const gap = nextRowBranches ? 24 : 8;
+        canvasHeight += headingCount
+          ? tocOffset + headingCount * HEADING_ROW_HEIGHT + gap
+          : Math.max(48, contentBottom + gap);
+      });
+      stableCanvasHeight = Math.max(stableCanvasHeight, canvasHeight);
+      canvas.style.height = `${stableCanvasHeight}px`;
+      edges.setAttribute("width", "100%");
+      edges.setAttribute("height", String(canvasHeight));
+      activeEdges.replaceChildren();
+      inactiveEdges.replaceChildren();
+      for (const entry of entries) {
+        const position = positions.get(entry.id);
+        if (!position) continue;
+        const { x, y } = position;
+        const paths: string[] = [];
+        const parent = positions.get(entry.parentId);
+        if (parent) {
+          const direction = Math.sign(x - parent.x);
+          const radius = Math.min(8, Math.abs(x - parent.x) / 2);
+          paths.push(
+            x === parent.x
+              ? `M${parent.x} ${parent.y + 36}V${y + 8}`
+              : `M${parent.x} ${parent.y + 36}V${y - 8 - radius}Q${parent.x} ${y - 8} ${parent.x + direction * radius} ${y - 8}H${x - direction * radius}Q${x} ${y - 8} ${x} ${y - 8 + radius}V${y + 8}`,
+          );
+        }
+        const toc = tocs.get(entry.id);
+        if (toc) {
+          const top = y + (tocOffsets.get(entry.id) ?? 36);
+          toc.style.top = `${top}px`;
+          const count = headings.get(entry.id)?.length ?? 0;
+          paths.push(
+            `M${x} ${y + 36}V${top + (count - 1) * HEADING_ROW_HEIGHT + 12}`,
+          );
+        }
+        for (const [index, path] of paths.entries()) {
+          const edge = document.createElementNS(SVG_NS, "path");
+          if (parent && index === 0) {
+            edge.dataset.childId = String(entry.id);
+            edge.dataset.parentId = String(entry.parentId);
+          }
+          edge.setAttribute("d", path);
+          edge.setAttribute(
+            "class",
+            `conversation-tree-edge${entry.active ? " active" : ""}`,
+          );
+          (entry.active ? activeEdges : inactiveEdges).append(edge);
+        }
+      }
+      scroller.scrollLeft =
+        previousScrollLeft + stableHalfWidth - previousCenter;
+    };
+    setStatus(entries.length ? "" : "Send a message to start a conversation.");
     dirty = false;
     placePanel();
     refreshLoaded();
@@ -422,11 +544,15 @@ export function createConversationTree(options: TreeOptions): {
           : headingButtons.get(`${focusedId}:${focusedHeading}`);
       focused?.focus({ preventScroll: true });
     }
+    scroller.scrollTop = scrollTop;
+    scroller.scrollLeft = scrollLeft + stableHalfWidth - previousCenter;
   }
 
   function open(): void {
     window.clearTimeout(closeTimer);
     if (!panel.hidden) return;
+    stableHalfWidth = 0;
+    stableCanvasHeight = 0;
     panel.hidden = false;
     toggle.setAttribute("aria-expanded", "true");
     if (dirty) render();
@@ -462,6 +588,20 @@ export function createConversationTree(options: TreeOptions): {
     { signal },
   );
   root.addEventListener("focusin", open, { signal });
+  root.addEventListener(
+    "pointerdown",
+    () => {
+      root.dataset.pointerFocus = "";
+    },
+    { signal },
+  );
+  root.addEventListener(
+    "keydown",
+    () => {
+      delete root.dataset.pointerFocus;
+    },
+    { signal },
+  );
   root.addEventListener(
     "focusout",
     (event) => {
@@ -510,6 +650,21 @@ export function createConversationTree(options: TreeOptions): {
     signal,
   });
   canvas.addEventListener(
+    "mousedown",
+    (event) => {
+      if (event.button !== 0) return;
+      const button =
+        event.target instanceof Element
+          ? event.target.closest<HTMLButtonElement>("[data-message-id]")
+          : null;
+      if (!button) return;
+      // Focus must not instantly reveal the item before smooth navigation.
+      event.preventDefault();
+      button.focus({ preventScroll: true });
+    },
+    { signal },
+  );
+  canvas.addEventListener(
     "click",
     async (event) => {
       const button =
@@ -518,7 +673,7 @@ export function createConversationTree(options: TreeOptions): {
           : null;
       if (!button || navigating) return;
       navigating = true;
-      statusText.data = "Opening message…";
+      setStatus("Opening message…");
       panel.setAttribute("aria-busy", "true");
       try {
         const headingIndex = button.dataset.headingIndex;
@@ -531,9 +686,16 @@ export function createConversationTree(options: TreeOptions): {
           dirty = true;
           render();
           updateCurrent();
-        } else statusText.data = "Finish the current response, then try again.";
+          revealSelection(
+            headingIndex === undefined
+              ? buttons.get(Number(button.dataset.messageId))
+              : headingButtons.get(
+                  `${button.dataset.messageId}:${headingIndex}`,
+                ),
+          );
+        } else setStatus("Finish the current response, then try again.");
       } catch {
-        statusText.data = "Could not open this message. Please try again.";
+        setStatus("Could not open this message. Please try again.");
       } finally {
         navigating = false;
         panel.removeAttribute("aria-busy");

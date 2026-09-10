@@ -65,6 +65,11 @@ export function transcriptMarkdown<M extends TranscriptMessage>(
     }
     lines.push(message.role === "user" ? USER_MARKER : ASSISTANT_MARKER);
     const meta: Record<string, unknown> = {};
+    if (
+      message.role === "assistant" &&
+      (message.stopped || message.status === "cancelled")
+    )
+      meta.stopped = true;
     if (message.sentAt !== undefined) meta.sentAt = message.sentAt;
     if (message.attachments?.length) meta.attachments = message.attachments;
     // A call still running when the file is written is stored as
@@ -254,6 +259,7 @@ export function parseTranscriptMarkdown(
       markdown:
         !turn.framed && STATUS_PLACEHOLDER.test(markdown) ? "" : markdown,
       sentAt: turn.meta?.sentAt,
+      stopped: turn.meta?.stopped,
       attachments: turn.meta?.attachments,
       toolCalls:
         fromMeta ?? (turn.summaries.length > 0 ? turn.summaries : undefined),

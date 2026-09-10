@@ -35,8 +35,8 @@ pnpm run dev
   loading in an in-flow edge slot, message versions, day separators with a
   sticky header, tool panels, a lossless Markdown export and import (the
   download and upload icons, or drop a transcript on the chat; import
-  replaces the stored OpenAI history or the simulated conversation for the
-  session), a settings dialog whose General section holds the autoscroll
+  replaces the separately stored OpenAI or simulated history), a settings
+  dialog whose General section holds the autoscroll
   mode (follow to the end, or stop when the reply's start reaches the top),
   theme, scrollback loader style, and sticky day headers, and an optional
   real OpenAI
@@ -50,6 +50,11 @@ pnpm run dev
   only.
   The built-in simulated history is dated through yesterday; new sends use
   the current time, so the first new turn starts a **Today** section.
+  Both providers preserve history across reloads, including branch selection
+  and stopped responses. The floating conversation tree uses equal-width
+  version bands, response-section links, and smooth reveal for clipped tree
+  items. See [conversation tree navigation](docs/conversation-tree-navigation.md)
+  for layout rules, the runtime-owned bottom position, and browser regressions.
 
 - `/demos/gallery/index.html` — the gallery: the same photos as
   justified rows or individually positioned whole-photo masonry items, with
@@ -183,7 +188,17 @@ list.dispose();
   land at the content bottom, and end-command `pin` requests are ignored.
   Temporary space needed to preserve a reading anchor during content changes
   still drains safely after scrolling. The chat-history demo uses this option.
-- With pinning enabled, `scrollTo` with `align: "start"` on a key pins it to
+- Use `pinning: { match: (item) => item.role === "user", offset: 40 }` for
+  declarative chat pinning. The runtime always reserves enough space to
+  scroll the last matching item to its inset, including after branch
+  replacement, manual scrolling, content shrinkage, or viewport resizing.
+  No match means no pin. Commands navigate without replacing this pin;
+  `align: "start"` and end-command `pin` cannot select another target.
+  The predicate runs during snapshot preparation, not on scroll frames.
+  The offset defaults to zero, including non-finite values. It is read with
+  each snapshot; use a getter for a live inset and submit a snapshot when it
+  changes. Held updates retain the key and offset captured during preparation.
+- With boolean `pinning: true`, `scrollTo` with `align: "start"` pins a key to
   the viewport top and reserves the shortfall below (a chat's send flow);
   `offset` lands it below a floating header. Realigning a pin removes unused
   trailing space

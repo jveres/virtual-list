@@ -13,6 +13,20 @@ const days = {
 };
 
 describe("chat transcript round trip", () => {
+  it.each(["", "Partial answer", "## Partial section\n\nA response."])(
+    "should preserve a stopped response through export and import: %s",
+    (markdown) => {
+      const turns: StoredTurn[] = [
+        { role: "user", markdown: "Question" },
+        { role: "assistant", markdown, stopped: true },
+      ];
+
+      const restored = parseTranscriptMarkdown(transcriptMarkdown(turns, days));
+
+      expect(restored).toEqual(turns);
+    },
+  );
+
   it.each([
     "Literal roles:\n\n**User**\n\n**Assistant**\n\nNot new turns.",
     "<!-- day -->\n## Not a day heading\n\nStill the answer.",
