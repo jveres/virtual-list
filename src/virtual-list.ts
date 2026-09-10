@@ -393,6 +393,11 @@ export interface VirtualList<T> {
 
 /** Float noise a measurement may carry (100.0000001 is 100, not 101). */
 const HEIGHT_NOISE = 1e-6;
+// The slot box every measured row gets: absolute, pinned to the canvas
+// edges, clipping its content to the committed height.
+const SLOT_STYLE_CLIP = "position:absolute;top:0;left:0;right:0;overflow:clip";
+const SLOT_STYLE_HIDDEN =
+  "position:absolute;top:0;left:0;right:0;overflow:hidden";
 
 /**
  * Committed heights are whole DEVICE pixels (rounded up, so content is
@@ -786,16 +791,19 @@ export function createVirtualList<T>(
   }
 
   // --- Rows: build, measure, retain, destroy --------------------------------
+  // `clip` avoids making every row a scroll container; fall back where the
+  // engine does not accept it. The engine is probed on the first slot; every
+  // later slot takes the resolved declaration in one parse.
+  let slotStyle: string | null = null;
+
   function createSlot(): HTMLElement {
     const slot = document.createElement("div");
-    slot.style.position = "absolute";
-    slot.style.top = "0";
-    slot.style.left = "0";
-    slot.style.right = "0";
-    // `clip` avoids making every row a scroll container; fall back where
-    // the engine does not accept it.
-    slot.style.overflow = "clip";
-    if (slot.style.overflow !== "clip") slot.style.overflow = "hidden";
+    if (slotStyle === null) {
+      slot.style.cssText = SLOT_STYLE_CLIP;
+      slotStyle =
+        slot.style.overflow === "clip" ? SLOT_STYLE_CLIP : SLOT_STYLE_HIDDEN;
+    }
+    slot.style.cssText = slotStyle;
     return slot;
   }
 

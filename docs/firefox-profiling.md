@@ -129,6 +129,19 @@ node scripts/firefox-profile/analyze.mjs browser-artifacts/firefox/run-EXAMPLE
 pnpm run test:firefox-profile
 ```
 
+To see which functions the content thread spent its samples in and which
+calls forced synchronous reflows, run the attribution script. It filters
+function names by a path fragment (default `/src/`, the runtime) and lists
+reflow causes by the innermost JavaScript frame and the DOM API it called:
+
+```sh
+node scripts/firefox-profile/attribute.mjs browser-artifacts/firefox/run-EXAMPLE --filter=/src/
+```
+
+The [runtime hot path profile](runtime-hot-path-profile.md) shows how these
+numbers were used to separate inherent measurement cost from avoidable
+work.
+
 The analyzer accepts this runner's raw live and shutdown profiles, including
 compressed ones. It does not accept processed exports from Firefox Profiler
 share links.
