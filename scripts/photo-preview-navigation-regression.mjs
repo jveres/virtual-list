@@ -53,6 +53,29 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     const modal = page.locator(".photo-viewer");
     const frame = page.locator(".photo-viewer-frame");
+    const arrowOffsets = await page
+      .locator(".photo-viewer-nav")
+      .evaluateAll((buttons) =>
+        buttons.map((button) => {
+          const box = button.getBoundingClientRect();
+          const glyph = button.querySelector("svg").getBoundingClientRect();
+          return {
+            label: button.getAttribute("aria-label"),
+            opticalX: button.classList.contains("photo-viewer-previous")
+              ? -1
+              : 1,
+            x: glyph.x + glyph.width / 2 - (box.x + box.width / 2),
+            y: glyph.y + glyph.height / 2 - (box.y + box.height / 2),
+          };
+        }),
+      );
+    for (const offset of arrowOffsets) {
+      assert.ok(
+        Math.abs(offset.x - offset.opticalX) < 0.5,
+        `${offset.label}: x=${offset.x}`,
+      );
+      assert.ok(Math.abs(offset.y) < 0.5, `${offset.label}: y=${offset.y}`);
+    }
     const nativeDefaults = await frame.evaluate((element) => {
       const image = element.querySelector(".photo-viewer-image");
       return {

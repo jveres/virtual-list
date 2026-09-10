@@ -73,6 +73,7 @@ import {
   saveOpenAIHistory,
   streamOpenAIChat,
 } from "./openai.js";
+import { type ResponseHeading, responseHeadings } from "./response-headings.js";
 import { sampleTimestamp } from "./sample-time.js";
 import {
   createTranscriptFile,
@@ -690,7 +691,36 @@ function currentTreeMessage(): number | null {
 
 // Selection semantics and runtime references: docs/conversation-tree-navigation.md.
 // A final node is still a keyed jump, not an end target or a forced start pin.
-async function navigateTreeMessage(messageId: number): Promise<boolean> {
+async function scrollToTreeTarget(
+  list: VirtualList<ChatRow>,
+  messageId: number,
+  headingIndex?: number,
+): Promise<boolean> {
+  const key = String(messageId);
+  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const epoch = conversationEpoch;
+  const reached = await list.scrollTo(key, { behavior: "auto", offset: inset });
+  if (!reached || headingIndex === undefined) return reached;
+  if (epoch !== conversationEpoch || streamAbort) return false;
+  const row = list.elementOf(key);
+  const headings = Array.from(
+    row?.querySelectorAll<HTMLElement>(
+      ".message-content .markdown :is(h1, h2)",
+    ) ?? [],
+  ).filter((heading) => !heading.closest(".tool-calls, [hidden]"));
+  const heading = headings[headingIndex];
+  if (!row || !heading) return false;
+  // One click-time measurement within the mounted row. The runtime owns
+  // the scroll destination, clamping, and reserve; this requests no pin.
+  const withinRow =
+    heading.getBoundingClientRect().top - row.getBoundingClientRect().top;
+  return list.scrollTo(key, { behavior: "auto", offset: inset - withinRow });
+}
+
+async function navigateTreeMessage(
+  messageId: number,
+  headingIndex?: number,
+): Promise<boolean> {
   const list = virtualList;
   if (
     !list ||
@@ -706,12 +736,7 @@ async function navigateTreeMessage(messageId: number): Promise<boolean> {
     activeIndex >= loadedStart &&
     !(activeIndex === 0 && edgeSlotRequested)
   ) {
-    return list.scrollTo(String(messageId), {
-      behavior: "auto",
-      // Do not request a pin/reserve: short final messages clamp to the
-      // existing bottom, while taller messages can naturally reach the top.
-      offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
-    });
+    return scrollToTreeTarget(list, messageId, headingIndex);
   }
   treeNavigation?.abort();
   const controller = new AbortController();
@@ -790,10 +815,7 @@ async function navigateTreeMessage(messageId: number): Promise<boolean> {
       { interrupt: true },
     );
     if (!committed || epoch !== conversationEpoch) return false;
-    return await list.scrollTo(String(messageId), {
-      behavior: "auto",
-      offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
-    });
+    return await scrollToTreeTarget(list, messageId, headingIndex);
   } finally {
     if (treeNavigation === controller) treeNavigation = null;
   }
@@ -835,6 +857,13 @@ function refreshLoadedWindow(): void {
         message &&
         (message.id === refreshMessageId || message.id === nextRefreshId)
       ) {
+        // A staged tree snapshot is rendered before onCommit updates this
+        // flag. Refresh retained/prepared footers too; visibility is paint
+        // only, so it does not invalidate the runtime's measured geometry.
+        rowById
+          .get(String(message.id))
+          ?.querySelector(".message-actions")
+          ?.toggleAttribute("data-latest", message.id === nextRefreshId);
         const next = { ...message };
         transcript[i] = next;
         const node = tree.get(message.id);
@@ -995,6 +1024,9 @@ function rowsForTreeNavigation(
   start: number,
 ): ChatRow[] {
   const rows: ChatRow[] = [];
+  const dated =
+    getAISettings().provider === "openai" ||
+    path.some((message) => message.sentAt !== undefined);
   const finalDay = Math.max(
     0,
     Math.floor((path.length - 1) / MESSAGES_PER_DAY),
@@ -1010,7 +1042,7 @@ function rowsForTreeNavigation(
     const day =
       sentAt !== undefined
         ? localMidnight(sentAt)
-        : conversationIsDated()
+        : dated
           ? UNDATED_DAY
           : Math.floor(index / MESSAGES_PER_DAY);
     const newDay = day !== previousDay;
@@ -3684,6 +3716,7 @@ syncMetrics();
 document.documentElement.classList.remove("booting");
 
 const imagePreview = createChatImagePreview(viewport, () => transcript);
+const headingCache = new WeakMap<Message, readonly ResponseHeading[]>();
 conversationTree = createConversationTree({
   host: mustGet("scroll-jump-layer"),
   viewport,
@@ -3693,6 +3726,16 @@ conversationTree = createConversationTree({
     return index !== undefined && index >= loadedStart;
   },
   currentMessage: currentTreeMessage,
+  headings: (id) => {
+    const message = tree.get(id)?.message;
+    if (message?.role !== "assistant") return [];
+    let headings = headingCache.get(message);
+    if (!headings) {
+      headings = responseHeadings(message);
+      headingCache.set(message, headings);
+    }
+    return headings;
+  },
   navigate: navigateTreeMessage,
 });
 window.addEventListener("pagehide", () => {

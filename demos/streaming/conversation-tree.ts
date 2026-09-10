@@ -3,6 +3,7 @@ import {
   type ConversationNode,
   conversationEntries,
 } from "./conversation-tree-model.js";
+import type { ResponseHeading } from "./response-headings.js";
 import "./conversation-tree.css";
 
 interface TreeOptions {
@@ -11,7 +12,8 @@ interface TreeOptions {
   tree: ReadonlyMap<number, ConversationNode>;
   isLoaded: (id: number) => boolean;
   currentMessage: () => number | null;
-  navigate: (id: number) => Promise<boolean>;
+  headings: (id: number) => readonly ResponseHeading[];
+  navigate: (id: number, headingIndex?: number) => Promise<boolean>;
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -107,15 +109,21 @@ export function createConversationTree(options: TreeOptions): {
   let dirty = true;
   let pinned = false;
   let navigating = false;
+  let replacingNodes = false;
   let closeTimer = 0;
   let current: HTMLButtonElement | undefined;
   const buttons = new Map<number, HTMLButtonElement>();
+  const headingButtons = new Map<string, HTMLButtonElement>();
   const stopFade = scrollFade(scroller);
 
   function refreshLoaded(): void {
     if (panel.hidden) return;
     for (const [id, button] of buttons) {
       const loaded = String(options.isLoaded(id));
+      if (button.dataset.loaded !== loaded) button.dataset.loaded = loaded;
+    }
+    for (const button of headingButtons.values()) {
+      const loaded = String(options.isLoaded(Number(button.dataset.messageId)));
       if (button.dataset.loaded !== loaded) button.dataset.loaded = loaded;
     }
   }
@@ -139,12 +147,30 @@ export function createConversationTree(options: TreeOptions): {
   }
 
   function render(): void {
-    const focusedId =
+    const focusedHeading =
       document.activeElement instanceof HTMLElement
+        ? document.activeElement.dataset.headingIndex
+        : undefined;
+    const focusedId =
+      document.activeElement instanceof HTMLElement &&
+      canvas.contains(document.activeElement)
         ? document.activeElement.dataset.messageId
         : undefined;
     buttons.clear();
+    headingButtons.clear();
     const entries = conversationEntries(options.tree);
+    const headings = new Map(
+      entries.map((entry) => {
+        const sections = options.headings(entry.id);
+        // The node title already navigates to the opening section. Keep the
+        // original ordinals when hiding its duplicate from the ToC.
+        const title = entry.label.replace(/\s+/g, " ").trim();
+        return [
+          entry.id,
+          sections[0]?.label === title ? sections.slice(1) : sections,
+        ] as const;
+      }),
+    );
     const rows = entries.reduce(
       (max, entry) => Math.max(max, entry.row + 1),
       0,
@@ -162,10 +188,39 @@ export function createConversationTree(options: TreeOptions): {
         .map((entry) => entry.row),
     );
     const rowTops: number[] = [];
+    const entryById = new Map(entries.map((entry) => [entry.id, entry]));
+    const junctionRows = new Set(
+      entries
+        .filter(
+          (entry) =>
+            entry.row > 0 &&
+            entry.column !== entryById.get(entry.parentId)?.column,
+        )
+        .map((entry) => entry.row - 1),
+    );
+    const headingRows = new Map<number, number>();
+    for (const entry of entries)
+      headingRows.set(
+        entry.row,
+        Math.max(
+          headingRows.get(entry.row) ?? 0,
+          headings.get(entry.id)?.length ?? 0,
+        ),
+      );
     let canvasHeight = 0;
     for (let row = 0; row < Math.max(1, rows); row++) {
       rowTops.push(canvasHeight);
-      canvasHeight += badgeRows.has(row) ? 88 : 64;
+      const count = headingRows.get(row) ?? 0;
+      if (count) {
+        const tocTop = badgeRows.has(row) ? 72 : 48;
+        canvasHeight += tocTop + count * 24 + (junctionRows.has(row) ? 24 : 8);
+      } else {
+        canvasHeight += badgeRows.has(row)
+          ? 88
+          : junctionRows.has(row)
+            ? 64
+            : 48;
+      }
     }
     canvas.style.height = `${canvasHeight}px`;
     canvas.style.width = `${columns * 208}px`;
@@ -181,7 +236,6 @@ export function createConversationTree(options: TreeOptions): {
     edges.append(inactiveEdges, activeEdges);
     const content = document.createDocumentFragment();
     content.append(edges);
-    const entryById = new Map(entries.map((entry) => [entry.id, entry]));
     const lastColumnByRow = new Map<number, number>();
     for (const entry of entries) lastColumnByRow.set(entry.row, entry.column);
     for (const entry of entries) {
@@ -245,16 +299,66 @@ export function createConversationTree(options: TreeOptions): {
       button.append(glyph, text);
       buttons.set(entry.id, button);
       content.append(button);
+      const sections = headings.get(entry.id) ?? [];
+      if (sections.length) {
+        const tocTop = y + (badgeRows.has(entry.row) ? 72 : 48);
+        // Terminal and folded responses also need a spine for their sections.
+        const stem = document.createElementNS(SVG_NS, "path");
+        stem.setAttribute(
+          "d",
+          `M${x + 26} ${y + 36}V${tocTop + (sections.length - 1) * 24 + 12}`,
+        );
+        stem.setAttribute(
+          "class",
+          `conversation-tree-edge${entry.active ? " active" : ""}`,
+        );
+        (entry.active ? activeEdges : inactiveEdges).append(stem);
+        const toc = document.createElement("ul");
+        toc.className = "conversation-tree-toc";
+        toc.setAttribute("aria-label", `Sections in ${entry.label}`);
+        toc.style.left = `${x + 20}px`;
+        toc.style.top = `${tocTop}px`;
+        if (entry.column === lastColumnByRow.get(entry.row))
+          toc.style.width = `calc(100% - ${x + 28}px)`;
+        for (const section of sections) {
+          const item = document.createElement("li");
+          const heading = document.createElement("button");
+          heading.type = "button";
+          heading.className = "conversation-tree-heading";
+          heading.dataset.messageId = String(entry.id);
+          heading.dataset.headingIndex = String(section.index);
+          heading.dataset.level = String(section.level);
+          heading.dataset.active = String(entry.active);
+          heading.textContent = section.label;
+          heading.title = section.label;
+          headingButtons.set(`${entry.id}:${section.index}`, heading);
+          item.append(heading);
+          toc.append(item);
+        }
+        content.append(toc);
+      }
     }
-    canvas.replaceChildren(content);
+    // Chromium emits focusout when a focused node is removed. This is an
+    // internal replacement, not the reader leaving an unpinned panel.
+    replacingNodes = true;
+    try {
+      canvas.replaceChildren(content);
+    } finally {
+      replacingNodes = false;
+    }
     statusText.data = entries.length
       ? "Blue line: active branch · Blue border: reading position"
       : "Send a message to start a conversation.";
     dirty = false;
     refreshLoaded();
     updateCurrent();
-    if (focusedId)
-      buttons.get(Number(focusedId))?.focus({ preventScroll: true });
+    if (focusedId) {
+      const focused =
+        focusedHeading === undefined
+          ? buttons.get(Number(focusedId))
+          : headingButtons.get(`${focusedId}:${focusedHeading}`);
+      focused?.focus({ preventScroll: true });
+    }
   }
 
   function open(): void {
@@ -296,6 +400,7 @@ export function createConversationTree(options: TreeOptions): {
     "focusout",
     (event) => {
       if (
+        !replacingNodes &&
         !pinned &&
         !(
           event.relatedTarget instanceof Node &&
@@ -350,7 +455,13 @@ export function createConversationTree(options: TreeOptions): {
       statusText.data = "Opening message…";
       panel.setAttribute("aria-busy", "true");
       try {
-        if (await options.navigate(Number(button.dataset.messageId))) {
+        const headingIndex = button.dataset.headingIndex;
+        if (
+          await options.navigate(
+            Number(button.dataset.messageId),
+            headingIndex === undefined ? undefined : Number(headingIndex),
+          )
+        ) {
           dirty = true;
           render();
           updateCurrent();

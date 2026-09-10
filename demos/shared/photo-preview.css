@@ -241,6 +241,13 @@ html.photo-view-open body {
 .photo-viewer-next {
   right: 16px;
 }
+/* Optically center the open chevrons, not just their SVG boxes. */
+.photo-viewer-previous svg {
+  transform: translateX(-1px);
+}
+.photo-viewer-next svg {
+  transform: translateX(1px);
+}
 .photo-viewer-nav[hidden] {
   display: none;
 }

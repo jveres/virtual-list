@@ -94,7 +94,8 @@ for (const engine of [firefox, webkit, chromium]) {
       exact: true,
     });
     const panel = page.locator(".conversation-tree-panel");
-    const node = (id) => panel.locator(`[data-message-id="${id}"]`);
+    const node = (id) =>
+      panel.locator(`.conversation-tree-node[data-message-id="${id}"]`);
     assert.equal(await panel.isVisible(), false);
     await toggle.hover();
     await panel.waitFor({ state: "visible" });
@@ -126,7 +127,7 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.equal(await toggle.locator("svg rect[rx='1']").count(), 3);
     const controlStrokes = await page
       .locator(
-        ".icon-btn svg > *, .scroll-jump svg > *, .message-actions button svg > *, .attach-btn svg > *, .conversation-tree button svg > *",
+        ".icon-btn svg > *, .scroll-jump svg > *, .message-actions button svg > *, .message-user-actions button svg > *, .version-nav-btn svg > *, .user-message-toggle svg > *, .attach-btn svg > *, .conversation-tree button svg > *",
       )
       .evaluateAll((shapes) =>
         shapes.map((shape) => {
@@ -626,6 +627,136 @@ for (const engine of [firefox, webkit, chromium]) {
         );
       await page.locator("#prompt").click();
     }
+    // Keyboard-opened (not pinned) panels must retain focus across the
+    // node replacement performed after a successful selection.
+    await toggle.focus();
+    await node(4).focus();
+    await page.keyboard.press("Enter");
+    await page.waitForFunction(
+      () =>
+        !document
+          .querySelector(".conversation-tree-panel")
+          .hasAttribute("aria-busy"),
+    );
+    assert.equal(
+      await panel.isVisible(),
+      true,
+      "keyboard selection must keep the tree open",
+    );
+    assert.equal(
+      await node(4).evaluate((element) => element === document.activeElement),
+      true,
+    );
+    await page.keyboard.press("Escape");
+
+    const datedBranch = await page.evaluate(async () => {
+      const { branchingTranscriptMarkdown } = await import(
+        "/demos/streaming/branching-transcript.ts"
+      );
+      const nodes = Array.from({ length: 4 }, (_, index) => ({
+        id: index + 1,
+        parentId: index,
+        selectedChildId: index === 3 ? null : index + 2,
+        message: {
+          role: index % 2 ? "assistant" : "user",
+          markdown: `Message ${index + 1}`,
+        },
+      }));
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 1;
+      const dataUrl = canvas.toDataURL("image/png");
+      nodes[2].message.markdown = "";
+      nodes[2].message.attachments = [
+        {
+          name: "review_image.png",
+          mimeType: "image/png",
+          size: atob(dataUrl.split(",")[1]).length,
+          dataUrl,
+        },
+      ];
+      nodes.push({
+        id: 5,
+        parentId: 3,
+        selectedChildId: null,
+        message: {
+          role: "assistant",
+          markdown: "Dated answer",
+          sentAt: Date.now(),
+        },
+      });
+      return branchingTranscriptMarkdown(
+        { selectedRootId: 1, nodes },
+        { dayOf: () => 0, dayLabel: () => "Today" },
+      );
+    });
+    await page.locator("#import-file").setInputFiles({
+      name: "dated-branch.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from(datedBranch),
+    });
+    await page.locator('#viewport [data-key="4"]').waitFor();
+    await toggle.click();
+    assert.equal(
+      await node(3).getAttribute("aria-description"),
+      "Includes 1 image",
+    );
+    assert.equal(
+      await node(3).locator(".conversation-tree-label").textContent(),
+      "review_image.png",
+    );
+    for (const [id, headers] of [
+      [5, ["Earlier", "Today"]],
+      [4, ["Today"]],
+    ]) {
+      await node(id).click();
+      await page.waitForFunction(
+        () =>
+          !document
+            .querySelector(".conversation-tree-panel")
+            .hasAttribute("aria-busy"),
+      );
+      await page.locator("#viewport").evaluate((element) => {
+        element.scrollTop = 0;
+      });
+      await page.locator('#viewport [data-key="1"]').waitFor();
+      assert.deepEqual(
+        await page.locator("#viewport .section-header-pill").allTextContents(),
+        headers,
+        "day headers must come from the selected snapshot",
+      );
+      assert.equal(
+        await page
+          .locator(`#viewport [data-key="${id}"] .message-actions`)
+          .getAttribute("data-latest"),
+        "",
+        "the selected branch's last response must keep its toolbar visible",
+      );
+    }
+    await page.locator("#prompt").click();
+    await page.locator("#prompt").fill("Explain virtual scrolling briefly.");
+    const pendingLabel = await page.evaluate(async () => {
+      document.querySelector("#send-btn").click();
+      // The structural refresh is queued after the new response is appended.
+      await Promise.resolve();
+      document.querySelector(".conversation-tree-toggle").click();
+      return document.querySelector(
+        '.conversation-tree-node[data-message-id="7"] .conversation-tree-label',
+      )?.textContent;
+    });
+    assert.equal(pendingLabel, "Response in progress…");
+    assert.equal(
+      await page.locator(".conversation-tree-panel").isVisible(),
+      true,
+    );
+    await page.waitForFunction(
+      () => document.querySelector("#send-btn").textContent === "Send",
+    );
+    const finishedLabel = await node(7)
+      .locator(".conversation-tree-label")
+      .textContent();
+    assert.notEqual(finishedLabel, "Untitled message");
+    assert.notEqual(finishedLabel, "Response in progress…");
+    assert.ok(finishedLabel.length > 0);
     assert.deepEqual(errors, []);
     console.log(
       `${engine.name()}: tree hover, keyboard, touch, history, branches, safe labels, alignment passed`,

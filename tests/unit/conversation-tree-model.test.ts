@@ -72,6 +72,76 @@ describe("conversation tree layout", () => {
     expect(conversationEntries(new Map())).toEqual([]);
   });
 
+  it.each(["thinking", "streaming"] as const)(
+    "should label an empty %s response as in progress until it has content",
+    (status) => {
+      const tree = fixture();
+      const first = tree.get(1);
+      if (!first?.message) throw new Error("Missing fixture message");
+      first.message = {
+        ...first.message,
+        role: "assistant",
+        markdown: "",
+        status,
+      };
+
+      const pending = conversationEntries(tree)[0];
+
+      expect(pending?.label).toBe("Response in progress…");
+      first.message.markdown = "A finished answer";
+      first.message.status = "done";
+      expect(conversationEntries(tree)[0]?.label).toBe("A finished answer");
+    },
+  );
+
+  it.each([
+    {
+      markdown: "",
+      names: ["landscape.png"],
+      image: true,
+      label: "landscape.png",
+    },
+    {
+      markdown: "",
+      names: ["first.png", "second.png"],
+      image: true,
+      label: "first.png",
+    },
+    {
+      markdown: "Compare these images",
+      names: ["first.png", "second.png"],
+      image: false,
+      label: "Compare these images",
+    },
+  ])(
+    "should describe attached images for '$label'",
+    ({ markdown, names, image, label }) => {
+      const tree = fixture();
+      const first = tree.get(1);
+      if (!first?.message) throw new Error("Missing fixture message");
+      const message = {
+        ...first.message,
+        markdown,
+        attachments: names.map((name) => ({
+          name,
+          mimeType: "image/png",
+          size: 3,
+          dataUrl: "data:image/png;base64,AAAA",
+        })),
+      };
+      first.message = message;
+
+      const entry = conversationEntries(tree)[0];
+
+      expect(entry).toMatchObject({
+        label,
+        image,
+        hasImages: true,
+        imageCount: names.length,
+      });
+    },
+  );
+
   it.each([
     { count: 0, caption: "A text response", image: false },
     { count: 1, caption: "", image: true },

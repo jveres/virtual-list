@@ -6,5 +6,7 @@ export default defineConfig({
     clearMocks: true,
     mockReset: true,
     restoreMocks: true,
+    // The viewer ships bundler-resolved imports; exercise its actual parser.
+    server: { deps: { inline: ["markdown-viewer", "loom"] } },
   },
 });

@@ -1,5 +1,14 @@
+import type { AssistantStatus } from "../shared/chat-ui.js";
+import type { ChatAttachment } from "./attachments.js";
+
 export interface ConversationNode {
-  message: { id: number; role: "user" | "assistant"; markdown: string } | null;
+  message: {
+    id: number;
+    role: "user" | "assistant";
+    markdown: string;
+    status?: AssistantStatus;
+    attachments?: readonly ChatAttachment[];
+  } | null;
   parentId: number;
   childrenIds: readonly number[];
   selectedChildIndex: number;
@@ -45,11 +54,14 @@ export function messageSummary(markdown: string): string {
 
 function messageContent(
   markdown: string,
+  attachments: readonly ChatAttachment[] = [],
 ): Pick<TreeEntry, "label" | "image" | "hasImages" | "imageCount"> {
   let cursor = 0;
   let firstAlt = "";
-  let imageCount = 0;
-  let hasText = false;
+  let imageCount = attachments.filter((attachment) =>
+    attachment.mimeType.startsWith("image/"),
+  ).length;
+  let hasText = imageCount < attachments.length;
   let text = "";
   const collect = (end: number): void => {
     const part = markdown.slice(cursor, end).trim();
@@ -68,7 +80,10 @@ function messageContent(
   }
   collect(markdown.length);
   return {
-    label: messageSummary(hasText ? text : firstAlt),
+    label:
+      text || firstAlt
+        ? messageSummary(text || firstAlt)
+        : attachments[0]?.name.trim().slice(0, 2000) || "Untitled message",
     image: imageCount > 0 && !hasText,
     hasImages: imageCount > 0,
     imageCount,
@@ -115,6 +130,13 @@ export function conversationEntries(
     parent.childrenIds.forEach((id, versionIndex) => {
       const message = tree.get(id)?.message;
       if (!message) return;
+      const content = messageContent(message.markdown, message.attachments);
+      if (
+        message.role === "assistant" &&
+        (message.status === "thinking" || message.status === "streaming") &&
+        content.label === "Untitled message"
+      )
+        content.label = "Response in progress…";
       entries.push({
         id,
         parentId,
@@ -123,7 +145,7 @@ export function conversationEntries(
         active: id === activeId,
         hiddenCount: id === activeId ? 0 : (sizes.get(id) ?? 1) - 1,
         role: message.role,
-        ...messageContent(message.markdown),
+        ...content,
       });
     });
     parentColumn += parent.selectedChildIndex;

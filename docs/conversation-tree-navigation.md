@@ -81,6 +81,20 @@ anchor, and cancellation guards. Publish the selected branch and loaded
 window in `onCommit`, then issue the same keyed jump shown above. See the
 [bounded-paging runtime boundary](bounded-paging.md#runtime-boundary).
 
+Derive day grouping from the **destination snapshot**, including whether that
+path contains timestamps. The old active branch's dated/undated flag is not
+valid for a pending branch. Using it labeled undated history as **Today**
+instead of **Earlier** when selecting a newly dated reply, and produced the
+inverse error when switching back.
+
+Row rendering and measurement happen before `onCommit`. Any render-time host
+state that changes at commit must either travel with the snapshot or be
+updated explicitly once the snapshot commits. In particular, the latest
+response's `data-latest` toolbar marker needs that update: the new row was
+prepared while the previous response was still latest. This marker only
+changes opacity and pointer handling; it doesn't change measured geometry.
+Keep structural row changes inside the runtime's snapshot transaction.
+
 When the new window reaches the beginning of history, remove the leading
 loader in that same update with `edgeSlots: { start: null }`. Omitting
 `edgeSlots` retains the existing slot by design. Leaving it registered caused
@@ -94,6 +108,30 @@ replacing the footer's text node briefly collapsed its line box and clamped
 the tree scroller 18 pixels upward at the bottom, moving the visible nodes
 down. Keep the footer text node and update its `data` instead. This issue was
 reproduced with an isolated tree component without a virtual-list runtime.
+
+Replacing a focused tree node can also emit `focusout` in Chromium. Suppress
+the panel's outside-focus dismissal during that synchronous replacement, then
+restore focus to the replacement node. A keyboard-opened, unpinned panel must
+remain open after selection, just like a click-pinned panel.
+
+## Response sections
+
+Assistant nodes list their H1/H2 sections beneath the title, with H2 entries
+indented. Each section has a clickable dot on the solid path line. Omit the
+first section if it repeats the node title, but retain its original heading
+ordinal so later links still select the right section, including duplicate
+heading names.
+
+Use the same Markdown parser and tool-separated text blocks as the response
+renderer. Keep labels as plain text. Cache the outline by immutable message
+object; build it when the tree renders, not on token or scroll-frame updates.
+
+For a heading jump, first use normal tree navigation to select the branch and
+mount the response. Measure the heading's offset within that row once, then
+call `scrollTo(key, { behavior: "auto", offset: inset - withinRow })`. Negative
+offsets are part of `ScrollOptions`; don't add `align: "start"`, a pin, or a
+second host-owned scroll calculation. The runtime still clamps sections near
+the end to the available scroll range.
 
 ## Regression checks
 
@@ -109,6 +147,13 @@ The following checks cover the decision at both the runtime and host layers:
   clamped scroll position, and unchanged `scrollHeight`. The same suite
   checks unloaded history, branch selection, and tree-panel bottom-click
   stability at desktop and narrow widths in Firefox, WebKit, and Chromium.
+  Review regressions also cover keyboard focus, dated/undated branch changes,
+  latest-response toolbars, attachment-only image nodes, and empty responses
+  labeled **Response in progress…** until streaming supplies a final summary.
+- [`scripts/chat-tree-headings-regression.mjs`](../scripts/chat-tree-headings-regression.mjs):
+  checks H1/H2 hierarchy, duplicate-title removal, original heading ordinals,
+  safe labels, clickable path dots, spacing, keyboard focus, unloaded history,
+  and branch changes in Firefox, WebKit, and Chromium.
 
 Run these checks after changing tree navigation, alignment, pinning, or
 staged-history integration. Start a local Vite server for the browser script,
@@ -118,6 +163,7 @@ or set `BROWSER_MATRIX_URL` to an existing server:
 pnpm run check
 pnpm test
 node scripts/chat-tree-regression.mjs
+node scripts/chat-tree-headings-regression.mjs
 ```
 
 Close any test browsers and servers you start. These are correctness checks,

@@ -303,6 +303,9 @@ p.ai-settings-note {
 .icon-btn svg > *,
 .scroll-jump svg > *,
 .attach-btn svg > *,
+.version-nav-btn svg > *,
+.user-message-toggle svg > *,
+.message-user-actions button svg > *,
 .message-actions button svg > * {
   stroke-width: 1px;
   vector-effect: non-scaling-stroke;
