@@ -50,6 +50,7 @@ import {
   parseBranchingTranscript,
   type TranscriptTree,
 } from "./branching-transcript.js";
+import { createConversationTree } from "./conversation-tree.js";
 import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
 import { createChatImagePreview } from "./image-preview.js";
 import {
@@ -337,6 +338,15 @@ const rootNode = (): TreeNode => ({
   selectedChildIndex: 0,
 });
 const tree = new Map<number, TreeNode>([[TREE_ROOT_ID, rootNode()]]);
+let conversationTree: ReturnType<typeof createConversationTree> | undefined;
+let treeNavigation: AbortController | null = null;
+
+function refreshConversationTree(): void {
+  treeNavigation?.abort();
+  treeNavigation = null;
+  // Structural operations finish updating the loaded window in this task.
+  queueMicrotask(() => conversationTree?.refresh());
+}
 
 const BULK_RESPONSES = [
   `Sure — here's a quick rundown.
@@ -627,6 +637,7 @@ function activeLeafId(): number {
 // Rewrites `transcript` in place (keeping the reference stable) to the active
 // path: the chain of selected children from the root.
 function rebuildActiveTranscript(): void {
+  refreshConversationTree();
   transcript.length = 0;
   let node = tree.get(TREE_ROOT_ID);
   while (node) {
@@ -648,7 +659,10 @@ function versionInfo(
   if (!node) return null;
   const parent = tree.get(node.parentId);
   if (!parent || parent.childrenIds.length <= 1) return null;
-  return { index: parent.selectedChildIndex, count: parent.childrenIds.length };
+  return {
+    index: parent.childrenIds.indexOf(messageId),
+    count: parent.childrenIds.length,
+  };
 }
 
 // New sends extend the active branch: each appended message becomes the
@@ -658,6 +672,130 @@ function appendToActiveBranch(nextMessages: readonly Message[]): void {
   for (const message of nextMessages) {
     addTreeChild(activeLeafId(), message, { select: true });
     transcript.push(message);
+  }
+  refreshConversationTree();
+}
+
+function currentTreeMessage(): number | null {
+  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const top = viewport.scrollTop + inset;
+  // Committed runtime positions, read only when the panel opens or scrolling
+  // ends. No row layout reads and no new work in the scroll-frame path.
+  for (const message of messages) {
+    const position = virtualList?.positionOf(String(message.id));
+    if (position && position.top + position.height > top) return message.id;
+  }
+  return null;
+}
+
+// Selection semantics and runtime references: docs/conversation-tree-navigation.md.
+// A final node is still a keyed jump, not an end target or a forced start pin.
+async function navigateTreeMessage(messageId: number): Promise<boolean> {
+  const list = virtualList;
+  if (
+    !list ||
+    streamAbort ||
+    preparingConversation ||
+    !tree.get(messageId)?.message
+  )
+    return false;
+  cancelUserEdit();
+  const activeIndex = transcriptIndexById.get(messageId);
+  if (
+    activeIndex !== undefined &&
+    activeIndex >= loadedStart &&
+    !(activeIndex === 0 && edgeSlotRequested)
+  ) {
+    return list.scrollTo(String(messageId), {
+      behavior: "auto",
+      // Do not request a pin/reserve: short final messages clamp to the
+      // existing bottom, while taller messages can naturally reach the top.
+      offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+    });
+  }
+  treeNavigation?.abort();
+  const controller = new AbortController();
+  treeNavigation = controller;
+  // Invalidate any older fetch before it can supersede this explicit jump.
+  const epoch = ++conversationEpoch;
+  activeLoad = null;
+  loadingTop = false;
+  setEdgeState("hidden");
+  const ancestors: number[] = [];
+  let id = messageId;
+  while (id !== TREE_ROOT_ID) {
+    const node = tree.get(id);
+    if (!node) return false;
+    ancestors.push(id);
+    id = node.parentId;
+  }
+  ancestors.reverse();
+  const path = [...ancestors];
+  let tail = tree.get(messageId);
+  while (tail) {
+    const childId = selectedChildId(tail);
+    if (childId === undefined) break;
+    path.push(childId);
+    tail = tree.get(childId);
+  }
+  const nextTranscript = path.flatMap((key) => {
+    const message = tree.get(key)?.message;
+    return message ? [message] : [];
+  });
+  const branchChanged =
+    path.length !== transcript.length ||
+    path.some((key, index) => transcript[index]?.id !== key);
+  const index = ancestors.length - 1;
+  const start = Math.min(loadedStart, index);
+  const nextStart = start - (start % MESSAGES_PER_DAY);
+  const needsScrollbackSlot = edgeLoaderMode === "slot" && nextStart > 0;
+  try {
+    const committed = await list.updateWindow(
+      () => {
+        if (epoch !== conversationEpoch || controller.signal.aborted)
+          return null;
+        return {
+          items: rowsForTreeNavigation(nextTranscript, nextStart),
+          edgeSlots: { start: needsScrollbackSlot ? edgeSlotSpec : null },
+          anchor: {
+            key: String(messageId),
+            offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+          },
+          onCommit: () => {
+            let parentId = TREE_ROOT_ID;
+            for (const childId of ancestors) {
+              const parent = tree.get(parentId);
+              if (parent)
+                parent.selectedChildIndex = parent.childrenIds.indexOf(childId);
+              parentId = childId;
+            }
+            transcript.length = 0;
+            transcript.push(...nextTranscript);
+            loadedStart = nextStart;
+            topBoundaryLoadSeen = false;
+            edgeSlotRequested = needsScrollbackSlot;
+            if (!needsScrollbackSlot) edgeSlotElement = null;
+            refreshLoadedWindow();
+            stickyHeaders?.refresh();
+            if (branchChanged) {
+              markConversationChanged();
+              if (getAISettings().provider === "openai")
+                persistOpenAIConversation();
+            }
+            syncMetrics();
+          },
+        };
+      },
+      controller.signal,
+      { interrupt: true },
+    );
+    if (!committed || epoch !== conversationEpoch) return false;
+    return await list.scrollTo(String(messageId), {
+      behavior: "auto",
+      offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+    });
+  } finally {
+    if (treeNavigation === controller) treeNavigation = null;
   }
 }
 
@@ -727,6 +865,7 @@ function refreshLoadedWindow(): void {
     }
     dayRunStartById.set(message.id, runStart);
   });
+  conversationTree?.refreshLoaded();
 }
 
 // Assigned at boot; callbacks that can fire during the boot transaction
@@ -799,13 +938,13 @@ function relativeDayLabel(back: number, date: Date): string {
   });
 }
 
-function dayLabel(day: number): string {
+function dayLabel(day: number, finalDay = lastDay()): string {
   if (day === UNDATED_DAY) return "Earlier";
   if (isDatedDay(day)) {
     const back = Math.round((localMidnight(Date.now()) - day) / DAY_MS);
     return relativeDayLabel(back, new Date(day));
   }
-  const back = lastDay() - day;
+  const back = finalDay - day;
   const date = new Date();
   date.setDate(date.getDate() - back);
   return relativeDayLabel(back, date);
@@ -846,6 +985,48 @@ function rowsForRuntime(
     }
     rows.push(message);
   }
+  return rows;
+}
+
+// A staged branch is not the active transcript yet. Derive its day runs
+// from that snapshot without changing the still-interactive old branch.
+function rowsForTreeNavigation(
+  path: readonly Message[],
+  start: number,
+): ChatRow[] {
+  const rows: ChatRow[] = [];
+  const finalDay = Math.max(
+    0,
+    Math.floor((path.length - 1) / MESSAGES_PER_DAY),
+  );
+  let previousDay: number | undefined;
+  let runStart = 0;
+  path.forEach((message, index) => {
+    const reply = message.role === "user" ? path[index + 1] : undefined;
+    const sentAt =
+      reply?.role === "assistant"
+        ? (reply.sentAt ?? message.sentAt)
+        : message.sentAt;
+    const day =
+      sentAt !== undefined
+        ? localMidnight(sentAt)
+        : conversationIsDated()
+          ? UNDATED_DAY
+          : Math.floor(index / MESSAGES_PER_DAY);
+    const newDay = day !== previousDay;
+    if (newDay) runStart = message.id;
+    if (index >= start) {
+      if (newDay || index === start)
+        rows.push({
+          kind: "day",
+          day,
+          runStart,
+          label: dayLabel(day, finalDay),
+        });
+      rows.push(message);
+    }
+    previousDay = day;
+  });
   return rows;
 }
 
@@ -1088,6 +1269,10 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
 // Fetch during scrolling; prepare and commit through the runtime's idle
 // window-update queue. The loader stays visible until that commit completes.
 function loadOlderMessages({ signal, complete }: ReachContext): void {
+  if (treeNavigation) {
+    complete();
+    return;
+  }
   if (activeLoad) {
     complete();
     return;
@@ -2408,6 +2593,7 @@ function autosize(): void {
 }
 
 function setStreamingUI(streaming: boolean): void {
+  if (!streaming) conversationTree?.refresh();
   viewport.classList.toggle("is-streaming", streaming);
   for (const button of viewport.querySelectorAll<HTMLButtonElement>(
     ".message-actions > button",
@@ -3498,6 +3684,21 @@ syncMetrics();
 document.documentElement.classList.remove("booting");
 
 const imagePreview = createChatImagePreview(viewport, () => transcript);
+conversationTree = createConversationTree({
+  host: mustGet("scroll-jump-layer"),
+  viewport,
+  tree,
+  isLoaded: (id) => {
+    const index = transcriptIndexById.get(id);
+    return index !== undefined && index >= loadedStart;
+  },
+  currentMessage: currentTreeMessage,
+  navigate: navigateTreeMessage,
+});
+window.addEventListener("pagehide", () => {
+  treeNavigation?.abort();
+  conversationTree?.dispose();
+});
 window.addEventListener("pagehide", () => imagePreview.dispose());
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) location.reload();

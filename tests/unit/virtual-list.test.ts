@@ -4833,6 +4833,40 @@ describe("runtime — edge slots", () => {
     h.list.dispose();
   });
 
+  it("should atomically remove the loader slot when a staged jump loads the beginning", async () => {
+    const slot = loader();
+    const h = mount(range(20, 40), { edgeSlots: { start: slot } });
+    // The first row represents the chat's day header; the reading target
+    // belongs directly below it, with no empty loader strip above either.
+    h.heights.set(0, 40);
+    let committed = false;
+    expect(h.list.positionOf("m20")?.top).toBe(52);
+
+    const applied = h.list.updateWindow(
+      () => ({
+        items: range(0, 40),
+        edgeSlots: { start: null },
+        anchor: { key: "m1", offset: 40 },
+        onCommit: () => {
+          committed = true;
+        },
+      }),
+      undefined,
+      { interrupt: true },
+    );
+    advanceFramesUntil(() => committed);
+    await expect(applied).resolves.toBe(true);
+    h.userScroll(0);
+    h.settle();
+
+    expect(h.viewport.scrollTop).toBe(0);
+    expect(h.list.positionOf("m0")).toEqual({ top: 0, height: 40 });
+    expect(h.list.positionOf("m1")).toEqual({ top: 40, height: ROW_H });
+    expect(h.list.state.totalSize).toBe(39 * ROW_H + 40);
+    expect(h.viewport.querySelector('[data-id="slot"]')).toBeNull();
+    h.list.dispose();
+  });
+
   it("a prepend replaces the slot's strip with content while the first row keeps its place", () => {
     const initial = range(0, 40);
     const h = mount(initial, { edgeSlots: { start: loader() } });
@@ -5280,6 +5314,27 @@ describe("runtime — commands", () => {
       expect(h.viewport.scrollTop).toBe(1456);
       expect(h.list.state.totalSize).toBe(2056);
       expect(h.list.state.atEnd).toBe(true);
+      h.list.dispose();
+    },
+  );
+
+  it.each([100, 900])(
+    "should naturally clamp a keyed jump without requesting a pin for a %i pixel last row",
+    async (lastHeight) => {
+      const h = mount(range(0, 20), {
+        boot: "start",
+        itemHeight: (item) => (item.id === 19 ? lastHeight : ROW_H),
+      });
+      const totalBefore = h.list.state.totalSize;
+
+      await expect(
+        h.list.scrollTo("m19", { behavior: "auto", offset: 40 }),
+      ).resolves.toBe(true);
+
+      expect(h.viewport.scrollTop).toBe(
+        Math.min(1900 - 40, totalBefore - VIEWPORT_H),
+      );
+      expect(h.list.state.totalSize).toBe(totalBefore);
       h.list.dispose();
     },
   );

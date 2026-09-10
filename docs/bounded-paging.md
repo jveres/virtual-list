@@ -40,6 +40,11 @@ the context arrays or synchronously dispatch input from the updater.
 snapshot (`scrollTop` and `height`). Combine it with `positionOf(key)` for
 geometry-based companions without forcing DOM measurements after mounting.
 
+For message selection across loaded windows, see
+[conversation-tree navigation](conversation-tree-navigation.md). It records
+the distinction between a clamped keyed jump and a pin, including short and
+long final messages and atomic removal of the leading loader slot.
+
 ## Paging companion
 
 The companion owns the contiguous retained source pages, deduplicates incoming

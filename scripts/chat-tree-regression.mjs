@@ -1,0 +1,636 @@
+import assert from "node:assert/strict";
+import { mkdir } from "node:fs/promises";
+import { chromium, firefox, webkit } from "playwright";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
+await mkdir("browser-artifacts/conversation-tree", { recursive: true });
+for (const engine of [firefox, webkit, chromium]) {
+  const browser = await engine.launch();
+  try {
+    const page = await browser.newPage({
+      viewport: { width: 1200, height: 820 },
+      hasTouch: true,
+    });
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("dialog", (dialog) => dialog.accept());
+    await page.goto(`${base}/demos/streaming/`);
+    await page.waitForFunction(
+      () => !document.documentElement.classList.contains("booting"),
+    );
+    const markdown = await page.evaluate(async () => {
+      const { branchingTranscriptMarkdown } = await import(
+        "/demos/streaming/branching-transcript.ts"
+      );
+      const imageUri = `data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80"><!--${"padding".repeat(600)}--><rect width="80" height="80" fill="#789"/></svg>`)}`;
+      const nodes = Array.from({ length: 120 }, (_, index) => ({
+        id: index + 1,
+        parentId: index,
+        selectedChildId: index === 119 ? null : index + 2,
+        message: {
+          role: index % 2 ? "assistant" : "user",
+          markdown: `${index === 4 ? "A detailed summary that should use the free space to the right instead of being cut off early." : `Message ${index + 1}`}\n\n${"A paragraph with enough content to exercise unloaded history. ".repeat(12)}`,
+        },
+      }));
+      nodes.push(
+        {
+          id: 201,
+          parentId: 1,
+          selectedChildId: 202,
+          message: {
+            role: "assistant",
+            markdown: `Alternate answer\n\n![Supporting picture](${imageUri})\n\n![Second picture](${imageUri})`,
+          },
+        },
+        {
+          id: 202,
+          parentId: 201,
+          selectedChildId: 203,
+          message: {
+            role: "user",
+            markdown: `Alternate follow-up\n\n![One picture](${imageUri})`,
+          },
+        },
+        {
+          id: 203,
+          parentId: 202,
+          selectedChildId: null,
+          message: {
+            role: "assistant",
+            markdown: `![Tree image summary](${imageUri})\n\n![Second picture](${imageUri})`,
+          },
+        },
+        {
+          id: 204,
+          parentId: 0,
+          selectedChildId: 205,
+          message: { role: "user", markdown: "Edited root question" },
+        },
+        {
+          id: 205,
+          parentId: 204,
+          selectedChildId: null,
+          message: {
+            role: "assistant",
+            markdown: '<img src=x onerror="alert(1)">',
+          },
+        },
+      );
+      return branchingTranscriptMarkdown(
+        { selectedRootId: 1, nodes },
+        { dayOf: () => 0, dayLabel: () => "Today" },
+      );
+    });
+    await page.locator("#import-file").setInputFiles({
+      name: "tree.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from(markdown),
+    });
+    await page.waitForFunction(() =>
+      document.querySelector('#viewport [data-key="119"]'),
+    );
+    const toggle = page.getByRole("button", {
+      name: "Conversation tree",
+      exact: true,
+    });
+    const panel = page.locator(".conversation-tree-panel");
+    const node = (id) => panel.locator(`[data-message-id="${id}"]`);
+    assert.equal(await panel.isVisible(), false);
+    await toggle.hover();
+    await panel.waitFor({ state: "visible" });
+    assert.equal(await node(1).getAttribute("data-loaded"), "false");
+    assert.equal(await node(119).getAttribute("data-loaded"), "true");
+    assert.equal(await node(201).getAttribute("data-loaded"), "false");
+    const unloadedInk = await node(1).evaluate((element) => {
+      const probe = document.createElement("span");
+      probe.style.color = "var(--fg-muted)";
+      element.append(probe);
+      const expected = getComputedStyle(probe).color;
+      probe.remove();
+      return {
+        expected,
+        text: getComputedStyle(
+          element.querySelector(".conversation-tree-label"),
+        ).color,
+        icon: getComputedStyle(
+          element.querySelector(".conversation-tree-glyph"),
+        ).color,
+      };
+    });
+    assert.equal(unloadedInk.text, unloadedInk.expected);
+    assert.equal(unloadedInk.icon, unloadedInk.expected);
+    assert.equal(
+      await panel.locator(".conversation-tree-node[title]").count(),
+      0,
+    );
+    assert.equal(await toggle.locator("svg rect[rx='1']").count(), 3);
+    const controlStrokes = await page
+      .locator(
+        ".icon-btn svg > *, .scroll-jump svg > *, .message-actions button svg > *, .attach-btn svg > *, .conversation-tree button svg > *",
+      )
+      .evaluateAll((shapes) =>
+        shapes.map((shape) => {
+          const style = getComputedStyle(shape);
+          return { width: style.strokeWidth, effect: style.vectorEffect };
+        }),
+      );
+    assert.ok(controlStrokes.length > 20);
+    for (const stroke of controlStrokes)
+      assert.deepEqual(stroke, { width: "1px", effect: "non-scaling-stroke" });
+    assert.equal(
+      await panel
+        .locator(".conversation-tree-edges > g:last-child > path:not(.active)")
+        .count(),
+      0,
+    );
+    assert.equal(await panel.locator(".conversation-tree-node").count(), 122);
+    assert.equal(await panel.locator('[aria-current="location"]').count(), 1);
+    const marker = await panel
+      .locator('[aria-current="location"]')
+      .evaluate((element) => ({
+        border: getComputedStyle(
+          element.querySelector(".conversation-tree-glyph"),
+        ).borderColor,
+        ink: getComputedStyle(element).color,
+        dot: getComputedStyle(element, "::before").content,
+      }));
+    assert.equal(marker.border, marker.ink);
+    assert.equal(marker.dot, "none");
+    const currentGlyph = panel.locator(
+      '[aria-current="location"] .conversation-tree-glyph',
+    );
+    assert.equal(
+      await currentGlyph.evaluate(
+        (element) => getComputedStyle(element).animationName,
+      ),
+      "conversation-tree-current-pulse",
+    );
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    assert.equal(
+      await currentGlyph.evaluate(
+        (element) => getComputedStyle(element).animationName,
+      ),
+      "none",
+    );
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    const wideLabel = await node(5)
+      .locator(".conversation-tree-label")
+      .evaluate((element) => ({
+        width: element.clientWidth,
+        height: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        text: element.textContent,
+      }));
+    assert.ok(
+      wideLabel.width > 250,
+      `single-node row should use available space: ${wideLabel.width}`,
+    );
+    assert.equal(
+      wideLabel.text,
+      "A detailed summary that should use the free space to the right instead of being cut off early.",
+    );
+    assert.equal(wideLabel.scrollHeight, wideLabel.height);
+    const closeGeometry = await page
+      .getByRole("button", { name: "Close conversation tree", exact: true })
+      .evaluate((element) => ({
+        width: element.getBoundingClientRect().width,
+        height: element.getBoundingClientRect().height,
+        radius: getComputedStyle(element).borderRadius,
+      }));
+    assert.equal(closeGeometry.width, closeGeometry.height);
+    assert.equal(closeGeometry.radius, "7px");
+    const closeButton = page.getByRole("button", {
+      name: "Close conversation tree",
+      exact: true,
+    });
+    await closeButton.hover();
+    const closeCenter = await closeButton.evaluate((element) => {
+      const button = element.getBoundingClientRect();
+      const cross = element.querySelector("svg").getBoundingClientRect();
+      return {
+        width: cross.width,
+        height: cross.height,
+        x: cross.x + cross.width / 2 - (button.x + button.width / 2),
+        y: cross.y + cross.height / 2 - (button.y + button.height / 2),
+      };
+    });
+    assert.deepEqual(closeCenter, { width: 16, height: 16, x: 0, y: 0 });
+    await closeButton.screenshot({
+      path: `browser-artifacts/conversation-tree/${engine.name()}-close.png`,
+    });
+    const badgeSpacing = await panel.evaluate((element) => {
+      const canvasTop = element
+        .querySelector(".conversation-tree-canvas")
+        .getBoundingClientRect().top;
+      return [...element.querySelectorAll(".conversation-tree-count")].flatMap(
+        (badge) => {
+          const row = Number(badge.closest("[data-row]").dataset.row);
+          const next = element.querySelector(`[data-row="${row + 1}"]`);
+          return next
+            ? [
+                Number.parseFloat(next.style.top) -
+                  8 -
+                  (badge.getBoundingClientRect().bottom - canvasTop),
+              ]
+            : [];
+        },
+      );
+    });
+    assert.ok(badgeSpacing.length > 0);
+    for (const gap of badgeSpacing)
+      assert.ok(gap >= 8, `badge-to-connector gap: ${gap}`);
+    const scrollbar = await panel
+      .locator(".conversation-tree-scroll")
+      .evaluate((element) => {
+        // Firefox's headless theme resolves even auto/thin to none on macOS.
+        // Compare with a native thin control and verify our authored rule too.
+        const probe = document.createElement("div");
+        probe.style.scrollbarWidth = "thin";
+        document.body.append(probe);
+        const nativeThin = getComputedStyle(probe).scrollbarWidth;
+        probe.remove();
+        const authoredThin = [...document.styleSheets].some((sheet) =>
+          [...sheet.cssRules].some(
+            (rule) =>
+              rule.selectorText === ".conversation-tree-scroll" &&
+              rule.style.scrollbarWidth === "thin",
+          ),
+        );
+        return {
+          actual: getComputedStyle(element).scrollbarWidth,
+          nativeThin,
+          authoredThin,
+        };
+      });
+    assert.equal(scrollbar.authoredThin, true);
+    assert.equal(scrollbar.actual, scrollbar.nativeThin);
+    const gutters = await panel
+      .locator(".conversation-tree-scroll")
+      .evaluate((element) => ({
+        x: Number.parseFloat(
+          element.style.getPropertyValue("--scroll-fade-gutter-x"),
+        ),
+        y: Number.parseFloat(
+          element.style.getPropertyValue("--scroll-fade-gutter-y"),
+        ),
+        actualX: element.offsetHeight - element.clientHeight,
+        actualY: element.offsetWidth - element.clientWidth,
+      }));
+    assert.equal(gutters.x, gutters.actualX);
+    assert.equal(gutters.y, gutters.actualY);
+    await panel.locator(".conversation-tree-scroll").evaluate((element) => {
+      element.scrollTop = 0;
+      element.scrollLeft = 0;
+    });
+    await page.waitForFunction(() => {
+      const style = document.querySelector(".conversation-tree-scroll").style;
+      return (
+        style.getPropertyValue("--scroll-fade-top") === "0px" &&
+        style.getPropertyValue("--scroll-fade-bottom") === "14px"
+      );
+    });
+    await panel.locator(".conversation-tree-scroll").evaluate((element) => {
+      element.scrollTop = element.scrollHeight;
+    });
+    await page.waitForFunction(() => {
+      const style = document.querySelector(".conversation-tree-scroll").style;
+      return (
+        style.getPropertyValue("--scroll-fade-top") === "14px" &&
+        style.getPropertyValue("--scroll-fade-bottom") === "0px"
+      );
+    });
+    const checkTreeBottomClick = async () => {
+      const treePosition = () =>
+        panel.locator(".conversation-tree-scroll").evaluate((element) => ({
+          top: element.scrollTop,
+          height: element.clientHeight,
+          contentHeight: element.scrollHeight,
+          nodeTop: element
+            .querySelector('[data-message-id="119"]')
+            .getBoundingClientRect().top,
+        }));
+      for (const width of [1200, 390]) {
+        await page.setViewportSize({ width, height: 820 });
+        await panel.locator(".conversation-tree-scroll").evaluate((element) => {
+          element.scrollTop = element.scrollHeight;
+        });
+        const beforeTreeClick = await treePosition();
+        await node(119).click();
+        await page.waitForFunction(
+          () =>
+            !document
+              .querySelector(".conversation-tree-panel")
+              .hasAttribute("aria-busy"),
+        );
+        assert.deepEqual(
+          await treePosition(),
+          beforeTreeClick,
+          `clicking a node at the tree's bottom must preserve its scroll position (${width}px)`,
+        );
+      }
+      await page.setViewportSize({ width: 1200, height: 820 });
+    };
+    assert.equal(
+      await node(201).locator(".conversation-tree-count").textContent(),
+      "2 more messages",
+    );
+    const geometry = await page.evaluate(() => {
+      const box = (selector) =>
+        document.querySelector(selector).getBoundingClientRect().toJSON();
+      return {
+        tree: box(".conversation-tree-toggle"),
+        top: box("#scroll-top-btn"),
+        panel: box(".conversation-tree-panel"),
+        message: box("#viewport .message"),
+      };
+    });
+    assert.equal(geometry.tree.y, geometry.top.y);
+    assert.equal(geometry.tree.width, geometry.top.width);
+    assert.ok(geometry.tree.x < geometry.top.x);
+    assert.ok(geometry.panel.x + geometry.panel.width > geometry.message.x);
+    await page.mouse.move(1190, 810);
+    await panel.waitFor({ state: "hidden" });
+    await toggle.focus();
+    await panel.waitFor({ state: "visible" });
+    await page.keyboard.press("Escape");
+    assert.equal(await panel.isVisible(), false);
+    await toggle.click();
+    await checkTreeBottomClick();
+    await node(1).click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('.conversation-tree-node[data-message-id="1"]')
+          ?.getAttribute("aria-current") === "location",
+    );
+    const firstPosition = await page
+      .locator('#viewport [data-key="1"]')
+      .evaluate(
+        (row) =>
+          row.getBoundingClientRect().top -
+          document.querySelector("#viewport").getBoundingClientRect().top,
+      );
+    assert.equal(await node(1).getAttribute("data-loaded"), "true");
+    // Loaded data need not have a mounted DOM row while it is offscreen.
+    assert.equal(await node(119).getAttribute("data-loaded"), "true");
+    assert.equal(await page.locator('#viewport [data-key="119"]').count(), 0);
+    assert.ok(
+      Math.abs(firstPosition - 40) <= 2,
+      `history target offset: ${firstPosition}`,
+    );
+    await page.locator("#prompt").click();
+    await page.locator("#viewport").hover();
+    await page.mouse.wheel(0, -600);
+    await page.waitForFunction(
+      () => document.querySelector("#viewport").scrollTop === 0,
+    );
+    assert.equal(await page.locator("#viewport .boundary-slot").count(), 0);
+    const firstAtTop = await page
+      .locator('#viewport [data-key="1"]')
+      .evaluate(
+        (row) =>
+          row.getBoundingClientRect().top -
+          document.querySelector("#viewport").getBoundingClientRect().top,
+      );
+    assert.ok(
+      Math.abs(firstAtTop - 40) <= 2,
+      `unexpected blank area above first message: ${firstAtTop}`,
+    );
+    await toggle.click();
+    await node(120).click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".conversation-tree-panel")
+          ?.getAttribute("aria-busy") === null,
+    );
+    const treeEnd = await page
+      .locator("#viewport")
+      .evaluate((viewport) => viewport.scrollTop);
+    await page.locator("#prompt").click();
+    await page.locator("#viewport").evaluate((viewport) => {
+      viewport.scrollTop -= 300;
+    });
+    await page
+      .getByRole("button", { name: "Scroll to bottom", exact: true })
+      .click();
+    await page.waitForFunction(
+      (expected) =>
+        Math.abs(document.querySelector("#viewport").scrollTop - expected) < 1,
+      treeEnd,
+    );
+    await toggle.click();
+    await node(201).scrollIntoViewIfNeeded();
+    const versionPosition = await node(201).evaluate((element) => ({
+      left: element.style.left,
+      top: element.style.top,
+    }));
+    await node(201).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.conversation-tree-node[data-message-id="201"]')
+          ?.dataset.active === "true",
+    );
+    assert.equal(await panel.locator('[data-active="true"]').count(), 4);
+    assert.equal(
+      await node(201).locator(".conversation-tree-image-indicator").count(),
+      1,
+    );
+    assert.equal(
+      await node(201).getAttribute("aria-description"),
+      "Includes 2 images",
+    );
+    assert.equal(
+      await node(202).getAttribute("aria-description"),
+      "Includes 1 image",
+    );
+    assert.equal(
+      await node(203).getAttribute("aria-description"),
+      "Includes 2 images",
+    );
+    const imagePath = (id, selector) =>
+      node(id).locator(selector).getAttribute("d");
+    const multipleImagePath = await imagePath(
+      201,
+      ".conversation-tree-image-indicator path",
+    );
+    assert.notEqual(
+      multipleImagePath,
+      await imagePath(202, ".conversation-tree-image-indicator path"),
+    );
+    assert.equal(
+      multipleImagePath,
+      await imagePath(203, ".conversation-tree-glyph > svg path"),
+    );
+    assert.equal(
+      await node(201).locator(".conversation-tree-label").textContent(),
+      "Alternate answer",
+    );
+    assert.equal(
+      await node(203).locator(".conversation-tree-label").textContent(),
+      "Tree image summary",
+    );
+    assert.equal(await node(203).locator("img").count(), 0);
+    assert.equal(
+      await node(203).locator(".conversation-tree-image-indicator").count(),
+      0,
+    );
+    assert.deepEqual(
+      await node(201).evaluate((element) => ({
+        left: element.style.left,
+        top: element.style.top,
+      })),
+      versionPosition,
+    );
+    assert.equal(
+      await node(2).locator(".conversation-tree-count").textContent(),
+      "118 more messages",
+    );
+    assert.equal(
+      await page
+        .locator('#viewport [data-key="201"] .version-nav-count')
+        .textContent(),
+      "2 / 2",
+    );
+    await page.screenshot({
+      path: `browser-artifacts/conversation-tree/${engine.name()}-desktop.png`,
+    });
+    await node(204).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.conversation-tree-node[data-message-id="204"]')
+          ?.dataset.active === "true",
+    );
+    assert.equal(await node(205).locator("img").count(), 0);
+    assert.equal(
+      await node(205).locator(".conversation-tree-label").textContent(),
+      '<img src=x onerror="alert(1)">',
+    );
+    assert.equal(await panel.locator('[data-active="true"]').count(), 2);
+    await node(1).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.conversation-tree-node[data-message-id="1"]')
+          ?.dataset.active === "true",
+    );
+    await node(2).click();
+    await page.waitForFunction(
+      () =>
+        document.querySelector('.conversation-tree-node[data-message-id="2"]')
+          ?.dataset.active === "true",
+    );
+    assert.equal(await panel.locator('[data-active="true"]').count(), 120);
+    await page.locator("#prompt").click();
+    assert.equal(await panel.isVisible(), false);
+    await page.setViewportSize({ width: 390, height: 844 });
+    await toggle.tap();
+    await panel.waitFor({ state: "visible" });
+    await panel.locator(".conversation-tree-scroll").evaluate((element) => {
+      element.scrollLeft = 0;
+    });
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(".conversation-tree-scroll")
+          .style.getPropertyValue("--scroll-fade-right") === "14px",
+    );
+    await panel.locator(".conversation-tree-scroll").evaluate((element) => {
+      element.scrollLeft = element.scrollWidth;
+    });
+    await page.waitForFunction(() => {
+      const style = document.querySelector(".conversation-tree-scroll").style;
+      return (
+        style.getPropertyValue("--scroll-fade-left") === "14px" &&
+        style.getPropertyValue("--scroll-fade-right") === "0px"
+      );
+    });
+    const mobile = await panel.boundingBox();
+    assert.ok(mobile.x >= 0 && mobile.x + mobile.width <= 390);
+    await page.screenshot({
+      path: `browser-artifacts/conversation-tree/${engine.name()}-mobile.png`,
+    });
+    await page
+      .getByRole("button", { name: "Close conversation tree", exact: true })
+      .tap();
+    assert.equal(await panel.isVisible(), false);
+    await page.setViewportSize({ width: 1200, height: 820 });
+    for (const long of [false, true]) {
+      const label = `Final ${long ? "long" : "short"} response`;
+      const ending = long
+        ? `${label}\n\n${"A long response paragraph. ".repeat(800)}`
+        : label;
+      await page.locator("#import-file").setInputFiles({
+        name: "last-message.md",
+        mimeType: "text/markdown",
+        buffer: Buffer.from(
+          `**User**\n\nEarlier prompt\n\n**Assistant**\n\n${"Earlier reply. ".repeat(200)}\n\n**User**\n\nFinal prompt\n\n**Assistant**\n\n${ending}\n`,
+        ),
+      });
+      await page
+        .locator("#viewport")
+        .getByText(label, { exact: true })
+        .waitFor();
+      const before = await page
+        .locator('#viewport [data-key="4"]')
+        .evaluate((row) => {
+          const viewport = document.querySelector("#viewport");
+          return {
+            height: viewport.scrollHeight,
+            client: viewport.clientHeight,
+            absoluteTop:
+              row.getBoundingClientRect().top -
+              viewport.getBoundingClientRect().top +
+              viewport.scrollTop,
+          };
+        });
+      await toggle.click();
+      await node(4).click();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector(".conversation-tree-panel")
+            ?.getAttribute("aria-busy") === null,
+      );
+      const after = await page
+        .locator('#viewport [data-key="4"]')
+        .evaluate((row) => {
+          const viewport = document.querySelector("#viewport");
+          return {
+            height: viewport.scrollHeight,
+            top: viewport.scrollTop,
+            offset:
+              row.getBoundingClientRect().top -
+              viewport.getBoundingClientRect().top,
+          };
+        });
+      assert.equal(
+        after.height,
+        before.height,
+        "tree navigation must not create trailing space",
+      );
+      assert.ok(
+        Math.abs(
+          after.top -
+            Math.min(before.absoluteTop - 40, before.height - before.client),
+        ) <= 2,
+      );
+      if (long)
+        assert.ok(
+          Math.abs(after.offset - 40) <= 2,
+          `long response should land at its top: ${after.offset}`,
+        );
+      else
+        assert.ok(
+          after.offset > 40,
+          "short response should stop at the existing bottom limit",
+        );
+      await page.locator("#prompt").click();
+    }
+    assert.deepEqual(errors, []);
+    console.log(
+      `${engine.name()}: tree hover, keyboard, touch, history, branches, safe labels, alignment passed`,
+    );
+  } finally {
+    await browser.close();
+  }
+}

@@ -299,6 +299,15 @@ p.ai-settings-note {
   flex: none;
 }
 
+/* Keep control strokes at one CSS pixel across different SVG viewBoxes. */
+.icon-btn svg > *,
+.scroll-jump svg > *,
+.attach-btn svg > *,
+.message-actions button svg > * {
+  stroke-width: 1px;
+  vector-effect: non-scaling-stroke;
+}
+
 .icon-btn[hidden] {
   display: none;
 }

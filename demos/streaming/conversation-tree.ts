@@ -1,0 +1,380 @@
+import { scrollFade } from "../shared/scroll-fade.js";
+import {
+  type ConversationNode,
+  conversationEntries,
+} from "./conversation-tree-model.js";
+import "./conversation-tree.css";
+
+interface TreeOptions {
+  host: HTMLElement;
+  viewport: HTMLElement;
+  tree: ReadonlyMap<number, ConversationNode>;
+  isLoaded: (id: number) => boolean;
+  currentMessage: () => number | null;
+  navigate: (id: number) => Promise<boolean>;
+}
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+const ICONS = {
+  user: "M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2v-10a9.5 9.5 0 1 1 19 0Z",
+  assistant: "M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8",
+  image: "M3 3h18v18H3zM3 17l6-6 4 4 3-3 5 5M15 7h.01",
+  images: "M3 7v14h14M7 3h14v14H7zM7 13l4-4 4 4 2-2 4 4M16 6h.01",
+};
+
+function icon(path: string): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.5");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const shape = document.createElementNS(SVG_NS, "path");
+  shape.setAttribute("d", path);
+  svg.append(shape);
+  return svg;
+}
+
+/** Lucide Network; CSS normalizes control strokes to one rendered pixel. */
+function networkIcon(): SVGSVGElement {
+  const svg = icon("M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3 M12 12V8");
+  for (const [x, y] of [
+    [16, 16],
+    [2, 16],
+    [9, 2],
+  ]) {
+    const rect = document.createElementNS(SVG_NS, "rect");
+    rect.setAttribute("x", String(x));
+    rect.setAttribute("y", String(y));
+    rect.setAttribute("width", "6");
+    rect.setAttribute("height", "6");
+    rect.setAttribute("rx", "1");
+    svg.prepend(rect);
+  }
+  return svg;
+}
+
+/** Built only on opening or a structural change while open. No token or
+ * animation-frame subscription; reading position updates at scroll end. */
+export function createConversationTree(options: TreeOptions): {
+  refresh: () => void;
+  refreshLoaded: () => void;
+  dispose: () => void;
+} {
+  const listeners = new AbortController();
+  const { signal } = listeners;
+  const root = document.createElement("div");
+  root.className = "conversation-tree";
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "scroll-jump conversation-tree-toggle";
+  toggle.setAttribute("aria-label", "Conversation tree");
+  toggle.setAttribute("aria-expanded", "false");
+  toggle.setAttribute("aria-controls", "conversation-tree-panel");
+  toggle.append(networkIcon());
+  const panel = document.createElement("section");
+  panel.id = "conversation-tree-panel";
+  panel.className = "conversation-tree-panel";
+  panel.setAttribute("aria-label", "Conversation tree");
+  panel.hidden = true;
+  const header = document.createElement("div");
+  header.className = "conversation-tree-header";
+  const title = document.createElement("h2");
+  title.textContent = "Conversation";
+  const closeButton = document.createElement("button");
+  closeButton.type = "button";
+  closeButton.className = "conversation-tree-close";
+  closeButton.setAttribute("aria-label", "Close conversation tree");
+  closeButton.append(icon("M6 6l12 12M18 6 6 18"));
+  header.append(title, closeButton);
+  const scroller = document.createElement("div");
+  scroller.className = "conversation-tree-scroll";
+  const canvas = document.createElement("div");
+  canvas.className = "conversation-tree-canvas";
+  scroller.append(canvas);
+  const status = document.createElement("p");
+  status.className = "conversation-tree-status";
+  status.setAttribute("role", "status");
+  // Keep the line box alive when changing the text. Replacing its text node
+  // briefly collapses the footer in WebKit and clamps the scroller at bottom.
+  const statusText = document.createTextNode("");
+  status.append(statusText);
+  panel.append(header, scroller, status);
+  root.append(toggle, panel);
+  options.host.append(root);
+  let dirty = true;
+  let pinned = false;
+  let navigating = false;
+  let closeTimer = 0;
+  let current: HTMLButtonElement | undefined;
+  const buttons = new Map<number, HTMLButtonElement>();
+  const stopFade = scrollFade(scroller);
+
+  function refreshLoaded(): void {
+    if (panel.hidden) return;
+    for (const [id, button] of buttons) {
+      const loaded = String(options.isLoaded(id));
+      if (button.dataset.loaded !== loaded) button.dataset.loaded = loaded;
+    }
+  }
+
+  function updateCurrent(center = false): void {
+    if (panel.hidden) return;
+    current?.removeAttribute("aria-current");
+    const id = options.currentMessage();
+    current = id === null ? undefined : buttons.get(id);
+    current?.setAttribute("aria-current", "location");
+    if (center && current) {
+      scroller.scrollTop = Math.max(
+        0,
+        Number.parseFloat(current.style.top) - 96,
+      );
+      scroller.scrollLeft = Math.max(
+        0,
+        Number.parseFloat(current.style.left) - 80,
+      );
+    }
+  }
+
+  function render(): void {
+    const focusedId =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement.dataset.messageId
+        : undefined;
+    buttons.clear();
+    const entries = conversationEntries(options.tree);
+    const rows = entries.reduce(
+      (max, entry) => Math.max(max, entry.row + 1),
+      0,
+    );
+    const columns = entries.reduce(
+      (max, entry) => Math.max(max, entry.column + 1),
+      1,
+    );
+    // A folded-branch badge belongs to its node, above the next junction.
+    // Reserve extra space only on rows with badges so the connector never
+    // crosses the label or makes it look like a count on the active path.
+    const badgeRows = new Set(
+      entries
+        .filter((entry) => entry.hiddenCount > 0)
+        .map((entry) => entry.row),
+    );
+    const rowTops: number[] = [];
+    let canvasHeight = 0;
+    for (let row = 0; row < Math.max(1, rows); row++) {
+      rowTops.push(canvasHeight);
+      canvasHeight += badgeRows.has(row) ? 88 : 64;
+    }
+    canvas.style.height = `${canvasHeight}px`;
+    canvas.style.width = `${columns * 208}px`;
+    const edges = document.createElementNS(SVG_NS, "svg");
+    edges.classList.add("conversation-tree-edges");
+    edges.setAttribute("width", String(columns * 208));
+    edges.setAttribute("height", String(canvasHeight));
+    edges.setAttribute("aria-hidden", "true");
+    const inactiveEdges = document.createElementNS(SVG_NS, "g");
+    const activeEdges = document.createElementNS(SVG_NS, "g");
+    // SVG paints in document order: the active spine must cover the shared
+    // gray segment, regardless of sibling order.
+    edges.append(inactiveEdges, activeEdges);
+    const content = document.createDocumentFragment();
+    content.append(edges);
+    const entryById = new Map(entries.map((entry) => [entry.id, entry]));
+    const lastColumnByRow = new Map<number, number>();
+    for (const entry of entries) lastColumnByRow.set(entry.row, entry.column);
+    for (const entry of entries) {
+      const x = entry.column * 208;
+      const y = rowTops[entry.row] ?? 0;
+      if (entry.row > 0) {
+        const parentX = (entryById.get(entry.parentId)?.column ?? 0) * 208;
+        const parentY = rowTops[entry.row - 1] ?? 0;
+        const edge = document.createElementNS(SVG_NS, "path");
+        edge.setAttribute(
+          "d",
+          x === parentX
+            ? `M${parentX + 26} ${parentY + 36}V${y + 8}`
+            : `M${parentX + 26} ${parentY + 36}V${y - 16}Q${parentX + 26} ${y - 8} ${parentX + 34} ${y - 8}H${x + 18}Q${x + 26} ${y - 8} ${x + 26} ${y}V${y + 8}`,
+        );
+        edge.setAttribute(
+          "class",
+          `conversation-tree-edge${entry.active ? " active" : ""}`,
+        );
+        (entry.active ? activeEdges : inactiveEdges).append(edge);
+      }
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "conversation-tree-node";
+      button.style.left = `${x}px`;
+      button.style.top = `${y}px`;
+      if (entry.column === lastColumnByRow.get(entry.row)) {
+        button.style.width = `calc(100% - ${x + 8}px)`;
+      }
+      button.dataset.messageId = String(entry.id);
+      button.dataset.row = String(entry.row);
+      button.dataset.active = String(entry.active);
+      const glyph = document.createElement("span");
+      glyph.className = "conversation-tree-glyph";
+      const imageIcon = entry.imageCount > 1 ? ICONS.images : ICONS.image;
+      glyph.append(icon(entry.image ? imageIcon : ICONS[entry.role]));
+      if (entry.hasImages && !entry.image) {
+        const indicator = document.createElement("span");
+        indicator.className = "conversation-tree-image-indicator";
+        indicator.setAttribute("aria-hidden", "true");
+        indicator.append(icon(imageIcon));
+        glyph.append(indicator);
+      }
+      if (entry.hasImages)
+        button.setAttribute(
+          "aria-description",
+          `Includes ${entry.imageCount} ${entry.imageCount === 1 ? "image" : "images"}`,
+        );
+      const text = document.createElement("span");
+      text.className = "conversation-tree-text";
+      const label = document.createElement("span");
+      label.className = "conversation-tree-label";
+      label.textContent = entry.label;
+      text.append(label);
+      if (entry.hiddenCount) {
+        const count = document.createElement("span");
+        count.className = "conversation-tree-count";
+        count.textContent = `${entry.hiddenCount} more ${entry.hiddenCount === 1 ? "message" : "messages"}`;
+        text.append(count);
+      }
+      button.append(glyph, text);
+      buttons.set(entry.id, button);
+      content.append(button);
+    }
+    canvas.replaceChildren(content);
+    statusText.data = entries.length
+      ? "Blue line: active branch · Blue border: reading position"
+      : "Send a message to start a conversation.";
+    dirty = false;
+    refreshLoaded();
+    updateCurrent();
+    if (focusedId)
+      buttons.get(Number(focusedId))?.focus({ preventScroll: true });
+  }
+
+  function open(): void {
+    window.clearTimeout(closeTimer);
+    if (!panel.hidden) return;
+    panel.hidden = false;
+    toggle.setAttribute("aria-expanded", "true");
+    if (dirty) render();
+    else refreshLoaded();
+    updateCurrent(true);
+  }
+
+  function close(restoreFocus = false): void {
+    window.clearTimeout(closeTimer);
+    pinned = false;
+    if (restoreFocus) toggle.focus({ preventScroll: true });
+    panel.hidden = true;
+    toggle.setAttribute("aria-expanded", "false");
+  }
+
+  root.addEventListener(
+    "pointerenter",
+    (event) => {
+      if (event.pointerType === "mouse") open();
+    },
+    { signal },
+  );
+  root.addEventListener(
+    "pointerleave",
+    () => {
+      closeTimer = window.setTimeout(() => {
+        if (!pinned && !root.contains(document.activeElement)) close();
+      }, 180);
+    },
+    { signal },
+  );
+  root.addEventListener("focusin", open, { signal });
+  root.addEventListener(
+    "focusout",
+    (event) => {
+      if (
+        !pinned &&
+        !(
+          event.relatedTarget instanceof Node &&
+          root.contains(event.relatedTarget)
+        )
+      )
+        close();
+    },
+    { signal },
+  );
+  toggle.addEventListener(
+    "click",
+    () => {
+      if (pinned) close();
+      else {
+        pinned = true;
+        open();
+      }
+    },
+    { signal },
+  );
+  closeButton.addEventListener("click", () => close(true), { signal });
+  document.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.target instanceof Node && !root.contains(event.target)) close();
+    },
+    { signal },
+  );
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key === "Escape" && !panel.hidden) {
+        event.preventDefault();
+        close(root.contains(document.activeElement));
+      }
+    },
+    { signal },
+  );
+  options.viewport.addEventListener("scrollend", () => updateCurrent(), {
+    signal,
+  });
+  canvas.addEventListener(
+    "click",
+    async (event) => {
+      const button =
+        event.target instanceof Element
+          ? event.target.closest<HTMLButtonElement>("[data-message-id]")
+          : null;
+      if (!button || navigating) return;
+      navigating = true;
+      statusText.data = "Opening message…";
+      panel.setAttribute("aria-busy", "true");
+      try {
+        if (await options.navigate(Number(button.dataset.messageId))) {
+          dirty = true;
+          render();
+          updateCurrent();
+        } else statusText.data = "Finish the current response, then try again.";
+      } catch {
+        statusText.data = "Could not open this message. Please try again.";
+      } finally {
+        navigating = false;
+        panel.removeAttribute("aria-busy");
+      }
+    },
+    { signal },
+  );
+  return {
+    refreshLoaded,
+    refresh() {
+      dirty = true;
+      if (!panel.hidden) render();
+    },
+    dispose() {
+      listeners.abort();
+      stopFade();
+      window.clearTimeout(closeTimer);
+      root.remove();
+    },
+  };
+}

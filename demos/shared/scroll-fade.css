@@ -1,0 +1,40 @@
+/* Loom's opaque-base / inverse-fade mask geometry (see scroll-fade.ts).
+ * Union the two inverse fades, then subtract them from the opaque base.
+ * Both scrollbar gutters stay outside the fade layers, including corners. */
+.scroll-fade {
+  --scroll-fade-top: 0px;
+  --scroll-fade-bottom: 0px;
+  --scroll-fade-left: 0px;
+  --scroll-fade-right: 0px;
+  --scroll-fade-gutter-x: 0px;
+  --scroll-fade-gutter-y: 0px;
+  mask-image:
+    linear-gradient(#000, #000),
+    linear-gradient(
+      to bottom,
+      #000 0,
+      transparent var(--scroll-fade-top),
+      transparent
+        calc(100% - var(--scroll-fade-gutter-x) - var(--scroll-fade-bottom)),
+      #000 calc(100% - var(--scroll-fade-gutter-x)),
+      transparent calc(100% - var(--scroll-fade-gutter-x)),
+      transparent 100%
+    ),
+    linear-gradient(
+      to right,
+      #000 0,
+      transparent var(--scroll-fade-left),
+      transparent
+        calc(100% - var(--scroll-fade-gutter-y) - var(--scroll-fade-right)),
+      #000 calc(100% - var(--scroll-fade-gutter-y)),
+      transparent calc(100% - var(--scroll-fade-gutter-y)),
+      transparent 100%
+    );
+  mask-size:
+    100% 100%,
+    calc(100% - var(--scroll-fade-gutter-y)) 100%,
+    100% calc(100% - var(--scroll-fade-gutter-x));
+  mask-repeat: no-repeat;
+  -webkit-mask-composite: source-out, source-over;
+  mask-composite: subtract, add;
+}
