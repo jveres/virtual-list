@@ -22,6 +22,8 @@ const ICONS = {
   assistant: "M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8",
   image: "M3 3h18v18H3zM3 17l6-6 4 4 3-3 5 5M15 7h.01",
   images: "M3 7v14h14M7 3h14v14H7zM7 13l4-4 4 4 2-2 4 4M16 6h.01",
+  attachment:
+    "m21 11-8.5 8.5a6 6 0 0 1-8.5-8.5l9-9a4 4 0 0 1 5.7 5.7l-9 9a2 2 0 0 1-2.8-2.8l8.5-8.5",
 };
 
 function icon(path: string): SVGSVGElement {
@@ -104,17 +106,60 @@ export function createConversationTree(options: TreeOptions): {
   const statusText = document.createTextNode("");
   status.append(statusText);
   panel.append(header, scroller, status);
-  root.append(toggle, panel);
+  // One continuous stroke avoids the hairline seam where rotated CSS
+  // borders meet at the tip, especially at fractional display scales.
+  const notch = icon("M-1 7.5H0L7 .5L14 7.5H15");
+  notch.classList.add("conversation-tree-notch");
+  notch.setAttribute("viewBox", "-1 -1 16 9");
+  notch.setAttribute("stroke-width", "1");
+  notch.setAttribute("stroke-linecap", "butt");
+  // Cover the straight panel border underneath the opening, independently
+  // of the stroke whose short horizontal ends meet that border's centerline.
+  const notchFill = document.createElementNS(SVG_NS, "path");
+  notchFill.setAttribute("d", "M-1 7.5H0L7 .5L14 7.5H15V8H-1Z");
+  notchFill.setAttribute("fill", "var(--conversation-tree-bg)");
+  notchFill.setAttribute("stroke", "none");
+  notch.prepend(notchFill);
+  root.append(toggle, panel, notch);
   options.host.append(root);
   let dirty = true;
   let pinned = false;
   let navigating = false;
   let replacingNodes = false;
   let closeTimer = 0;
+  let preferredWidth = 320;
   let current: HTMLButtonElement | undefined;
   const buttons = new Map<number, HTMLButtonElement>();
   const headingButtons = new Map<string, HTMLButtonElement>();
   const stopFade = scrollFade(scroller);
+
+  function placePanel(): void {
+    if (panel.hidden) return;
+    // Keep the compact-screen popover usable. On desktop, spend the free
+    // left gutter first and never extend beyond the chat column's midpoint.
+    if (window.matchMedia("(max-width: 984px)").matches) {
+      panel.style.removeProperty("left");
+      panel.style.removeProperty("width");
+      return;
+    }
+    const chat = options.host.getBoundingClientRect();
+    const origin = root.getBoundingClientRect();
+    const margin = 16;
+    const rightLimit = Math.min(
+      chat.left + chat.width / 2,
+      document.documentElement.clientWidth - margin,
+    );
+    const width = Math.min(preferredWidth, Math.max(0, rightLimit - margin));
+    const left = Math.max(margin, origin.right - width);
+    panel.style.width = `${width}px`;
+    panel.style.left = `${left - origin.left}px`;
+  }
+
+  // Placement reads geometry only on opening, tree changes, and resizing;
+  // it doesn't participate in chat scrolling or streaming frame updates.
+  const placementObserver = new ResizeObserver(placePanel);
+  placementObserver.observe(options.host);
+  window.addEventListener("resize", placePanel, { signal });
 
   function refreshLoaded(): void {
     if (panel.hidden) return;
@@ -179,6 +224,8 @@ export function createConversationTree(options: TreeOptions): {
       (max, entry) => Math.max(max, entry.column + 1),
       1,
     );
+    // Include panel borders, scroller padding, and a non-overlay scrollbar.
+    preferredWidth = Math.max(320, columns * 208 + 40);
     // A folded-branch badge belongs to its node, above the next junction.
     // Reserve extra space only on rows with badges so the connector never
     // crosses the label or makes it look like a count on the active path.
@@ -271,18 +318,33 @@ export function createConversationTree(options: TreeOptions): {
       const glyph = document.createElement("span");
       glyph.className = "conversation-tree-glyph";
       const imageIcon = entry.imageCount > 1 ? ICONS.images : ICONS.image;
-      glyph.append(icon(entry.image ? imageIcon : ICONS[entry.role]));
-      if (entry.hasImages && !entry.image) {
+      const userAttachments =
+        entry.role === "user" && (entry.hasImages || entry.fileCount > 0);
+      glyph.append(
+        icon(entry.image && !userAttachments ? imageIcon : ICONS[entry.role]),
+      );
+      if (userAttachments || (entry.hasImages && !entry.image)) {
         const indicator = document.createElement("span");
-        indicator.className = "conversation-tree-image-indicator";
+        indicator.className = userAttachments
+          ? "conversation-tree-attachment-indicator"
+          : "conversation-tree-image-indicator";
         indicator.setAttribute("aria-hidden", "true");
-        indicator.append(icon(imageIcon));
+        indicator.append(icon(userAttachments ? ICONS.attachment : imageIcon));
         glyph.append(indicator);
       }
+      const included: string[] = [];
       if (entry.hasImages)
+        included.push(
+          `${entry.imageCount} ${entry.imageCount === 1 ? "image" : "images"}`,
+        );
+      if (entry.fileCount > 0)
+        included.push(
+          `${entry.fileCount} ${entry.fileCount === 1 ? "file" : "files"}`,
+        );
+      if (included.length)
         button.setAttribute(
           "aria-description",
-          `Includes ${entry.imageCount} ${entry.imageCount === 1 ? "image" : "images"}`,
+          `Includes ${included.join(" and ")}`,
         );
       const text = document.createElement("span");
       text.className = "conversation-tree-text";
@@ -350,6 +412,7 @@ export function createConversationTree(options: TreeOptions): {
       ? "Blue line: active branch · Blue border: reading position"
       : "Send a message to start a conversation.";
     dirty = false;
+    placePanel();
     refreshLoaded();
     updateCurrent();
     if (focusedId) {
@@ -367,7 +430,10 @@ export function createConversationTree(options: TreeOptions): {
     panel.hidden = false;
     toggle.setAttribute("aria-expanded", "true");
     if (dirty) render();
-    else refreshLoaded();
+    else {
+      placePanel();
+      refreshLoaded();
+    }
     updateCurrent(true);
   }
 
@@ -483,6 +549,7 @@ export function createConversationTree(options: TreeOptions): {
     },
     dispose() {
       listeners.abort();
+      placementObserver.disconnect();
       stopFade();
       window.clearTimeout(closeTimer);
       root.remove();

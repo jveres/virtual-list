@@ -138,7 +138,32 @@ describe("conversation tree layout", () => {
         image,
         hasImages: true,
         imageCount: names.length,
+        fileCount: 0,
       });
+    },
+  );
+
+  it.each([
+    { types: ["application/pdf"], fileCount: 1, imageCount: 0 },
+    { types: ["text/plain", "text/csv"], fileCount: 2, imageCount: 0 },
+    { types: ["image/png", "application/pdf"], fileCount: 1, imageCount: 1 },
+    { types: [], fileCount: 0, imageCount: 0 },
+  ])(
+    "should distinguish file and image attachments for $types",
+    ({ types, fileCount, imageCount }) => {
+      const tree = fixture();
+      const first = tree.get(1);
+      if (!first?.message) throw new Error("Missing fixture message");
+      first.message.attachments = types.map((mimeType, index) => ({
+        name: `Attachment ${index + 1}`,
+        mimeType,
+        size: 3,
+        dataUrl: `data:${mimeType};base64,AAAA`,
+      }));
+
+      const entry = conversationEntries(tree)[0];
+
+      expect(entry).toMatchObject({ fileCount, imageCount, image: false });
     },
   );
 

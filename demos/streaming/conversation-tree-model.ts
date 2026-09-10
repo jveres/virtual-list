@@ -26,6 +26,7 @@ export interface TreeEntry {
   image: boolean;
   hasImages: boolean;
   imageCount: number;
+  fileCount: number;
 }
 
 /** Short, plain-text labels only; message markup never enters the panel DOM. */
@@ -55,13 +56,17 @@ export function messageSummary(markdown: string): string {
 function messageContent(
   markdown: string,
   attachments: readonly ChatAttachment[] = [],
-): Pick<TreeEntry, "label" | "image" | "hasImages" | "imageCount"> {
+): Pick<
+  TreeEntry,
+  "label" | "image" | "hasImages" | "imageCount" | "fileCount"
+> {
   let cursor = 0;
   let firstAlt = "";
   let imageCount = attachments.filter((attachment) =>
     attachment.mimeType.startsWith("image/"),
   ).length;
-  let hasText = imageCount < attachments.length;
+  const fileCount = attachments.length - imageCount;
+  let hasText = fileCount > 0;
   let text = "";
   const collect = (end: number): void => {
     const part = markdown.slice(cursor, end).trim();
@@ -87,6 +92,7 @@ function messageContent(
     image: imageCount > 0 && !hasText,
     hasImages: imageCount > 0,
     imageCount,
+    fileCount,
   };
 }
 

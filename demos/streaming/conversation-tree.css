@@ -1,6 +1,7 @@
 .conversation-tree {
+  --conversation-tree-bg: color-mix(in srgb, var(--bg) 94%, transparent);
   position: absolute;
-  top: 14px;
+  top: 0;
   bottom: 14px;
   left: -54px;
   width: 38px;
@@ -8,26 +9,41 @@
   pointer-events: none;
 }
 .conversation-tree-toggle.scroll-jump {
-  top: 0;
+  top: 14px;
   left: 0;
   right: auto;
 }
 .conversation-tree-toggle[aria-expanded="true"] {
   color: var(--accent);
 }
+.conversation-tree-notch {
+  display: none;
+  position: absolute;
+  top: 52px;
+  left: 11px;
+  width: 16px;
+  height: 9px;
+  overflow: hidden;
+  z-index: 1;
+  stroke: var(--border);
+}
+.conversation-tree:has(.conversation-tree-panel:not([hidden]))
+  .conversation-tree-notch {
+  display: block;
+}
 .conversation-tree-panel {
   container-type: inline-size;
   position: absolute;
-  top: 46px;
+  top: 60px;
   left: 0;
   display: flex;
   flex-direction: column;
   width: min(460px, calc(100vw - 32px));
-  max-height: calc(100% - 46px);
+  max-height: calc(100% - 60px);
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  background: var(--conversation-tree-bg);
   box-shadow: 0 12px 36px rgb(0 0 0 / 14%);
   pointer-events: auto;
   overflow: hidden;
@@ -175,7 +191,8 @@
   width: 15px;
   height: 15px;
 }
-.conversation-tree-image-indicator {
+.conversation-tree-image-indicator,
+.conversation-tree-attachment-indicator {
   position: absolute;
   right: -4px;
   bottom: -3px;
@@ -187,7 +204,8 @@
   background: var(--bg);
   box-shadow: 0 0 0 1px var(--border);
 }
-.conversation-tree-image-indicator svg {
+.conversation-tree-image-indicator svg,
+.conversation-tree-attachment-indicator svg {
   width: 10px;
   height: 10px;
 }

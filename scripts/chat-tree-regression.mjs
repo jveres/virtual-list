@@ -81,6 +81,20 @@ for (const engine of [firefox, webkit, chromium]) {
           markdown: `${index === 4 ? "A detailed summary that should use the free space to the right instead of being cut off early." : `Message ${index + 1}`}\n\n${"A paragraph with enough content to exercise unloaded history. ".repeat(12)}`,
         },
       }));
+      const file = (name, mimeType) => ({
+        name,
+        mimeType,
+        size: 3,
+        dataUrl: `data:${mimeType};base64,YWJj`,
+      });
+      nodes[0].message.attachments = [
+        file("notes.txt", "text/plain"),
+        file("data.csv", "text/csv"),
+      ];
+      nodes[2].message.markdown = "";
+      nodes[2].message.attachments = [file("report.pdf", "application/pdf")];
+      nodes[4].message.attachments = [file("notes.txt", "text/plain")];
+      nodes[4].message.markdown += `\n\n![Attached picture](${imageUri})`;
       nodes.push(
         {
           id: 201,
@@ -151,6 +165,36 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.equal(await node(1).getAttribute("data-loaded"), "false");
     assert.equal(await node(119).getAttribute("data-loaded"), "true");
     assert.equal(await node(201).getAttribute("data-loaded"), "false");
+    for (const [id, description] of [
+      [1, "Includes 2 files"],
+      [3, "Includes 1 file"],
+      [5, "Includes 1 image and 1 file"],
+    ]) {
+      assert.equal(
+        await node(id).getAttribute("aria-description"),
+        description,
+      );
+      assert.equal(
+        await node(id)
+          .locator(".conversation-tree-attachment-indicator")
+          .count(),
+        1,
+        "user attachments use one paperclip badge regardless of file type",
+      );
+      assert.equal(
+        await node(id).locator(".conversation-tree-image-indicator").count(),
+        0,
+      );
+      assert.equal(
+        await node(id)
+          .locator(".conversation-tree-glyph > svg path")
+          .getAttribute("d"),
+        await node(119)
+          .locator(".conversation-tree-glyph > svg path")
+          .getAttribute("d"),
+        "attachments preserve the user-message bubble",
+      );
+    }
     const unloadedInk = await node(1).evaluate((element) => {
       const probe = document.createElement("span");
       probe.style.color = "var(--fg-muted)";
@@ -506,7 +550,7 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     assert.notEqual(
       multipleImagePath,
-      await imagePath(202, ".conversation-tree-image-indicator path"),
+      await imagePath(202, ".conversation-tree-attachment-indicator path"),
     );
     assert.equal(
       multipleImagePath,
@@ -752,6 +796,11 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.equal(
       await node(3).locator(".conversation-tree-label").textContent(),
       "review_image.png",
+    );
+    assert.equal(
+      await node(3).locator(".conversation-tree-attachment-indicator").count(),
+      1,
+      "an image-only user message also has a paperclip badge",
     );
     for (const [id, headers] of [
       [5, ["Earlier", "Today"]],
