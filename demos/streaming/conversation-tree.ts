@@ -172,6 +172,7 @@ export function createConversationTree(options: TreeOptions): {
   let dirty = true;
   let pinned = false;
   let navigating = false;
+  let navigationEpoch = 0;
   let replacingNodes = false;
   let closeTimer = 0;
   // Retain the scroll extent while alternative branches fold.
@@ -489,7 +490,7 @@ export function createConversationTree(options: TreeOptions): {
   );
 
   function placePanel(): void {
-    if (panel.hidden) return;
+    if (signal.aborted || panel.hidden) return;
     const origin = root.getBoundingClientRect();
     const margin = 16;
     if (fullWidth) {
@@ -525,7 +526,7 @@ export function createConversationTree(options: TreeOptions): {
   window.addEventListener("resize", placePanel, { signal });
 
   function refreshLoaded(): void {
-    if (panel.hidden) return;
+    if (signal.aborted || panel.hidden) return;
     for (const [id, button] of buttons) {
       const loaded = String(options.isLoaded(id));
       if (button.dataset.loaded !== loaded) button.dataset.loaded = loaded;
@@ -989,14 +990,21 @@ export function createConversationTree(options: TreeOptions): {
     revealSelection(current ?? buttons.values().next().value, "instant");
   }
 
-  function close(restoreFocus = false): void {
-    window.clearTimeout(closeTimer);
-    pinned = false;
+  function clearGesture(): void {
+    for (const id of pointers.keys()) {
+      if (scroller.hasPointerCapture(id)) scroller.releasePointerCapture(id);
+    }
     pointers.clear();
     trackpadPinch = null;
     gesture = null;
     dragged = false;
     delete scroller.dataset.dragging;
+  }
+
+  function close(restoreFocus = false): void {
+    window.clearTimeout(closeTimer);
+    pinned = false;
+    clearGesture();
     if (restoreFocus) toggle.focus({ preventScroll: true });
     panel.hidden = true;
     toggle.setAttribute("aria-expanded", "false");
@@ -1119,17 +1127,20 @@ export function createConversationTree(options: TreeOptions): {
           ? event.target.closest<HTMLElement>("[data-message-id]")
           : null;
       if (!button || navigating) return;
+      const epoch = navigationEpoch;
+      const isCurrentNavigation = (): boolean =>
+        !signal.aborted && epoch === navigationEpoch;
       navigating = true;
       setStatus("Opening message…");
       panel.setAttribute("aria-busy", "true");
       try {
         const headingIndex = button.dataset.headingIndex;
-        if (
-          await options.navigate(
-            Number(button.dataset.messageId),
-            headingIndex === undefined ? undefined : Number(headingIndex),
-          )
-        ) {
+        const opened = await options.navigate(
+          Number(button.dataset.messageId),
+          headingIndex === undefined ? undefined : Number(headingIndex),
+        );
+        if (!isCurrentNavigation()) return;
+        if (opened) {
           // A short final reply can share the viewport with its prompt.
           // Keep explicit selection distinct from the first-visible marker
           // until the reader moves to another chat position.
@@ -1149,10 +1160,13 @@ export function createConversationTree(options: TreeOptions): {
           );
         } else setStatus("Finish the current response, then try again.");
       } catch {
-        setStatus("Could not open this message. Please try again.");
+        if (isCurrentNavigation())
+          setStatus("Could not open this message. Please try again.");
       } finally {
-        navigating = false;
-        panel.removeAttribute("aria-busy");
+        if (isCurrentNavigation()) {
+          navigating = false;
+          panel.removeAttribute("aria-busy");
+        }
       }
     },
     { signal },
@@ -1160,6 +1174,13 @@ export function createConversationTree(options: TreeOptions): {
   return {
     refreshLoaded,
     reset() {
+      if (signal.aborted) return;
+      // A new conversation must not inherit pending selection or busy state.
+      navigationEpoch++;
+      navigating = false;
+      clearGesture();
+      panel.removeAttribute("aria-busy");
+      setStatus("");
       // A new chat must not inherit an old branch's empty canvas or viewport.
       stableHalfWidth = 0;
       stableLeft = 0;
@@ -1179,11 +1200,14 @@ export function createConversationTree(options: TreeOptions): {
       }
     },
     refresh() {
+      if (signal.aborted) return;
       dirty = true;
       if (!panel.hidden) render();
     },
     dispose() {
+      if (signal.aborted) return;
       listeners.abort();
+      clearGesture();
       placementObserver.disconnect();
       stopFade();
       window.clearTimeout(closeTimer);
