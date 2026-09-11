@@ -2,11 +2,104 @@ import { describe, expect, it } from "vitest";
 import {
   branchingTranscriptMarkdown,
   parseBranchingTranscript,
+  selectTranscriptBranches,
   type TranscriptTree,
 } from "../../demos/streaming/branching-transcript";
 import { parseTranscriptMarkdown } from "../../demos/streaming/transcript";
 
 const days = { dayOf: () => 0, dayLabel: () => "Today" };
+
+it("should change branch choices without copying message payloads", () => {
+  const tree = conversation();
+  const selection = {
+    selectedRootId: 1,
+    nodes: tree.nodes.map((node) => ({
+      id: node.id,
+      selectedChildId: node.id === 1 ? 2 : node.selectedChildId,
+    })),
+  };
+
+  const selected = selectTranscriptBranches(tree, selection);
+
+  expect(selected?.turns).toEqual([
+    message(tree, 1),
+    message(tree, 2),
+    message(tree, 6),
+  ]);
+  expect(
+    selected?.tree?.nodes.map((node) => [node.id, node.selectedChildId]),
+  ).toEqual([
+    [1, 2],
+    [2, 6],
+    [3, 4],
+    [4, 5],
+    [5, null],
+    [6, null],
+    [10, 11],
+    [11, null],
+  ]);
+  for (const node of selected?.tree?.nodes ?? []) {
+    expect(node.message).toBe(message(tree, node.id));
+  }
+  expect(tree.nodes[0]?.selectedChildId).toBe(3);
+});
+
+it.each([null, undefined, {}, { selectedRootId: 1, nodes: [] }])(
+  "should reject incomplete saved branch choices (%j)",
+  (selection) => {
+    expect(selectTranscriptBranches(conversation(), selection)).toBeNull();
+  },
+);
+
+it.each([
+  { label: "wrong root", root: 99, id: 1, child: 3 },
+  { label: "non-child selection", root: 1, id: 1, child: 11 },
+  { label: "missing selection", root: 1, id: 1, child: null },
+  { label: "unknown node", root: 1, id: 99, child: 3 },
+  { label: "duplicate node", root: 1, id: 2, child: 3 },
+  { label: "invalid node ID", root: 1, id: "1", child: 3 },
+])(
+  "should reject $label without changing the transcript",
+  ({ root, id, child }) => {
+    const tree = conversation();
+    const original = structuredClone(tree);
+    const selection = {
+      selectedRootId: root,
+      nodes: tree.nodes.map((node, index) => ({
+        id: index === 0 ? id : node.id,
+        selectedChildId: index === 0 ? child : node.selectedChildId,
+      })),
+    };
+
+    expect(selectTranscriptBranches(tree, selection)).toBeNull();
+    expect(tree).toEqual(original);
+  },
+);
+
+it("should preserve folded choices when selecting another root and returning", () => {
+  const tree = conversation();
+  const nodes = tree.nodes.map(({ id, selectedChildId }) => ({
+    id,
+    selectedChildId,
+  }));
+
+  const alternate = selectTranscriptBranches(tree, {
+    selectedRootId: 10,
+    nodes,
+  });
+  const restored =
+    alternate?.tree &&
+    selectTranscriptBranches(alternate.tree, { selectedRootId: 1, nodes });
+
+  expect(alternate?.turns).toEqual([message(tree, 10), message(tree, 11)]);
+  expect(restored?.tree).toEqual(tree);
+  expect(restored?.turns).toEqual([
+    message(tree, 1),
+    message(tree, 3),
+    message(tree, 4),
+    message(tree, 5),
+  ]);
+});
 
 function message(tree: TranscriptTree, id: number) {
   const node = tree.nodes.find((node) => node.id === id);

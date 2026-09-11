@@ -292,18 +292,20 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     assert.equal(wideLabel.height, 32);
     assert.ok(wideLabel.scrollHeight > wideLabel.height);
-    const equalRows = await panel
+    const cappedWidths = await panel
       .locator(".conversation-tree-node")
       .evaluateAll((nodes) => {
-        const widths = new Map();
         return nodes.every((node) => {
           const width = node.getBoundingClientRect().width;
-          const previous = widths.get(node.dataset.row) ?? width;
-          widths.set(node.dataset.row, width);
-          return Math.abs(previous - width) < 0.1;
+          const cap = Number.parseFloat(node.style.maxWidth);
+          return width > 0 && width <= cap && cap <= 320;
         });
       });
-    assert.equal(equalRows, true, "versions within each row have equal widths");
+    assert.equal(
+      cappedWidths,
+      true,
+      "content-sized versions respect the width cap",
+    );
     const closeGeometry = await page
       .getByRole("button", { name: "Close conversation tree", exact: true })
       .evaluate((element) => ({

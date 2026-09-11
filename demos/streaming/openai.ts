@@ -5,6 +5,7 @@ import {
   type ChatAttachment,
   storedAttachments,
 } from "./attachments.js";
+import type { TranscriptSelection } from "./branching-transcript.js";
 import {
   filesFromAnnotations,
   filesFromOutput,
@@ -508,51 +509,109 @@ export interface SimulatedHistory {
   markdown: string;
   nextResponse: number;
   changed: boolean;
+  /** Untrusted until checked against the parsed transcript tree. */
+  selection?: unknown;
 }
 
 // A separate record preserves the simulated version tree without touching
 // the real-provider history or requiring an IndexedDB schema migration.
 const SIMULATED_HISTORY_RECORD_KEY = "simulated-history";
+const SIMULATED_SELECTION_RECORD_KEY = "simulated-selection";
 let sessionSimulatedHistory: SimulatedHistory | undefined;
+let sessionSimulatedRevision: string | undefined;
 
 export async function loadSimulatedHistory(): Promise<SimulatedHistory | null> {
   await historyWriteChain;
   if (sessionSimulatedHistory) return sessionSimulatedHistory;
   try {
     const db = await historyDb();
-    const stored = await new Promise<unknown>((resolve, reject) => {
-      const request = db
-        .transaction(HISTORY_STORE, "readonly")
-        .objectStore(HISTORY_STORE)
-        .get(SIMULATED_HISTORY_RECORD_KEY);
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    });
+    const [stored, selection] = await new Promise<[unknown, unknown]>(
+      (resolve, reject) => {
+        const transaction = db.transaction(HISTORY_STORE, "readonly");
+        const store = transaction.objectStore(HISTORY_STORE);
+        const historyRequest = store.get(SIMULATED_HISTORY_RECORD_KEY);
+        const selectionRequest = store.get(SIMULATED_SELECTION_RECORD_KEY);
+        transaction.oncomplete = () =>
+          resolve([historyRequest.result, selectionRequest.result]);
+        transaction.onabort = transaction.onerror = () =>
+          reject(transaction.error);
+      },
+    );
     if (sessionSimulatedHistory) return sessionSimulatedHistory;
     if (!isRecord(stored) || typeof stored.markdown !== "string") return null;
-    return {
+    const choices =
+      isRecord(selection) &&
+      typeof stored.revision === "string" &&
+      selection.revision === stored.revision
+        ? selection
+        : null;
+    const progress = choices ?? stored;
+    sessionSimulatedRevision =
+      typeof stored.revision === "string" ? stored.revision : undefined;
+    sessionSimulatedHistory = {
       markdown: stored.markdown,
       nextResponse:
-        typeof stored.nextResponse === "number" &&
-        Number.isSafeInteger(stored.nextResponse) &&
-        stored.nextResponse >= 0
-          ? stored.nextResponse
+        typeof progress.nextResponse === "number" &&
+        Number.isSafeInteger(progress.nextResponse) &&
+        progress.nextResponse >= 0
+          ? progress.nextResponse
           : 0,
-      changed: stored.changed === true,
+      changed: progress.changed === true,
+      ...(choices ? { selection: choices.selection } : {}),
     };
+    return sessionSimulatedHistory;
   } catch {
     return sessionSimulatedHistory ?? null;
   }
 }
 
-export function saveSimulatedHistory(history: SimulatedHistory): void {
+export function saveSimulatedHistory(
+  history: Omit<SimulatedHistory, "selection">,
+): void {
   sessionSimulatedHistory = history;
+  // getRandomValues also works when the demo is served over local-network HTTP.
+  const revision = Array.from(
+    crypto.getRandomValues(new Uint32Array(4)),
+    (value) => value.toString(16),
+  ).join("-");
+  sessionSimulatedRevision = revision;
+  queueHistoryWrite((db) => {
+    const store = db
+      .transaction(HISTORY_STORE, "readwrite")
+      .objectStore(HISTORY_STORE);
+    store.delete(SIMULATED_SELECTION_RECORD_KEY);
+    return store.put({ ...history, revision }, SIMULATED_HISTORY_RECORD_KEY);
+  });
+}
+
+/** Persist navigation without cloning the unchanged Markdown/attachment bytes. */
+export function saveSimulatedSelection(
+  selection: TranscriptSelection,
+  nextResponse: number,
+  changed: boolean,
+): boolean {
+  const revision = sessionSimulatedRevision;
+  if (!sessionSimulatedHistory || !revision) return false;
+  const snapshot = {
+    selectedRootId: selection.selectedRootId,
+    nodes: selection.nodes.map((node) => ({ ...node })),
+  };
+  sessionSimulatedHistory = {
+    ...sessionSimulatedHistory,
+    selection: snapshot,
+    nextResponse,
+    changed,
+  };
   queueHistoryWrite((db) =>
     db
       .transaction(HISTORY_STORE, "readwrite")
       .objectStore(HISTORY_STORE)
-      .put(history, SIMULATED_HISTORY_RECORD_KEY),
+      .put(
+        { revision, selection: snapshot, nextResponse, changed },
+        SIMULATED_SELECTION_RECORD_KEY,
+      ),
   );
+  return true;
 }
 
 /**

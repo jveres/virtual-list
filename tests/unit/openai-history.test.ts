@@ -62,3 +62,79 @@ it("should not restore stale legacy history after saving an empty conversation",
 
   await expect(loadOpenAIHistory()).resolves.toEqual([]);
 });
+
+it("should retain branch selection separately from unchanged transcript bytes without storage", async () => {
+  const { saveSimulatedHistory, saveSimulatedSelection, loadSimulatedHistory } =
+    await import("../../demos/streaming/openai");
+  const history = {
+    markdown: "Unchanged saved tree",
+    nextResponse: 3,
+    changed: false,
+  };
+  const chosenNode = { id: 1, selectedChildId: 3 };
+  const selection = {
+    selectedRootId: 1,
+    nodes: [chosenNode],
+  };
+  saveSimulatedHistory(history);
+
+  expect(saveSimulatedSelection(selection, 4, true)).toBe(true);
+  chosenNode.selectedChildId = 2;
+
+  await expect(loadSimulatedHistory()).resolves.toEqual({
+    ...history,
+    nextResponse: 4,
+    changed: true,
+    selection: { selectedRootId: 1, nodes: [{ id: 1, selectedChildId: 3 }] },
+  });
+});
+
+it("should discard an old selection when a full transcript replaces its snapshot", async () => {
+  const { saveSimulatedHistory, saveSimulatedSelection, loadSimulatedHistory } =
+    await import("../../demos/streaming/openai");
+  saveSimulatedHistory({
+    markdown: "Old tree",
+    nextResponse: 3,
+    changed: true,
+  });
+  saveSimulatedSelection({ selectedRootId: 1, nodes: [] }, 4, true);
+  const replacement = {
+    markdown: "Replacement tree",
+    nextResponse: 0,
+    changed: false,
+  };
+
+  saveSimulatedHistory(replacement);
+
+  await expect(loadSimulatedHistory()).resolves.toEqual(replacement);
+});
+
+it("should require a saved snapshot before persisting its branch choices", async () => {
+  const { saveSimulatedSelection, loadSimulatedHistory } = await import(
+    "../../demos/streaming/openai"
+  );
+
+  expect(
+    saveSimulatedSelection({ selectedRootId: 1, nodes: [] }, 0, true),
+  ).toBe(false);
+
+  await expect(loadSimulatedHistory()).resolves.toBeNull();
+});
+
+it("should save history without requiring secure-context UUID support", async () => {
+  vi.stubGlobal("crypto", {
+    getRandomValues: crypto.getRandomValues.bind(crypto),
+  });
+  const { saveSimulatedHistory, loadSimulatedHistory } = await import(
+    "../../demos/streaming/openai"
+  );
+  const history = {
+    markdown: "LAN demo history",
+    nextResponse: 0,
+    changed: true,
+  };
+
+  saveSimulatedHistory(history);
+
+  await expect(loadSimulatedHistory()).resolves.toEqual(history);
+});

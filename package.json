@@ -11,7 +11,7 @@
     "check": "biome check . && tsc --noEmit",
     "test": "vitest run",
     "test:browser": "node scripts/browser-matrix.mjs",
-    "test:chat-tree": "node scripts/chat-tree-zoom-regression.mjs && node scripts/chat-tree-regression.mjs && node scripts/chat-tree-headings-regression.mjs && node scripts/chat-tree-placement-regression.mjs && node scripts/chat-tree-reveal-regression.mjs && node scripts/chat-bottom-regression.mjs",
+    "test:chat-tree": "node scripts/chat-tree-persistence-regression.mjs && node scripts/chat-tree-zoom-regression.mjs && node scripts/chat-tree-regression.mjs && node scripts/chat-tree-headings-regression.mjs && node scripts/chat-tree-placement-regression.mjs && node scripts/chat-tree-reveal-regression.mjs && node scripts/chat-bottom-regression.mjs",
     "profile:firefox": "node scripts/firefox-profile.mjs",
     "test:firefox-profile": "node --test scripts/firefox-profile/analyze.checks.mjs scripts/firefox-profile/attribute.checks.mjs",
     "test:watch": "vitest"

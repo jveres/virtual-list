@@ -48,6 +48,8 @@ import {
   branchingTranscriptMarkdown,
   type ImportedTranscript,
   parseBranchingTranscript,
+  selectTranscriptBranches,
+  type TranscriptSelection,
   type TranscriptTree,
 } from "./branching-transcript.js";
 import { createConversationTree } from "./conversation-tree.js";
@@ -73,6 +75,7 @@ import {
   type StoredTurn,
   saveOpenAIHistory,
   saveSimulatedHistory,
+  saveSimulatedSelection,
   streamOpenAIChat,
 } from "./openai.js";
 import { type ResponseHeading, responseHeadings } from "./response-headings.js";
@@ -810,7 +813,7 @@ async function navigateTreeMessage(
               markConversationChanged();
               if (getAISettings().provider === "openai")
                 persistOpenAIConversation();
-              else persistSimulatedConversation();
+              else persistSimulatedBranchSelection();
             }
             syncMetrics();
           },
@@ -1529,7 +1532,11 @@ async function prepareSimulatedConversation(): Promise<void> {
   const history = await loadSimulatedHistory();
   if (!history) return;
   try {
-    const imported = parseBranchingTranscript(history.markdown);
+    const parsed = parseBranchingTranscript(history.markdown);
+    const imported =
+      parsed.tree && history.selection
+        ? (selectTranscriptBranches(parsed.tree, history.selection) ?? parsed)
+        : parsed;
     await loadLanguages(
       historyFenceLanguages(
         imported.tree?.nodes.map((node) => node.message) ?? imported.turns,
@@ -1553,6 +1560,35 @@ function persistSimulatedConversation(): void {
     nextResponse,
     changed: simulatedConversationChanged,
   });
+}
+
+function persistSimulatedBranchSelection(): void {
+  if (getAISettings().provider !== "simulated") return;
+  const selection: TranscriptSelection = {
+    selectedRootId:
+      selectedChildId(tree.get(TREE_ROOT_ID) ?? rootNode()) ?? null,
+    nodes: [...tree.entries()].flatMap(([id, node]) =>
+      node.message
+        ? [{ id, selectedChildId: selectedChildId(node) ?? null }]
+        : [],
+    ),
+  };
+  const selected = importedConversation?.tree
+    ? selectTranscriptBranches(importedConversation.tree, selection)
+    : null;
+  if (
+    !selected ||
+    !saveSimulatedSelection(
+      selection,
+      nextResponse,
+      simulatedConversationChanged,
+    )
+  ) {
+    persistSimulatedConversation();
+    return;
+  }
+  importedConversation = selected;
+  simulatedNextResponse = nextResponse;
 }
 
 // Loads the history snapshot and the fence languages its static render needs
@@ -1660,6 +1696,7 @@ function reloadConversation(importedTree?: TranscriptTree | null): void {
   setEdgeState("hidden");
   mountConversation();
   syncMetrics();
+  conversationTree?.reset();
   persistSimulatedConversation();
 }
 
@@ -1730,7 +1767,7 @@ function switchMessageVersion(messageId: number, offset: number): void {
   if (branchIndex >= 0) loadedStart = Math.min(loadedStart, branchIndex);
   pushItems(anchor, true);
   syncMetrics();
-  persistSimulatedConversation();
+  persistSimulatedBranchSelection();
 }
 
 // Remove the selected version and descendants, preserving sibling versions.

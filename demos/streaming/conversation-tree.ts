@@ -17,10 +17,11 @@ interface TreeOptions {
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
-const MIN_BAND_WIDTH = 208;
 const HEADING_ROW_HEIGHT = 24;
+const BAND_GAP = 12;
 const ICONS = {
-  user: "M21 11.5a8.5 8.5 0 0 1-8.5 8.5H4l-2 2v-10a9.5 9.5 0 1 1 19 0Z",
+  // Lucide MessageSquare.
+  user: "M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z",
   assistant: "M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8",
   image: "M3 3h18v18H3zM3 17l6-6 4 4 3-3 5 5M15 7h.01",
   images: "M3 7v14h14M7 3h14v14H7zM7 13l4-4 4 4 2-2 4 4M16 6h.01",
@@ -66,6 +67,7 @@ function networkIcon(): SVGSVGElement {
  * animation-frame subscription; reading position updates at scroll end. */
 export function createConversationTree(options: TreeOptions): {
   refresh: () => void;
+  reset: () => void;
   refreshLoaded: () => void;
   dispose: () => void;
 } {
@@ -174,18 +176,21 @@ export function createConversationTree(options: TreeOptions): {
   let closeTimer = 0;
   // Retain the scroll extent while alternative branches fold.
   let stableHalfWidth = 0;
+  let stableLeft = 0;
+  let stableRight = 0;
+  let layoutOrigin = 0;
   let stableCanvasHeight = 0;
   let layoutWidth = 0;
   let zoom = 1;
   let fitting = false;
   let fullWidth = false;
-  let hasOpened = false;
   let canvasLeft = 0;
   let canvasTop = 0;
   let layout = (): void => {};
   let current: HTMLElement | undefined;
   let selection: { id: number; readingId: number | null } | null = null;
   const buttons = new Map<number, HTMLElement>();
+  const bandWidths = new Map<number, number>();
   const headingButtons = new Map<string, HTMLElement>();
   const stopFade = scrollFade(scroller);
   // Toolbar interaction makes a hover-opened panel persistent too. Updating
@@ -467,9 +472,13 @@ export function createConversationTree(options: TreeOptions): {
       updateCurrent();
       if (!current) return;
       const item = current.getBoundingClientRect();
+      const width =
+        bandWidths.get(Number(current.dataset.messageId)) ??
+        current.offsetWidth;
       const view = scroller.getBoundingClientRect();
       scroller.scrollBy({
-        left: item.left + item.width / 2 - view.left - scroller.clientWidth / 2,
+        left:
+          item.left + (width * zoom) / 2 - view.left - scroller.clientWidth / 2,
         top: item.top + item.height / 2 - view.top - scroller.clientHeight / 2,
         behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
           ? "auto"
@@ -542,7 +551,14 @@ export function createConversationTree(options: TreeOptions): {
     locateButton.disabled = !current;
   }
 
-  function revealSelection(button: HTMLElement | undefined): void {
+  function revealSelection(
+    button: HTMLElement | undefined,
+    behavior: ScrollBehavior = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches
+      ? "auto"
+      : "smooth",
+  ): void {
     if (!button) return;
     const item = button.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
@@ -575,16 +591,14 @@ export function createConversationTree(options: TreeOptions): {
     scroller.scrollBy({
       left,
       top,
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        ? "auto"
-        : "smooth",
+      behavior,
     });
   }
 
   function render(): void {
     const scrollTop = scroller.scrollTop;
     const scrollLeft = scroller.scrollLeft;
-    const previousCenter = stableHalfWidth;
+    const previousOrigin = layoutOrigin;
     const focusedHeading =
       document.activeElement instanceof HTMLElement
         ? document.activeElement.dataset.headingIndex
@@ -595,6 +609,7 @@ export function createConversationTree(options: TreeOptions): {
         ? document.activeElement.dataset.messageId
         : undefined;
     buttons.clear();
+    bandWidths.clear();
     headingButtons.clear();
     const entries = conversationEntries(options.tree);
     const headings = new Map(
@@ -633,11 +648,13 @@ export function createConversationTree(options: TreeOptions): {
     const edges = document.createElementNS(SVG_NS, "svg");
     edges.classList.add("conversation-tree-edges");
     edges.setAttribute("aria-hidden", "true");
+    const ribbon = document.createElementNS(SVG_NS, "path");
+    ribbon.classList.add("conversation-tree-path-ribbon");
     const inactiveEdges = document.createElementNS(SVG_NS, "g");
     const activeEdges = document.createElementNS(SVG_NS, "g");
     // SVG paints in document order: the active spine must cover the shared
     // gray segment, regardless of sibling order.
-    edges.append(inactiveEdges, activeEdges);
+    edges.append(ribbon, inactiveEdges, activeEdges);
     const content = document.createDocumentFragment();
     content.append(edges);
     const tocs = new Map<number, HTMLUListElement>();
@@ -655,9 +672,13 @@ export function createConversationTree(options: TreeOptions): {
       const imageIcon = entry.imageCount > 1 ? ICONS.images : ICONS.image;
       const userAttachments =
         entry.role === "user" && (entry.hasImages || entry.fileCount > 0);
-      glyph.append(
-        icon(entry.image && !userAttachments ? imageIcon : ICONS[entry.role]),
+      const pictogram = icon(
+        entry.image && !userAttachments ? imageIcon : ICONS[entry.role],
       );
+      // MessageSquare's drawing spans y=3..22, centered at 12.5, not 12.
+      if (entry.role === "user")
+        pictogram.setAttribute("viewBox", "0 0.5 24 24");
+      glyph.append(pictogram);
       if (userAttachments || (entry.hasImages && !entry.image)) {
         const indicator = document.createElement("span");
         indicator.className = userAttachments
@@ -687,10 +708,15 @@ export function createConversationTree(options: TreeOptions): {
       label.className = "conversation-tree-label";
       label.textContent = entry.label;
       text.append(label);
-      if (entry.hiddenCount) {
+      if (badgeEntries.has(entry.id)) {
         const count = document.createElement("span");
         count.className = "conversation-tree-count";
-        count.textContent = `${entry.hiddenCount} more ${entry.hiddenCount === 1 ? "message" : "messages"}`;
+        count.textContent = `${entry.descendantCount} more ${entry.descendantCount === 1 ? "message" : "messages"}`;
+        // Reserve the folded badge's intrinsic width even on the active branch.
+        if (!entry.hiddenCount) {
+          count.style.visibility = "hidden";
+          count.setAttribute("aria-hidden", "true");
+        }
         text.append(count);
       }
       button.append(glyph, text);
@@ -698,6 +724,9 @@ export function createConversationTree(options: TreeOptions): {
       content.append(button);
       const sections = headings.get(entry.id) ?? [];
       if (sections.length) {
+        const baseLevel = sections.some((section) => section.level === 1)
+          ? 1
+          : 2;
         const toc = document.createElement("ul");
         toc.className = "conversation-tree-toc";
         toc.setAttribute("aria-label", `Sections in ${entry.label}`);
@@ -711,6 +740,7 @@ export function createConversationTree(options: TreeOptions): {
           heading.dataset.messageId = String(entry.id);
           heading.dataset.headingIndex = String(section.index);
           heading.dataset.level = String(section.level);
+          heading.dataset.depth = String(section.level - baseLevel);
           heading.dataset.active = String(entry.active);
           heading.textContent = section.label;
           heading.title = section.label;
@@ -730,63 +760,79 @@ export function createConversationTree(options: TreeOptions): {
       replacingNodes = false;
     }
     layout = () => {
-      const previousCenter = stableHalfWidth;
+      const previousOrigin = layoutOrigin;
       const previousScrollLeft = scroller.scrollLeft;
       const availableWidth = Math.max(0, scroller.clientWidth - 24);
-      // Keep extents stable for branch switches, but refit on real resizes.
-      if (fitting || layoutWidth !== availableWidth) stableHalfWidth = 0;
-      if (fitting) stableCanvasHeight = 0;
-      layoutWidth = availableWidth;
-      const bands = new Map<number, { center: number; width: number }>([
-        [0, { center: 0, width: availableWidth }],
-      ]);
-      for (const siblings of displayRows) {
-        siblings.forEach((entry, index) => {
-          const parent = bands.get(entry.parentId) ?? {
-            center: 0,
-            width: availableWidth,
-          };
-          // Split the parent band evenly around its spine. A single child
-          // inherits that band's center, so a fork never snaps back to root.
-          const width = Math.max(
-            MIN_BAND_WIDTH,
-            parent.width / siblings.length,
-          );
-          bands.set(entry.id, {
-            center: parent.center + (index - (siblings.length - 1) / 2) * width,
-            width,
-          });
-        });
+      const maxWidth = Math.max(0, Math.min(320, availableWidth - 16));
+      // Apply all caps before measuring: short content shrink-wraps, while
+      // long labels and outlines keep the same depth-independent maximum.
+      for (const entry of entries) {
+        const button = buttons.get(entry.id);
+        if (button) button.style.maxWidth = `${maxWidth}px`;
+        const toc = tocs.get(entry.id);
+        if (toc) toc.style.maxWidth = `${Math.max(0, maxWidth - 20)}px`;
       }
-      stableHalfWidth = Math.max(stableHalfWidth, availableWidth / 2);
-      for (const band of bands.values()) {
-        stableHalfWidth = Math.max(
-          stableHalfWidth,
-          Math.abs(band.center) + band.width / 2,
+      for (const entry of entries) {
+        const toc = tocs.get(entry.id);
+        bandWidths.set(
+          entry.id,
+          Math.max(
+            buttons.get(entry.id)?.offsetWidth ?? 0,
+            toc ? toc.offsetWidth + 20 : 0,
+          ),
         );
       }
-      const canvasWidth = stableHalfWidth * 2;
-      const centerX = stableHalfWidth;
+      // Keep extents stable for branch switches, but refit on real resizes.
+      if (fitting || layoutWidth !== availableWidth) {
+        stableLeft = 0;
+        stableRight = 0;
+      }
+      if (fitting) stableCanvasHeight = 0;
+      layoutWidth = availableWidth;
+      const bands = new Map<number, number>([[0, 0]]);
+      for (const siblings of displayRows) {
+        let offset = 0;
+        const offsets = siblings.map((entry) => {
+          const left = offset;
+          offset += (bandWidths.get(entry.id) ?? 0) + BAND_GAP;
+          return left;
+        });
+        const center =
+          offsets.reduce((sum, left) => sum + left, 0) / siblings.length;
+        siblings.forEach((entry, index) => {
+          const parent = bands.get(entry.parentId) ?? 0;
+          // Pack actual occupied widths, leaving only the gutter between
+          // siblings. A single child keeps its parent's spine.
+          bands.set(entry.id, parent + (offsets[index] ?? 0) - center);
+        });
+      }
+      for (const entry of entries) {
+        const left = (bands.get(entry.id) ?? 0) - 26;
+        stableLeft = Math.min(stableLeft, left);
+        stableRight = Math.max(
+          stableRight,
+          left + (bandWidths.get(entry.id) ?? 0),
+        );
+      }
+      const contentWidth = stableRight - stableLeft;
+      const canvasWidth = Math.max(availableWidth, contentWidth);
+      stableHalfWidth = canvasWidth / 2;
+      layoutOrigin = (canvasWidth - contentWidth) / 2 - stableLeft;
       canvas.style.width = `${canvasWidth}px`;
       const positions = new Map<number, { x: number; y: number }>();
       for (const entry of entries) {
         const band = bands.get(entry.id);
-        if (!band) continue;
-        const x = centerX + band.center;
-        const width = fullWidth
-          ? Math.min(320, band.width / 2 + 18)
-          : band.width / 2 + 18;
-        const left = entry.role === "user" ? x + 26 - width : x - 26;
+        if (band === undefined) continue;
+        const x = layoutOrigin + band;
+        const left = x - 26;
         positions.set(entry.id, { x, y: 0 });
         const button = buttons.get(entry.id);
         if (button) {
           button.style.left = `${left}px`;
-          button.style.width = `${width}px`;
         }
         const toc = tocs.get(entry.id);
         if (toc) {
           toc.style.left = `${x - 6}px`;
-          toc.style.width = `${width - 20}px`;
         }
       }
       const tocOffsets = new Map<number, number>();
@@ -833,10 +879,13 @@ export function createConversationTree(options: TreeOptions): {
       edges.setAttribute("height", String(canvasHeight));
       activeEdges.replaceChildren();
       inactiveEdges.replaceChildren();
+      const ribbonPaths: string[] = [];
       for (const entry of entries) {
         const position = positions.get(entry.id);
         if (!position) continue;
         const { x, y } = position;
+        // Bridge the glyph as well as the connectors for one continuous stream.
+        if (entry.active) ribbonPaths.push(`M${x} ${y + 8}V${y + 36}`);
         const paths: string[] = [];
         const parent = positions.get(entry.parentId);
         if (parent) {
@@ -858,6 +907,7 @@ export function createConversationTree(options: TreeOptions): {
           );
         }
         for (const [index, path] of paths.entries()) {
+          if (entry.active) ribbonPaths.push(path);
           const edge = document.createElementNS(SVG_NS, "path");
           if (parent && index === 0) {
             edge.dataset.childId = String(entry.id);
@@ -871,8 +921,9 @@ export function createConversationTree(options: TreeOptions): {
           (entry.active ? activeEdges : inactiveEdges).append(edge);
         }
       }
+      ribbon.setAttribute("d", ribbonPaths.join(" "));
       scroller.scrollLeft =
-        previousScrollLeft + (stableHalfWidth - previousCenter) * zoom;
+        previousScrollLeft + (layoutOrigin - previousOrigin) * zoom;
       applyZoom();
     };
     setStatus(entries.length ? "" : "Send a message to start a conversation.");
@@ -889,8 +940,30 @@ export function createConversationTree(options: TreeOptions): {
     }
     if (!fitting) {
       scroller.scrollTop = scrollTop;
-      scroller.scrollLeft =
-        scrollLeft + (stableHalfWidth - previousCenter) * zoom;
+      scroller.scrollLeft = scrollLeft + (layoutOrigin - previousOrigin) * zoom;
+    }
+  }
+
+  function positionCurrentView(): void {
+    if (fitting) return;
+    const target = current ?? buttons.values().next().value;
+    if (target) {
+      const bandCenter =
+        Number.parseFloat(target.style.left) +
+        (bandWidths.get(Number(target.dataset.messageId)) ??
+          target.offsetWidth) /
+          2;
+      scroller.scrollTo({
+        top: Math.max(
+          0,
+          Number.parseFloat(target.style.top) * zoom + canvasTop - 96,
+        ),
+        left: Math.max(
+          0,
+          bandCenter * zoom + canvasLeft - scroller.clientWidth / 2 + 12,
+        ),
+        behavior: "instant",
+      });
     }
   }
 
@@ -905,17 +978,8 @@ export function createConversationTree(options: TreeOptions): {
       refreshLoaded();
     }
     updateCurrent();
-    if (!hasOpened && current) {
-      scroller.scrollTop = Math.max(
-        0,
-        Number.parseFloat(current.style.top) - 96,
-      );
-      scroller.scrollLeft = Math.max(
-        0,
-        stableHalfWidth - scroller.clientWidth / 2 + 12,
-      );
-    }
-    hasOpened = true;
+    positionCurrentView();
+    revealSelection(current ?? buttons.values().next().value, "instant");
   }
 
   function close(restoreFocus = false): void {
@@ -1088,6 +1152,25 @@ export function createConversationTree(options: TreeOptions): {
   );
   return {
     refreshLoaded,
+    reset() {
+      // A new chat must not inherit an old branch's empty canvas or viewport.
+      stableHalfWidth = 0;
+      stableLeft = 0;
+      stableRight = 0;
+      layoutOrigin = 0;
+      stableCanvasHeight = 0;
+      layoutWidth = -1;
+      zoom = 1;
+      fitting = false;
+      selection = null;
+      scroller.scrollTop = 0;
+      scroller.scrollLeft = 0;
+      dirty = true;
+      if (!panel.hidden) {
+        render();
+        positionCurrentView();
+      }
+    },
     refresh() {
       dirty = true;
       if (!panel.hidden) render();

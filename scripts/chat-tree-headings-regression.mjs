@@ -91,7 +91,24 @@ for (const engine of [firefox, webkit, chromium]) {
     const indent = await headings(2).evaluateAll((buttons) =>
       buttons.map((button) => getComputedStyle(button).paddingLeft),
     );
-    assert.deepEqual(indent, ["33px", "45px", "45px", "45px"]);
+    assert.deepEqual(indent, ["29px", "41px", "41px", "41px"]);
+    const outline = await headings(2)
+      .first()
+      .evaluate((heading) => {
+        const glyph = document.querySelector(
+          '.conversation-tree-node[data-message-id="2"] .conversation-tree-glyph',
+        );
+        const rect = heading.getBoundingClientRect();
+        const glyphRect = glyph.getBoundingClientRect();
+        const style = getComputedStyle(heading);
+        return {
+          alignment: style.textAlign,
+          textLeft: rect.left + Number.parseFloat(style.paddingLeft),
+          spineX: glyphRect.left + glyphRect.width / 2,
+        };
+      });
+    assert.equal(outline.alignment, "left");
+    assert.ok(outline.textLeft > outline.spineX);
 
     async function jump(id, index, keyboard = false) {
       const target = headings(id).nth(index);

@@ -32,7 +32,8 @@ for (const engine of [firefox, webkit, chromium]) {
               : `Prompt ${index + 1}`,
         },
       }));
-      for (let id = 21; id <= 24; id++)
+      // Enough content-sized versions to clip a middle node at either edge.
+      for (let id = 21; id <= 30; id++)
         nodes.push({
           id,
           parentId: 19,
@@ -53,6 +54,57 @@ for (const engine of [firefox, webkit, chromium]) {
     await page
       .getByRole("button", { name: "Conversation tree", exact: true })
       .click();
+    async function currentIsVisible() {
+      await page.waitForFunction(() => {
+        const view = document.querySelector(".conversation-tree-scroll");
+        const bounds = view.getBoundingClientRect();
+        const current = view.querySelector('[aria-current="location"]');
+        if (!current) return false;
+        const rect = current.getBoundingClientRect();
+        return (
+          rect.left >= bounds.left &&
+          rect.right <= bounds.left + view.clientWidth &&
+          rect.top >= bounds.top &&
+          rect.bottom <= bounds.top + view.clientHeight
+        );
+      });
+    }
+    await currentIsVisible();
+    const chatBeforeReopen = await page
+      .locator("#viewport")
+      .evaluate((view) => view.scrollTop);
+    await page.locator(".conversation-tree-scroll").evaluate((view) => {
+      view.scrollTop = 0;
+      view.scrollLeft = view.scrollWidth;
+    });
+    await page.keyboard.press("Escape");
+    await page
+      .getByRole("button", { name: "Conversation tree", exact: true })
+      .click();
+    await currentIsVisible();
+    assert.equal(
+      await page.locator("#viewport").evaluate((view) => view.scrollTop),
+      chatBeforeReopen,
+    );
+    const reopenOffset = await page
+      .locator(".conversation-tree-scroll")
+      .evaluate((view) => {
+        const bounds = view.getBoundingClientRect();
+        const item = view
+          .querySelector('[aria-current="location"]')
+          .getBoundingClientRect();
+        return (
+          item.left + item.width / 2 - (bounds.left + view.clientWidth / 2)
+        );
+      });
+    assert.ok(
+      Math.abs(reopenOffset) < 1,
+      "reopening centers the current band after a far-right pan",
+    );
+    assert.equal(
+      await page.locator(".conversation-tree-panel").getAttribute("data-zoom"),
+      "1",
+    );
     await page.evaluate(() => {
       const scroller = document.querySelector(".conversation-tree-scroll");
       document.querySelector('[aria-label="Reset tree zoom to 100%"]')?.click();
@@ -107,6 +159,10 @@ for (const engine of [firefox, webkit, chromium]) {
           const clipped = node.getBoundingClientRect();
           window.revealCalls.length = 0;
           return {
+            clipping: {
+              left: clipped.left - view.left,
+              right: clipped.right - view.left - scroller.clientWidth,
+            },
             top: scroller.scrollTop,
             left: scroller.scrollLeft,
             clickX:
@@ -121,6 +177,10 @@ for (const engine of [firefox, webkit, chromium]) {
         { selector, edge },
       );
       // Click the visible portion without locator auto-scrolling it first.
+      if (edge === "right")
+        assert.ok(before.clipping.right > 0, "fixture clips the right edge");
+      if (edge === "left")
+        assert.ok(before.clipping.left < 0, "fixture clips the left edge");
       await page.mouse.click(before.clickX, before.clickY);
       await page.waitForFunction(
         () =>

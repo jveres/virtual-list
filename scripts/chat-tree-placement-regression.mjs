@@ -27,6 +27,20 @@ for (const engine of [firefox, webkit, chromium]) {
     await page.getByRole("button", { name: "Reset tree zoom to 100%" }).click();
 
     async function checkRowLayout() {
+      // Viewport resizing can precede the panel's ResizeObserver layout pass.
+      await page.waitForFunction(() => {
+        const panel = document.querySelector(".conversation-tree-panel");
+        const cap = Math.max(
+          0,
+          Math.min(
+            320,
+            panel.querySelector(".conversation-tree-scroll").clientWidth - 40,
+          ),
+        );
+        return [...panel.querySelectorAll(".conversation-tree-node")].every(
+          (node) => Number.parseFloat(node.style.maxWidth) === cap,
+        );
+      });
       const geometry = await panel.evaluate((panel) => {
         const canvas = panel.querySelector(".conversation-tree-canvas");
         const origin = canvas.getBoundingClientRect();
@@ -38,14 +52,42 @@ for (const engine of [firefox, webkit, chromium]) {
           const glyph = node
             .querySelector(".conversation-tree-glyph")
             .getBoundingClientRect();
+          const svg = node.querySelector(".conversation-tree-glyph > svg");
+          const pictogram = svg.getBoundingClientRect();
+          const drawing = svg.getBBox();
+          const drawingCenter = new DOMPoint(
+            drawing.x + drawing.width / 2,
+            drawing.y + drawing.height / 2,
+          ).matrixTransform(svg.getScreenCTM());
           const label = node
             .querySelector(".conversation-tree-label")
             .getBoundingClientRect();
+          const toc = panel.querySelector(
+            `.conversation-tree-toc:has([data-message-id="${node.dataset.messageId}"])`,
+          );
           const item = {
             id: node.dataset.messageId,
             x: glyph.left + glyph.width / 2 - origin.left,
             y: glyph.top - origin.top,
             width: box.width,
+            left: box.left - origin.left,
+            bandRight:
+              Math.max(
+                box.right,
+                toc?.getBoundingClientRect().right ?? box.right,
+              ) - origin.left,
+            maxWidth: Number.parseFloat(node.style.maxWidth),
+            pictogramRatio: pictogram.width / glyph.width,
+            drawingOffsetX: drawingCenter.x - (glyph.left + glyph.width / 2),
+            drawingOffsetY: drawingCenter.y - (glyph.top + glyph.height / 2),
+            pictogramOffsetX:
+              pictogram.left +
+              pictogram.width / 2 -
+              (glyph.left + glyph.width / 2),
+            pictogramOffsetY:
+              pictogram.top +
+              pictogram.height / 2 -
+              (glyph.top + glyph.height / 2),
             role: node.dataset.role,
             labelLeft: label.left - origin.left,
             labelRight: label.right - origin.left,
@@ -72,6 +114,8 @@ for (const engine of [firefox, webkit, chromium]) {
           nodes: Object.fromEntries(byId),
           edges,
           center: origin.width / 2,
+          forkWidth:
+            panel.querySelector(".conversation-tree-scroll").clientWidth - 24,
         };
       });
       const parentById = new Map(
@@ -79,34 +123,50 @@ for (const engine of [firefox, webkit, chromium]) {
       );
       for (const siblings of geometry.rows) {
         const parent = geometry.nodes[parentById.get(siblings[0].id)];
-        const center = parent?.x ?? geometry.center;
-        assert.ok(
-          Math.abs(
-            siblings.reduce((sum, node) => sum + node.x, 0) / siblings.length -
-              center,
-          ) < 0.1,
-          "the fork is centered under its actual parent",
-        );
-        const bandWidth = 2 * (siblings[0].width - 18);
-        for (const [index, node] of siblings.entries()) {
+        if (parent)
           assert.ok(
-            Math.abs(node.width - siblings[0].width) < 0.1,
-            "equal-width version bands",
+            Math.abs(
+              siblings.reduce((sum, node) => sum + node.x, 0) /
+                siblings.length -
+                parent.x,
+            ) < 0.1,
+            "the fork is centered under its actual parent",
+          );
+        for (const [index, node] of siblings.entries()) {
+          assert.ok(Math.abs(node.pictogramRatio - 12 / 28) < 0.001);
+          assert.ok(
+            Math.abs(node.drawingOffsetX) < 0.02,
+            "drawing centers horizontally in its ring",
+          );
+          assert.ok(
+            Math.abs(node.drawingOffsetY) < 0.02,
+            "drawing centers vertically in its ring",
+          );
+          assert.ok(
+            Math.abs(node.pictogramOffsetX) < 0.1,
+            "pictogram centers horizontally in its ring",
+          );
+          assert.ok(
+            Math.abs(node.pictogramOffsetY) < 0.1,
+            "pictogram centers vertically in its ring",
+          );
+          assert.ok(
+            node.width <= node.maxWidth + 0.1 &&
+              node.maxWidth === geometry.rows[0][0].maxWidth,
+            "root and deeper nodes share one maximum, not a forced width",
           );
           assert.ok(
             Math.abs(node.y - siblings[0].y) < 0.1,
             "versions share a depth row",
           );
           assert.ok(
-            node.role === "user"
-              ? node.labelRight < node.x
-              : node.labelLeft > node.x,
-            "user labels stay left; assistant labels stay right",
+            node.labelLeft - node.x - 5 >= 17.9,
+            "message labels keep an 18px gap from the active ribbon",
           );
           if (index > 0)
             assert.ok(
-              Math.abs(node.x - siblings[index - 1].x - bandWidth) < 0.1,
-              "neighboring bands have equal spacing",
+              Math.abs(node.left - siblings[index - 1].bandRight - 12) <= 1,
+              "neighboring content has only a 12px gutter, not unused band space",
             );
         }
         if (siblings.length === 1 && parent)
@@ -147,7 +207,7 @@ for (const engine of [firefox, webkit, chromium]) {
         const rect = panel.getBoundingClientRect();
         const expected = matchMedia("(max-width: 984px)").matches
           ? Math.min(460, innerWidth - 32)
-          : Math.min(rect.width, chat.left + chat.width * 0.15 - 16);
+          : Math.min(664, Math.max(214, chat.left + chat.width * 0.15 - 16));
         const toggle = document
           .querySelector(".conversation-tree-toggle")
           .getBoundingClientRect();
@@ -221,8 +281,8 @@ for (const engine of [firefox, webkit, chromium]) {
       assert.ok(bounds.left >= 15 && bounds.right <= width - 15);
       if (width > 984) {
         assert.ok(
-          bounds.right <= bounds.overlapLimit + 1,
-          "at most 15% of the chat is covered",
+          bounds.right <= Math.max(16 + 214, bounds.overlapLimit) + 1,
+          "limit chat overlap while retaining room for all header controls",
         );
         assert.ok(
           bounds.left < bounds.toggleLeft,
@@ -328,6 +388,80 @@ for (const engine of [firefox, webkit, chromium]) {
       message: { role: "user", markdown: "Explain this" },
     };
     await page.setViewportSize({ width: 2560, height: 820 });
+    await importTree([
+      prompt,
+      { ...response(2, "A", ""), selectedChildId: 3 },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        id: index + 3,
+        parentId: index + 2,
+        selectedChildId: index < 3 ? index + 4 : null,
+        message: { role: index % 2 ? "assistant" : "user", markdown: "Text" },
+      })),
+      response(7, "B", ""),
+    ]);
+    const stableCards = panel.locator(
+      '.conversation-tree-node:is([data-message-id="1"], [data-message-id="2"], [data-message-id="7"])',
+    );
+    const cardGeometry = () =>
+      stableCards.evaluateAll((nodes) =>
+        nodes.map((node) => {
+          const { x, y, width, height } = node.getBoundingClientRect();
+          return { id: node.dataset.messageId, x, y, width, height };
+        }),
+      );
+    const initialCards = await cardGeometry();
+    const badge = panel.locator(
+      '.conversation-tree-node[data-message-id="2"] .conversation-tree-count',
+    );
+    assert.equal(await badge.textContent(), "4 more messages");
+    assert.equal(await badge.isVisible(), false);
+    for (const id of [7, 2, 7, 2]) {
+      await panel
+        .locator(`.conversation-tree-node[data-message-id="${id}"]`)
+        .click();
+      await page.waitForFunction(
+        () =>
+          !document
+            .querySelector(".conversation-tree-panel")
+            .hasAttribute("aria-busy"),
+      );
+      assert.equal(await badge.isVisible(), id === 7);
+      const stream = await panel.evaluate((panel) => {
+        const ribbon = panel.querySelector(".conversation-tree-path-ribbon");
+        const path = ribbon.getAttribute("d");
+        const style = getComputedStyle(ribbon);
+        return {
+          count: panel.querySelectorAll(".conversation-tree-path-ribbon")
+            .length,
+          opacity: style.opacity,
+          width: style.strokeWidth,
+          followsActive: [
+            ...panel.querySelectorAll(".conversation-tree-edge.active"),
+          ].every((edge) => path.includes(edge.getAttribute("d"))),
+          transparentCards: [
+            ...panel.querySelectorAll(".conversation-tree-node"),
+          ].every(
+            (node) =>
+              getComputedStyle(node).backgroundColor === "rgba(0, 0, 0, 0)",
+          ),
+        };
+      });
+      assert.deepEqual(stream, {
+        count: 1,
+        opacity: "0.06",
+        width: "10px",
+        followsActive: true,
+        transparentCards: true,
+      });
+      assert.deepEqual(
+        await cardGeometry(),
+        initialCards,
+        "switching versions preserves card sizes and positions",
+      );
+    }
+    await panel.screenshot({
+      path: `browser-artifacts/conversation-tree/${engine.name()}-path-ribbon.png`,
+    });
     for (const count of [1, 2, 3, 4, 5]) {
       await importTree([
         prompt,
@@ -389,6 +523,31 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     assert.equal(longWidth, shortWidth, "long labels don't resize the panel");
     await checkTextFits();
+    const outlineAlignment = await panel.evaluate((panel) => {
+      const heading = panel.querySelector(".conversation-tree-heading");
+      const glyph = panel.querySelector(".conversation-tree-glyph");
+      const headingRect = heading.getBoundingClientRect();
+      const glyphRect = glyph.getBoundingClientRect();
+      const style = getComputedStyle(heading);
+      return {
+        depth: heading.dataset.depth,
+        padding: style.paddingLeft,
+        gap:
+          headingRect.left +
+          Number.parseFloat(style.paddingLeft) -
+          (glyphRect.left + glyphRect.width / 2),
+      };
+    });
+    assert.equal(
+      outlineAlignment.depth,
+      "0",
+      "H2-only outlines start at the base level",
+    );
+    assert.equal(outlineAlignment.padding, "29px");
+    assert.ok(
+      Math.abs(outlineAlignment.gap - 23) < 0.1,
+      "base headings align with user text",
+    );
     const spacing = await panel.evaluate((panel) => {
       const node = panel.querySelector(
         '.conversation-tree-node[data-message-id="2"]',
@@ -427,7 +586,7 @@ for (const engine of [firefox, webkit, chromium]) {
       }
     }
 
-    // Both versions get equal halves, including their ToCs.
+    // Titles shrink-wrap independently; longer ToCs still reserve their space.
     await importTree([
       prompt,
       response(
@@ -451,13 +610,16 @@ for (const engine of [firefox, webkit, chromium]) {
       const firstNode = panel
         .querySelector('.conversation-tree-node[data-message-id="2"]')
         .getBoundingClientRect();
+      const nextHeading = panel
+        .querySelector('.conversation-tree-heading[data-message-id="3"]')
+        .getBoundingClientRect();
       return {
-        gap: next.left - first.right,
+        gap: nextHeading.left - first.right,
         stride: next.left - firstNode.left,
         firstWidth: firstNode.width,
         nextWidth: next.width,
-        canvasWidth: panel
-          .querySelector(".conversation-tree-canvas")
+        rootWidth: panel
+          .querySelector('.conversation-tree-node[data-message-id="1"]')
           .getBoundingClientRect().width,
         firstTocWidth: first.width,
         nextTocWidth: panel
@@ -466,15 +628,15 @@ for (const engine of [firefox, webkit, chromium]) {
       };
     });
     assert.ok(separation.gap >= 8, "text stops before the adjacent branch");
-    assert.ok(Math.abs(separation.stride - separation.canvasWidth / 2) < 0.1);
+    assert.ok(separation.stride >= separation.firstWidth - 0.1);
+    assert.ok(separation.rootWidth < 320, "short root labels shrink-wrap");
     assert.ok(
-      Math.abs(separation.firstWidth - (separation.stride / 2 + 18)) < 0.1,
+      separation.nextWidth < separation.firstWidth,
+      "short versions use less width",
     );
-    assert.equal(separation.nextWidth, separation.firstWidth);
-    assert.ok(
-      Math.abs(separation.firstTocWidth - (separation.firstWidth - 20)) < 0.1,
-    );
-    assert.equal(separation.nextTocWidth, separation.firstTocWidth);
+    assert.ok(separation.firstTocWidth <= 300);
+    assert.ok(separation.nextTocWidth <= 300);
+    await checkRowLayout();
 
     // Non-duplicated headings get the same compact spacing.
     await importTree([

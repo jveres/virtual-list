@@ -7,21 +7,36 @@ needed. The runtime owns this geometry; don't calculate it in the demo.
 
 ## Tree layout
 
-The initial path is centered in the tree canvas. Each fork divides its
-parent's band into equal-width bands: two versions sit left and right, three
-sit left, center, and right, and larger forks follow the same rule. A single
-child stays on its parent's branch instead of returning to the root spine.
-Selecting a version never reorders its siblings. User labels sit to the left
-of their glyphs; assistant labels and response sections sit to the right.
+Tree centering includes the occupied card and outline width rather than only
+the spine. Cards and outlines shrink to their content, with a panel-derived
+maximum width shared at every depth. Sibling positions follow those measured
+widths, leaving only a 12-pixel gutter instead of empty fixed-width slots.
+A single child stays on its parent's branch instead of returning to the root
+spine.
+Selecting a version never reorders its siblings. Both user and assistant
+labels sit to the right of their glyphs and use natural left alignment.
+The active path has a continuous, faint blue ribbon behind its spine and
+glyphs. Message backgrounds stay transparent, including on hover.
+Response sections continue beneath the assistant title on that same side.
+The 12-pixel pictograms are centered inside 28-pixel rings; the user pictogram
+uses Lucide's MessageSquare with its drawing bounds vertically centered.
+The [Lucide license notice](../public/lucide-license.txt) ships with the demo.
 
-Bands have a 208-pixel minimum width. The normal panel uses the available left
-gutter, up to 664 pixels wide, targeting at most 15% overlap with the desktop
+The normal panel uses the available left gutter, up to 664 pixels wide,
+targeting at most 15% overlap with the desktop
 chat column. Its 214-pixel minimum width keeps all header controls visible.
 Wide forks scroll horizontally at reading zoom. Canvas extents remain stable
 while branches fold in manual zoom; Fit recalculates the full extent.
 Resizing the panel recalculates the width. Long labels wrap to two lines,
 and section titles use an ellipsis within their band. A folded branch's count
 sits above its continuation line. Message nodes have no hover tooltips.
+Foldable versions reserve the count badge's width even while active, so showing
+the badge doesn't resize a short title or shift its siblings.
+Short titles stay compact even beside longer outlines. The layout reserves
+the wider of each title and its outline, so neighboring branches do not
+overlap. Width caps are applied together, then widths are measured in one
+batch during layout, never in the scroll-frame path. Nested forks stay under
+their own parent; the canvas can grow to contain those offset branches.
 
 After successful navigation, a partially clipped node or section smoothly
 scrolls into view inside the tree panel, moving only as far as needed. Fully
@@ -39,10 +54,18 @@ The header contains zoom out, a percentage reset, zoom in, Fit, Locate, full
 width, and Close controls. Toggle full width to span the window with 16-pixel
 side margins; toggle it again to restore the normal panel width. This choice
 persists when you close and reopen the panel and preserves your zoom or Fit mode.
-Full-width mode caps node cards at 320 pixels and heading lists at 300 pixels,
-so branches can spread across the canvas without stretching their text.
+Both modes cap node cards at 320 pixels and heading lists at 300 pixels,
+reduced for narrower panels. Root and leaf cards share those maximums,
+but their actual widths follow their content rather than filling the cap.
+Extra panel width adds canvas space without stretching text or connectors.
+Sibling spacing accommodates these cards so their text does not overlap.
 The first opening uses 100% zoom. Closing and reopening retains
-your zoom and mode. Fit is opt-in and fits the entire displayed tree into the
+your zoom and mode, but recenters the current node's band and immediately
+reveals the node as far as the scroll boundaries permit. If the reading
+position is unavailable, opening falls back to the first node. Importing or
+replacing a conversation clears the previous canvas extents and pan position
+and resets zoom to 100%, whether the panel is open or closed.
+Fit is opt-in and fits the entire displayed tree into the
 available width and height; it remains active across resizing and branch
 changes. Long conversations can make the overview's text very small.
 
@@ -205,8 +228,10 @@ remain open after selection, just like a click-pinned panel.
 
 ## Response sections
 
-Assistant nodes list their H1/H2 sections beneath the title, with H2 entries
-indented. Each section has a clickable dot on the solid path line. Omit the
+Assistant nodes list their H1/H2 sections beneath the title. The shallowest
+visible heading level aligns with the message text; only nested headings are
+indented. An H2-only outline therefore has no extra initial indentation.
+Each section has a clickable dot on the solid path line. Omit the
 first section if it repeats the node title, but retain its original heading
 ordinal so later links still select the right section, including duplicate
 heading names.
@@ -231,6 +256,44 @@ switching versions, and deleting versions persist the updated history locally.
 Reloading restores that history and uses the same runtime bottom geometry.
 The settings dialog can restore the built-in simulated conversation.
 
+Branch selection saves only node choices and progress flags in a small,
+separate IndexedDB record. It reuses the already-validated in-memory message
+payloads instead of exporting and reparsing the full transcript. A revision
+ties these choices to their content snapshot; a stale selection from an older
+snapshot cannot override a replacement chat. Full content saves atomically
+replace the snapshot and clear its previous selection record. Existing
+Markdown-only history records remain readable.
+
+Imports, sends, stops, edits, and deletions still save the full transcript.
+Loading validates persisted content and checks saved choices against the tree.
+Export uses the current in-memory tree, including choices in folded branches.
+
+### Measured version-switch cost
+
+The September 11, 2026 check used an image-rich 16 MB imported chat and eight
+alternating native clicks on two visible version nodes per run. The installed
+Firefox 155.0.1 used a fresh profile, closed DevTools, and the external LU28R55
+at 60 Hz: a 1900 × 965 CSS-pixel viewport with 2× display scaling. The panel
+stayed open at 100% zoom. Two baseline runs and two changed runs agreed:
+
+| Selection | Baseline mean | Changed mean |
+| --- | ---: | ---: |
+| Short branch | 187–188 ms | 31–32 ms |
+| Longer branch | 280–283 ms | 133–134 ms |
+
+Times measure the click handler through navigation completion, not physical
+display presentation. The longest animation-frame interval fell from about
+200 ms to 34 ms. Profiles attributed about 152 ms of sampled work per switch
+to the demo's full-history serialization, reparsing, validation, and storage
+clone. The runtime itself accounted for about 5 ms; its enclosing callback
+stacks must not be mistaken for runtime-owned work. The remaining longer-branch
+delay includes Markdown row rendering and frame-batched preparation.
+
+Raw profiles, timings, and screenshots remain local under ignored
+`browser-artifacts/firefox/`. Baselines are `run-aFAn3Z` and `run-GsDckT`;
+changed runs are `run-xFEYCC` and `run-J0CPOY`. Earlier hidden-panel captures and
+an interrupted focus attempt are not valid evidence for this comparison.
+
 ## Regression checks
 
 The following checks cover the decision at both the runtime and host layers:
@@ -251,7 +314,10 @@ The following checks cover the decision at both the runtime and host layers:
   adding a reply reserve on top of the existing prompt reserve. It also
   checks unloaded history, branch selection, and tree-panel bottom-click
   stability at desktop and narrow widths in Firefox, WebKit, and Chromium.
-  Review regressions also cover keyboard focus, dated/undated branch changes,
+- [`scripts/chat-tree-persistence-regression.mjs`](../scripts/chat-tree-persistence-regression.mjs):
+  checks small selection writes, reloads, complete exports, replacement
+  snapshots, and stale-record isolation in Firefox, WebKit, and Chromium.
+  The main tree regressions also cover keyboard focus, dated/undated branch changes,
   latest-response toolbars, attachment-only image nodes, and empty responses
   labeled **Response in progress…** until streaming supplies a final summary.
 - [`scripts/chat-tree-headings-regression.mjs`](../scripts/chat-tree-headings-regression.mjs):
@@ -260,15 +326,18 @@ The following checks cover the decision at both the runtime and host layers:
   and branch changes in Firefox, WebKit, and Chromium.
 - [`scripts/chat-tree-placement-regression.mjs`](../scripts/chat-tree-placement-regression.mjs):
   checks one through five equal-width version bands, parent alignment,
-  role-aware labels, edge endpoints, resizing, and narrow-screen placement.
+  right-side labels, drawing and ring centers, normalized heading indentation,
+  edge endpoints, resizing, and narrow-screen placement.
 - [`scripts/chat-tree-zoom-regression.mjs`](../scripts/chat-tree-zoom-regression.mjs):
   checks full-tree fit, manual zoom, Locate without chat movement, header
   controls, full-width toggling and restoration, hover-open percentage reset,
+  import view resets with open and closed panels, band centering,
   dragging from text without selection,
   and synthetic pinch input. Physical trackpad feel requires manual checking.
 - [`scripts/chat-tree-reveal-regression.mjs`](../scripts/chat-tree-reveal-regression.mjs):
-  checks clipped nodes on all four edges, section links, reduced motion, and
-  fully visible selections that must not move the panel.
+  checks first-open visibility, recentering after a far-right pan and reopen,
+  clipped nodes on all four edges, section links, reduced motion, and fully
+  visible selections that must not move the panel.
 - [`scripts/chat-bottom-regression.mjs`](../scripts/chat-bottom-regression.mjs):
   checks stopped-response persistence, branch return followed by manual
   scrolling, bottom-arrow equivalence, live sticky insets, and short and long

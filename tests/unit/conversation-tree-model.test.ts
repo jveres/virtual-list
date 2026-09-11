@@ -72,6 +72,23 @@ describe("conversation tree layout", () => {
     expect(conversationEntries(new Map())).toEqual([]);
   });
 
+  it("should retain descendant counts when switching the selected version", () => {
+    const tree = fixture();
+    const parent = tree.get(1);
+    if (!parent) throw new Error("Missing fixture parent");
+    const before = conversationEntries(tree);
+
+    parent.selectedChildIndex = 0;
+    const after = conversationEntries(tree);
+
+    for (const entries of [before, after]) {
+      expect(entries.find((entry) => entry.id === 2)?.descendantCount).toBe(2);
+      expect(entries.find((entry) => entry.id === 4)?.descendantCount).toBe(1);
+    }
+    expect(before.find((entry) => entry.id === 2)?.hiddenCount).toBe(2);
+    expect(after.find((entry) => entry.id === 2)?.hiddenCount).toBe(0);
+  });
+
   it.each(["thinking", "streaming"] as const)(
     "should label an empty %s response as in progress until it has content",
     (status) => {

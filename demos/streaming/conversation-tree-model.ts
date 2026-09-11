@@ -20,6 +20,7 @@ export interface TreeEntry {
   row: number;
   column: number;
   active: boolean;
+  descendantCount: number;
   hiddenCount: number;
   role: "user" | "assistant";
   label: string;
@@ -149,6 +150,7 @@ export function conversationEntries(
         row,
         column: parentColumn + versionIndex,
         active: id === activeId,
+        descendantCount: (sizes.get(id) ?? 1) - 1,
         hiddenCount: id === activeId ? 0 : (sizes.get(id) ?? 1) - 1,
         role: message.role,
         ...content,

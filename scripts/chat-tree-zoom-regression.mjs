@@ -110,20 +110,61 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.ok(Math.abs(expanded.x - 16) <= 1);
     assert.ok(Math.abs(expanded.width - (1440 - 32)) <= 1);
     assert.equal(await zoom(), 1, "full width preserves manual zoom");
+    const siblingGaps = await page
+      .locator(".conversation-tree-node")
+      .evaluateAll((nodes) => {
+        const rows = new Map();
+        for (const node of nodes) {
+          const box = node.getBoundingClientRect();
+          const toc = node.parentElement.querySelector(
+            `.conversation-tree-toc:has([data-message-id="${node.dataset.messageId}"])`,
+          );
+          const row = rows.get(node.dataset.row) ?? [];
+          row.push({
+            left: box.left,
+            right: Math.max(
+              box.right,
+              toc?.getBoundingClientRect().right ?? box.right,
+            ),
+          });
+          rows.set(node.dataset.row, row);
+        }
+        return [...rows.values()]
+          .filter((row) => row.length > 1)
+          .flatMap((row) => {
+            row.sort((a, b) => a.left - b.left);
+            return row
+              .slice(1)
+              .map((node, index) => node.left - row[index].right);
+          });
+      });
+    assert.ok(
+      siblingGaps.length > 0 &&
+        siblingGaps.every((gap) => Math.abs(gap - 12) <= 1),
+      `full-width siblings pack their actual widths (${siblingGaps.join(", ")})`,
+    );
     assert.equal(
       await page
         .locator(".conversation-tree-node")
         .evaluateAll((nodes) =>
-          nodes.every((node) => Number.parseFloat(node.style.width) <= 320),
+          nodes.every(
+            (node) =>
+              Number.parseFloat(node.style.maxWidth) === 320 &&
+              node.getBoundingClientRect().width <= 320.1,
+          ),
         ),
       true,
-      "full-width node cards keep a readable width cap",
+      "full-width root and leaf cards share a maximum width",
     );
     assert.equal(
       await page
         .locator(".conversation-tree-toc")
         .evaluateAll((lists) =>
-          lists.every((list) => Number.parseFloat(list.style.width) <= 300),
+          lists.every(
+            (list) =>
+              Number.parseFloat(list.style.maxWidth) <= 300 &&
+              list.getBoundingClientRect().width <= 300.1,
+          ),
         ),
       true,
       "full-width headings keep the corresponding width cap",
@@ -133,7 +174,34 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.equal(await widthToggle.getAttribute("aria-pressed"), "true");
     assert.equal((await panel.boundingBox()).width, expanded.width);
     await page.setViewportSize({ width: 1200, height: 900 });
+    await page.waitForFunction(
+      (expected) =>
+        Math.abs(
+          document
+            .querySelector(".conversation-tree-panel")
+            .getBoundingClientRect().width - expected,
+        ) <= 1,
+      1200 - 32,
+    );
     assert.ok(Math.abs((await panel.boundingBox()).width - (1200 - 32)) <= 1);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await fit.click();
+    await fits();
+    assert.equal(
+      await page.locator(".conversation-tree-canvas").evaluate((canvas) => {
+        const bounds = canvas.getBoundingClientRect();
+        return [
+          ...canvas.querySelectorAll(
+            ".conversation-tree-node, .conversation-tree-toc",
+          ),
+        ].every((node) => {
+          const box = node.getBoundingClientRect();
+          return box.left >= bounds.left - 1 && box.right <= bounds.right + 1;
+        });
+      }),
+      true,
+      "full-width label extents remain inside the canvas on narrow screens",
+    );
     await page.setViewportSize({ width: 1440, height: 900 });
     await fit.click();
     await fits();
@@ -352,6 +420,14 @@ for (const engine of [firefox, webkit, chromium]) {
     await page.keyboard.press("Escape");
     await toggle.click();
     await fits();
+    await reset.click();
+    await page
+      .getByRole("button", { name: "Zoom in tree", exact: true })
+      .click();
+    await page.locator(".conversation-tree-scroll").evaluate((view) => {
+      view.scrollTop = view.scrollHeight;
+      view.scrollLeft = view.scrollWidth;
+    });
     await page.keyboard.press("Escape");
     await page.locator("#import-file").setInputFiles({
       name: "short-selection.md",
@@ -362,6 +438,47 @@ for (const engine of [firefox, webkit, chromium]) {
     });
     await page.locator('#viewport [data-key="4"]').waitFor();
     await toggle.click();
+    async function checkReplacementView() {
+      assert.equal(await zoom(), 1, "a replacement chat resets tree zoom");
+      const viewState = await page
+        .locator(".conversation-tree-scroll")
+        .evaluate((view) => {
+          const bounds = view.getBoundingClientRect();
+          const nodes = [...view.querySelectorAll(".conversation-tree-node")];
+          const first = (
+            view.querySelector('[aria-current="location"]') ?? nodes[0]
+          ).getBoundingClientRect();
+          const offset =
+            first.left + first.width / 2 - (bounds.left + view.clientWidth / 2);
+          const centeredLeft = Math.max(
+            0,
+            Math.min(
+              view.scrollWidth - view.clientWidth,
+              view.scrollLeft + offset,
+            ),
+          );
+          return {
+            remainingCenterScroll: centeredLeft - view.scrollLeft,
+            visible: nodes.some((node) => {
+              const rect = node.getBoundingClientRect();
+              return (
+                rect.bottom > bounds.top &&
+                rect.top < bounds.bottom &&
+                rect.right > bounds.left &&
+                rect.left < bounds.right
+              );
+            }),
+            excessHeight: view.scrollHeight - view.clientHeight,
+          };
+        });
+      assert.equal(viewState.visible, true, "replacement nodes are in view");
+      assert.ok(
+        Math.abs(viewState.remainingCenterScroll) < 1,
+        "a straight path centers the card band as far as scroll bounds allow",
+      );
+      assert.ok(viewState.excessHeight <= 1, "old canvas height is discarded");
+    }
+    await checkReplacementView();
     await page.locator('.conversation-tree-node[data-message-id="4"]').click();
     await page.waitForFunction(
       () =>
@@ -389,6 +506,22 @@ for (const engine of [firefox, webkit, chromium]) {
           .querySelector('.conversation-tree-node[data-message-id="1"]')
           ?.getAttribute("aria-current") === "location",
     );
+    await page
+      .getByRole("button", { name: "Zoom in tree", exact: true })
+      .click();
+    await page.locator("#import-file").setInputFiles({
+      name: "visible-replacement.md",
+      mimeType: "text/markdown",
+      buffer: Buffer.from(
+        "**User**\n\nReplacement prompt\n\n**Assistant**\n\nReplacement reply\n",
+      ),
+    });
+    await page.waitForFunction(
+      () =>
+        document.querySelector(".conversation-tree-label")?.textContent ===
+        "Replacement prompt",
+    );
+    await checkReplacementView();
     assert.deepEqual(errors, []);
     console.log(
       `${engine.name()}: fit, zoom, locate, resize, and reopen passed`,

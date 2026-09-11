@@ -25,6 +25,51 @@ export interface ImportedTranscript {
   tree: TranscriptTree | null;
 }
 
+/** Branch choices only; message bodies and attachments stay in the snapshot. */
+export interface TranscriptSelection {
+  selectedRootId: number | null;
+  nodes: { id: number; selectedChildId: number | null }[];
+}
+
+/** Apply saved choices without serializing or revalidating message payloads. */
+export function selectTranscriptBranches(
+  tree: TranscriptTree,
+  selection: unknown,
+): ImportedTranscript | null {
+  if (
+    !isRecord(selection) ||
+    (selection.selectedRootId !== null && !isId(selection.selectedRootId)) ||
+    !Array.isArray(selection.nodes) ||
+    selection.nodes.length !== tree.nodes.length
+  )
+    return null;
+  const choices = new Map<number, number | null>();
+  for (const node of selection.nodes) {
+    if (
+      !isRecord(node) ||
+      !isId(node.id) ||
+      choices.has(node.id) ||
+      (node.selectedChildId !== null && !isId(node.selectedChildId))
+    )
+      return null;
+    choices.set(node.id, node.selectedChildId);
+  }
+  if (tree.nodes.some((node) => !choices.has(node.id))) return null;
+  const selected: TranscriptTree = {
+    selectedRootId: selection.selectedRootId,
+    nodes: tree.nodes.map((node) => ({
+      ...node,
+      selectedChildId: choices.get(node.id) ?? null,
+    })),
+  };
+  try {
+    const { active } = indexTree(selected);
+    return { tree: selected, turns: active.map((node) => node.message) };
+  } catch {
+    return null;
+  }
+}
+
 const TREE_TAG = "<!-- branching-tree ";
 const COMMENT_END = " -->";
 const TITLE = "# streaming-chat transcript";
