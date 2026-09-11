@@ -124,11 +124,15 @@ describe("sticky headers", () => {
 
     sticky.refresh(10);
 
-    expect(previous?.style.visibility).toBe("");
-    expect(replacement.style.visibility).toBe("hidden");
+    expect(previous?.classList.contains("vl-sticky-inline-hidden")).toBe(false);
+    expect(replacement.classList.contains("vl-sticky-inline-hidden")).toBe(
+      true,
+    );
     expect(active.firstChild).toBe(label);
     sticky.destroy();
-    expect(replacement.style.visibility).toBe("");
+    expect(replacement.classList.contains("vl-sticky-inline-hidden")).toBe(
+      false,
+    );
   });
 
   it("should adopt changed header geometry and retire an obsolete incoming slot", () => {
@@ -153,16 +157,24 @@ describe("sticky headers", () => {
     expect(active.style.transform).toBe("translateY(-34px)");
     expect(incoming.style.transform).toBe("translateY(10px)");
     expect(active.parentElement?.style.height).toBe("54px");
-    expect(inline.get("day:0")?.style.visibility).toBe("hidden");
-    expect(inline.get("day:1")?.style.visibility).toBe("hidden");
+    expect(
+      inline.get("day:0")?.classList.contains("vl-sticky-inline-hidden"),
+    ).toBe(true);
+    expect(
+      inline.get("day:1")?.classList.contains("vl-sticky-inline-hidden"),
+    ).toBe(true);
     sticky.refresh(100);
     expect(active.textContent).toBe("day 1");
     expect(active.style.transform).toBe("");
     expect(active.parentElement?.style.height).toBe("44px");
     expect(incoming.textContent).toBe("");
-    expect(inline.get("day:0")?.style.visibility).toBe("");
+    expect(
+      inline.get("day:0")?.classList.contains("vl-sticky-inline-hidden"),
+    ).toBe(false);
     sticky.destroy();
-    expect(inline.get("day:1")?.style.visibility).toBe("");
+    expect(
+      inline.get("day:1")?.classList.contains("vl-sticky-inline-hidden"),
+    ).toBe(false);
   });
 
   it("should keep the incoming date attached to its row in both scroll directions", () => {
@@ -192,8 +204,12 @@ describe("sticky headers", () => {
 
     sticky.setEnabled(false);
 
-    expect(inline.get("day:0")?.style.visibility).toBe("");
-    expect(inline.get("day:1")?.style.visibility).toBe("");
+    expect(
+      inline.get("day:0")?.classList.contains("vl-sticky-inline-hidden"),
+    ).toBe(false);
+    expect(
+      inline.get("day:1")?.classList.contains("vl-sticky-inline-hidden"),
+    ).toBe(false);
     sticky.destroy();
   });
 

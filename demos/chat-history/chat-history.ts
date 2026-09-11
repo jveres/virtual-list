@@ -433,7 +433,9 @@ sticky = createStickyHeaders({
   viewport,
   headerKeys: () => headerRows.map((row) => row.key),
   positionOf: (key) => list?.positionOf(key) ?? null,
-  elementOf: (key) => list?.elementOf(key) ?? null,
+  elementOf: (key) =>
+    list?.elementOf(key)?.querySelector<HTMLElement>(".section-header-pill") ??
+    null,
   renderHeader: (slot, ordinal) => {
     const row = headerRows[ordinal];
     if (row) slot.replaceChildren(buildSectionHeader(groupLabel(row.group)));

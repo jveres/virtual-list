@@ -28,9 +28,9 @@ interface StickyHeadersConfig {
   /** Fill `slot` with the content of header `ordinal` (0-based among headers). */
   renderHeader: (slot: HTMLElement, ordinal: number) => void;
   /**
-   * Mounted element for a key — pass `VirtualList.elementOf`. The pinned
-   * group's in-flow header is hidden while it's pinned so it doesn't show
-   * twice (the floating pill plus its own row scrolling up behind it).
+   * Mounted inline visual for a key (for example, the date pill inside
+   * `VirtualList.elementOf`). The companion toggles `vl-sticky-inline-hidden`;
+   * style that class to suppress duplicate paint without hiding the row.
    */
   elementOf?: (key: string) => HTMLElement | null;
 }
@@ -125,13 +125,14 @@ export function createStickyHeaders(
   };
 
   const restoreInline = (): void => {
-    for (const element of hiddenInline) element.style.visibility = "";
+    for (const element of hiddenInline)
+      element.classList.remove("vl-sticky-inline-hidden");
     hiddenInline = [];
   };
 
   // Hide the pinned group's in-flow header (if mounted) so it doesn't show
-  // through the floating pill as it scrolls up behind the overlay. A
-  // visibility change is not a size change: the row's geometry is untouched.
+  // through the floating pill as it scrolls up behind the overlay.
+  // Paint-only styling leaves visibility, opacity and row geometry untouched.
   const hideInlineFor = (ordinal: number, next = -1): void => {
     const activeElement = elementOf?.(keys[ordinal] ?? "") ?? null;
     const incomingElement =
@@ -145,9 +146,11 @@ export function createStickyHeaders(
       (element): element is HTMLElement => element !== null,
     );
     for (const element of hiddenInline) {
-      if (!elements.includes(element)) element.style.visibility = "";
+      if (!elements.includes(element))
+        element.classList.remove("vl-sticky-inline-hidden");
     }
-    for (const element of elements) element.style.visibility = "hidden";
+    for (const element of elements)
+      element.classList.add("vl-sticky-inline-hidden");
     hiddenInline = elements;
   };
 

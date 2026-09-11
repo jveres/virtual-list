@@ -263,8 +263,15 @@ p.ai-settings-note {
   box-shadow: 0 1px 3px rgb(0 0 0 / 8%);
 }
 
-/* The floating overlay's recycled slots (layout/visibility only; the header
-   content reuses .section-header above). */
+/* Suppress the inline duplicate without visibility or opacity transitions. */
+.section-header-pill.vl-sticky-inline-hidden {
+  color: transparent;
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
+/* The floating overlay's recycled slots reuse .section-header above. */
 .vl-sticky-header {
   /* The pill is centered over the date row plus the next message's top
      padding. Let its border and shadow paint into that existing gap. The

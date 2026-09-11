@@ -154,6 +154,9 @@ for (const engine of [firefox, chromium, webkit]) {
         const incomingPill = slots[1]
           .querySelector(".section-header-pill")
           ?.getBoundingClientRect();
+        const inlinePillStyle = getComputedStyle(
+          today.querySelector(".section-header-pill"),
+        );
         return {
           requestedDistance: distance,
           scrollTop: v.scrollTop,
@@ -175,6 +178,14 @@ for (const engine of [firefox, chromium, webkit]) {
               )
             : 0,
           inlineVisibility: getComputedStyle(today).visibility,
+          inlinePillOpacity: inlinePillStyle.opacity,
+          inlinePillVisibility: inlinePillStyle.visibility,
+          inlinePillPaint: [
+            inlinePillStyle.color,
+            inlinePillStyle.backgroundColor,
+            inlinePillStyle.borderTopColor,
+            inlinePillStyle.boxShadow,
+          ],
           incomingClipped: incomingPill
             ? Math.max(0, incomingPill.bottom - overlayBox.bottom) +
               Math.max(0, overlayBox.top - incomingPill.top)
@@ -208,9 +219,25 @@ for (const engine of [firefox, chromium, webkit]) {
       );
       assert.equal(
         result.inlineVisibility,
-        distance < result.headerHeight ? "hidden" : "visible",
-        `overlay owns today's header at ${distance}`,
+        "visible",
+        "the inline date row must remain visible during handoff",
       );
+      assert.equal(
+        result.inlinePillOpacity,
+        "1",
+        "inline suppression must not change opacity",
+      );
+      assert.equal(result.inlinePillVisibility, "visible");
+      if (distance < result.headerHeight) {
+        assert.deepEqual(result.inlinePillPaint, [
+          "rgba(0, 0, 0, 0)",
+          "rgba(0, 0, 0, 0)",
+          "rgba(0, 0, 0, 0)",
+          "none",
+        ]);
+      } else {
+        assert.notEqual(result.inlinePillPaint[0], "rgba(0, 0, 0, 0)");
+      }
       if (result.incoming === "Today") {
         assert.ok(
           Math.abs(result.incomingOffset - result.actualDistance) <= 0.5,

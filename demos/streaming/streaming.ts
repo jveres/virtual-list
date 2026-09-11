@@ -3446,7 +3446,11 @@ stickyHeaders = createStickyHeaders({
   viewport,
   headerKeys: dayHeaderKeys,
   positionOf: (key) => virtualList?.positionOf(key) ?? null,
-  elementOf: (key) => virtualList?.elementOf(key) ?? null,
+  // Suppress only the duplicate pill, keeping the scrolling row visible.
+  elementOf: (key) =>
+    virtualList
+      ?.elementOf(key)
+      ?.querySelector<HTMLElement>(".section-header-pill") ?? null,
   renderHeader: (slot, ordinal) => {
     const label = dayHeaderRows()[ordinal]?.label ?? "";
     slot.replaceChildren(buildSectionHeader(label));
