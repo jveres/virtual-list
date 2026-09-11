@@ -493,29 +493,45 @@ export function createConversationTree(options: TreeOptions): {
     if (signal.aborted || panel.hidden) return;
     const origin = root.getBoundingClientRect();
     const margin = 16;
+    panel.style.removeProperty("height");
     if (fullWidth) {
       panel.style.left = `${margin - origin.left}px`;
       panel.style.width = `${Math.max(0, document.documentElement.clientWidth - margin * 2)}px`;
       layout();
       return;
     }
-    // Keep the compact-screen popover usable. On desktop, spend the free
-    // left gutter first, targeting 15% overlap while keeping controls visible.
-    if (window.matchMedia("(max-width: 984px)").matches) {
+    const compact = window.matchMedia("(max-width: 984px)").matches;
+    if (compact) {
       panel.style.removeProperty("left");
       panel.style.removeProperty("width");
-      layout();
-      return;
     }
     const chat = options.host.getBoundingClientRect();
     const rightLimit = Math.min(
       chat.left + chat.width * 0.15,
       document.documentElement.clientWidth - margin,
     );
-    const width = Math.min(664, Math.max(214, rightLimit - margin));
-    const left = Math.max(margin, origin.right - width);
+    const maximumWidth = compact
+      ? Math.min(460, document.documentElement.clientWidth - margin * 2)
+      : Math.min(664, Math.max(214, rightLimit - margin));
+    // Measure at the allowed width first, so an earlier narrow viewport
+    // cannot permanently constrain labels. The overlap allowance is a cap,
+    // not a request to fill the entire gutter and part of the chat.
+    panel.style.width = `${maximumWidth}px`;
+    layout();
+    const width = Math.min(
+      maximumWidth,
+      Math.max(214, Math.ceil(stableRight - stableLeft) + 26),
+    );
     panel.style.width = `${width}px`;
-    panel.style.left = `${left - origin.left}px`;
+    if (!compact) {
+      const left = Math.max(margin, origin.right - width);
+      panel.style.left = `${left - origin.left}px`;
+    }
+    layout();
+    panel.style.height = `${Math.min(
+      panel.getBoundingClientRect().height,
+      header.offsetHeight + stableCanvasHeight + 26,
+    )}px`;
     layout();
   }
 

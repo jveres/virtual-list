@@ -213,9 +213,11 @@ for (const engine of [firefox, webkit, chromium]) {
           .getBoundingClientRect();
         const left = matchMedia("(max-width: 984px)").matches
           ? toggle.left
-          : Math.max(16, toggle.right - expected);
+          : Math.max(16, toggle.right - rect.width);
         return (
-          Math.abs(rect.width - expected) < 1 && Math.abs(rect.left - left) < 1
+          rect.width <= expected + 1 &&
+          rect.width >= Math.min(214, expected) - 1 &&
+          Math.abs(rect.left - left) < 1
         );
       });
       const bounds = await panel.evaluate((panel) => {
@@ -532,7 +534,42 @@ for (const engine of [firefox, webkit, chromium]) {
     const shortWidth = await panel.evaluate(
       (el) => el.getBoundingClientRect().width,
     );
-    assert.equal(shortWidth, 664);
+    assert.ok(
+      shortWidth < 400,
+      "a small tree must not fill the width allowance",
+    );
+    const compactBounds = await panel.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      const chat = document
+        .querySelector("#scroll-jump-layer")
+        .getBoundingClientRect();
+      return { height: rect.height, right: rect.right, chatLeft: chat.left };
+    });
+    assert.ok(
+      compactBounds.height < 300,
+      "a short tree must shrink vertically",
+    );
+    assert.ok(
+      compactBounds.right <= compactBounds.chatLeft,
+      "a small tree stays in the gutter when it fits",
+    );
+    await page.setViewportSize({ width: 1920, height: 820 });
+    await checkPlacement(1920);
+    assert.equal(
+      await panel.evaluate(
+        (el) =>
+          el.getBoundingClientRect().right <=
+          document.querySelector("#scroll-jump-layer").getBoundingClientRect()
+            .left,
+      ),
+      true,
+      "a small tree uses no overlap on a normal desktop",
+    );
+    await page.screenshot({
+      path: `browser-artifacts/conversation-tree/${engine.name()}-small-panel.png`,
+    });
+    await page.setViewportSize({ width: 2560, height: 820 });
+    await checkPlacement(2560);
 
     const title = "Mi az az LLM Wiki?";
     const longHeading =
@@ -577,7 +614,10 @@ for (const engine of [firefox, webkit, chromium]) {
     const longWidth = await panel.evaluate(
       (el) => el.getBoundingClientRect().width,
     );
-    assert.equal(longWidth, shortWidth, "long labels don't resize the panel");
+    assert.ok(
+      longWidth > shortWidth && longWidth <= 664,
+      "long labels grow the panel only as far as their bounded content needs",
+    );
     await checkTextFits();
     const outlineAlignment = await panel.evaluate((panel) => {
       const heading = panel.querySelector(".conversation-tree-heading");
@@ -730,7 +770,10 @@ for (const engine of [firefox, webkit, chromium]) {
     await page.setViewportSize({ width: 390, height: 820 });
     await page.waitForFunction(
       () =>
-        document.querySelector(".conversation-tree-panel").style.width === "",
+        document
+          .querySelector(".conversation-tree-panel")
+          .getBoundingClientRect().right <=
+        innerWidth - 15,
     );
     const wrappedClearance = await panel.evaluate((panel) => {
       const label = panel

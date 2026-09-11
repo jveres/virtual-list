@@ -432,7 +432,7 @@ for (const engine of [firefox, webkit, chromium]) {
         await page.setViewportSize({ width, height: 820 });
         await page.waitForFunction(
           (mobile) =>
-            (document.querySelector(".conversation-tree-panel").style.width ===
+            (document.querySelector(".conversation-tree-panel").style.left ===
               "") ===
             mobile,
           width === 390,
