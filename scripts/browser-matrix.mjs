@@ -448,8 +448,8 @@ async function runChat(engine) {
 async function runChatRegression(engine, suite) {
   const script =
     suite === "refresh-anchors"
-      ? "scripts/chat-refresh-anchor-regression.mjs"
-      : "scripts/chat-generated-files-regression.mjs";
+      ? "scripts/regressions/chat-storage/chat-refresh-anchor-regression.mjs"
+      : "scripts/regressions/chat-content/chat-generated-files-regression.mjs";
   await new Promise((resolveRun, reject) => {
     const child = spawn(process.execPath, [resolve(script)], {
       stdio: "inherit",

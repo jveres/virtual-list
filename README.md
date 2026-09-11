@@ -251,12 +251,21 @@ Firefox on the affected monitor, with isolated runs and local artifacts.
 ```sh
 pnpm run check   # Biome + TypeScript
 pnpm test        # vitest, jsdom, deterministic
+pnpm run test:regression           # All feature-grouped browser regressions
+pnpm run test:regression -- --group=gallery
+pnpm run test:regression -- --list # List groups and scripts without launching browsers
+pnpm run test:regression-runner    # Portable suite-runner checks
 pnpm run test:browser              # Chromium, Firefox, WebKit via Playwright
 pnpm run test:browser -- --suite=chat --engine=webkit
 pnpm run test:browser -- --chaos=300 --seed=7 --headed
-node scripts/history-regression.mjs        # Run with the dev server on port 5173
-node scripts/sticky-header-regression.mjs  # Day-pill handoff, both directions
+pnpm run test:regression -- --group=history
+pnpm run test:regression -- --match=sticky-header
 ```
+
+The [regression suite](docs/regression-suite.md) groups browser checks by feature
+under `scripts/regressions/`, starts its own local server, and reports failures
+across the selected scripts. `test:chat-tree` is an alias for the tree group.
+Benchmarks and native Firefox profiling remain separate from correctness tests.
 
 The unit suite drives the real settle controller and the real runtime
 against a controllable jsdom harness (a scripted `ResizeObserver`, fake

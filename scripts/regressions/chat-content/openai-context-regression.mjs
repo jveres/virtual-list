@@ -1,5 +1,5 @@
 // Offline API fixture: no credentials or billable requests. Start Vite first.
-// BROWSER_MATRIX_URL=http://127.0.0.1:5173 node scripts/openai-context-regression.mjs
+// BROWSER_MATRIX_URL=http://127.0.0.1:5173 node scripts/regressions/chat-content/openai-context-regression.mjs
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
 

@@ -1,5 +1,5 @@
 // Offline API fixture: no credentials or billable requests. Start Vite first.
-// BROWSER_MATRIX_URL=http://localhost:5173 node scripts/chat-attachments-regression.mjs
+// BROWSER_MATRIX_URL=http://localhost:5173 node scripts/regressions/chat-content/chat-attachments-regression.mjs
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
 

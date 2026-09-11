@@ -19,7 +19,7 @@ try {
     () => !document.documentElement.classList.contains("booting"),
   );
   const arrowSizes = await page
-    .locator(".scroll-jump svg")
+    .locator("#scroll-top-btn svg, #scroll-bottom-btn svg")
     .evaluateAll((elements) =>
       elements.map((el) => ({
         width: getComputedStyle(el).width,

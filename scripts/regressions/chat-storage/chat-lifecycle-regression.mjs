@@ -125,9 +125,19 @@ try {
       { role: "user", markdown: "History about to be cleared" },
     ]);
     await api.loadOpenAIHistory();
+  });
+  // Saving also populates the session cache. Reload before fault injection so
+  // switching providers genuinely reads IndexedDB instead of returning it.
+  await switching.reload();
+  await switching.waitForFunction(
+    () => !document.documentElement.classList.contains("booting"),
+  );
+  await switching.evaluate(() => {
     const originalGet = IDBObjectStore.prototype.get;
     IDBObjectStore.prototype.get = function (...args) {
       const request = originalGet.apply(this, args);
+      if (this.name !== "openai-history" || args[0] !== "history")
+        return request;
       IDBObjectStore.prototype.get = originalGet;
       request.addEventListener("success", (event) => {
         event.stopImmediatePropagation();

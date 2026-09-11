@@ -1,4 +1,4 @@
-// BROWSER_MATRIX_URL=http://localhost:5173 node scripts/chat-import-layout-regression.mjs
+// BROWSER_MATRIX_URL=http://localhost:5173 node scripts/regressions/chat-storage/chat-import-layout-regression.mjs
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
 

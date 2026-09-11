@@ -173,8 +173,16 @@ try {
     tree.nodes.push({
       id: Number.MAX_SAFE_INTEGER,
       parentId: 0,
-      selectedChildId: null,
+      selectedChildId: Number.MAX_SAFE_INTEGER - 1,
       message: { role: "user", markdown: "Large imported ID" },
+    });
+    // Editing an answered prompt creates a new branch. Unanswered prompts
+    // intentionally edit in place, which doesn't exercise version allocation.
+    tree.nodes.push({
+      id: Number.MAX_SAFE_INTEGER - 1,
+      parentId: Number.MAX_SAFE_INTEGER,
+      selectedChildId: null,
+      message: { role: "assistant", markdown: "Answer for large imported ID" },
     });
     tree.selectedRootId = Number.MAX_SAFE_INTEGER;
     return branchingTranscriptMarkdown(tree, {
@@ -191,6 +199,7 @@ try {
   });
   await editor.fill("New version after import");
   await editor.press("Enter");
+  await row("New version after import").waitFor();
   await page.waitForFunction(
     () => document.getElementById("send-btn").textContent === "Stop",
   );
@@ -199,8 +208,8 @@ try {
     () => document.getElementById("send-btn").textContent === "Send",
   );
   const extended = (await parse(await downloadFile())).tree;
-  assert.equal(extended.nodes.length, 11);
-  assert.equal(new Set(extended.nodes.map((node) => node.id)).size, 11);
+  assert.equal(extended.nodes.length, 12);
+  assert.equal(new Set(extended.nodes.map((node) => node.id)).size, 12);
   assert.equal(
     extended.nodes.every((node) => Number.isSafeInteger(node.id)),
     true,

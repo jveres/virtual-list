@@ -150,6 +150,6 @@ the shared layout manager's checkpoint provider. It doesn't need the indexed
 synthetic-history adapter. Feed and chat adapters don't need this geometry
 reconstruction.
 
-Run `node scripts/gallery-paging-regression.mjs` against a Vite server on port
-4193 to check repeated forward/backward loads, retained counts, mounted nodes,
+Run `pnpm run test:regression -- --group=gallery --match=paging` to check
+repeated forward/backward loads, retained counts, mounted nodes,
 reading anchors, and resizing in Firefox.

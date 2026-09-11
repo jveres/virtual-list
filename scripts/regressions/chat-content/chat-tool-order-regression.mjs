@@ -122,6 +122,9 @@ for (const engine of [firefox, webkit, chromium]) {
     const order = () =>
       row.evaluate((row) =>
         Array.from(row.querySelectorAll(".tool-call-title, .markdown p"))
+          // Thinking summaries now render Markdown inside the tool disclosure.
+          // They are tool content, not additional top-level response segments.
+          .filter((element) => !element.closest(".tool-call-body"))
           .map((element) =>
             element.querySelector("img") ? "IMAGE" : element.textContent.trim(),
           )
@@ -136,6 +139,11 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     await row.getByText("thinking", { exact: true }).waitFor();
     await row.locator(".tool-call-meta.done").waitFor();
+    assert.equal(
+      await row.locator(".tool-call-body .markdown p").textContent(),
+      "Ready",
+      "the thinking summary remains rendered inside its tool",
+    );
     const beforeText = await toolLayout();
     await delta("Before tool.\n\n");
     await row.getByText("Before tool.", { exact: true }).waitFor();
@@ -144,11 +152,12 @@ for (const engine of [firefox, webkit, chromium]) {
       beforeText,
       "starting text preserves the preceding tool's spacing and position",
     );
-    await page.evaluate(() => {
-      window.originalText = document.querySelector(
-        "article.message.assistant .markdown p",
-      );
-    });
+    await row
+      .locator(".markdown p")
+      .filter({ hasText: "Before tool." })
+      .evaluate((element) => {
+        window.originalText = element;
+      });
     await added(item("image_generation_call", "image-1"));
     await row.getByText("image_generation", { exact: true }).waitFor();
     assert.deepEqual(await order(), [

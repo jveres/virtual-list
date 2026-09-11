@@ -1,5 +1,5 @@
 // Run against a local Vite server:
-// BROWSER_MATRIX_URL=http://127.0.0.1:4193 node scripts/gallery-reload-regression.mjs
+// BROWSER_MATRIX_URL=http://127.0.0.1:4193 node scripts/regressions/gallery/gallery-reload-regression.mjs
 import assert from "node:assert/strict";
 import { firefox } from "playwright";
 

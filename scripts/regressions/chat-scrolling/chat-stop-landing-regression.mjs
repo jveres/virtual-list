@@ -63,7 +63,9 @@ try {
           ...document.querySelectorAll("#viewport .message.assistant"),
         ].at(-1);
         return [...row.querySelectorAll(".markdown")].some(
-          (markdown) => markdown.textContent.length > 40,
+          (markdown) =>
+            !markdown.closest(".tool-call-body") &&
+            markdown.textContent.length > 40,
         );
       });
     }
@@ -114,7 +116,24 @@ try {
     // Force a fresh static render of the stopped response via version changes.
     const key = await reply.getAttribute("data-key");
     await reply.getByRole("button", { name: "Regenerate response" }).click();
+    // Regeneration first glides with the old reply intact. Stopping during
+    // that glide cancels regeneration before a new version is created.
+    await page.waitForFunction((previousKey) => {
+      const latest = [
+        ...document.querySelectorAll("#viewport .message.assistant"),
+      ].at(-1);
+      return (
+        latest &&
+        latest.dataset.key !== previousKey &&
+        latest.querySelector(
+          '.role-label[data-status="thinking"], .role-label[data-status="streaming"]',
+        )
+      );
+    }, key);
     await page.locator("#send-btn").click();
+    await page.waitForFunction(
+      () => document.getElementById("send-btn").textContent === "Send",
+    );
     await page
       .locator("#viewport .message.assistant")
       .last()

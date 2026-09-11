@@ -306,7 +306,7 @@ The following checks cover the decision at both the runtime and host layers:
   Declarative-pin cases cover boot, branch restoration before manual
   scrolling, command independence, targeted and held updates, growth and
   shrinkage, live inset changes, held inset capture, and predicate failure.
-- [`scripts/chat-tree-regression.mjs`](../scripts/chat-tree-regression.mjs):
+- [`scripts/regressions/chat-tree/chat-tree-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-regression.mjs):
   the final short/long response cases check the page-load bottom position and
   matching `scrollHeight`. The same suite
   reproduces scrolling up in the default simulated chat and selecting the
@@ -314,38 +314,38 @@ The following checks cover the decision at both the runtime and host layers:
   adding a reply reserve on top of the existing prompt reserve. It also
   checks unloaded history, branch selection, and tree-panel bottom-click
   stability at desktop and narrow widths in Firefox, WebKit, and Chromium.
-- [`scripts/chat-tree-persistence-regression.mjs`](../scripts/chat-tree-persistence-regression.mjs):
+- [`scripts/regressions/chat-tree/chat-tree-persistence-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-persistence-regression.mjs):
   checks small selection writes, reloads, complete exports, replacement
   snapshots, and stale-record isolation in Firefox, WebKit, and Chromium.
   The main tree regressions also cover keyboard focus, dated/undated branch changes,
   latest-response toolbars, attachment-only image nodes, and empty responses
   labeled **Response in progress…** until streaming supplies a final summary.
-- [`scripts/chat-tree-headings-regression.mjs`](../scripts/chat-tree-headings-regression.mjs):
+- [`scripts/regressions/chat-tree/chat-tree-headings-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-headings-regression.mjs):
   checks H1/H2 hierarchy, duplicate-title removal, original heading ordinals,
   safe labels, clickable path dots, spacing, keyboard focus, unloaded history,
   and branch changes in Firefox, WebKit, and Chromium.
-- [`scripts/chat-tree-placement-regression.mjs`](../scripts/chat-tree-placement-regression.mjs):
+- [`scripts/regressions/chat-tree/chat-tree-placement-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-placement-regression.mjs):
   checks one through five equal-width version bands, parent alignment,
   right-side labels, drawing and ring centers, normalized heading indentation,
   edge endpoints, resizing, and narrow-screen placement.
-- [`scripts/chat-tree-zoom-regression.mjs`](../scripts/chat-tree-zoom-regression.mjs):
+- [`scripts/regressions/chat-tree/chat-tree-zoom-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-zoom-regression.mjs):
   checks full-tree fit, manual zoom, Locate without chat movement, header
   controls, full-width toggling and restoration, hover-open percentage reset,
   import view resets with open and closed panels, band centering,
   dragging from text without selection,
   and synthetic pinch input. Physical trackpad feel requires manual checking.
-- [`scripts/chat-tree-reveal-regression.mjs`](../scripts/chat-tree-reveal-regression.mjs):
+- [`scripts/regressions/chat-tree/chat-tree-reveal-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-reveal-regression.mjs):
   checks first-open visibility, recentering after a far-right pan and reopen,
   clipped nodes on all four edges, section links, reduced motion, and fully
   visible selections that must not move the panel.
-- [`scripts/chat-bottom-regression.mjs`](../scripts/chat-bottom-regression.mjs):
+- [`scripts/regressions/chat-tree/chat-bottom-regression.mjs`](../scripts/regressions/chat-tree/chat-bottom-regression.mjs):
   checks stopped-response persistence, branch return followed by manual
   scrolling, bottom-arrow equivalence, live sticky insets, and short and long
   responses across reloads in Firefox, WebKit, and Chromium.
 
 Run these checks after changing tree navigation, alignment, pinning, or
-staged-history integration. Start a local Vite server for the browser script,
-or set `BROWSER_MATRIX_URL` to an existing server:
+staged-history integration. The suite starts and closes its own local Vite
+server, or you can set `BROWSER_MATRIX_URL` to an existing server:
 
 ```sh
 pnpm run check
