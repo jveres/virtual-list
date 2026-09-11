@@ -1,5 +1,5 @@
 .conversation-tree {
-  --conversation-tree-bg: color-mix(in srgb, var(--bg) 94%, transparent);
+  --conversation-tree-bg: var(--bg);
   position: absolute;
   top: 0;
   bottom: 14px;
@@ -215,7 +215,7 @@
 .conversation-tree-edge {
   fill: none;
   stroke: var(--border);
-  stroke-width: 1.5;
+  stroke-width: 1px;
 }
 .conversation-tree-edge.active {
   stroke: var(--accent);
@@ -269,7 +269,7 @@
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: var(--bg-surface);
+  background: var(--conversation-tree-bg);
   border: 1px solid var(--border);
 }
 .conversation-tree-node[data-active="true"] .conversation-tree-glyph {

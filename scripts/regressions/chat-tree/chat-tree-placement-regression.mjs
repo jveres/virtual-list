@@ -452,6 +452,21 @@ for (const engine of [firefox, webkit, chromium]) {
           panel.querySelector(".conversation-tree-edge:not(.active)"),
         ).stroke;
         return {
+          spineMatchesRingWidth: [
+            ...panel.querySelectorAll(".conversation-tree-edge"),
+          ].every(
+            (edge) =>
+              getComputedStyle(edge).strokeWidth ===
+              getComputedStyle(panel.querySelector(".conversation-tree-glyph"))
+                .borderTopWidth,
+          ),
+          ringsMatchCanvas: [
+            ...panel.querySelectorAll(".conversation-tree-glyph"),
+          ].every(
+            (glyph) =>
+              getComputedStyle(glyph).backgroundColor ===
+              getComputedStyle(panel).backgroundColor,
+          ),
           ringsFollowPath: [
             ...panel.querySelectorAll(".conversation-tree-node"),
           ].every(
@@ -483,6 +498,8 @@ for (const engine of [firefox, webkit, chromium]) {
         };
       });
       assert.deepEqual(stream, {
+        spineMatchesRingWidth: true,
+        ringsMatchCanvas: true,
         ringsFollowPath: true,
         startsAtFirstRing: true,
         terminalStopsAtRing: true,
