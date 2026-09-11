@@ -35,6 +35,13 @@ its window to the selected display's usable area. It checks the browser's
 position and pixel ratio against that display. It then records six downward
 and four upward gestures, including pauses for native release and paging.
 
+The runner requires at least 10 GiB of free disk space before starting. Swift
+compilation uses one shared `.swift-cache/` in the output parent, rather than
+a separate cache for every capture. After its browser exits, the runner removes
+that run's temporary `browser-profile/`, including after a failed capture.
+`run.json` records successful profile removal or a cleanup error. Raw captures,
+metadata, logs, and screenshots remain available locally.
+
 The runner focuses the scroll container after navigation and again after
 warmup, immediately before measurement. It uses a native click on a temporary
 inert overlay so Firefox's address bar cannot retain document focus. The
@@ -113,7 +120,9 @@ is uploaded automatically, and rerunning does not overwrite earlier runs.
 - `final.png`: a screenshot taken after measurement.
 - `browser.log`: browser output, including startup or shutdown errors.
 - `setup.js`: the optional workload setup expression used for this capture.
-- `browser-profile/`: the isolated browser profile; keep it private.
+- `browser-profile/`: temporary isolated browser data, removed after shutdown.
+  If interrupted cleanup leaves it behind, keep it private and confirm the
+  owning browser has exited before removing it.
 - `partial-frames.json`: partial evidence when a capture fails, if available.
 
 Open the raw profile locally in [Firefox Profiler](https://profiler.firefox.com/).
@@ -144,6 +153,8 @@ node scripts/firefox-profile/attribute.mjs browser-artifacts/firefox/run-EXAMPLE
 
 The [runtime hot path profile](runtime-hot-path-profile.md) records the
 corrected attribution and the limits on what it can establish.
+The [measured proposal results](measured-performance-proposals.md) record
+retained optimizations, rejected experiments, and comparable captures.
 
 The analyzer accepts this runner's raw live and shutdown profiles, including
 compressed ones. It does not accept processed exports from Firefox Profiler

@@ -9,6 +9,29 @@ for (const engine of [firefox, chromium, webkit]) {
       const page = await browser.newPage();
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
+      await page.addInitScript(() => {
+        const NativeObserver = window.ResizeObserver;
+        window.resizeSubscriptions = [];
+        window.ResizeObserver = class extends NativeObserver {
+          constructor(callback) {
+            super(callback);
+            this.targets = new Set();
+            window.resizeSubscriptions.push(this.targets);
+          }
+          observe(target, options) {
+            super.observe(target, options);
+            this.targets.add(target);
+          }
+          unobserve(target) {
+            super.unobserve(target);
+            this.targets.delete(target);
+          }
+          disconnect() {
+            super.disconnect();
+            this.targets.clear();
+          }
+        };
+      });
       // The final probe deliberately violates the contract; keep that test
       // report out of the user's device-report log.
       await page.route("**/__lab/report", (route) =>
@@ -41,6 +64,17 @@ for (const engine of [firefox, chromium, webkit]) {
         widthViolations,
         [],
         `${engine.name()}/${mode}: width takeover`,
+      );
+      assert.deepEqual(
+        await page.evaluate(() =>
+          window.resizeSubscriptions.flatMap((targets) =>
+            [...targets]
+              .filter((target) => !target.isConnected)
+              .map((target) => target.dataset.id ?? target.tagName),
+          ),
+        ),
+        [],
+        `${engine.name()}/${mode}: observers must release detached rows`,
       );
 
       await page.click("#glide-bottom");

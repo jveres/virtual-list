@@ -873,6 +873,54 @@ describe("incremental window preparation", () => {
     h.list.dispose();
   });
 
+  it.each(["snapshot", "same item", "restored item"] as const)(
+    "should preserve staged work after an identity-equivalent %s submission",
+    async (submission) => {
+      const initial = range(0, 20);
+      const first = initial[0] as Msg;
+      const h = mount(initial, { boot: "start" });
+      const applied = h.list.updateWindow(({ items }) => ({
+        items: [...items, ...range(20, 44)],
+      }));
+      vi.advanceTimersByTime(16);
+
+      if (submission === "snapshot") h.list.setItems([...initial]);
+      else {
+        if (submission === "restored item")
+          h.list.updateItem("m0", message(0, "temporary change"));
+        h.list.updateItem("m0", first);
+      }
+      advanceFramesUntil(() => h.list.state.count === 44);
+
+      await expect(applied).resolves.toBe(true);
+      expect(h.list.state.count).toBe(44);
+      expect(h.list.elementOf("m0")?.textContent).toBe(first.body);
+      expect(h.list.positionOf("m43")).toEqual({ top: 4300, height: 100 });
+      h.list.dispose();
+      expect(h.destroyed.sort((a, b) => a - b)).toEqual(
+        range(0, 44).map((item) => item.id),
+      );
+    },
+  );
+
+  it("should invalidate a cached staged source after an in-place item update", async () => {
+    const h = mount(range(0, 20), { boot: "start" });
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, ...range(20, 44)],
+    }));
+    vi.advanceTimersByTime(16);
+
+    h.list.updateItem("m0", message(0, "new accepted input"));
+    vi.advanceTimersByTime(100);
+
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.elementOf("m0")?.textContent).toBe("new accepted input");
+    expect(h.list.positionOf("m20")).toBeNull();
+    expect(h.destroyed).toEqual(range(20, 28).map((item) => item.id));
+    h.list.dispose();
+  });
+
   it("should cancel width-stale work and leave no hidden measurement root", async () => {
     let width = 300;
     const h = mount(range(0, 20), {
@@ -4309,7 +4357,7 @@ describe("runtime — retained nodes", () => {
     );
   });
 
-  it("restores every retained element when a batched remeasurement fails", () => {
+  it("should preserve retained elements and recover after a batched remeasurement fails", () => {
     let width = 300;
     const h = mount(range(0, 50), { width: () => width });
     void h.list.scrollTo("start");
@@ -4329,10 +4377,50 @@ describe("runtime — retained nodes", () => {
       "remeasure failed",
     );
     // measureMany detached all retained elements before one read threw.
-    // Failure must not strip any of them from their owning slots.
-    expect(slot0.firstElementChild).toBe(row0);
-    expect(slot1.firstElementChild).toBe(row1);
+    // Off-screen rows no longer retain wrappers. Failure must still leave
+    // both elements detached, alive, and available for exact re-entry.
+    expect(slot0.firstElementChild).toBeNull();
+    expect(slot1.firstElementChild).toBeNull();
+    expect(row0.parentElement).toBeNull();
+    expect(row1.parentElement).toBeNull();
+    expect(h.destroyed).toEqual([]);
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
+    row0.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    void h.list.scrollTo("start", { behavior: "auto" });
+    expect(h.list.elementOf("m0")).toBe(row0);
+    expect(h.list.elementOf("m1")).toBe(row1);
+    expect(h.slotOf(row1).style.transform).toBe("translateY(100px)");
+    h.list.dispose();
+    expect(h.destroyed.sort((a, b) => a - b)).toEqual(
+      range(0, 50).map((item) => item.id),
+    );
+  });
+
+  it("should release off-screen wrappers without losing element-local state", () => {
+    const h = mount(range(0, 100), { boot: "start" });
+    const row = h.rowElement("msg 1");
+    const slot = h.slotOf(row);
+    row.dataset.localState = "preserved";
+
+    h.userScroll(5005);
+
+    expect(row.parentElement).toBeNull();
+    expect(slot.firstElementChild).toBeNull();
+    expect(h.list.elementOf("m1")).toBeNull();
+    expect(h.destroyed).toEqual([]);
+
+    h.userScroll(0);
+
+    expect(h.list.elementOf("m1")).toBe(row);
+    expect(row.dataset.localState).toBe("preserved");
+    expect(h.slotOf(row)).not.toBe(slot);
+    expect(h.slotOf(row).style.height).toBe("100px");
+    expect(h.slotOf(row).style.transform).toBe("translateY(100px)");
+    h.list.dispose();
+    expect(h.destroyed.sort((a, b) => a - b)).toEqual(
+      range(0, 100).map((item) => item.id),
+    );
   });
 
   it("rolls back a failed preparation: built rows destroyed once, held and committed state intact", () => {

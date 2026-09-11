@@ -398,7 +398,7 @@ export interface VirtualList<T> {
 
 /** Float noise a measurement may carry (100.0000001 is 100, not 101). */
 const HEIGHT_NOISE = 1e-6;
-// The slot box every measured row gets: absolute, pinned to the canvas
+// The slot box every mounted measured row gets: absolute, pinned to the canvas
 // edges, clipping its content to the committed height.
 const SLOT_STYLE_CLIP = "position:absolute;top:0;left:0;right:0;overflow:clip";
 const SLOT_STYLE_HIDDEN =
@@ -493,8 +493,8 @@ interface Row<T> {
    */
   renderUnknown: boolean;
   element: HTMLElement;
-  /** Dimensionally stable container: fixed committed height, clipped. */
-  slot: HTMLElement;
+  /** Fixed-height clip wrapper only while mounted; direct positioned cards own their slot. */
+  slot: HTMLElement | null;
   height: number;
   /** The offset last written to the slot's transform (NaN: never). */
   offset: number;
@@ -585,6 +585,9 @@ export function createVirtualList<T>(
   /** Advances on every commit; window reconciliation is memoized on it and onState fires when it moved. */
   let geometryEpoch = 0;
   let inputEpoch = 0;
+  // Full snapshots replace lastItems; updateItem can mutate it in place.
+  // Staged identity checks need to distinguish those in-place revisions.
+  let itemsRevision = 0;
 
   // --- Pending work (waits for the scroll phase to settle) ------------------
   let pending: Prepared<T> | null = null;
@@ -821,7 +824,7 @@ export function createVirtualList<T>(
     return slot;
   }
 
-  /** Wrap an element into a retained row; fresh rows carry a provisional height until the batch measurement. */
+  /** Retain the element; allocate its clip wrapper only when it mounts. */
   function retain(
     key: string,
     item: T,
@@ -829,13 +832,13 @@ export function createVirtualList<T>(
     height: number,
     direct = false,
   ): Row<T> {
-    const slot = direct ? element : createSlot();
-    if (direct) {
+    const slot = direct ? element : null;
+    if (slot) {
       slot.style.position = "absolute";
       slot.style.top = "0";
-    } else slot.appendChild(element);
+    }
     const quantized = quantizeHeight(height);
-    slot.style.height = `${quantized}px`;
+    if (slot) slot.style.height = `${quantized}px`;
     return {
       key,
       item,
@@ -857,7 +860,8 @@ export function createVirtualList<T>(
     row.destroyed = true;
     if (row.mounted) unmountRow(row);
     dirtyRows.delete(row);
-    row.slot.remove();
+    row.slot?.remove();
+    row.element.remove();
     if (!row.edge) options.onDestroy?.(row.element, row.item);
   }
 
@@ -950,10 +954,10 @@ export function createVirtualList<T>(
       return measurer.measureMany(detached.map((row) => row.element));
     } finally {
       // The measurer detaches every element on success and failure. Restore
-      // ownership before returning or surfacing an error; a row destroyed
-      // reentrantly during measurement must stay destroyed.
+      // any existing wrapper; unmounted rows retain just their elements.
+      // A row destroyed reentrantly during measurement must stay destroyed.
       for (const row of detached) {
-        if (!row.destroyed) row.slot.appendChild(row.element);
+        if (!row.destroyed) row.slot?.appendChild(row.element);
       }
     }
   }
@@ -1421,7 +1425,7 @@ export function createVirtualList<T>(
         freshRows.forEach((row, index) => {
           const height = quantizeHeight(heights[index] as number);
           row.height = height;
-          row.slot.style.height = `${height}px`;
+          if (row.slot) row.slot.style.height = `${height}px`;
         });
       }
       // Incremental rows stayed connected in their private root. Read them
@@ -1508,7 +1512,8 @@ export function createVirtualList<T>(
       const displaced = row.element;
       const displacedItem = row.item;
       const wasMounted = row.mounted;
-      if (wasMounted) unmountRow(row);
+      // A same-height promotion preserves the mounted wrapper and its offset.
+      if (wasMounted) unmountRow(row, true);
       if (disposed) break;
       fresh.element.remove();
       displaced.replaceWith(fresh.element);
@@ -1543,7 +1548,7 @@ export function createVirtualList<T>(
     row.dirty = false;
     dirtyRows.delete(row);
     row.height = height;
-    row.slot.style.height = `${height}px`;
+    if (row.slot) row.slot.style.height = `${height}px`;
     geometry.measure(row.key, height);
   }
 
@@ -1877,6 +1882,7 @@ export function createVirtualList<T>(
 
   /** Move a row's slot to its committed offset (a no-op when unchanged). */
   function placeRow(row: Row<T>): void {
+    if (!row.slot) return;
     const offset = geometry.offsetOf(row.key);
     if (offset < 0 || row.offset === offset) return;
     row.offset = offset;
@@ -1887,6 +1893,12 @@ export function createVirtualList<T>(
   }
 
   function mountRow(row: Row<T>): void {
+    if (!row.slot) {
+      row.slot = createSlot();
+      row.slot.style.height = `${row.height}px`;
+      row.slot.appendChild(row.element);
+      row.offset = Number.NaN;
+    }
     row.mounted = true;
     mountedRows.add(row);
     canvas.appendChild(row.slot);
@@ -1894,12 +1906,17 @@ export function createVirtualList<T>(
     if (!row.edge) hostHook(options.onMount, row);
   }
 
-  function unmountRow(row: Row<T>): void {
+  function unmountRow(row: Row<T>, retainSlot = false): void {
     row.mounted = false;
     mountedRows.delete(row);
     rowObserver.unobserve(row.element);
     if (!row.edge) hostHook(options.onUnmount, row);
-    row.slot.remove();
+    row.slot?.remove();
+    if (!retainSlot && row.slot !== row.element) {
+      row.element.remove();
+      row.slot = null;
+      row.offset = Number.NaN;
+    }
   }
 
   /** A mount hook is the host's: its throw is deferred like a teardown's, the window still completes. */
@@ -2404,6 +2421,25 @@ export function createVirtualList<T>(
         if (working) cancelRequested = true;
         else finish(false);
       };
+      let checkedItems: readonly T[] | null = null;
+      let checkedRevision = -1;
+      const sourceCurrent = (): boolean => {
+        if (!staged) return true;
+        if (checkedItems === lastItems && checkedRevision === itemsRevision)
+          return true;
+        if (
+          staged.source.length !== lastItems.length ||
+          !staged.source.every((item, index) => item === lastItems[index])
+        )
+          return false;
+        // Render callbacks and successive frames recheck the same source.
+        // Rescan only after input changes, preserving identical submissions
+        // and changes restored before the next check instead of cancelling
+        // them merely because an input epoch advanced.
+        checkedItems = lastItems;
+        checkedRevision = itemsRevision;
+        return true;
+      };
       const current = (): boolean =>
         !finished &&
         !cancelRequested &&
@@ -2412,8 +2448,7 @@ export function createVirtualList<T>(
         (!staged ||
           (staged.width === lastViewportWidth &&
             (!interrupt || staged.input === inputEpoch) &&
-            staged.source.length === lastItems.length &&
-            staged.source.every((item, index) => item === lastItems[index])));
+            sourceCurrent()));
 
       const stageFrame = (): void => {
         frame = 0;
@@ -2563,8 +2598,8 @@ export function createVirtualList<T>(
                     const heights = job.measurer.measure();
                     stagedRows.forEach((row, index) => {
                       row.height = quantizeHeight(heights[index] as number);
-                      row.slot.style.height = `${row.height}px`;
-                      if (!row.destroyed) row.slot.appendChild(row.element);
+                      if (row.slot) row.slot.style.height = `${row.height}px`;
+                      if (!row.destroyed) row.slot?.appendChild(row.element);
                     });
                     job.measurer.dispose();
                   }
@@ -2720,7 +2755,10 @@ export function createVirtualList<T>(
     }
     guarded(() => {
       const { prepared, teardownFailures } = prepare([item], anchor, true);
-      if (!disposed) lastItems[index] = item;
+      if (!disposed) {
+        lastItems[index] = item;
+        itemsRevision += 1;
+      }
       deferTeardown(teardownFailures);
       applyPrepared(prepared, key);
     });

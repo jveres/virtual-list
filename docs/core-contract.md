@@ -324,7 +324,10 @@ interaction; the [README](../README.md) lists the public options.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
   waiting for settle). Heights are measured or declared, never estimated.
   Hosts window their data; the chat demo hands the runtime a modest loaded
-  window. Measured rows retain their nodes when leaving the DOM:
+  window. Measured rows retain their rendered elements when leaving the DOM,
+  but release their clip wrappers. Re-entry creates a new wrapper around the
+  same element; element-local state survives. Same-height promotions preserve
+  the mounted wrapper and its offset. Measured-row lifecycle:
   `onDestroy(element, item)` ends an element's life (key removed, replacement
   committed, pending snapshot superseded, or dispose), exactly once.
   `onMount`/`onUnmount`

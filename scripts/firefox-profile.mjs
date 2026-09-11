@@ -1,6 +1,14 @@
 import { execFileSync, spawn } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rename,
+  rm,
+  statfs,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
 import { pipeline } from "node:stream/promises";
@@ -91,6 +99,14 @@ if (!["http:", "https:"].includes(url.protocol))
   throw new Error("Expected an HTTP(S) URL");
 
 await mkdir(resolve(options.output), { recursive: true });
+const disk = await statfs(resolve(options.output));
+if (disk.bavail * disk.bsize < 10 * 1024 ** 3)
+  throw new Error(
+    "Profiling requires at least 10 GiB free; no capture started",
+  );
+// Compiler modules are reusable; a private copy per run costs about 200 MiB.
+const compilerCache = join(resolve(options.output), ".swift-cache");
+await mkdir(compilerCache, { recursive: true });
 const directory = await mkdtemp(join(resolve(options.output), "run-"));
 console.log(`Artifacts: ${directory}`);
 const helper = join(directory, "native");
@@ -98,7 +114,7 @@ execFileSync(
   "/usr/bin/swiftc",
   [
     "-module-cache-path",
-    join(directory, "swift-cache"),
+    compilerCache,
     fileURLToPath(new URL("./firefox-profile/native.swift", import.meta.url)),
     "-o",
     helper,
@@ -563,6 +579,19 @@ try {
   process.removeListener("SIGINT", interrupt);
   process.removeListener("SIGTERM", interrupt);
   metadata.finished = new Date().toISOString();
+  // This exact directory belongs to the child above. Never remove it while
+  // that browser is alive, and never remove raw captures or run metadata.
+  if (ended) {
+    try {
+      await rm(browserProfile, { recursive: true });
+      metadata.browserProfileRemoved = true;
+    } catch (error) {
+      metadata.browserProfileRemoved = false;
+      metadata.cleanupError = String(error);
+      process.exitCode = 1;
+      console.error("Temporary browser profile cleanup failed:", error);
+    }
+  }
   await saveMetadata();
 }
 if (metadata.status === "captured") {

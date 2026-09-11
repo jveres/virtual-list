@@ -823,6 +823,12 @@ function createList(): void {
     onState,
     onReachStart: (context) => startLoad("start", context),
     onReachEnd: (context) => startLoad("end", context),
+    onUnmount: (row) => {
+      // Unsubscribe while the row is still identifiable. A removed wrapper
+      // may already be empty by the MutationObserver's later delivery.
+      paintObserver?.unobserve(row);
+      clippedKeys.delete(row.dataset.id ?? "?");
+    },
     onDestroy,
     scrollingUpdates: scrollingMode(),
   });
