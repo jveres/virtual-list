@@ -95,11 +95,47 @@ export function createConversationTree(options: TreeOptions): {
   closeButton.setAttribute("aria-label", "Close conversation tree");
   closeButton.append(icon("M6 6l12 12M18 6 6 18"));
   header.append(title, closeButton);
+  const controls = document.createElement("div");
+  controls.className = "conversation-tree-controls";
+  controls.setAttribute("role", "group");
+  controls.setAttribute("aria-label", "Tree view controls");
+  function control(label: string, path: string): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.append(icon(path));
+    controls.append(button);
+    return button;
+  }
+  const zoomOut = control("Zoom out tree", "M5 12h14");
+  const zoomReset = document.createElement("button");
+  zoomReset.type = "button";
+  zoomReset.className = "conversation-tree-zoom-value";
+  zoomReset.setAttribute("aria-label", "Reset tree zoom to 100%");
+  controls.append(zoomReset);
+  const zoomIn = control("Zoom in tree", "M5 12h14M12 5v14");
+  const fitButton = control(
+    "Fit entire tree",
+    "M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5",
+  );
+  const locateButton = control(
+    "Locate current chat position",
+    "M12 2v4m0 12v4M2 12h4m12 0h4M12 6a6 6 0 1 0 0 12 6 6 0 0 0 0-12Z",
+  );
+  const widthButton = control(
+    "Full width tree panel",
+    "M3 4v16M21 4v16M8 8l-4 4 4 4m8-8 4 4-4 4M4 12h16",
+  );
+  widthButton.setAttribute("aria-pressed", "false");
   const scroller = document.createElement("div");
   scroller.className = "conversation-tree-scroll";
+  const surface = document.createElement("div");
+  surface.className = "conversation-tree-surface";
   const canvas = document.createElement("div");
   canvas.className = "conversation-tree-canvas";
-  scroller.append(canvas);
+  surface.append(canvas);
+  scroller.append(surface);
   const status = document.createElement("p");
   status.className = "conversation-tree-status";
   status.setAttribute("role", "status");
@@ -113,6 +149,7 @@ export function createConversationTree(options: TreeOptions): {
     statusText.data = message;
     status.hidden = message.length === 0;
   }
+  header.insertBefore(controls, closeButton);
   panel.append(header, scroller, status);
   // One continuous stroke avoids the hairline seam where rotated CSS
   // borders meet at the tip, especially at fractional display scales.
@@ -139,16 +176,321 @@ export function createConversationTree(options: TreeOptions): {
   let stableHalfWidth = 0;
   let stableCanvasHeight = 0;
   let layoutWidth = 0;
+  let zoom = 1;
+  let fitting = false;
+  let fullWidth = false;
+  let hasOpened = false;
+  let canvasLeft = 0;
+  let canvasTop = 0;
   let layout = (): void => {};
-  let current: HTMLButtonElement | undefined;
-  const buttons = new Map<number, HTMLButtonElement>();
-  const headingButtons = new Map<string, HTMLButtonElement>();
+  let current: HTMLElement | undefined;
+  let selection: { id: number; readingId: number | null } | null = null;
+  const buttons = new Map<number, HTMLElement>();
+  const headingButtons = new Map<string, HTMLElement>();
   const stopFade = scrollFade(scroller);
+  // Toolbar interaction makes a hover-opened panel persistent too. Updating
+  // the percentage must not let a transient focus/hover change dismiss it.
+  controls.addEventListener(
+    "pointerdown",
+    () => {
+      pinned = true;
+    },
+    { signal },
+  );
+
+  function applyZoom(next = zoom): void {
+    const width = Math.max(1, scroller.clientWidth - 24);
+    const height = Math.max(1, scroller.clientHeight - 24);
+    const centerX = (scroller.scrollLeft + width / 2 - canvasLeft) / zoom;
+    const centerY = (scroller.scrollTop + height / 2 - canvasTop) / zoom;
+    const treeWidth = Math.max(1, stableHalfWidth * 2);
+    const treeHeight = Math.max(1, stableCanvasHeight);
+    zoom = fitting ? Math.min(1, width / treeWidth, height / treeHeight) : next;
+    canvasLeft = Math.max(0, (width - treeWidth * zoom) / 2);
+    canvasTop = Math.max(0, (height - treeHeight * zoom) / 2);
+    surface.style.width = `${Math.max(width, treeWidth * zoom)}px`;
+    surface.style.height = `${Math.max(height, treeHeight * zoom)}px`;
+    canvas.style.left = `${canvasLeft}px`;
+    canvas.style.top = `${canvasTop}px`;
+    canvas.style.transform = `scale(${zoom})`;
+    panel.dataset.zoom = String(zoom);
+    fitButton.setAttribute("aria-pressed", String(fitting));
+    zoomReset.textContent = `${Math.round(zoom * 100)}%`;
+    zoomIn.disabled = zoom >= 3;
+    zoomOut.disabled =
+      zoom <= Math.min(0.1, width / treeWidth, height / treeHeight);
+    scroller.scrollTo({
+      left: fitting ? 0 : centerX * zoom + canvasLeft - width / 2,
+      top: fitting ? 0 : centerY * zoom + canvasTop - height / 2,
+      behavior: "instant",
+    });
+  }
+
+  function changeZoom(next: number): void {
+    fitting = false;
+    applyZoom(Math.max(Math.min(0.1, zoom), Math.min(3, next)));
+  }
+  zoomOut.addEventListener("click", () => changeZoom(zoom / 1.25), { signal });
+  zoomIn.addEventListener("click", () => changeZoom(zoom * 1.25), { signal });
+  zoomReset.addEventListener("click", () => changeZoom(1), { signal });
+  widthButton.addEventListener(
+    "click",
+    () => {
+      fullWidth = !fullWidth;
+      widthButton.setAttribute("aria-pressed", String(fullWidth));
+      widthButton.title = fullWidth
+        ? "Restore tree panel width"
+        : "Full width tree panel";
+      placePanel();
+    },
+    { signal },
+  );
+  fitButton.addEventListener(
+    "click",
+    () => {
+      fitting = true;
+      render();
+    },
+    { signal },
+  );
+  const pointers = new Map<number, { x: number; y: number }>();
+  scroller.addEventListener(
+    "mousedown",
+    (event) => {
+      // Every canvas surface, including text, starts a pan gesture.
+      if (event.button === 0) event.preventDefault();
+    },
+    { signal },
+  );
+  let gesture: {
+    x: number;
+    y: number;
+    distance: number;
+    zoom: number;
+    left: number;
+    top: number;
+    anchorX: number;
+    anchorY: number;
+  } | null = null;
+  let dragged = false;
+  function pointerCenter(): { x: number; y: number; distance: number } {
+    const [first, second] = [...pointers.values()];
+    if (!first) return { x: 0, y: 0, distance: 0 };
+    return second
+      ? {
+          x: (first.x + second.x) / 2,
+          y: (first.y + second.y) / 2,
+          distance: Math.hypot(second.x - first.x, second.y - first.y),
+        }
+      : { ...first, distance: 0 };
+  }
+  function beginGesture(): void {
+    const point = pointerCenter();
+    const view = scroller.getBoundingClientRect();
+    gesture = {
+      ...point,
+      zoom,
+      left: scroller.scrollLeft,
+      top: scroller.scrollTop,
+      anchorX:
+        (scroller.scrollLeft + point.x - view.left - 12 - canvasLeft) / zoom,
+      anchorY: (scroller.scrollTop + point.y - view.top - canvasTop) / zoom,
+    };
+  }
+  function zoomAt(
+    next: number,
+    x: number,
+    y: number,
+    anchorX: number,
+    anchorY: number,
+  ): void {
+    changeZoom(next);
+    const view = scroller.getBoundingClientRect();
+    scroller.scrollTo({
+      left: anchorX * zoom + canvasLeft - (x - view.left - 12),
+      top: anchorY * zoom + canvasTop - (y - view.top),
+      behavior: "instant",
+    });
+  }
+  scroller.addEventListener(
+    "pointerdown",
+    (event) => {
+      if (event.button !== 0 || pointers.size >= 2) return;
+      if (pointers.size === 0) dragged = false;
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      beginGesture();
+    },
+    { signal },
+  );
+  scroller.addEventListener(
+    "pointermove",
+    (event) => {
+      if (!pointers.has(event.pointerId) || !gesture) return;
+      pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      const point = pointerCenter();
+      if (
+        !dragged &&
+        pointers.size === 1 &&
+        Math.hypot(point.x - gesture.x, point.y - gesture.y) < 4
+      )
+        return;
+      dragged = true;
+      fitting = false;
+      fitButton.setAttribute("aria-pressed", "false");
+      scroller.dataset.dragging = "";
+      if (event.isTrusted) scroller.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      if (pointers.size === 2 && gesture.distance > 0) {
+        zoomAt(
+          (gesture.zoom * point.distance) / gesture.distance,
+          point.x,
+          point.y,
+          gesture.anchorX,
+          gesture.anchorY,
+        );
+      } else {
+        scroller.scrollTo({
+          left: gesture.left - (point.x - gesture.x),
+          top: gesture.top - (point.y - gesture.y),
+          behavior: "instant",
+        });
+      }
+    },
+    { signal },
+  );
+  function endPointer(event: PointerEvent): void {
+    if (!pointers.delete(event.pointerId)) return;
+    if (pointers.size) beginGesture();
+    else {
+      gesture = null;
+      delete scroller.dataset.dragging;
+    }
+  }
+  document.addEventListener("pointerup", endPointer, { signal });
+  document.addEventListener("pointercancel", endPointer, { signal });
+  scroller.addEventListener(
+    "click",
+    (event) => {
+      if (dragged) {
+        event.preventDefault();
+        event.stopPropagation();
+        dragged = false;
+      }
+    },
+    { capture: true, signal },
+  );
+  scroller.addEventListener(
+    "wheel",
+    (event) => {
+      if (!event.ctrlKey) return;
+      event.preventDefault();
+      const view = scroller.getBoundingClientRect();
+      const anchorX =
+        (scroller.scrollLeft + event.clientX - view.left - 12 - canvasLeft) /
+        zoom;
+      const anchorY =
+        (scroller.scrollTop + event.clientY - view.top - canvasTop) / zoom;
+      zoomAt(
+        zoom * Math.exp(-event.deltaY / 300),
+        event.clientX,
+        event.clientY,
+        anchorX,
+        anchorY,
+      );
+    },
+    { passive: false, signal },
+  );
+  // Safari trackpads expose gesture events instead of control-wheel input.
+  let trackpadPinch: {
+    zoom: number;
+    x: number;
+    y: number;
+    anchorX: number;
+    anchorY: number;
+  } | null = null;
+  scroller.addEventListener(
+    "gesturestart",
+    (event) => {
+      event.preventDefault();
+      const view = scroller.getBoundingClientRect();
+      const x =
+        "clientX" in event && typeof event.clientX === "number"
+          ? event.clientX
+          : view.left + view.width / 2;
+      const y =
+        "clientY" in event && typeof event.clientY === "number"
+          ? event.clientY
+          : view.top + view.height / 2;
+      trackpadPinch = {
+        zoom,
+        x,
+        y,
+        anchorX: (scroller.scrollLeft + x - view.left - 12 - canvasLeft) / zoom,
+        anchorY: (scroller.scrollTop + y - view.top - canvasTop) / zoom,
+      };
+    },
+    { passive: false, signal },
+  );
+  scroller.addEventListener(
+    "gesturechange",
+    (event) => {
+      if (
+        !trackpadPinch ||
+        !("scale" in event) ||
+        typeof event.scale !== "number" ||
+        !Number.isFinite(event.scale) ||
+        event.scale <= 0
+      )
+        return;
+      event.preventDefault();
+      const start = trackpadPinch;
+      zoomAt(
+        start.zoom * event.scale,
+        start.x,
+        start.y,
+        start.anchorX,
+        start.anchorY,
+      );
+    },
+    { passive: false, signal },
+  );
+  scroller.addEventListener(
+    "gestureend",
+    () => {
+      trackpadPinch = null;
+    },
+    { signal },
+  );
+  locateButton.addEventListener(
+    "click",
+    () => {
+      updateCurrent();
+      if (!current) return;
+      const item = current.getBoundingClientRect();
+      const view = scroller.getBoundingClientRect();
+      scroller.scrollBy({
+        left: item.left + item.width / 2 - view.left - scroller.clientWidth / 2,
+        top: item.top + item.height / 2 - view.top - scroller.clientHeight / 2,
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+    },
+    { signal },
+  );
 
   function placePanel(): void {
     if (panel.hidden) return;
+    const origin = root.getBoundingClientRect();
+    const margin = 16;
+    if (fullWidth) {
+      panel.style.left = `${margin - origin.left}px`;
+      panel.style.width = `${Math.max(0, document.documentElement.clientWidth - margin * 2)}px`;
+      layout();
+      return;
+    }
     // Keep the compact-screen popover usable. On desktop, spend the free
-    // left gutter first and never cover more than 15% of the chat column.
+    // left gutter first, targeting 15% overlap while keeping controls visible.
     if (window.matchMedia("(max-width: 984px)").matches) {
       panel.style.removeProperty("left");
       panel.style.removeProperty("width");
@@ -156,13 +498,11 @@ export function createConversationTree(options: TreeOptions): {
       return;
     }
     const chat = options.host.getBoundingClientRect();
-    const origin = root.getBoundingClientRect();
-    const margin = 16;
     const rightLimit = Math.min(
       chat.left + chat.width * 0.15,
       document.documentElement.clientWidth - margin,
     );
-    const width = Math.min(664, Math.max(0, rightLimit - margin));
+    const width = Math.min(664, Math.max(214, rightLimit - margin));
     const left = Math.max(margin, origin.right - width);
     panel.style.width = `${width}px`;
     panel.style.left = `${left - origin.left}px`;
@@ -187,25 +527,22 @@ export function createConversationTree(options: TreeOptions): {
     }
   }
 
-  function updateCurrent(center = false): void {
+  function updateCurrent(): void {
     if (panel.hidden) return;
     current?.removeAttribute("aria-current");
-    const id = options.currentMessage();
+    const readingId = options.currentMessage();
+    if (
+      selection &&
+      (selection.readingId !== readingId || !buttons.has(selection.id))
+    )
+      selection = null;
+    const id = selection?.id ?? readingId;
     current = id === null ? undefined : buttons.get(id);
     current?.setAttribute("aria-current", "location");
-    if (center && current) {
-      scroller.scrollTop = Math.max(
-        0,
-        Number.parseFloat(current.style.top) - 96,
-      );
-      scroller.scrollLeft = Math.max(
-        0,
-        (canvas.offsetWidth - scroller.clientWidth) / 2 + 12,
-      );
-    }
+    locateButton.disabled = !current;
   }
 
-  function revealSelection(button: HTMLButtonElement | undefined): void {
+  function revealSelection(button: HTMLElement | undefined): void {
     if (!button) return;
     const item = button.getBoundingClientRect();
     const view = scroller.getBoundingClientRect();
@@ -305,8 +642,9 @@ export function createConversationTree(options: TreeOptions): {
     content.append(edges);
     const tocs = new Map<number, HTMLUListElement>();
     for (const entry of entries) {
-      const button = document.createElement("button");
-      button.type = "button";
+      const button = document.createElement("div");
+      button.setAttribute("role", "button");
+      button.tabIndex = 0;
       button.className = "conversation-tree-node";
       button.dataset.messageId = String(entry.id);
       button.dataset.row = String(entry.row);
@@ -366,8 +704,9 @@ export function createConversationTree(options: TreeOptions): {
         tocs.set(entry.id, toc);
         for (const section of sections) {
           const item = document.createElement("li");
-          const heading = document.createElement("button");
-          heading.type = "button";
+          const heading = document.createElement("div");
+          heading.setAttribute("role", "button");
+          heading.tabIndex = 0;
           heading.className = "conversation-tree-heading";
           heading.dataset.messageId = String(entry.id);
           heading.dataset.headingIndex = String(section.index);
@@ -395,7 +734,8 @@ export function createConversationTree(options: TreeOptions): {
       const previousScrollLeft = scroller.scrollLeft;
       const availableWidth = Math.max(0, scroller.clientWidth - 24);
       // Keep extents stable for branch switches, but refit on real resizes.
-      if (layoutWidth !== availableWidth) stableHalfWidth = 0;
+      if (fitting || layoutWidth !== availableWidth) stableHalfWidth = 0;
+      if (fitting) stableCanvasHeight = 0;
       layoutWidth = availableWidth;
       const bands = new Map<number, { center: number; width: number }>([
         [0, { center: 0, width: availableWidth }],
@@ -433,7 +773,9 @@ export function createConversationTree(options: TreeOptions): {
         const band = bands.get(entry.id);
         if (!band) continue;
         const x = centerX + band.center;
-        const width = band.width / 2 + 18;
+        const width = fullWidth
+          ? Math.min(320, band.width / 2 + 18)
+          : band.width / 2 + 18;
         const left = entry.role === "user" ? x + 26 - width : x - 26;
         positions.set(entry.id, { x, y: 0 });
         const button = buttons.get(entry.id);
@@ -530,7 +872,8 @@ export function createConversationTree(options: TreeOptions): {
         }
       }
       scroller.scrollLeft =
-        previousScrollLeft + stableHalfWidth - previousCenter;
+        previousScrollLeft + (stableHalfWidth - previousCenter) * zoom;
+      applyZoom();
     };
     setStatus(entries.length ? "" : "Send a message to start a conversation.");
     dirty = false;
@@ -544,15 +887,16 @@ export function createConversationTree(options: TreeOptions): {
           : headingButtons.get(`${focusedId}:${focusedHeading}`);
       focused?.focus({ preventScroll: true });
     }
-    scroller.scrollTop = scrollTop;
-    scroller.scrollLeft = scrollLeft + stableHalfWidth - previousCenter;
+    if (!fitting) {
+      scroller.scrollTop = scrollTop;
+      scroller.scrollLeft =
+        scrollLeft + (stableHalfWidth - previousCenter) * zoom;
+    }
   }
 
   function open(): void {
     window.clearTimeout(closeTimer);
     if (!panel.hidden) return;
-    stableHalfWidth = 0;
-    stableCanvasHeight = 0;
     panel.hidden = false;
     toggle.setAttribute("aria-expanded", "true");
     if (dirty) render();
@@ -560,12 +904,28 @@ export function createConversationTree(options: TreeOptions): {
       placePanel();
       refreshLoaded();
     }
-    updateCurrent(true);
+    updateCurrent();
+    if (!hasOpened && current) {
+      scroller.scrollTop = Math.max(
+        0,
+        Number.parseFloat(current.style.top) - 96,
+      );
+      scroller.scrollLeft = Math.max(
+        0,
+        stableHalfWidth - scroller.clientWidth / 2 + 12,
+      );
+    }
+    hasOpened = true;
   }
 
   function close(restoreFocus = false): void {
     window.clearTimeout(closeTimer);
     pinned = false;
+    pointers.clear();
+    trackpadPinch = null;
+    gesture = null;
+    dragged = false;
+    delete scroller.dataset.dragging;
     if (restoreFocus) toggle.focus({ preventScroll: true });
     panel.hidden = true;
     toggle.setAttribute("aria-expanded", "false");
@@ -650,12 +1010,28 @@ export function createConversationTree(options: TreeOptions): {
     signal,
   });
   canvas.addEventListener(
+    "keydown",
+    (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const target =
+        event.target instanceof Element
+          ? event.target.closest<HTMLElement>(
+              '[role="button"][data-message-id]',
+            )
+          : null;
+      if (!target) return;
+      event.preventDefault();
+      if (!event.repeat) target.click();
+    },
+    { signal },
+  );
+  canvas.addEventListener(
     "mousedown",
     (event) => {
       if (event.button !== 0) return;
       const button =
         event.target instanceof Element
-          ? event.target.closest<HTMLButtonElement>("[data-message-id]")
+          ? event.target.closest<HTMLElement>("[data-message-id]")
           : null;
       if (!button) return;
       // Focus must not instantly reveal the item before smooth navigation.
@@ -669,7 +1045,7 @@ export function createConversationTree(options: TreeOptions): {
     async (event) => {
       const button =
         event.target instanceof Element
-          ? event.target.closest<HTMLButtonElement>("[data-message-id]")
+          ? event.target.closest<HTMLElement>("[data-message-id]")
           : null;
       if (!button || navigating) return;
       navigating = true;
@@ -683,6 +1059,13 @@ export function createConversationTree(options: TreeOptions): {
             headingIndex === undefined ? undefined : Number(headingIndex),
           )
         ) {
+          // A short final reply can share the viewport with its prompt.
+          // Keep explicit selection distinct from the first-visible marker
+          // until the reader moves to another chat position.
+          selection = {
+            id: Number(button.dataset.messageId),
+            readingId: options.currentMessage(),
+          };
           dirty = true;
           render();
           updateCurrent();

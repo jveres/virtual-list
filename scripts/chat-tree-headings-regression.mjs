@@ -67,6 +67,7 @@ for (const engine of [firefox, webkit, chromium]) {
       .getByRole("button", { name: "Conversation tree", exact: true })
       .click();
     const panel = page.locator(".conversation-tree-panel");
+    await page.getByRole("button", { name: "Reset tree zoom to 100%" }).click();
     const node = (id) =>
       panel.locator(`.conversation-tree-node[data-message-id="${id}"]`);
     const headings = (id) =>

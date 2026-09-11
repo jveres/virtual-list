@@ -55,6 +55,7 @@ for (const engine of [firefox, webkit, chromium]) {
       .click();
     await page.evaluate(() => {
       const scroller = document.querySelector(".conversation-tree-scroll");
+      document.querySelector('[aria-label="Reset tree zoom to 100%"]')?.click();
       const scrollBy = scroller.scrollBy.bind(scroller);
       window.revealCalls = [];
       scroller.scrollBy = (options) => {

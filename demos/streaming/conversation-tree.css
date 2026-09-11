@@ -40,6 +40,7 @@
   flex-direction: column;
   width: min(460px, calc(100vw - 32px));
   max-height: calc(100% - 60px);
+  height: calc(100% - 60px);
   min-height: 0;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -55,8 +56,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 12px 16px 8px;
+  gap: 4px;
+  padding: 12px 8px 8px;
 }
 .conversation-tree-header h2 {
   flex: 1;
@@ -71,10 +72,10 @@
 .conversation-tree-close {
   display: grid;
   place-items: center;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-  border-radius: 7px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 6px;
   border: 0;
   background: none;
   padding: 0;
@@ -85,11 +86,16 @@
   width: 16px;
   height: 16px;
 }
-.conversation-tree button svg > * {
+.conversation-tree :is(button, [role="button"]) svg > * {
   stroke-width: 1px;
   vector-effect: non-scaling-stroke;
 }
 .conversation-tree-scroll {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+  flex: 1;
   overflow: auto;
   overflow-x: scroll;
   overscroll-behavior: contain;
@@ -98,6 +104,24 @@
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--fg-muted) 35%, transparent)
     transparent;
+}
+.conversation-tree-scroll[data-dragging] {
+  cursor: grabbing;
+}
+.conversation-tree-node,
+.conversation-tree-text,
+.conversation-tree-heading {
+  -webkit-user-select: none;
+  user-select: none;
+  cursor: default;
+}
+.conversation-tree-scroll[data-dragging]
+  :is(
+    .conversation-tree-node,
+    .conversation-tree-text,
+    .conversation-tree-heading
+  ) {
+  cursor: grabbing;
 }
 .conversation-tree-scroll::-webkit-scrollbar {
   width: 6px;
@@ -111,9 +135,76 @@
 .conversation-tree-scroll::-webkit-scrollbar-corner {
   background: transparent;
 }
-.conversation-tree-canvas {
+.conversation-tree-controls {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: center;
+  gap: 2px;
+}
+.conversation-tree-controls button {
+  flex: 0 0 28px;
+  box-sizing: border-box;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 6px;
+}
+.conversation-tree-controls button:hover,
+.conversation-tree-close:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+}
+.conversation-tree-controls button[aria-pressed="true"] {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.conversation-tree-controls button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.conversation-tree-controls button:disabled {
+  opacity: 0.4;
+}
+.conversation-tree-controls svg {
+  width: 16px;
+  height: 16px;
+}
+.conversation-tree-controls .conversation-tree-zoom-value {
+  flex-basis: 40px;
+  aspect-ratio: auto;
+  width: 40px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+@container (max-width: 240px) {
+  .conversation-tree-header {
+    gap: 0;
+    padding-inline: 4px;
+  }
+  .conversation-tree-header h2 {
+    display: none;
+  }
+  .conversation-tree-controls {
+    flex: 1;
+    gap: 0;
+  }
+  .conversation-tree-controls .conversation-tree-zoom-value {
+    flex-basis: 36px;
+    width: 36px;
+  }
+}
+.conversation-tree-surface {
   position: relative;
-  min-width: 100%;
+  overflow: hidden;
+}
+.conversation-tree-canvas {
+  position: absolute;
+  transform-origin: top left;
 }
 .conversation-tree-edges {
   position: absolute;

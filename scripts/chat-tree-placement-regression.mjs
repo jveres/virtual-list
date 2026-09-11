@@ -24,6 +24,7 @@ for (const engine of [firefox, webkit, chromium]) {
     });
     const panel = page.locator(".conversation-tree-panel");
     await toggle.click();
+    await page.getByRole("button", { name: "Reset tree zoom to 100%" }).click();
 
     async function checkRowLayout() {
       const geometry = await panel.evaluate((panel) => {
@@ -306,6 +307,9 @@ for (const engine of [firefox, webkit, chromium]) {
       });
       await page.locator('#viewport [data-key="2"]').waitFor();
       await toggle.click();
+      await page
+        .getByRole("button", { name: "Reset tree zoom to 100%" })
+        .click();
       await panel
         .locator('.conversation-tree-node[data-message-id="2"]')
         .waitFor();

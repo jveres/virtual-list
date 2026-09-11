@@ -14,10 +14,12 @@ child stays on its parent's branch instead of returning to the root spine.
 Selecting a version never reorders its siblings. User labels sit to the left
 of their glyphs; assistant labels and response sections sit to the right.
 
-Bands have a 208-pixel minimum width. The panel uses the available left gutter,
-up to 664 pixels wide, and covers at most 15% of the chat column on desktop.
-Wide forks scroll horizontally. Canvas extents remain stable while branches
-fold; resizing the panel recalculates the width. Long labels wrap to two lines,
+Bands have a 208-pixel minimum width. The normal panel uses the available left
+gutter, up to 664 pixels wide, targeting at most 15% overlap with the desktop
+chat column. Its 214-pixel minimum width keeps all header controls visible.
+Wide forks scroll horizontally at reading zoom. Canvas extents remain stable
+while branches fold in manual zoom; Fit recalculates the full extent.
+Resizing the panel recalculates the width. Long labels wrap to two lines,
 and section titles use an ellipsis within their band. A folded branch's count
 sits above its continuation line. Message nodes have no hover tooltips.
 
@@ -27,6 +29,35 @@ visible items stay put. Reduced-motion preferences make this reveal immediate.
 This does not change the chat viewport's immediate navigation behavior.
 Pointer selections retain focus without a keyboard outline; keyboard navigation
 keeps its visible focus indicator.
+The clicked message keeps the blue current-node highlight even when another
+message is first in the chat viewport. Once the chat's first visible message
+changes, the highlight follows that reading position again.
+
+## Zoom and locate
+
+The header contains zoom out, a percentage reset, zoom in, Fit, Locate, full
+width, and Close controls. Toggle full width to span the window with 16-pixel
+side margins; toggle it again to restore the normal panel width. This choice
+persists when you close and reopen the panel and preserves your zoom or Fit mode.
+Full-width mode caps node cards at 320 pixels and heading lists at 300 pixels,
+so branches can spread across the canvas without stretching their text.
+The first opening uses 100% zoom. Closing and reopening retains
+your zoom and mode. Fit is opt-in and fits the entire displayed tree into the
+available width and height; it remains active across resizing and branch
+changes. Long conversations can make the overview's text very small.
+
+Zoom buttons leave Fit mode and preserve the viewing center. Click the
+percentage to return to 100%. Manual zoom supports up to 300%, and resizing
+preserves your chosen scale. Toolbar interaction keeps a hover-opened panel
+open. Locate smoothly centers the current chat node as far as the scroll
+boundaries permit, without changing the zoom or the chat's scroll position.
+Reduced-motion preferences make Locate immediate.
+
+Drag anywhere in the tree, including labels and headings, to pan. Tree text
+is not selectable, and dragging does not navigate the chat. Two-finger touch pinch,
+control-wheel trackpad pinch, and Safari gesture events zoom around the
+gesture's center. Ordinary wheel input still scrolls the tree. Dragging and
+pinching leave Fit mode; use Fit to restore the full overview.
 
 ## Final-node behavior
 
@@ -230,6 +261,11 @@ The following checks cover the decision at both the runtime and host layers:
 - [`scripts/chat-tree-placement-regression.mjs`](../scripts/chat-tree-placement-regression.mjs):
   checks one through five equal-width version bands, parent alignment,
   role-aware labels, edge endpoints, resizing, and narrow-screen placement.
+- [`scripts/chat-tree-zoom-regression.mjs`](../scripts/chat-tree-zoom-regression.mjs):
+  checks full-tree fit, manual zoom, Locate without chat movement, header
+  controls, full-width toggling and restoration, hover-open percentage reset,
+  dragging from text without selection,
+  and synthetic pinch input. Physical trackpad feel requires manual checking.
 - [`scripts/chat-tree-reveal-regression.mjs`](../scripts/chat-tree-reveal-regression.mjs):
   checks clipped nodes on all four edges, section links, reduced motion, and
   fully visible selections that must not move the panel.

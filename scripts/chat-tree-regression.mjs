@@ -162,6 +162,10 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.equal(await panel.isVisible(), false);
     await toggle.hover();
     await panel.waitFor({ state: "visible" });
+    // These geometry/fade checks exercise the unscaled reading view.
+    await page
+      .getByRole("button", { name: "Reset tree zoom to 100%" })
+      .evaluate((button) => button.click());
     assert.equal(await node(1).getAttribute("data-loaded"), "false");
     assert.equal(await node(119).getAttribute("data-loaded"), "true");
     assert.equal(await node(201).getAttribute("data-loaded"), "false");
@@ -308,7 +312,7 @@ for (const engine of [firefox, webkit, chromium]) {
         radius: getComputedStyle(element).borderRadius,
       }));
     assert.equal(closeGeometry.width, closeGeometry.height);
-    assert.equal(closeGeometry.radius, "7px");
+    assert.equal(closeGeometry.radius, "6px");
     const closeButton = page.getByRole("button", {
       name: "Close conversation tree",
       exact: true,
@@ -410,6 +414,9 @@ for (const engine of [firefox, webkit, chromium]) {
       );
     });
     const checkTreeBottomClick = async () => {
+      await page
+        .getByRole("button", { name: "Reset tree zoom to 100%" })
+        .click();
       const treePosition = () =>
         panel.locator(".conversation-tree-scroll").evaluate((element) => ({
           top: element.scrollTop,
@@ -642,6 +649,7 @@ for (const engine of [firefox, webkit, chromium]) {
     await page.setViewportSize({ width: 390, height: 844 });
     await toggle.tap();
     await panel.waitFor({ state: "visible" });
+    await page.getByRole("button", { name: "Reset tree zoom to 100%" }).tap();
     await panel.locator(".conversation-tree-scroll").evaluate((element) => {
       element.scrollLeft = 0;
     });
