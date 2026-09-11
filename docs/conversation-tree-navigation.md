@@ -44,8 +44,9 @@ visible items stay put. Reduced-motion preferences make this reveal immediate.
 This does not change the chat viewport's immediate navigation behavior.
 Pointer selections retain focus without a keyboard outline; keyboard navigation
 keeps its visible focus indicator.
-The clicked message keeps the blue current-node highlight even when another
-message is first in the chat viewport. Once the chat's first visible message
+The clicked message or section keeps the blue current-item highlight even when
+another message is first in the chat viewport. A selected section highlights
+itself, not its parent message. Once the chat's first visible message
 changes, the highlight follows that reading position again.
 
 ## Zoom and locate
@@ -82,7 +83,7 @@ control-wheel trackpad pinch, and Safari gesture events zoom around the
 gesture's center. Ordinary wheel input still scrolls the tree. Dragging and
 pinching leave Fit mode; use Fit to restore the full overview.
 
-## Final-node behavior
+## Bottom geometry and navigation targets
 
 The runtime establishes the last-user pin from the committed conversation,
 not from a navigation command. Configure it once when mounting the list:
@@ -108,10 +109,12 @@ matching key. A held snapshot retains both values until commit. When you
 change the sticky-header setting, submit the current items again so the
 runtime captures the new inset; don't adjust trailing space in the host.
 
-Boot already lands at the runtime's end. The final tree node and bottom arrow
-use ordinary `scrollTo("end")` commands, with no demo-owned bottom helper.
+Boot already lands at the runtime's end. The bottom arrow uses ordinary
+`scrollTo("end")`, with no demo-owned bottom helper. Bottom geometry does not
+change the target of a tree click: a message node targets its own start,
+including the final message. Never substitute the bottom for an offscreen title.
 
-Earlier messages use a keyed jump with the sticky-header inset:
+All message nodes use a keyed jump with the sticky-header inset:
 
 ```ts
 await list.scrollTo(String(messageId), {
@@ -120,7 +123,7 @@ await list.scrollTo(String(messageId), {
 });
 ```
 
-For these earlier-message jumps, omit `align` and `pin`. The runtime resolves
+For these message jumps, omit `align` and `pin`. The runtime resolves
 the message's top minus the inset and clamps it to the available scroll range.
 The host must not calculate a second destination from DOM heights.
 In the streaming demo, the enabled sticky-header inset is 40 pixels.
@@ -129,7 +132,8 @@ In the streaming demo, the enabled sticky-header inset is 40 pixels.
 | --- | --- |
 | Earlier message with enough content below it | Its top lands below the sticky header. |
 | Short final response | The last user message stays below the header, with trailing space after its response as needed. |
-| Long final response | The conversation lands at its end without unnecessary trailing space. |
+| Long final response | Its start lands below the sticky header, without adding trailing space. |
+| Bottom arrow | The conversation lands at the same bottom position as page load. |
 
 Tree jumps are immediate: `ScrollOptions.behavior` uses `"auto"`, not
 `"instant"`. The scroll-arrow buttons remain separate controls and retain
@@ -137,10 +141,11 @@ their smooth animation, but the bottom destination belongs to the runtime.
 
 ## Why the earlier approaches failed
 
-The previous rule treated the final tree node as a separate keyed destination.
-It relied on whatever reserve remained after earlier navigation, so returning
-to the bottom didn't explicitly restore the page-load geometry. That rule is
-superseded: reserve is a runtime invariant, independent of navigation.
+Earlier implementations tied trailing reserve to navigation. Reserve is now a
+runtime invariant, independent of navigation. Redirecting the final tree node
+to the bottom confused that geometry rule with the selected target: a long
+response's title remained offscreen. All message nodes now use keyed jumps;
+only an explicit bottom command requests the conversation end.
 
 Re-pinning only when clicking the final node also failed. Switching branches
 could remove the pinned key; returning through an earlier node restored the
@@ -170,7 +175,7 @@ behavior; search by symbol if line numbers change:
   different option from `ScrollOptions.behavior`.
 - [`navigateTreeMessage`](../demos/streaming/streaming.ts) is the host adapter.
   Both its loaded-message path and its staged-history path finish with the
-  same navigation helper, including the canonical bottom for a final node.
+  same keyed navigation helper, including for the final node.
 
 ## Unloaded history and branch changes
 
@@ -307,8 +312,8 @@ The following checks cover the decision at both the runtime and host layers:
   scrolling, command independence, targeted and held updates, growth and
   shrinkage, live inset changes, held inset capture, and predicate failure.
 - [`scripts/regressions/chat-tree/chat-tree-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-regression.mjs):
-  the final short/long response cases check the page-load bottom position and
-  matching `scrollHeight`. The same suite
+  the final short/long response cases check clamped message-start navigation
+  and unchanged `scrollHeight`. The same suite
   reproduces scrolling up in the default simulated chat and selecting the
   final response's second version: it must stop at the bottom limit without
   adding a reply reserve on top of the existing prompt reserve. It also

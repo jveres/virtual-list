@@ -733,13 +733,17 @@ for (const engine of [firefox, webkit, chromium]) {
       assert.equal(
         after.height,
         before.height,
-        "tree navigation must restore the page-load bottom geometry",
+        "tree navigation must preserve the page-load scroll range",
       );
-      assert.ok(Math.abs(after.top - (before.height - before.client)) <= 2);
+      const expectedTop = Math.max(
+        0,
+        Math.min(before.absoluteTop - 40, before.height - before.client),
+      );
+      assert.ok(Math.abs(after.top - expectedTop) <= 2);
       if (long)
         assert.ok(
-          after.offset < 40,
-          `long response should land at the conversation bottom: ${after.offset}`,
+          Math.abs(after.offset - 40) <= 2,
+          `long response should reveal its start: ${after.offset}`,
         );
       else
         assert.ok(

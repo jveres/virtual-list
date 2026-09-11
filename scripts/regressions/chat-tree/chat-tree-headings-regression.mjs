@@ -35,8 +35,8 @@ for (const engine of [firefox, webkit, chromium]) {
           markdown:
             index === 0
               ? "# User heading"
-              : index === 1
-                ? answer("A structured answer")
+              : index === 1 || index === 119
+                ? answer(index === 1 ? "A structured answer" : "Final answer")
                 : `Message ${index + 1}\n\n${paragraph}`,
         },
       }));
@@ -143,6 +143,21 @@ for (const engine of [firefox, webkit, chromium]) {
       );
       assert.equal(await panel.isVisible(), true);
       assert.equal(await target.getAttribute("data-loaded"), "true");
+      assert.equal(await target.getAttribute("aria-current"), "location");
+      assert.equal(await node(id).getAttribute("aria-current"), null);
+      assert.equal(await panel.locator('[aria-current="location"]').count(), 1);
+      assert.equal(
+        await target.evaluate((heading) => {
+          const parent = document.querySelector(
+            `.conversation-tree-node[data-message-id="${heading.dataset.messageId}"]`,
+          );
+          return (
+            getComputedStyle(heading).color !== getComputedStyle(parent).color
+          );
+        }),
+        true,
+        "selected heading, not its parent message, receives the accent color",
+      );
       if (keyboard)
         assert.equal(
           await target.evaluate((button) => button === document.activeElement),
@@ -226,6 +241,32 @@ for (const engine of [firefox, webkit, chromium]) {
         "H1 and H2 hover styles match message nodes",
       );
     }
+    // A final response title is a message target, not a bottom command.
+    await jump(120, 1);
+    await node(120).click();
+    await page.waitForFunction(
+      () =>
+        !document
+          .querySelector(".conversation-tree-panel")
+          .hasAttribute("aria-busy"),
+    );
+    const parentLanding = await page
+      .locator('#viewport [data-key="120"]')
+      .evaluate((row) => {
+        const viewport = document.querySelector("#viewport");
+        return {
+          top:
+            row.getBoundingClientRect().top -
+            viewport.getBoundingClientRect().top,
+          endGap:
+            viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
+        };
+      });
+    assert.ok(Math.abs(parentLanding.top - 40) <= 2);
+    assert.ok(parentLanding.endGap > 100);
+    assert.equal(await node(120).getAttribute("aria-current"), "location");
+    assert.equal(await headings(120).nth(1).getAttribute("aria-current"), null);
+    await jump(2, 0);
     await page.screenshot({
       path: `browser-artifacts/conversation-tree/${engine.name()}-headings-desktop.png`,
     });

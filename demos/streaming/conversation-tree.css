@@ -404,6 +404,9 @@
 .conversation-tree-heading[data-loaded="false"] {
   color: var(--fg-muted);
 }
+.conversation-tree-heading[aria-current="location"] {
+  color: var(--accent);
+}
 .conversation-tree-heading:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;

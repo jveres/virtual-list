@@ -700,8 +700,6 @@ async function scrollToTreeTarget(
   messageId: number,
   headingIndex?: number,
 ): Promise<boolean> {
-  if (headingIndex === undefined && transcript.at(-1)?.id === messageId)
-    return list.scrollTo("end", { behavior: "auto" });
   const key = String(messageId);
   const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
   const epoch = conversationEpoch;

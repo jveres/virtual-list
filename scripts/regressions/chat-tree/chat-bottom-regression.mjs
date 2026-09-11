@@ -207,7 +207,16 @@ for (const engine of [firefox, webkit, chromium]) {
       const imported = await geometry(3, 4);
       await jump(1);
       await jump(4);
-      matches(await geometry(3, 4), imported, `${label} return vs load`);
+      const selected = await geometry(3, 4);
+      if (long) assert.ok(Math.abs(selected.reply.top - 40) <= 2);
+      else matches(selected, imported, `${label} clamped return vs load`);
+      await jump(1);
+      await page.locator("#scroll-bottom-btn").click();
+      await page.waitForFunction(() => {
+        const v = document.querySelector("#viewport");
+        return Math.abs(v.scrollHeight - v.clientHeight - v.scrollTop) <= 2;
+      });
+      matches(await geometry(3, 4), imported, `${label} bottom arrow vs load`);
       if (long)
         assert.ok(
           imported.reply.top < 40 &&

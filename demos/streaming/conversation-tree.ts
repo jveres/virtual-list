@@ -189,7 +189,11 @@ export function createConversationTree(options: TreeOptions): {
   let canvasTop = 0;
   let layout = (): void => {};
   let current: HTMLElement | undefined;
-  let selection: { id: number; readingId: number | null } | null = null;
+  let selection: {
+    id: number;
+    headingIndex: number | undefined;
+    readingId: number | null;
+  } | null = null;
   const buttons = new Map<number, HTMLElement>();
   const bandWidths = new Map<number, number>();
   const headingButtons = new Map<string, HTMLElement>();
@@ -563,7 +567,13 @@ export function createConversationTree(options: TreeOptions): {
     )
       selection = null;
     const id = selection?.id ?? readingId;
-    current = id === null ? undefined : buttons.get(id);
+    current =
+      id === null
+        ? undefined
+        : selection?.headingIndex === undefined
+          ? buttons.get(id)
+          : (headingButtons.get(`${id}:${selection.headingIndex}`) ??
+            buttons.get(id));
     current?.setAttribute("aria-current", "location");
     locateButton.disabled = !current;
   }
@@ -1162,6 +1172,8 @@ export function createConversationTree(options: TreeOptions): {
           // until the reader moves to another chat position.
           selection = {
             id: Number(button.dataset.messageId),
+            headingIndex:
+              headingIndex === undefined ? undefined : Number(headingIndex),
             readingId: options.currentMessage(),
           };
           dirty = true;
