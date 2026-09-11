@@ -711,7 +711,9 @@ export function createConversationTree(options: TreeOptions): {
       if (badgeEntries.has(entry.id)) {
         const count = document.createElement("span");
         count.className = "conversation-tree-count";
-        count.textContent = `${entry.descendantCount} more ${entry.descendantCount === 1 ? "message" : "messages"}`;
+        const countLabel = document.createElement("span");
+        countLabel.textContent = `${entry.descendantCount} more ${entry.descendantCount === 1 ? "message" : "messages"}`;
+        count.append(countLabel);
         // Reserve the folded badge's intrinsic width even on the active branch.
         if (!entry.hiddenCount) {
           count.style.visibility = "hidden";
@@ -885,7 +887,12 @@ export function createConversationTree(options: TreeOptions): {
         if (!position) continue;
         const { x, y } = position;
         // Bridge the glyph as well as the connectors for one continuous stream.
-        if (entry.active) ribbonPaths.push(`M${x} ${y + 8}V${y + 36}`);
+        if (entry.active) {
+          const terminal =
+            entry.row === displayRows.length - 1 && !tocs.has(entry.id);
+          const start = entry.row === 0 ? 22 : 8;
+          ribbonPaths.push(`M${x} ${y + start}V${y + (terminal ? 22 : 36)}`);
+        }
         const paths: string[] = [];
         const parent = positions.get(entry.parentId);
         if (parent) {

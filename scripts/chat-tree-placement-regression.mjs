@@ -426,11 +426,47 @@ for (const engine of [firefox, webkit, chromium]) {
             .hasAttribute("aria-busy"),
       );
       assert.equal(await badge.isVisible(), id === 7);
+      const badgeCenter = await badge.evaluate((badge) => {
+        const outer = badge.getBoundingClientRect();
+        const text = badge.firstElementChild.getBoundingClientRect();
+        return text.top + text.height / 2 - (outer.top + outer.height / 2);
+      });
+      assert.ok(
+        Math.abs(badgeCenter + 1) < 0.1,
+        "badge text has a 1px optical correction above its centered line box",
+      );
       const stream = await panel.evaluate((panel) => {
         const ribbon = panel.querySelector(".conversation-tree-path-ribbon");
         const path = ribbon.getAttribute("d");
         const style = getComputedStyle(ribbon);
+        const last = [
+          ...panel.querySelectorAll(
+            '.conversation-tree-node[data-active="true"]',
+          ),
+        ].at(-1);
+        const ribbonBounds = ribbon.getBBox();
+        const activeColor = getComputedStyle(
+          panel.querySelector(".conversation-tree-edge.active"),
+        ).stroke;
+        const inactiveColor = getComputedStyle(
+          panel.querySelector(".conversation-tree-edge:not(.active)"),
+        ).stroke;
         return {
+          ringsFollowPath: [
+            ...panel.querySelectorAll(".conversation-tree-node"),
+          ].every(
+            (node) =>
+              getComputedStyle(node.querySelector(".conversation-tree-glyph"))
+                .borderTopColor ===
+              (node.dataset.active === "true" ? activeColor : inactiveColor),
+          ),
+          startsAtFirstRing: Math.abs(ribbonBounds.y - 22) < 0.1,
+          terminalStopsAtRing:
+            Math.abs(
+              ribbonBounds.y +
+                ribbonBounds.height -
+                (Number.parseFloat(last.style.top) + 22),
+            ) < 0.1,
           count: panel.querySelectorAll(".conversation-tree-path-ribbon")
             .length,
           opacity: style.opacity,
@@ -447,6 +483,9 @@ for (const engine of [firefox, webkit, chromium]) {
         };
       });
       assert.deepEqual(stream, {
+        ringsFollowPath: true,
+        startsAtFirstRing: true,
+        terminalStopsAtRing: true,
         count: 1,
         opacity: "0.06",
         width: "10px",

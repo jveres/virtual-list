@@ -272,8 +272,10 @@
   background: var(--bg-surface);
   border: 1px solid var(--border);
 }
-.conversation-tree-node[aria-current="location"] .conversation-tree-glyph {
+.conversation-tree-node[data-active="true"] .conversation-tree-glyph {
   border-color: var(--accent);
+}
+.conversation-tree-node[aria-current="location"] .conversation-tree-glyph {
   animation: conversation-tree-current-pulse 2.4s ease-in-out infinite;
 }
 @keyframes conversation-tree-current-pulse {
@@ -326,18 +328,26 @@
   min-width: 0;
 }
 .conversation-tree-count {
-  display: block;
+  display: flex;
+  align-items: center;
   width: max-content;
   max-width: 100%;
+  height: 16px;
   overflow: hidden;
   margin-top: 3px;
-  padding: 1px 6px;
+  padding: 0 6px;
   border-radius: 20px;
   background: var(--bg-surface);
   border: 1px solid var(--border);
   color: var(--fg-muted);
   font-size: 10px;
   line-height: 12px;
+}
+.conversation-tree-count > span {
+  position: relative;
+  top: -1px;
+  min-width: 0;
+  overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
