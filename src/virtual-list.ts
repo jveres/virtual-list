@@ -562,12 +562,16 @@ export function createVirtualList<T>(
   // so the kernel's estimate is only a validation placeholder.
   const geometry = new Geometry(1);
   const anchorable = options.anchorable;
-  geometry.setAnchorExclusion((key) => {
-    if (isSlotKey(key)) return true;
-    if (anchorable === undefined) return false;
-    const entry = declaredItems.get(key) ?? rows.get(key);
-    return entry !== undefined && !anchorable(entry.item);
-  });
+  geometry.setAnchorExclusion(
+    (key) => {
+      if (isSlotKey(key)) return true;
+      if (anchorable === undefined) return false;
+      const entry = declaredItems.get(key) ?? rows.get(key);
+      return entry !== undefined && !anchorable(entry.item);
+    },
+    // Host predicates retain source-order calls, including their effects.
+    anchorable === undefined,
+  );
   const rows = new Map<string, Row<T>>();
   let declaredItems = new Map<string, DeclaredItem<T>>();
   const edgeSlots: Record<Edge, EdgeSlot | null> = {
@@ -1978,6 +1982,13 @@ export function createVirtualList<T>(
       range.delta?.from === lastRange.indices
         ? range.delta
         : undefined;
+    const previousStackedRange =
+      !deferredRetirements &&
+      !geometryChanged &&
+      range.indices === undefined &&
+      lastRange.indices === undefined
+        ? lastRange
+        : undefined;
     lastRange = range;
     deferredRetirements = false;
     function retire(row: Row<T>): void {
@@ -2014,7 +2025,18 @@ export function createVirtualList<T>(
     const enteringIndices = delta?.entering ?? range.indices;
     const length = enteringIndices?.length ?? range.end - range.start;
     for (let i = 0; i < length; i++) {
-      const index = enteringIndices?.[i] ?? range.start + i;
+      let index = enteringIndices?.[i] ?? range.start + i;
+      // A complete unchanged stack already owns the common interval. Jump
+      // over it without looking up surviving rows or allocating an index list.
+      if (
+        previousStackedRange &&
+        index >= previousStackedRange.start &&
+        index < previousStackedRange.end
+      ) {
+        i += previousStackedRange.end - index;
+        if (i >= length) break;
+        index = range.start + i;
+      }
       const key = geometry.keyAt(index);
       let row = key === undefined ? undefined : rows.get(key);
       if (!row && key !== undefined) {

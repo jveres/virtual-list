@@ -93,6 +93,7 @@ export class Geometry {
   private reservePx = 0;
   /** Keys that never anchor (edge slots): the anchor falls to a neighbor. */
   private neverAnchor: (key: string) => boolean = () => false;
+  private anchorExclusionIsPure = true;
 
   constructor(estimate: number | ((key: string) => number)) {
     this.estimateForKey =
@@ -109,9 +110,14 @@ export class Geometry {
    * successor for a leading slot, the predecessor for a trailing one) with
    * the offset that keeps the exact coordinate, so the slot's replacement by
    * content leaves the content the user was reading where it was.
+   * Pure predicates allow positioned lookup to skip or reorder their calls.
    */
-  setAnchorExclusion(predicate: (key: string) => boolean): void {
+  setAnchorExclusion(
+    predicate: (key: string) => boolean,
+    isPure = false,
+  ): void {
     this.neverAnchor = predicate;
+    this.anchorExclusionIsPure = isPure;
   }
 
   keyAt(index: number): string | undefined {
@@ -183,8 +189,10 @@ export class Geometry {
     if (this.keys.length === 0) return null;
     const top = Math.max(0, Math.min(viewport.scrollTop, this.contentSize));
     if (this.positioned) {
-      const index = this.positioned.anchorAt(top, (i) =>
-        this.neverAnchor(this.keys[i] as string),
+      const index = this.positioned.anchorAt(
+        top,
+        (i) => this.neverAnchor(this.keys[i] as string),
+        this.anchorExclusionIsPure,
       );
       const key = this.keys[index];
       return key === undefined

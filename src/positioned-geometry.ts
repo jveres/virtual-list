@@ -201,12 +201,38 @@ export class PositionedGeometry {
     return this.cached;
   }
 
-  /** Prefer a containing item in source order, then the nearest following item. */
-  anchorAt(top: number, excluded: (index: number) => boolean): number {
+  /**
+   * Prefer a containing item in source order, then the nearest following item.
+   * Pure exclusion predicates allow indexed lookup to skip or reorder calls.
+   */
+  anchorAt(
+    top: number,
+    excluded: (index: number) => boolean,
+    isPure = false,
+  ): number {
+    // Ordered lane bottoms let us skip everything above the reading point.
+    // Source order can differ from both lane order and vertical order, so
+    // compare every containing candidate before choosing the anchor.
+    if (isPure && this.orderedBottoms && Number.isFinite(top)) {
+      let containing = -1;
+      for (const lane of this.lanes) {
+        for (let i = this.firstAfter(lane, top); i < lane.indices.length; i++) {
+          const index = lane.indices[i] as number;
+          if (this.top(index) > top) break;
+          if ((containing < 0 || index < containing) && !excluded(index)) {
+            if (index === 0) return index;
+            containing = index;
+          }
+        }
+      }
+      if (containing >= 0) return containing;
+    }
+
+    // Keep the source-order fallback for gaps, excluded content, and nested
+    // intervals whose bottoms are unordered. It also preserves boundary ties.
     let containing = -1;
     let following = -1;
     let previous = -1;
-    // Anchor capture is a transaction operation, not the scrolling hot path.
     for (let index = 0; index < this.items.length; index++) {
       if (excluded(index)) continue;
       if (this.top(index) <= top && this.bottom(index) > top) {

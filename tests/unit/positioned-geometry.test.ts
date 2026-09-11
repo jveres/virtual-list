@@ -159,6 +159,257 @@ describe("positioned geometry", () => {
     expect(layout.anchorAt(50, () => true)).toBe(-1);
   });
 
+  it.each([1, 2, 5])(
+    "should match source-order anchor lookup across %i lanes, permutations and exclusions",
+    (lanes) => {
+      const items = Array.from({ length: 48 }, (_, index) => ({
+        top: Math.floor(index / lanes) * 31.25 + (index % lanes) * 3.5,
+        height: 45.5,
+        lane: index % lanes,
+      }));
+      const queries = [
+        -1,
+        0,
+        ...items.flatMap(({ top, height }) => [
+          top,
+          top + 0.25,
+          top + height - 0.25,
+          top + height,
+        ]),
+        2000,
+      ];
+      const permutations = [
+        items,
+        [...items].reverse(),
+        [...items.filter((_, i) => i % 2), ...items.filter((_, i) => !(i % 2))],
+      ];
+
+      for (const permutation of permutations) {
+        const layout = new PositionedGeometry(permutation);
+        for (const divisor of [1, 3, 7, 49]) {
+          const excluded = (index: number) => (index + 1) % divisor === 0;
+          for (const top of queries) {
+            const expected = layout.anchorAt(top, excluded);
+
+            expect(layout.anchorAt(top, excluded, true)).toBe(expected);
+          }
+        }
+      }
+    },
+  );
+
+  it.each([
+    { excluded: [], expected: 1 },
+    { excluded: [1], expected: 2 },
+    { excluded: [1, 2], expected: 3 },
+    { excluded: [1, 2, 3], expected: 0 },
+    { excluded: [0, 1, 2, 3], expected: -1 },
+  ])(
+    "should choose anchor $expected in source order with exclusions $excluded",
+    ({ excluded, expected }) => {
+      const layout = new PositionedGeometry([
+        { top: 400, height: 30, lane: 0 },
+        { top: 120, height: 100, lane: 1 },
+        { top: 110, height: 100, lane: 0 },
+        { top: 100, height: 100, lane: 1 },
+      ]);
+
+      const anchor = layout.anchorAt(
+        150,
+        (index) => excluded.includes(index),
+        true,
+      );
+
+      expect(anchor).toBe(expected);
+    },
+  );
+
+  it.each([
+    { top: 20.25, expected: 0 },
+    { top: 20.5, expected: 1 },
+    { top: 40, expected: 1 },
+  ])(
+    "should preserve inclusive tops and exclusive bottoms at $top",
+    ({ top, expected }) => {
+      const layout = new PositionedGeometry([
+        { top: 0, height: 20.5, lane: 0 },
+        { top: 20.5, height: 19.5, lane: 0 },
+        { top: 0, height: 20.5, lane: 1 },
+        { top: 20.5, height: 19.5, lane: 1 },
+      ]);
+
+      const anchor = layout.anchorAt(top, () => false, true);
+
+      expect(anchor).toBe(expected);
+    },
+  );
+
+  it.each([
+    { top: 0, expected: 1 },
+    { top: 70, expected: 3 },
+    { top: 210, expected: 0 },
+    { top: -Infinity, expected: 1 },
+    { top: Infinity, expected: 0 },
+    { top: Number.NaN, expected: 0 },
+  ])(
+    "should preserve source-order fallback ties at $top",
+    ({ top, expected }) => {
+      const layout = new PositionedGeometry([
+        { top: 200, height: 10, lane: 1 },
+        { top: 50, height: 20, lane: 2 },
+        { top: 50, height: 20, lane: 1 },
+        { top: 100, height: 110, lane: 2 },
+      ]);
+
+      const anchor = layout.anchorAt(top, () => false, true);
+
+      expect(anchor).toBe(expected);
+    },
+  );
+
+  it.each([
+    { top: 110, excluded: [], expected: 0 },
+    { top: 250, excluded: [], expected: 1 },
+    { top: 510, excluded: [], expected: 1 },
+    { top: 150, excluded: [1], expected: 2 },
+    { top: 350, excluded: [1], expected: 2 },
+    { top: 110, excluded: [0, 1, 2], expected: -1 },
+  ])(
+    "should preserve nested-overlap anchor $expected at $top with exclusions $excluded",
+    ({ top, excluded, expected }) => {
+      const layout = new PositionedGeometry([
+        { top: 100, height: 20, lane: 0 },
+        { top: 0, height: 500, lane: 0 },
+        { top: 300, height: 20, lane: 0 },
+      ]);
+
+      const anchor = layout.anchorAt(
+        top,
+        (index) => excluded.includes(index),
+        true,
+      );
+
+      expect(anchor).toBe(expected);
+    },
+  );
+
+  it.each([0, -Infinity, Infinity, Number.NaN])(
+    "should return no anchor for an empty layout at %s",
+    (top) => {
+      const layout = new PositionedGeometry([]);
+
+      const anchor = layout.anchorAt(top, () => false, true);
+
+      expect(anchor).toBe(-1);
+    },
+  );
+
+  it("should leave cached visibility and its incremental cursors unchanged during anchor lookup", () => {
+    const layout = new PositionedGeometry(
+      Array.from({ length: 12 }, (_, index) => ({
+        top: Math.floor(index / 2) * 100,
+        height: 90,
+        lane: index % 2,
+      })),
+    );
+    const first = layout.window(100, 300);
+
+    const anchor = layout.anchorAt(450, () => false, true);
+    const repeated = layout.window(100, 300);
+    const advanced = layout.window(200, 400);
+
+    expect(anchor).toBe(8);
+    expect(repeated).toBe(first);
+    expect(first.indices).toEqual([2, 3, 4, 5]);
+    expect(advanced.indices).toEqual([4, 5, 6, 7]);
+    expect(advanced.delta?.from).toBe(first.indices);
+    expect(advanced.delta?.entering).toEqual([6, 7]);
+    expect(advanced.delta?.leaving).toEqual([2, 3]);
+  });
+
+  it.each([
+    { excluded: [], expected: 1, visited: [0, 1] },
+    { excluded: [1, 2, 3], expected: 0, visited: [0, 1, 2, 3] },
+  ])(
+    "should preserve callback effects in source order by default with exclusions $excluded",
+    ({ excluded, expected, visited }) => {
+      const layout = new PositionedGeometry([
+        { top: 400, height: 30, lane: 0 },
+        { top: 120, height: 100, lane: 1 },
+        { top: 110, height: 100, lane: 0 },
+        { top: 100, height: 100, lane: 1 },
+      ]);
+      const effects: number[] = [];
+
+      const anchor = layout.anchorAt(150, (index) => {
+        effects.push(index);
+        return excluded.includes(index);
+      });
+
+      expect(anchor).toBe(expected);
+      expect(effects).toEqual(visited);
+    },
+  );
+
+  it("should propagate a default predicate failure before the containing item", () => {
+    const layout = new PositionedGeometry([
+      { top: 0, height: 100, lane: 0 },
+      { top: 100, height: 100, lane: 0 },
+    ]);
+    const failure = new Error("earlier exclusion failed");
+
+    expect(() =>
+      layout.anchorAt(150, (index) => {
+        if (index === 0) throw failure;
+        return false;
+      }),
+    ).toThrow(failure);
+  });
+
+  it("should preserve keyed predicate effects when replacing a pure exclusion", () => {
+    const geometry = new Geometry(100);
+    geometry.setKeys(["future", "reading", "other", "earlier"]);
+    geometry.setPositioned(
+      new PositionedGeometry([
+        { top: 400, height: 30, lane: 0 },
+        { top: 120, height: 100, lane: 1 },
+        { top: 110, height: 100, lane: 0 },
+        { top: 100, height: 100, lane: 1 },
+      ]),
+    );
+    geometry.setAnchorExclusion(() => false, true);
+    const effects: string[] = [];
+    geometry.setAnchorExclusion((key) => {
+      effects.push(key);
+      return false;
+    });
+
+    const anchor = geometry.anchorAt({ scrollTop: 150, height: 100 });
+
+    expect(anchor).toEqual({ key: "reading", offset: 30 });
+    expect(effects).toEqual(["future", "reading"]);
+  });
+
+  it("should propagate a keyed predicate failure before the containing item", () => {
+    const geometry = new Geometry(100);
+    geometry.setKeys(["earlier", "reading"]);
+    geometry.setPositioned(
+      new PositionedGeometry([
+        { top: 0, height: 100, lane: 0 },
+        { top: 100, height: 100, lane: 0 },
+      ]),
+    );
+    const failure = new Error("earlier keyed exclusion failed");
+    geometry.setAnchorExclusion((key) => {
+      if (key === "earlier") throw failure;
+      return false;
+    });
+
+    expect(() => geometry.anchorAt({ scrollTop: 150, height: 100 })).toThrow(
+      failure,
+    );
+  });
+
   it.each([
     { top: -1, height: 10, lane: 0 },
     { top: Number.NaN, height: 10, lane: 0 },

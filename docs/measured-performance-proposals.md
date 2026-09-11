@@ -6,6 +6,10 @@ Neither changes the public API or delays synchronous geometry updates. The
 remaining proposals stay out of the runtime pending stronger evidence or a
 separate API design.
 
+The later [core and runtime audit](core-runtime-audit.md) uses these retained
+changes as its baseline and adds algorithmic measurements and architecture
+refactoring findings.
+
 ## Method and limits
 
 Measurements use installed Firefox 155.0.1, fresh temporary profiles, closed

@@ -336,6 +336,147 @@ describe("settle-time window updates", () => {
     h.list.dispose();
   });
 
+  it.each([
+    { declared: false, overscanPx: 0 },
+    { declared: true, overscanPx: 0 },
+    { declared: false, overscanPx: 200 },
+    { declared: true, overscanPx: 200 },
+  ])(
+    "should preserve stacked coverage and lifecycle order through reversals (declared=$declared, overscan=$overscanPx)",
+    ({ declared, overscanPx }) => {
+      const mounted: number[] = [];
+      const unmounted: number[] = [];
+      const h = mount(range(0, 60), {
+        boot: "start",
+        overscanPx,
+        itemHeight: declared ? () => ROW_H : undefined,
+        onMount: (_element, m) => mounted.push(m.id),
+        onUnmount: (_element, m) => unmounted.push(m.id),
+      });
+      try {
+        for (const top of [1000, 1100, 900, 901, 4000, 100, 0, 1500]) {
+          const before = new Map(
+            [...h.canvas().querySelectorAll<HTMLElement>("[data-id]")].map(
+              (element) => [Number(element.dataset.id), element],
+            ),
+          );
+          mounted.length = 0;
+          unmounted.length = 0;
+          const expected = range(
+            Math.floor(Math.max(0, top - overscanPx) / ROW_H),
+            Math.ceil((top + VIEWPORT_H + overscanPx) / ROW_H),
+          ).map((m) => m.id);
+
+          h.userScroll(top);
+
+          expect(
+            [...h.canvas().querySelectorAll<HTMLElement>("[data-id]")]
+              .map((element) => Number(element.dataset.id))
+              .sort((a, b) => a - b),
+          ).toEqual(expected);
+          expect(mounted).toEqual(expected.filter((id) => !before.has(id)));
+          expect(unmounted).toEqual(
+            [...before.keys()].filter((id) => !expected.includes(id)),
+          );
+          for (const id of expected) {
+            const retained = before.get(id);
+            if (retained) expect(h.list.elementOf(`m${id}`)).toBe(retained);
+          }
+        }
+      } finally {
+        h.list.dispose();
+      }
+      expect(new Set(h.destroyedElements).size).toBe(
+        h.destroyedElements.length,
+      );
+    },
+  );
+
+  it("should reconcile both stacked entrance spans and empty windows before resize delivery", () => {
+    let height = VIEWPORT_H;
+    const mounted: number[] = [];
+    const h = mount(range(0, 50), {
+      boot: "start",
+      overscanPx: 0,
+      itemHeight: () => ROW_H,
+      height: () => height,
+      onMount: (_element, m) => mounted.push(m.id),
+    });
+    h.userScroll(1000);
+    const retained = h.list.elementOf("m12");
+    mounted.length = 0;
+
+    // A scroll event can observe the resized box before ResizeObserver does.
+    height = 1000;
+    h.userScroll(800);
+
+    expect(mounted).toEqual([8, 9, 16, 17]);
+    expect(h.list.elementOf("m12")).toBe(retained);
+    expect(h.canvas().childElementCount).toBe(10);
+
+    mounted.length = 0;
+    height = 200;
+    h.userScroll(1200);
+    expect(mounted).toEqual([]);
+    expect(h.canvas().childElementCount).toBe(2);
+
+    height = 0;
+    h.userScroll(1200);
+    expect(h.canvas().childElementCount).toBe(0);
+
+    height = VIEWPORT_H;
+    h.userScroll(1200);
+    expect(mounted).toEqual([12, 13, 14, 15, 16, 17]);
+    expect(h.canvas().childElementCount).toBe(6);
+    h.list.dispose();
+  });
+
+  it("should mount replacement keys after a commit preserves stacked index bounds", () => {
+    const items = range(0, 50);
+    const h = mount(items, {
+      boot: "start",
+      overscanPx: 0,
+      itemHeight: () => ROW_H,
+    });
+    h.userScroll(1000);
+    h.settle();
+    const retained = h.list.elementOf("m10");
+    items[12] = message(112);
+
+    h.list.setItems(items, { anchor: "viewport" });
+
+    expect(h.list.state.start).toBe(10);
+    expect(h.list.state.end).toBe(16);
+    expect(h.list.elementOf("m12")).toBeNull();
+    expect(h.list.elementOf("m112")?.textContent).toBe("msg 112");
+    expect(h.list.elementOf("m10")).toBe(retained);
+    expect(h.canvas().childElementCount).toBe(6);
+    h.list.dispose();
+  });
+
+  it("should stop mounting stacked entrants when a mount callback disposes the list", () => {
+    let disposing = false;
+    const mounted: number[] = [];
+    const h = mount(range(0, 50), {
+      boot: "start",
+      overscanPx: 0,
+      itemHeight: () => ROW_H,
+      onMount: (_element, m) => {
+        mounted.push(m.id);
+        if (disposing) h.list.dispose();
+      },
+    });
+    mounted.length = 0;
+    disposing = true;
+
+    h.userScroll(100);
+
+    expect(mounted).toEqual([6]);
+    expect(h.viewport.childElementCount).toBe(0);
+    expect(h.destroyed.sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6]);
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
+  });
+
   it("should retry a failed stacked entry without a range change", () => {
     let fail = true;
     const failures: string[] = [];
@@ -352,6 +493,7 @@ describe("settle-time window updates", () => {
     });
     window.addEventListener("error", onError);
     try {
+      h.userScroll(1500);
       h.userScroll(2001);
       expect(h.list.elementOf("m30")).toBeNull();
       fail = false;
