@@ -5,6 +5,7 @@ export type FollowMode = "end" | "keep-start";
 type FollowHost = {
   maxScrollTop(): number;
   lastItemTop(): number | null;
+  lastItemKey(): string | null;
   hidden(): boolean;
   now(): number;
 };
@@ -20,18 +21,22 @@ function normalizeInset(inset: number): number {
 export class FollowController {
   private following = false;
   private resumeUntil = 0;
+  private endOverrideKey: string | null = null;
 
   get armed(): boolean {
     return this.following;
   }
 
+  /** An explicit end command overrides keep-start for this tail only. */
   start(): void {
+    this.endOverrideKey = this.host.lastItemKey();
     this.following = true;
   }
 
   stop(): boolean {
     const wasFollowing = this.following;
     this.following = false;
+    this.endOverrideKey = null;
     return wasFollowing;
   }
 
@@ -44,13 +49,24 @@ export class FollowController {
   }
 
   setMode(mode: FollowMode, inset = 0): void {
+    if (mode !== this.mode) this.endOverrideKey = null;
     this.mode = mode;
     this.inset = normalizeInset(inset);
   }
 
+  private get followsEnd(): boolean {
+    if (
+      this.endOverrideKey !== null &&
+      this.endOverrideKey !== this.host.lastItemKey()
+    ) {
+      this.endOverrideKey = null;
+    }
+    return this.mode === "end" || this.endOverrideKey !== null;
+  }
+
   /** Stop at the last item's start, but never move backwards to reach it. */
   target(current: number, end = this.host.maxScrollTop()): number {
-    if (this.mode === "end") return end;
+    if (this.followsEnd) return end;
     const top = this.host.lastItemTop();
     if (top === null) return end;
     return Math.min(end, Math.max(current, Math.max(0, top - this.inset)));
@@ -58,22 +74,20 @@ export class FollowController {
 
   atLimit(position: number): boolean {
     return (
-      this.mode === "keep-start" &&
-      Math.abs(this.target(0) - position) <= AT_EDGE_PX
+      !this.followsEnd && Math.abs(this.target(0) - position) <= AT_EDGE_PX
     );
   }
 
   needsMotion(current: number): boolean {
     const delta = this.target(current) - current;
-    return this.mode === "end"
-      ? Math.abs(delta) > AT_EDGE_PX
-      : delta > AT_EDGE_PX;
+    return this.followsEnd ? Math.abs(delta) > AT_EDGE_PX : delta > AT_EDGE_PX;
   }
 
   resolveCommit(policy: CapturePolicy, target: number): void {
     this.following =
       (policy === "auto" || policy === "end") &&
       (this.host.maxScrollTop() - target <= AT_EDGE_PX || this.atLimit(target));
+    if (!this.following) this.endOverrideKey = null;
   }
 
   /** Re-evaluate intent after held work and any parked command have settled. */
@@ -84,6 +98,9 @@ export class FollowController {
     gliding: boolean;
     position: number;
   }): boolean {
+    if (!state.takingOver && state.endCommand) {
+      this.endOverrideKey = this.host.lastItemKey();
+    }
     const following =
       !state.takingOver &&
       (state.atEnd ||
@@ -92,6 +109,7 @@ export class FollowController {
         this.atLimit(state.position));
     const changed = this.following !== following;
     this.following = following;
+    if (!following) this.endOverrideKey = null;
     return changed;
   }
 

@@ -3546,6 +3546,58 @@ describe("runtime — commits and slots", () => {
     h.list.dispose();
   });
 
+  it.each(["auto", "smooth"] as const)(
+    "should keep following resumed growth after a %s end command in keep-start mode",
+    async (behavior) => {
+      const h = mount(range(0, 50), {
+        followBehavior: "smooth",
+        scrollingUpdates: "live",
+        followMode: "keep-start",
+        followInset: 44,
+      });
+      try {
+        h.heights.set(49, 1300);
+        h.list.updateItem("m49", message(49, "reply reaches its start limit"));
+        advanceFramesUntil(() => h.viewport.scrollTop === 4856);
+        h.settle();
+        expect(h.viewport.scrollTop).toBe(4856);
+
+        const landed = h.list.scrollTo("end", { behavior });
+        advanceFramesUntil(() => h.viewport.scrollTop === 5600);
+        h.settle();
+        await expect(landed).resolves.toBe(true);
+        expect(h.list.state.following).toBe(true);
+
+        // Each pause lets the command/follow glide fully settle before
+        // more content arrives; a still-running command hides this bug.
+        for (const height of [1500, 1800]) {
+          h.heights.set(49, height);
+          h.list.updateItem("m49", message(49, `reply grows to ${height}`));
+          advanceFramesUntil(() => h.viewport.scrollTop === 4300 + height);
+          h.settle();
+          expect(h.viewport.scrollTop).toBe(4300 + height);
+          expect(h.list.state.following).toBe(true);
+        }
+
+        // A new tail gets the configured keep-start policy again.
+        h.list.setItems([
+          ...range(0, 49),
+          message(49, "finished reply"),
+          message(50),
+        ]);
+        advanceFramesUntil(() => h.viewport.scrollTop === 6200);
+        h.settle();
+        h.heights.set(50, 1300);
+        h.list.updateItem("m50", message(50, "the next reply grows"));
+        advanceFramesUntil(() => h.viewport.scrollTop === 6656);
+        h.settle();
+        expect(h.viewport.scrollTop).toBe(6656);
+      } finally {
+        h.list.dispose();
+      }
+    },
+  );
+
   it("setFollowMode widens a stopped follow and catches up at once", () => {
     const initial = range(0, 50);
     const h = mount(initial, {

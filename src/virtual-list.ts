@@ -254,7 +254,9 @@ export interface VirtualListOptions<T> {
    * reaches the viewport top — a reply is read from its start, and once it
    * is taller than the viewport the user scrolls at their own pace.
    * Explicit commands and explicit "end" anchors still reach the true end;
-   * boot lands at the end.
+   * boot lands at the end. With smooth follow, an end command also resumes
+   * following that row's growth until interrupted. A new last row uses
+   * the configured mode again.
    */
   followMode?: FollowMode;
   /** Pixels kept clear above the last row's top under "keep-start"; negative or non-finite values use zero. */
@@ -656,17 +658,19 @@ export function createVirtualList<T>(
   let followGlide = false;
   // The in-flight command glide's destination is an align:"start" pin.
   let glideToPin = false;
+  function lastFollowItemKey(): string | null {
+    let index = geometry.count - 1;
+    while (index >= 0 && isSlotKey(geometry.keyAt(index) as string)) index -= 1;
+    return geometry.keyAt(index) ?? null;
+  }
   const followController = new FollowController(
     {
       maxScrollTop: () => geometry.maxScrollTop(viewport.clientHeight),
       lastItemTop: () => {
-        let index = geometry.count - 1;
-        while (index >= 0 && isSlotKey(geometry.keyAt(index) as string))
-          index -= 1;
-        return index < 0
-          ? null
-          : geometry.offsetOf(geometry.keyAt(index) as string);
+        const key = lastFollowItemKey();
+        return key === null ? null : geometry.offsetOf(key);
       },
+      lastItemKey: lastFollowItemKey,
       hidden: () => document.visibilityState === "hidden",
       now: () => performance.now(),
     },
