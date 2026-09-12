@@ -91,7 +91,7 @@
   vector-effect: non-scaling-stroke;
 }
 .conversation-tree-scroll {
-  touch-action: none;
+  touch-action: pan-x pan-y;
   -webkit-user-select: none;
   user-select: none;
   cursor: default;

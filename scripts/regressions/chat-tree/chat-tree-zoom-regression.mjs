@@ -340,6 +340,11 @@ for (const engine of [firefox, webkit, chromium]) {
         ) > 1.1,
     );
     await reset.click();
+    assert.equal(
+      await scroller.evaluate((view) => getComputedStyle(view).touchAction),
+      "pan-x pan-y",
+      "touch panning is browser-owned",
+    );
     const pointer = (type, id, px) =>
       scroller.dispatchEvent(type, {
         pointerId: id,
@@ -350,16 +355,71 @@ for (const engine of [firefox, webkit, chromium]) {
         clientY: y,
         bubbles: true,
       });
-    await pointer("pointerdown", 41, x - 40);
-    await pointer("pointerdown", 42, x + 40);
-    await pointer("pointermove", 41, x - 60);
-    await pointer("pointermove", 42, x + 60);
+    const touch = (type, positions, cancelable = true) =>
+      scroller.evaluate(
+        (view, { type, positions, y, cancelable }) => {
+          const event = new Event(type, { bubbles: true, cancelable });
+          Object.defineProperty(event, "touches", {
+            value: positions.map((clientX, index) => ({
+              clientX,
+              clientY: y,
+              target: view.querySelectorAll("button")[index] ?? view,
+            })),
+          });
+          view.dispatchEvent(event);
+          return event.defaultPrevented;
+        },
+        { type, positions, y, cancelable },
+      );
+    const nativeTop = await scroller.evaluate((view) => view.scrollTop);
+    const nativeLeft = await scroller.evaluate((view) => view.scrollLeft);
+    assert.equal(await touch("touchstart", [x]), false);
+    await pointer("pointerdown", 41, x);
+    await pointer("pointermove", 41, x + 60);
+    assert.equal(await touch("touchmove", [x + 60]), false);
+    assert.equal(await scroller.evaluate((view) => view.scrollTop), nativeTop);
+    assert.equal(
+      await scroller.evaluate((view) => view.scrollLeft),
+      nativeLeft,
+    );
+    assert.equal(await scroller.getAttribute("data-dragging"), null);
+    await pointer("pointercancel", 41, x + 60);
+    assert.equal(await touch("touchend", []), false);
+    assert.equal(await touch("touchstart", [x - 40, x + 40]), true);
+    await scroller.evaluate((view) => {
+      for (const [type, scale] of [
+        ["gesturestart", 1],
+        ["gesturechange", 2],
+      ]) {
+        const event = new Event(type, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "scale", { value: scale });
+        view.dispatchEvent(event);
+      }
+    });
+    assert.equal(
+      await zoom(),
+      1,
+      "Safari gestures do not double-handle touch pinch",
+    );
+    assert.equal(await touch("touchmove", [x - 60, x + 60]), true);
     assert.ok(
       Math.abs((await zoom()) - 1.5) < 0.001,
-      "two-pointer pinch scales around its center",
+      "two-finger pinch scales around its center",
     );
-    await pointer("pointerup", 41, x - 60);
-    await pointer("pointerup", 42, x + 60);
+    assert.equal(await touch("touchend", [x - 60]), true);
+    assert.equal(await touch("touchmove", [x - 80]), true);
+    await touch("touchend", []);
+    assert.equal(await touch("touchstart", [x]), false);
+    assert.equal(await touch("touchmove", [x + 60]), false);
+    await touch("touchcancel", []);
+    assert.equal(await touch("touchstart", [x]), false);
+    assert.equal(await touch("touchmove", [x - 40, x + 40], false), false);
+    assert.equal(
+      await zoom(),
+      1.5,
+      "an uncancelable native pan is not taken over",
+    );
+    await touch("touchcancel", []);
     assert.equal(await scroller.getAttribute("data-dragging"), null);
     await reset.click();
     await scroller.evaluate((view) => {

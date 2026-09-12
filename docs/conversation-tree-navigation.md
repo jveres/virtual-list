@@ -77,9 +77,11 @@ open. Locate smoothly centers the current chat node as far as the scroll
 boundaries permit, without changing the zoom or the chat's scroll position.
 Reduced-motion preferences make Locate immediate.
 
-Drag anywhere in the tree, including labels and headings, to pan. Tree text
-is not selectable, and dragging does not navigate the chat. Two-finger touch pinch,
-control-wheel trackpad pinch, and Safari gesture events zoom around the
+Drag with a mouse anywhere in the tree, including labels and headings, to pan.
+On touch devices, one-finger swipes use native scrolling and release momentum.
+Tree text is not selectable, and dragging does not navigate the chat.
+Two-finger touch pinch, control-wheel trackpad pinch, and Safari gesture
+events zoom around the
 gesture's center. Ordinary wheel input still scrolls the tree. Dragging and
 pinching leave Fit mode; use Fit to restore the full overview.
 

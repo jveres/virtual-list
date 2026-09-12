@@ -325,6 +325,7 @@ export function createConversationTree(options: TreeOptions): {
   scroller.addEventListener(
     "pointerdown",
     (event) => {
+      if (event.pointerType === "touch") return;
       if (event.button !== 0 || pointers.size >= 2) return;
       if (pointers.size === 0) dragged = false;
       pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
@@ -378,6 +379,72 @@ export function createConversationTree(options: TreeOptions): {
   }
   document.addEventListener("pointerup", endPointer, { signal });
   document.addEventListener("pointercancel", endPointer, { signal });
+  // Leave one-finger panning to the browser, including momentum after release.
+  // Touch events keep pinch tracking alive when native pan cancels pointers.
+  let touchCount = 0;
+  let touchPinch: {
+    distance: number;
+    zoom: number;
+    anchorX: number;
+    anchorY: number;
+  } | null = null;
+  function handleTouch(event: TouchEvent): void {
+    const previousCount = touchCount;
+    // Fingers may start on different labels, so targetTouches is too narrow.
+    const touches = Array.from(event.touches).filter(
+      (touch) =>
+        touch.target instanceof Node && scroller.contains(touch.target),
+    );
+    touchCount = touches.length;
+    if (touchCount === 0) {
+      touchPinch = null;
+      return;
+    }
+    if (previousCount === 0) dragged = false;
+    if (event.type === "touchmove") {
+      fitting = false;
+      fitButton.setAttribute("aria-pressed", "false");
+    }
+    // Once claimed, suppress the remaining finger until the pinch ends.
+    if (touchPinch && event.cancelable) event.preventDefault();
+    const [first, second] = touches;
+    if (!first || !second || !event.cancelable) return;
+    event.preventDefault();
+    dragged = true;
+    const x = (first.clientX + second.clientX) / 2;
+    const y = (first.clientY + second.clientY) / 2;
+    const distance = Math.hypot(
+      second.clientX - first.clientX,
+      second.clientY - first.clientY,
+    );
+    if (!touchPinch || previousCount !== touchCount) {
+      const view = scroller.getBoundingClientRect();
+      touchPinch = {
+        distance,
+        zoom,
+        anchorX: (scroller.scrollLeft + x - view.left - 12 - canvasLeft) / zoom,
+        anchorY: (scroller.scrollTop + y - view.top - canvasTop) / zoom,
+      };
+      return;
+    }
+    if (touchPinch.distance > 0) {
+      zoomAt(
+        (touchPinch.zoom * distance) / touchPinch.distance,
+        x,
+        y,
+        touchPinch.anchorX,
+        touchPinch.anchorY,
+      );
+    }
+  }
+  for (const type of [
+    "touchstart",
+    "touchmove",
+    "touchend",
+    "touchcancel",
+  ] as const) {
+    scroller.addEventListener(type, handleTouch, { passive: false, signal });
+  }
   scroller.addEventListener(
     "click",
     (event) => {
@@ -422,6 +489,7 @@ export function createConversationTree(options: TreeOptions): {
     "gesturestart",
     (event) => {
       event.preventDefault();
+      if (touchCount > 0) return;
       const view = scroller.getBoundingClientRect();
       const x =
         "clientX" in event && typeof event.clientX === "number"
@@ -445,6 +513,7 @@ export function createConversationTree(options: TreeOptions): {
     "gesturechange",
     (event) => {
       if (
+        touchCount > 0 ||
         !trackpadPinch ||
         !("scale" in event) ||
         typeof event.scale !== "number" ||
@@ -1021,6 +1090,8 @@ export function createConversationTree(options: TreeOptions): {
       if (scroller.hasPointerCapture(id)) scroller.releasePointerCapture(id);
     }
     pointers.clear();
+    touchCount = 0;
+    touchPinch = null;
     trackpadPinch = null;
     gesture = null;
     dragged = false;
