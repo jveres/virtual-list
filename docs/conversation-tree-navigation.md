@@ -73,8 +73,12 @@ changes. Long conversations can make the overview's text very small.
 Zoom buttons leave Fit mode and preserve the viewing center. Click the
 percentage to return to 100%. Manual zoom supports up to 300%, and resizing
 preserves your chosen scale. Toolbar interaction keeps a hover-opened panel
-open. Locate smoothly centers the current chat node as far as the scroll
-boundaries permit, without changing the zoom or the chat's scroll position.
+open. Locate resolves the chat's current reading position, ignoring the last
+clicked tree item. Within a response, it selects the last H1 or H2 at or above
+the reading edge below the sticky header. Before the first section, or when
+that heading is the message title, it selects the message node instead.
+Locate smoothly centers that item as far as the scroll boundaries permit,
+without changing the zoom or the chat's scroll position.
 Reduced-motion preferences make Locate immediate.
 
 Drag with a mouse anywhere in the tree, including labels and headings, to pan.
@@ -330,7 +334,8 @@ The following checks cover the decision at both the runtime and host layers:
 - [`scripts/regressions/chat-tree/chat-tree-headings-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-headings-regression.mjs):
   checks H1/H2 hierarchy, duplicate-title removal, original heading ordinals,
   safe labels, clickable path dots, spacing, keyboard focus, unloaded history,
-  and branch changes in Firefox, WebKit, and Chromium.
+  branch changes, and Locate after scrolling between sections of the same
+  response in Firefox, WebKit, and Chromium.
 - [`scripts/regressions/chat-tree/chat-tree-placement-regression.mjs`](../scripts/regressions/chat-tree/chat-tree-placement-regression.mjs):
   checks one through five equal-width version bands, parent alignment,
   right-side labels, drawing and ring centers, normalized heading indentation,

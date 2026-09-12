@@ -694,6 +694,26 @@ function currentTreeMessage(): number | null {
   return null;
 }
 
+function currentTreeHeading(messageId: number): number | undefined {
+  const row = virtualList?.elementOf(String(messageId));
+  if (!row) return undefined;
+  const headings = Array.from(
+    row.querySelectorAll<HTMLElement>(".message-content .markdown :is(h1, h2)"),
+  ).filter((heading) => !heading.closest(".tool-calls, [hidden]"));
+  if (!headings.length) return undefined;
+  // Read only on tree interaction or scroll end, never in the scroll frame.
+  // The active section begins at the last heading above the reading edge.
+  const top =
+    viewport.getBoundingClientRect().top +
+    (stickyEnabled ? DAY_HEADER_HEIGHT : 0);
+  let current: number | undefined;
+  for (const [index, heading] of headings.entries()) {
+    if (heading.getBoundingClientRect().top > top + 1) break;
+    current = index;
+  }
+  return current;
+}
+
 // Selection semantics and runtime references: docs/conversation-tree-navigation.md.
 async function scrollToTreeTarget(
   list: VirtualList<ChatRow>,
@@ -3791,6 +3811,7 @@ conversationTree = createConversationTree({
     return index !== undefined && index >= loadedStart;
   },
   currentMessage: currentTreeMessage,
+  currentHeading: currentTreeHeading,
   headings: (id) => {
     const message = tree.get(id)?.message;
     if (message?.role !== "assistant") return [];

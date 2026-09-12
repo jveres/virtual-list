@@ -12,6 +12,7 @@ interface TreeOptions {
   tree: ReadonlyMap<number, ConversationNode>;
   isLoaded: (id: number) => boolean;
   currentMessage: () => number | null;
+  currentHeading?: (id: number) => number | undefined;
   headings: (id: number) => readonly ResponseHeading[];
   navigate: (id: number, headingIndex?: number) => Promise<boolean>;
 }
@@ -543,6 +544,8 @@ export function createConversationTree(options: TreeOptions): {
   locateButton.addEventListener(
     "click",
     () => {
+      // Locate reads the chat now, not the last explicit tree selection.
+      selection = null;
       updateCurrent();
       if (!current) return;
       const item = current.getBoundingClientRect();
@@ -636,13 +639,17 @@ export function createConversationTree(options: TreeOptions): {
     )
       selection = null;
     const id = selection?.id ?? readingId;
+    const headingIndex = selection
+      ? selection.headingIndex
+      : id === null
+        ? undefined
+        : options.currentHeading?.(id);
     current =
       id === null
         ? undefined
-        : selection?.headingIndex === undefined
+        : headingIndex === undefined
           ? buttons.get(id)
-          : (headingButtons.get(`${id}:${selection.headingIndex}`) ??
-            buttons.get(id));
+          : (headingButtons.get(`${id}:${headingIndex}`) ?? buttons.get(id));
     current?.setAttribute("aria-current", "location");
     locateButton.disabled = !current;
   }

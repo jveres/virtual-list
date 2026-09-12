@@ -192,6 +192,39 @@ for (const engine of [firefox, webkit, chromium]) {
         positions.nextTop <= positions.tocBottom + 12,
       "a straight path should leave only a compact gap after the ToC",
     );
+    // Scrolling within one reply must not leave Locate on the last clicked ToC.
+    for (const index of [0, 1, 2]) {
+      const target = headings(2).nth(index);
+      const ordinal = Number(await target.getAttribute("data-heading-index"));
+      const chatTop = await page.evaluate((ordinal) => {
+        const viewport = document.querySelector("#viewport");
+        const heading = document
+          .querySelector('[data-key="2"]')
+          .querySelectorAll(".message-content .markdown :is(h1, h2)")[ordinal];
+        viewport.scrollTop +=
+          heading.getBoundingClientRect().top -
+          viewport.getBoundingClientRect().top -
+          40 +
+          120;
+        return viewport.scrollTop;
+      }, ordinal);
+      await page
+        .getByRole("button", { name: "Locate current chat position" })
+        .click();
+      assert.equal(
+        await target.getAttribute("aria-current"),
+        "location",
+        `Locate resolves section ${ordinal} after scrolling within message 2`,
+      );
+      assert.equal(await panel.locator('[aria-current="location"]').count(), 1);
+      assert.ok(
+        Math.abs(
+          (await page.locator("#viewport").evaluate((view) => view.scrollTop)) -
+            chatTop,
+        ) < 1,
+        "Locate does not move the chat",
+      );
+    }
     await jump(201, 1, true);
     assert.equal(await node(201).getAttribute("data-active"), "true");
     await jump(2, 0);
