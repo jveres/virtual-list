@@ -118,16 +118,25 @@ const stored = ((): {
   concurrency?: unknown;
 } => {
   try {
-    return JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}");
+    const parsed: unknown = JSON.parse(
+      localStorage.getItem(OPTIONS_KEY) ?? "{}",
+    );
+    return parsed !== null &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed)
+      ? parsed
+      : {};
   } catch {
     return {};
   }
 })();
 let layout: Layout = stored.layout === "masonry" ? "masonry" : "rows";
 let size: Size = stored.size === "s" || stored.size === "l" ? stored.size : "m";
-let concurrency = CONCURRENCIES.includes(Number(stored.concurrency))
-  ? Number(stored.concurrency)
-  : 6;
+let concurrency =
+  typeof stored.concurrency === "number" &&
+  CONCURRENCIES.includes(stored.concurrency)
+    ? stored.concurrency
+    : 6;
 function saveOptions(): void {
   try {
     localStorage.setItem(

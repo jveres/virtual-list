@@ -136,10 +136,13 @@ re-grabs invalidate the pending release on every engine.
 
 The definition of correct, referenced by number throughout the code:
 
-- **I0** — committed geometry is integral on the device-pixel grid: heights
-  round up to whole device pixels (a CSS pixel at 1x, half at 2x, two
-  thirds at 1.5x) and scroll writes land on it, so no offset ever sits on
-  a half device pixel for the engine to snap on its own.
+- **I0** — committed heights round up to a stable pixel grid. Stacked rows
+  use whole CSS pixels at integer display scales (1x, 2x, 3x), since engines
+  can quantize scroll writes to CSS pixels even on Retina displays. These
+  heights also lie on the device grid. Fractional scales and host-positioned
+  layouts retain device-pixel rounding (two thirds of a CSS pixel at 1.5x).
+  A half-CSS-pixel prepend at 2x must not depend on the browser accepting
+  a half-CSS-pixel scroll correction.
 - **I1** — the resolved scroll target keeps the visible anchor's viewport
   coordinate stationary. An anchor row that shrinks under the viewport's
   offset into it keeps the slice the user saw — its bottom — at the same

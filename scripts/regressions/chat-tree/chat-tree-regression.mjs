@@ -497,8 +497,9 @@ for (const engine of [firefox, webkit, chromium]) {
           document.querySelector("#viewport").getBoundingClientRect().top,
       );
     assert.equal(await node(1).getAttribute("data-loaded"), "true");
-    // Loaded data need not have a mounted DOM row while it is offscreen.
-    assert.equal(await node(119).getAttribute("data-loaded"), "true");
+    // Explicit navigation loads a bounded interval, not the entire tail.
+    assert.equal(await node(30).getAttribute("data-loaded"), "true");
+    assert.equal(await node(119).getAttribute("data-loaded"), "false");
     assert.equal(await page.locator('#viewport [data-key="119"]').count(), 0);
     assert.ok(
       Math.abs(firstPosition - 40) <= 2,

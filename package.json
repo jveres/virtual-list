@@ -10,6 +10,7 @@
     "format": "biome format --write .",
     "check": "biome check . && tsc --noEmit",
     "test": "vitest run",
+    "test:consumer": "node scripts/check-consumer.mjs",
     "test:browser": "node scripts/browser-matrix.mjs",
     "test:regression": "node scripts/regression-suite.mjs",
     "test:regression-runner": "node --test scripts/regression-suite.checks.mjs",

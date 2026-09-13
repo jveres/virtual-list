@@ -35,11 +35,15 @@ for (const engine of [firefox, webkit]) {
       viewport: { width: 1000, height: 720 },
     });
     const errors = [];
+    let phase = "boot";
     let failNext = false;
     let holdHead = false;
     let releaseHead;
     let headOffset = 0;
-    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("pageerror", (error) => {
+      errors.push(error.message);
+      console.error(`${engine.name()}/${phase}: ${error.message}`);
+    });
     const text =
       "A long public post, with enough text to exercise measured heights and expansion. ".repeat(
         24,
@@ -105,6 +109,7 @@ for (const engine of [firefox, webkit]) {
     await page.waitForFunction(
       () => document.querySelector("#viewport").dataset.retained === "10",
     );
+    phase = "expand";
     await page.getByRole("button", { name: "Show more" }).first().click();
     await page.waitForFunction(() =>
       document.querySelector('.text-toggle[aria-expanded="true"]'),
@@ -126,6 +131,7 @@ for (const engine of [firefox, webkit]) {
     }
     // Use only the runtime's existing reach callbacks; there are no host wheel,
     // touch, or pull-to-refresh handlers and no loader buttons.
+    phase = "head refresh";
     await middle();
     headOffset = -2;
     holdHead = true;
@@ -173,6 +179,7 @@ for (const engine of [firefox, webkit]) {
         viewport.dispatchEvent(new Event("scroll"));
       });
     }
+    phase = "paging";
     for (let step = 0; step < 5; step++) {
       const count =
         Number(await page.locator("#viewport").getAttribute("data-pages")) + 1;
@@ -212,6 +219,7 @@ for (const engine of [firefox, webkit]) {
       .evaluateAll((rows) => rows.map((row) => row.dataset.postKey));
     assert.equal(new Set(keys).size, keys.length);
 
+    phase = "load failure and retry";
     failNext = true;
     await middle();
     await atEnd();
@@ -230,6 +238,7 @@ for (const engine of [firefox, webkit]) {
     );
 
     // A late, aborted old-source response may never resurrect the old session.
+    phase = "source reset";
     holdHead = true;
     await page.getByRole("button", { name: "Refresh feed" }).click();
     const deadline = Date.now() + 10_000;
@@ -261,6 +270,7 @@ for (const engine of [firefox, webkit]) {
     const height = await page
       .locator("header")
       .evaluate((header) => header.getBoundingClientRect().height);
+    phase = "viewport resize";
     await page.setViewportSize({ width: 375, height: 720 });
     assert.equal(
       await page
@@ -275,6 +285,7 @@ for (const engine of [firefox, webkit]) {
       }),
     );
     for (const width of [375, 1000]) {
+      phase = `renderer fixtures at ${width}px`;
       await page.setViewportSize({ width, height: 720 });
       const expansions = await page.evaluate(async () => {
         const { renderPost } = await import("/demos/feed/render.ts");
@@ -292,8 +303,16 @@ for (const engine of [firefox, webkit]) {
           };
           const heights = [false, true].map((expanded) => {
             const row = renderPost({ ...post, expanded }, () => {});
-            row.style.width = "100%";
+            const viewport = document.querySelector("#viewport");
+            const viewportHeight = viewport.clientHeight;
+            // Renderer probes must not become flex siblings that shrink the
+            // running feed and trigger unrelated observer/scroll work.
+            row.style.cssText = "position:fixed;top:0;left:0;width:100%";
             document.body.append(row);
+            if (viewport.clientHeight !== viewportHeight)
+              throw new Error(
+                "Renderer fixture resized the live feed viewport",
+              );
             const height = row.getBoundingClientRect().height;
             const body = row.querySelector(".post-body");
             const clipped = body.scrollHeight > body.clientHeight;
@@ -321,6 +340,7 @@ for (const engine of [firefox, webkit]) {
         }
         assert.equal(expanded.faded, false);
       }
+      phase = `image grids at ${width}px`;
       const grids = await page.evaluate(async () => {
         const { renderPost, mountPost, unmountPost } = await import(
           "/demos/feed/render.ts"
@@ -357,12 +377,18 @@ for (const engine of [firefox, webkit]) {
               }),
           );
           const row = renderPost(response.items[0], () => {});
+          const viewport = document.querySelector("#viewport");
+          const viewportHeight = viewport.clientHeight;
+          row.style.cssText = "position:fixed;top:0;left:0;width:100%";
           document.body.append(row);
-          row.style.width = "100%";
+          if (viewport.clientHeight !== viewportHeight)
+            throw new Error("Renderer fixture resized the live feed viewport");
           const before = row.getBoundingClientRect().height;
           mountPost(row);
           const images = [...row.querySelectorAll("img")];
           await Promise.all(images.map((image) => image.decode()));
+          if (viewport.clientHeight !== viewportHeight)
+            throw new Error("Image fixture resized the live feed viewport");
           const tiles = [...row.querySelectorAll(".post-image")].map((tile) => {
             const rect = tile.getBoundingClientRect();
             const image = tile.querySelector("img");

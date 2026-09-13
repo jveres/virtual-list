@@ -68,7 +68,8 @@ for (const engine of [firefox, webkit, chromium]) {
             .filter(
               (element) =>
                 element.textContent === "Today" &&
-                getComputedStyle(element).visibility === "visible",
+                getComputedStyle(element).visibility === "visible" &&
+                getComputedStyle(element).color !== "rgba(0, 0, 0, 0)",
             )
             .map((element) => {
               const bounds = element.getBoundingClientRect();

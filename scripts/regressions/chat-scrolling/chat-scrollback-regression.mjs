@@ -115,6 +115,7 @@ for (const engine of [firefox, webkit, chromium]) {
       const handoff = await page.evaluate(async () => {
         const viewport = document.querySelector("#viewport");
         const inline = viewport.querySelector(".section-header");
+        const inlineVisual = inline.querySelector(".section-header-pill");
         const overlay = document.querySelector(".vl-sticky-header");
         const boundary =
           inline.getBoundingClientRect().top -
@@ -142,7 +143,10 @@ for (const engine of [firefox, webkit, chromium]) {
               samples.push({
                 top: viewport.scrollTop,
                 pinned: overlay.style.display !== "none",
-                inlineHidden: inline.style.visibility === "hidden",
+                inlineHidden: inlineVisual.classList.contains(
+                  "vl-sticky-inline-hidden",
+                ),
+                rowVisible: getComputedStyle(inline).visibility === "visible",
               });
             }
           });
@@ -183,6 +187,11 @@ for (const engine of [firefox, webkit, chromium]) {
           sample.inlineHidden,
           pinned,
           `same-frame inline header: ${JSON.stringify(sample)}`,
+        );
+        assert.equal(
+          sample.rowVisible,
+          true,
+          "the measured header row stays visible",
         );
       }
       assert.equal(await initialStart(), 1, "return glide did not page");

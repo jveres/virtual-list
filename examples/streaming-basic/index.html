@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Virtual list: minimal streaming consumer</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 16px/1.5 system-ui; }
+      main { height: 100dvh; display: flex; flex-direction: column; max-width: 800px; margin: auto; }
+      header, form { display: flex; gap: 8px; padding: 12px; flex-wrap: wrap; }
+      h1 { font-size: 18px; margin: 0; }
+      #viewport { flex: 1; min-height: 0; overflow: auto; }
+      .message { padding: 16px; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .message[data-role="user"] { background: #eaf1ff; }
+      .message[data-streaming="true"]::after { content: " ▍"; }
+      input { flex: 1; min-width: 100px; }
+      button, input, select { font: inherit; }
+      #status { margin-left: auto; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Streaming consumer</h1>
+        <label>Follow <select id="follow"><option value="end">End</option><option value="keep-start">Reply start</option></select></label>
+        <button id="bottom" type="button">Latest</button>
+        <button id="reset" type="button">New conversation</button>
+        <output id="status">Ready</output>
+      </header>
+      <!-- biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard scrolling requires a focusable region -->
+      <div id="viewport" role="region" aria-label="Messages" tabindex="0"></div>
+      <form>
+        <input aria-label="Message" name="message" value="Explain streaming" required />
+        <button id="send" type="submit">Send</button>
+        <button id="stop" type="button" disabled>Stop</button>
+      </form>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

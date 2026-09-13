@@ -1,3 +1,7 @@
+import {
+  createStickyHeaders,
+  type StickyHeaders,
+} from "../../src/companions/index";
 import { createPagedWindow, type PagedWindow } from "../../src/paging";
 import {
   createVirtualList,
@@ -11,10 +15,6 @@ import {
   initMarkdown,
   renderMarkdown,
 } from "../shared/markdown";
-import {
-  createStickyHeaders,
-  type StickyHeaders,
-} from "../shared/sticky-headers";
 import { applyDocumentTheme, watchSystemTheme } from "../shared/theme";
 import {
   bindThemeButtons,

@@ -3,8 +3,34 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStickyHeaders } from "../../demos/shared/sticky-headers";
+import { createStickyHeaders as createCompanion } from "../../src/companions/index";
 
 describe("sticky headers", () => {
+  it("should use runtime publications without a native scroll listener by default", () => {
+    const viewport = document.createElement("div");
+    const container = document.createElement("div");
+    document.body.append(container);
+    const sticky = createCompanion({
+      container,
+      viewport,
+      headerKeys: () => ["a", "b"],
+      positionOf: (key) => ({ top: key === "a" ? 0 : 100, height: 40 }),
+      renderHeader: (slot, index) => {
+        slot.textContent = String(index);
+      },
+    });
+    Object.defineProperty(viewport, "scrollTop", {
+      get() {
+        throw new Error("Unexpected native sample");
+      },
+    });
+    viewport.dispatchEvent(new Event("scroll"));
+    vi.advanceTimersByTime(20);
+    sticky.refresh(110);
+    expect(container.querySelector(".sticky-group")?.textContent).toBe("1");
+    sticky.destroy();
+    expect(container.children.length).toBe(0);
+  });
   function setup(beforeSticky?: (viewport: HTMLElement) => void) {
     const container = document.createElement("div");
     const viewport = document.createElement("div");

@@ -16,6 +16,7 @@ import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { createGzip } from "node:zlib";
 import { analyzeDirectory } from "./firefox-profile/analyze.mjs";
+import { serializedExpression } from "./firefox-profile/expression.mjs";
 
 const { values: options } = parseArgs({
   args: process.argv.slice(process.argv[2] === "--" ? 3 : 2),
@@ -316,7 +317,7 @@ try {
   const context = contexts[0].context;
   evaluate = async (expression) => {
     const result = await command("script.evaluate", {
-      expression: `JSON.stringify(${expression})`,
+      expression: serializedExpression(expression),
       target: { context },
       awaitPromise: true,
     });

@@ -733,6 +733,128 @@ describe("settle-time window updates", () => {
     h.list.dispose();
   });
 
+  it.each([undefined, true, false])(
+    "should apply offscreen pin protection policy %s and restore a declarative pin without following",
+    async (protectPin) => {
+      const initial = range(0, 40);
+      const h = mount(initial, {
+        boot: "start",
+        overscanPx: 0,
+        itemHeight: () => ROW_H,
+        pinning: { match: (m) => m.id === 39 },
+      });
+      h.userScroll(500);
+      h.settle();
+      let protectedIds: number[] = [];
+      await expect(
+        h.list.updateWindow(
+          ({ items, protectedItems }) => {
+            protectedIds = protectedItems.map((m) => m.id);
+            return {
+              items: items.filter(
+                (m) => m.id !== 39 || protectedIds.includes(39),
+              ),
+            };
+          },
+          undefined,
+          { protectPin },
+        ),
+      ).resolves.toBe(true);
+
+      expect(protectedIds.includes(39)).toBe(protectPin !== false);
+      expect(h.list.state.count).toBe(protectPin === false ? 39 : 40);
+      expect(h.viewport.scrollTop).toBe(500);
+      expect(h.list.state.following).toBe(false);
+      expect(h.list.state.totalSize).toBe(protectPin === false ? 3900 : 4500);
+
+      await expect(
+        h.list.updateWindow(() => ({ items: initial }), undefined, {
+          protectPin: false,
+        }),
+      ).resolves.toBe(true);
+      expect(h.list.state.totalSize).toBe(4500);
+      expect(h.viewport.scrollTop).toBe(500);
+      expect(h.list.state.following).toBe(false);
+      h.list.dispose();
+    },
+  );
+
+  it.each([
+    { pin: 0, overscan: 0, remove: 0 },
+    { pin: 6, overscan: 200, remove: 6 },
+    { pin: 39, overscan: 0, remove: 2 },
+  ])(
+    "should reject trimming protected row $remove with pin $pin",
+    async ({ pin, overscan, remove }) => {
+      const h = mount(range(0, 40), {
+        boot: "start",
+        overscanPx: overscan,
+        itemHeight: () => ROW_H,
+        pinning: { match: (m) => m.id === pin },
+      });
+      const committed = vi.fn();
+      await expect(
+        h.list.updateWindow(
+          ({ items }) => ({
+            items: items.filter((m) => m.id !== remove),
+            onCommit: committed,
+          }),
+          undefined,
+          { protectPin: false },
+        ),
+      ).resolves.toBe(false);
+      expect(h.list.state.count).toBe(40);
+      expect(h.list.positionOf(`m${remove}`)?.height).toBe(ROW_H);
+      expect(committed).not.toHaveBeenCalled();
+      h.list.dispose();
+    },
+  );
+
+  it("should reject an evicted explicit target without touching the committed window", async () => {
+    const h = mount(range(0, 40), { boot: "start", overscanPx: 0 });
+    await expect(
+      h.list.updateWindow(
+        ({ items }) => ({
+          items: items.slice(0, 20),
+          anchor: { key: "m39", offset: 0 },
+        }),
+        undefined,
+        { protectPin: false },
+      ),
+    ).resolves.toBe(false);
+    expect(h.list.state.count).toBe(40);
+    expect(h.viewport.scrollTop).toBe(0);
+    h.list.dispose();
+  });
+
+  it("should cancel pin eviction when a gesture exposes it during preparation", async () => {
+    const h = mount(range(0, 80), {
+      boot: "start",
+      overscanPx: 0,
+      pinning: { match: (m) => m.id === 79 },
+    });
+    const committed = vi.fn();
+    const applied = h.list.updateWindow(
+      ({ items }) => ({
+        items: [...range(-24, 0), ...items.slice(0, 20)],
+        onCommit: committed,
+      }),
+      undefined,
+      { protectPin: false },
+    );
+    vi.advanceTimersByTime(16);
+    h.userScroll(7900);
+    h.settle();
+    await vi.advanceTimersByTimeAsync(500);
+
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(80);
+    expect(h.list.elementOf("m79")?.textContent).toBe("msg 79");
+    expect(h.viewport.scrollTop).toBe(7900);
+    expect(committed).not.toHaveBeenCalled();
+    h.list.dispose();
+  });
+
   it("should settle cancelled jobs on disposal", async () => {
     const h = mount(range(0, 40));
     h.userScroll(1000);
@@ -1523,6 +1645,121 @@ describe("positioned declared items", () => {
 });
 
 describe("bounded paging on the runtime", () => {
+  it.each([
+    { trim: undefined, expected: 80 },
+    { trim: false as const, expected: 80 },
+    { trim: {}, expected: 80 },
+    { trim: { offscreenPin: "retain" as const }, expected: 80 },
+    { trim: { offscreenPin: "evict" as const }, expected: 20 },
+  ])(
+    "should honor optional trimming policy $trim while traversing pinned history",
+    async ({ trim, expected }) => {
+      const initial = page(60);
+      const h = mount([...initial.items], {
+        boot: "start",
+        overscanPx: 0,
+        itemHeight: () => ROW_H,
+        pinning: { match: (m) => m.id === 79 },
+      });
+      const evicted: number[] = [];
+      const paging = createPagedWindow({
+        list: h.list,
+        initial,
+        maxItems: 20,
+        trim,
+        key: (m) => `m${m.id}`,
+        keysOf: (m) => [`m${m.id}`],
+        project: (items) => items,
+        load: async ({ cursor }) => page(cursor),
+        onEvict: (items) => evicted.push(...items.map((m) => m.id)),
+      });
+      for (let step = 0; step < 3; step++) {
+        await expect(paging.load("start")).resolves.toBe(true);
+        await h.list.scrollTo("start");
+        await paging.reconcile();
+      }
+      expect(paging.items).toHaveLength(expected);
+      expect(h.list.state.count).toBe(expected);
+      expect(paging.items[0]?.id).toBe(0);
+      expect(evicted.length).toBe(80 - expected);
+      if (trim === false) expect(paging.reconcile()).toBeNull();
+      paging.dispose();
+      h.list.dispose();
+    },
+  );
+
+  it("should disable trimming in both directions without suppressing paging or live updates", async () => {
+    const initial = page(20);
+    const h = mount([...initial.items], {
+      boot: "start",
+      itemHeight: () => ROW_H,
+    });
+    const evict = vi.fn();
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 1,
+      trim: false,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      live: { project: (m) => m, key: (m) => `m${m.id}` },
+      load: async ({ cursor }) => page(cursor),
+      onEvict: evict,
+    });
+    await paging.load("start");
+    await h.list.scrollTo("end");
+    await paging.load("end");
+    await paging.updateItemLive("m25", (m) => ({ ...m, body: "latest token" }));
+    expect(paging.items).toHaveLength(60);
+    expect(paging.items.find((m) => m.id === 25)?.body).toBe("latest token");
+    expect(paging.reconcile()).toBeNull();
+    expect(evict).not.toHaveBeenCalled();
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should evict an offscreen leading pin and restore source-owned text on reverse paging", async () => {
+    let first = message(0);
+    const sourcePage = (start: number): Page<Msg, number> => ({
+      ...page(start),
+      items: page(start).items.map((m) => (m.id === 0 ? first : m)),
+    });
+    const initial = sourcePage(0);
+    const h = mount([...initial.items], {
+      boot: "start",
+      overscanPx: 0,
+      itemHeight: () => ROW_H,
+      pinning: { match: (m) => m.id === 0 },
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 20,
+      trim: { offscreenPin: "evict" },
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      live: { project: (m) => m, key: (m) => `m${m.id}` },
+      load: async ({ cursor }) => sourcePage(cursor),
+    });
+    await paging.load("end");
+    await h.list.scrollTo("end");
+    await paging.reconcile();
+    expect(paging.items).toEqual(range(20, 40));
+    expect(h.list.positionOf("m0")).toBeNull();
+    first = message(0, "text received after eviction");
+    await expect(paging.updateItemLive("m0", () => first)).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    await paging.load("start");
+    await h.list.scrollTo("start");
+    await paging.reconcile();
+    expect(paging.items).toEqual([first, ...range(1, 20)]);
+    expect(h.list.elementOf("m0")?.textContent).toBe(first.body);
+    paging.dispose();
+    h.list.dispose();
+  });
+
   it.each(["start", "end"] as const)(
     "should keep repeated overlapping %s loads bounded and contiguous",
     async (edge) => {
@@ -1861,6 +2098,120 @@ describe("bounded paging on the runtime", () => {
     expect(paging.items).toEqual(range(20, 60));
     expect(h.list.positionOf("m0")).toBeNull();
     expect(complete).toHaveBeenCalledTimes(1);
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it("should render pager-owned tokens during a gesture and retain them after paging", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], {
+      boot: "start",
+      scrollingUpdates: "live",
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      live: { project: (item) => item, key: (m) => `m${m.id}` },
+      load: async ({ cursor }) => page(cursor),
+    });
+    h.userScroll(100);
+    const load = paging.load("end");
+    await expect(
+      paging.updateItemLive("m1", (m) => ({ ...m, body: "live token" })),
+    ).resolves.toBe(true);
+    expect(h.rowElement("live token").textContent).toBe("live token");
+    expect(paging.items.find((m) => m.id === 1)?.body).toBe("live token");
+    h.settle();
+    for (let frame = 0; frame < 30; frame++)
+      await vi.advanceTimersByTimeAsync(16);
+    await expect(load).resolves.toBe(true);
+    expect(paging.items.find((m) => m.id === 1)?.body).toBe("live token");
+    expect(h.rowElement("live token").textContent).toBe("live token");
+    paging.dispose();
+    h.list.dispose();
+  });
+
+  it.each(["updateItem", "updateItemLive"] as const)(
+    "should retry detached page preparation after %s without fetching again",
+    async (method) => {
+      const initial = page(0);
+      const fetched: number[] = [];
+      const h = mount([...initial.items], {
+        boot: "start",
+        scrollingUpdates: "live",
+      });
+      const paging = createPagedWindow({
+        list: h.list,
+        initial,
+        maxItems: 60,
+        key: (m) => `m${m.id}`,
+        keysOf: (m) => [`m${m.id}`],
+        project: (items) => items,
+        live: { project: (item) => item, key: (m) => `m${m.id}` },
+        load: async ({ cursor }) => {
+          fetched.push(cursor);
+          return page(cursor);
+        },
+      });
+      try {
+        const load = paging.load("end");
+        await vi.advanceTimersByTimeAsync(16);
+        await expect(
+          paging[method]("m1", (m) => ({
+            ...m,
+            body: "newer than the staged page",
+          })),
+        ).resolves.toBe(true);
+        for (let frame = 0; frame < 30; frame++)
+          await vi.advanceTimersByTimeAsync(16);
+        await expect(load).resolves.toBe(true);
+        expect(fetched).toEqual([20]);
+        expect(paging.items).toHaveLength(40);
+        expect(paging.items.find((m) => m.id === 1)?.body).toBe(
+          "newer than the staged page",
+        );
+        expect(h.rowElement("newer than the staged page").textContent).toBe(
+          "newer than the staged page",
+        );
+      } finally {
+        paging.dispose();
+        h.list.dispose();
+      }
+    },
+  );
+
+  it("should reject live key changes and cancel a failed live publisher", async () => {
+    const initial = page(0);
+    const h = mount([...initial.items], { boot: "start", throwOn: "broken" });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      live: { project: (item) => item, key: (m) => `m${m.id}` },
+      load: async ({ cursor }) => page(cursor),
+    });
+    await expect(
+      paging.updateItemLive("m1", (m) => ({ ...m, id: 2 })),
+    ).rejects.toThrow("keep its key");
+    await expect(paging.updateItemLive("missing", (m) => m)).resolves.toBe(
+      false,
+    );
+    expect(paging.items).toEqual(initial.items);
+    await expect(
+      paging.updateItemLive("m1", (m) => ({ ...m, body: "broken" })),
+    ).rejects.toThrow("render failed: broken");
+    expect(paging.canLoad("end")).toBe(false);
+    expect(paging.items.find((m) => m.id === 1)?.body).toBe("broken");
+    await expect(
+      paging.updateItemLive("m1", (m) => ({ ...m, body: "ignored" })),
+    ).resolves.toBe(false);
     paging.dispose();
     h.list.dispose();
   });
@@ -3622,6 +3973,72 @@ describe("runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(5600);
     h.list.dispose();
   });
+
+  it.each([1, 2, 3])(
+    "should preserve the reading anchor with whole-CSS-pixel scroll writes at %sx",
+    (ratio) => {
+      const original = window.devicePixelRatio;
+      Object.defineProperty(window, "devicePixelRatio", {
+        value: ratio,
+        configurable: true,
+      });
+      try {
+        const h = mount(range(0, 50));
+        h.userScroll(2050);
+        h.settle();
+        const before = (h.list.positionOf("m20")?.top ?? 0) - 2050;
+        h.heights.set(-1, 100.25);
+
+        h.list.setItems([message(-1), ...range(0, 50)], {
+          anchor: "viewport",
+        });
+
+        const top = h.viewport.scrollTop;
+        // Some engines accept only whole CSS pixels, even when DPR is 2/3.
+        // Both floor and nearest rounding must preserve the same coordinate.
+        expect((h.list.positionOf("m20")?.top ?? 0) - Math.floor(top)).toBe(
+          before,
+        );
+        expect((h.list.positionOf("m20")?.top ?? 0) - Math.round(top)).toBe(
+          before,
+        );
+        expect(h.list.positionOf("m-1")?.height).toBeGreaterThanOrEqual(100.25);
+        h.list.dispose();
+      } finally {
+        Object.defineProperty(window, "devicePixelRatio", {
+          value: original,
+          configurable: true,
+        });
+      }
+    },
+  );
+
+  it.each([2, 3])(
+    "should preserve the host-positioned height grid at %sx",
+    (ratio) => {
+      const original = window.devicePixelRatio;
+      Object.defineProperty(window, "devicePixelRatio", {
+        value: ratio,
+        configurable: true,
+      });
+      try {
+        const height = Math.ceil(100.1 * ratio) / ratio;
+        const h = mount(range(0, 50), {
+          itemHeight: () => 100.1,
+          position: (item) => ({ top: item.id * height, lane: 0 }),
+          scrollingUpdates: "freeze",
+        });
+        expect(h.list.positionOf("m20")?.height).toBeCloseTo(height, 8);
+        expect(h.list.positionOf("m21")?.top).toBeCloseTo(21 * height, 8);
+        h.list.dispose();
+      } finally {
+        Object.defineProperty(window, "devicePixelRatio", {
+          value: original,
+          configurable: true,
+        });
+      }
+    },
+  );
 
   it("heights quantize to the device grid at a fractional ratio, so offsets never sit on half device pixels", () => {
     const original = window.devicePixelRatio;

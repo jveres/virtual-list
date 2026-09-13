@@ -1,0 +1,4 @@
+/* Apply this class to the inline header visual, not its measured row. */
+.vl-sticky-inline-hidden {
+  visibility: hidden;
+}

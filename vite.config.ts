@@ -70,6 +70,18 @@ export default defineConfig({
   build: {
     rollupOptions: {
       input: {
+        "streaming-markdown": new URL(
+          "examples/streaming-markdown/index.html",
+          import.meta.url,
+        ).pathname,
+        "streaming-paged": new URL(
+          "examples/streaming-paged/index.html",
+          import.meta.url,
+        ).pathname,
+        "streaming-basic": new URL(
+          "examples/streaming-basic/index.html",
+          import.meta.url,
+        ).pathname,
         main: new URL("index.html", import.meta.url).pathname,
         "scroll-settle": new URL(
           "demos/scroll-settle/index.html",

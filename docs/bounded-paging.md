@@ -1,6 +1,6 @@
 # Bounded paging
 
-Use `createPagedWindow` from `src/paging.ts` to retain a moving window of
+Use `createPagedWindow` from `src/companions/index.ts` to retain a moving window of
 source pages. The gallery is the first integration: it keeps a soft budget
 of 480 photos and restores discarded pages when you scroll back.
 
@@ -10,6 +10,10 @@ of 480 photos and restores discarded pages when you scroll back.
 scrolling settles, or immediately while idle. Its context contains the latest
 submitted `items` and the committed `protectedItems`: visible items, overscan,
 and pinned or explicitly requested anchors. Edge slots are excluded.
+
+The third argument supports `protectPin: false` for optional offscreen-pin
+eviction. Visible/overscan rows and explicit targets remain protected, and
+an unsafe proposal resolves `false`. The default retains pin protection.
 
 Return `{ items, anchor?, edgeSlots?, onCommit? }` to commit one snapshot.
 Additions, removals, and optional edge-slot changes share the same geometry
@@ -51,6 +55,12 @@ The companion owns the contiguous retained source pages, deduplicates incoming
 keys, and trims whole pages from the edge opposite a load. It won't evict a
 page containing a protected source key, and it keeps at least one page. The
 budget is therefore soft, not a hard cap that can remove visible content.
+
+Set `trim: false` to disable budget eviction, or set
+`trim: { offscreenPin: "evict" }` to permit eviction of an offscreen pin.
+Omitting `trim`, passing `{}`, or choosing `offscreenPin: "retain"` preserves
+the default. See [optional trimming](streaming-consumer.md#optional-trimming)
+for pin restoration, source ownership, and soft-budget limits.
 
 Configure these adapters for your content:
 
@@ -99,6 +109,13 @@ boundary. Queued edits and loads preserve each other's changes. Missing keys
 and unchanged object references resolve `false`; key changes reject. Edits
 don't evict pages. Don't edit projected rows through `list.updateItem` or
 replace them through `list.setItems`: those APIs don't update page ownership.
+
+For one-source-item/one-row streaming updates, configure the optional `live`
+adapter and use `paging.updateItemLive`. This submits through the runtime's
+live row path rather than waiting for scroll settle. Its promise describes
+submission, not geometry commit; structural projection changes still use
+`updateItem`. See [live paging](streaming-consumer.md#live-paging) for source
+ownership, preparation retries, failure recovery, and eviction semantics.
 
 ## Cursor and refresh semantics
 

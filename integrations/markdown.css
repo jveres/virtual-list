@@ -1,0 +1,60 @@
+/* The padding swap: every assistant body ends in a constant breathing room —
+   except while a line-owning streaming cursor (a direct child of .markdown,
+   exactly 1em tall by markdown-viewer's bare-cursor rule) occupies that space
+   instead, as the --cursor-gap above the cursor (markdown-viewer zeroes the
+   preceding block's own margin, so without it the cursor hugs the block) plus
+   the cursor's 1em line. Both states total gap + 1em and trade places
+   atomically in one style recalc, so stream end never shifts the content
+   below: the space is permanent, only its occupant changes. Rows with an
+   action footer use that footer as their reservation instead (see below). */
+.message.assistant .markdown {
+  /* --cursor-line mirrors markdown-viewer's bare-cursor contract (a block
+     cursor line of exactly 1em); --cursor-gap adds optional air above the
+     cursor at the cost of the same amount of constant padding. Zero keeps
+     the reservation at the minimum that still makes stream end motionless:
+     exactly the cursor's own line. */
+  --cursor-line: 1em;
+  --cursor-gap: 0em;
+  padding-bottom: calc(var(--cursor-line) + var(--cursor-gap));
+}
+
+.message.assistant .markdown:has(> .cursor) {
+  padding-bottom: 0;
+}
+
+/* Only the final text segment reserves the streaming cursor's line. */
+.message.assistant .message-text-intermediate .markdown {
+  padding-bottom: 0;
+}
+
+/* Thinking panels never host the response's streaming cursor. */
+.message.assistant .tool-call-body .markdown {
+  padding-bottom: 0;
+}
+
+.message.assistant .markdown > .cursor {
+  margin-top: var(--cursor-gap);
+}
+
+/* The footer is row padding, outside the markdown hit-test area. A bare
+   cursor paints into it without adding a line to the measured body. At
+   stream end the toolbar occupies that same footer; its size never depends
+   on cursor presence, hover, or whether the last text ends with a block. */
+.message.assistant:has(> .message-actions) .markdown {
+  padding-bottom: 0;
+}
+
+.message.assistant:has(> .message-actions) .markdown > .cursor {
+  /* Override markdown-viewer's important last-child margin reset. */
+  /* biome-ignore lint/complexity/noImportantStyles: the upstream reset is important */
+  margin-bottom: calc(-1 * (var(--cursor-line) + var(--cursor-gap))) !important;
+}
+
+/* Code blocks and tables scroll horizontally, but markdown-viewer gives them
+   `overflow: auto`, which also makes them a vertical scroll container that traps
+   wheel events and stalls list scrolling. Pin overflow-y so vertical scrolling
+   always reaches the viewport (they size to content height, so nothing clips). */
+.markdown-viewer .markdown pre,
+.markdown-viewer .markdown table {
+  overflow-y: hidden;
+}

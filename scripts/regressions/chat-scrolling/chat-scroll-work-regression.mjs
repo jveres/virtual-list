@@ -255,7 +255,9 @@ for (const engine of [firefox, chromium, webkit]) {
           inline = document.createElement("div");
           viewport.append(inline);
           sticky.refresh(10);
-          const replacementHidden = inline.style.visibility === "hidden";
+          const replacementHidden = inline.classList.contains(
+            "vl-sticky-inline-hidden",
+          );
           top = 20;
           sticky.refresh(10);
           const changedGeometryHidden = overlay.style.display === "none";

@@ -323,7 +323,7 @@ export type RemeasureOptions = {
 export interface WindowUpdateContext<T> {
   /** Latest submitted data, including any snapshot waiting for settle. */
   items: readonly T[];
-  /** Committed visible/overscan items, plus an explicit or pinned anchor. */
+  /** Committed visible/overscan items and explicit target, plus the pin unless protection is disabled. */
   protectedItems: readonly T[];
 }
 
@@ -350,7 +350,12 @@ export interface VirtualList<T> {
   updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
-    options?: { interrupt?: boolean },
+    options?: {
+      interrupt?: boolean;
+      /** Default true. False permits offscreen pin eviction, never visible/overscan or explicit-target eviction.
+       * An unsafe snapshot resolves false. Does not change idle scheduling or restore imperative pins. */
+      protectPin?: boolean;
+    },
   ): Promise<boolean>;
   setItems(
     items: readonly T[],
@@ -405,23 +410,6 @@ const HEIGHT_NOISE = 1e-6;
 const SLOT_STYLE_CLIP = "position:absolute;top:0;left:0;right:0;overflow:clip";
 const SLOT_STYLE_HIDDEN =
   "position:absolute;top:0;left:0;right:0;overflow:hidden";
-
-/**
- * Committed heights are whole DEVICE pixels (rounded up, so content is
- * never clipped by the quantization): a whole CSS pixel at an integral
- * ratio, half of one at 2x, two thirds at 1.5x. Fractional heights made
- * every offset, canvas size, and anchor target fractional; engines then
- * snap transformed rows to device pixels differently as the scroll
- * position changes, which showed as a 1px layout shift after a top load —
- * and whole CSS pixels at a fractional ratio (Windows at 150%) put every
- * offset on a half device pixel, where rows snapped up or down on their
- * own and danced by a device pixel on each commit. Geometry integral on
- * the device grid has no such seam: anchor writes land exactly.
- */
-function quantizeHeight(height: number): number {
-  const ratio = devicePixelRatioNow();
-  return Math.max(1 / ratio, Math.ceil(height * ratio - HEIGHT_NOISE) / ratio);
-}
 
 /** The device pixel ratio, 1 where there is no window (tests, SSR). */
 function devicePixelRatioNow(): number {
@@ -540,6 +528,22 @@ export function createVirtualList<T>(
   const scrollingUpdates: ScrollingUpdates =
     options.scrollingUpdates ?? (options.position ? "freeze" : "live");
   const declared = options.height;
+  /**
+   * Stacked rows use whole CSS pixels at integral display scales: engines
+   * can floor/round scrollTop writes to CSS pixels even at 2x/3x. A half-
+   * CSS-pixel prepend can therefore leave a one-device-pixel anchor shift.
+   * Round up to avoid clipping. Fractional scales keep the device grid,
+   * as do positioned layouts whose host-supplied offsets use that grid.
+   */
+  function quantizeHeight(height: number): number {
+    const ratio = devicePixelRatioNow();
+    if (!options.position && Number.isInteger(ratio))
+      return Math.max(1, Math.ceil(height - HEIGHT_NOISE));
+    return Math.max(
+      1 / ratio,
+      Math.ceil(height * ratio - HEIGHT_NOISE) / ratio,
+    );
+  }
   if (options.position && (!declared || scrollingUpdates !== "freeze"))
     throw new Error(
       "positioned layouts require declared heights and freeze updates",
@@ -2360,14 +2364,14 @@ export function createVirtualList<T>(
   }
 
   // --- Data -----------------------------------------------------------------
-  function windowUpdateContext(): WindowUpdateContext<T> {
+  function windowUpdateContext(protectPin = true): WindowUpdateContext<T> {
     const range = geometry.window(viewportState(), overscanPx);
     const keys = new Set(
       range.indices
         ? range.indices.map((index) => committedKeys[index] as string)
         : committedKeys.slice(range.start, range.end),
     );
-    if (geometry.pinned !== null) keys.add(geometry.pinned);
+    if (protectPin && geometry.pinned !== null) keys.add(geometry.pinned);
     if (pending?.target) keys.add(pending.target.key);
     const protectedItems: T[] = [];
     for (const key of keys) {
@@ -2381,9 +2385,10 @@ export function createVirtualList<T>(
   function updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
-    updateOptions: { interrupt?: boolean } = {},
+    updateOptions: { interrupt?: boolean; protectPin?: boolean } = {},
   ): Promise<boolean> {
     const interrupt = updateOptions.interrupt === true;
+    const protectPin = updateOptions.protectPin !== false;
     return new Promise((resolve, reject) => {
       if (disposed || signal?.aborted) {
         resolve(false);
@@ -2545,10 +2550,25 @@ export function createVirtualList<T>(
               if (frame === 0) frame = requestAnimationFrame(stageFrame);
               return;
             }
-            const context = windowUpdateContext();
+            const context = windowUpdateContext(protectPin);
             const next = job?.next ?? update(context);
             if (!next || !current()) return;
             const snapshot = job?.snapshot ?? [...next.items];
+            // Opt-in trimming may release only the pin's extra protection.
+            // Validate even small synchronous proposals, and recheck staged
+            // proposals against the reading window at their commit frame.
+            if (!protectPin) {
+              const keys = job?.keys ?? new Set(snapshot.map(keyOf));
+              const target =
+                typeof next.anchor === "object" ? next.anchor : null;
+              if (
+                context.protectedItems.some((item) => !keys.has(keyOf(item))) ||
+                (target !== null && !keys.has(target.key))
+              ) {
+                cancel();
+                return;
+              }
+            }
             const slots = next.edgeSlots
               ? {
                   start: ownEdgeSlot(next.edgeSlots.start),

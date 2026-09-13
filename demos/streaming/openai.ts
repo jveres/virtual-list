@@ -1,3 +1,4 @@
+import { EMBEDDED_IMAGE_PATTERN as GENERATED_IMAGE_PATTERN } from "../../integrations/index.js";
 import type { ChatToolCall } from "../shared/chat-ui.js";
 import { mustGet } from "../shared/utils.js";
 import {
@@ -159,8 +160,8 @@ Use the available tools (web search, image generation, code execution) when
 they help answer the question.`;
 
 /** The Markdown shape of an embedded generated image (one source for every regex over it). */
-export const GENERATED_IMAGE_PATTERN =
-  "!\\[[^\\]]*\\]\\(data:image\\/[a-z.+-]+;base64,[^)]*\\)";
+export { GENERATED_IMAGE_PATTERN };
+
 const GENERATED_IMAGE_RE = new RegExp(GENERATED_IMAGE_PATTERN, "g");
 
 // Generated images are stripped from the request context: megabytes of

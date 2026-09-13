@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Streaming with bounded history</title>
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font: 16px/1.5 system-ui; }
+      main { max-width: 800px; margin: auto; height: 100dvh; display: flex; flex-direction: column; }
+      header { padding: 12px; display: flex; gap: 10px; flex-wrap: wrap; }
+      #viewport { flex: 1; min-height: 0; overflow: auto; }
+      article { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; border-bottom: 1px solid #ddd; }
+      button { font: inherit; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <button id="stream" type="button">Stream latest reply</button>
+        <button id="older" type="button">Load older</button>
+        <button id="newer" type="button">Load newer</button>
+        <output id="status">Ready</output>
+        <output id="retained"></output>
+      </header>
+      <!-- biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard scrolling requires a focusable region -->
+      <div id="viewport" role="region" aria-label="History" tabindex="0"></div>
+    </main>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

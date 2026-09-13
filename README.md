@@ -9,12 +9,23 @@ content, and scrollback loading. The runtime rests on two cornerstones:
   the scroller can land while nothing is moving.
 - **Premeasurement** (`src/premeasure.ts`): rows are rendered and measured
   off the scroller before they ever enter it, so committed geometry is
-  rounded to whole device pixels, never estimated and corrected later.
+  rounded to a stable pixel grid, never estimated and corrected later.
+  Stacked rows use whole CSS pixels at integer display scales, including 2x.
   Hosts can supply declared heights instead of measuring rows.
 
 The contract, its invariants (I0–I6), and the design decisions live in
 [`docs/core-contract.md`](docs/core-contract.md). This file covers running, using,
 and testing the code.
+
+The [streaming integration release plan](docs/streaming-integration-plan.md)
+tracks the implemented consumer examples and companions, verification
+evidence, and remaining release gates.
+
+Start with the [streaming consumer guide](docs/streaming-consumer.md) and
+`/examples/streaming-basic/` for the small runtime-only example, or
+`/examples/streaming-paged/` for live updates and optional pin trimming through
+the paging companion. `/examples/streaming-markdown/` adds a renderer and
+autosizing composer through the separate UI integration layer.
 
 ## Run the demos
 

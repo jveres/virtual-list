@@ -1,4 +1,21 @@
 import {
+  autosizeTextarea,
+  mountUserMessageCollapse,
+  prepareUserMessageCollapse,
+  streamingMarkdownText,
+  syncUserMessageCollapse,
+  unmountUserMessageCollapse,
+} from "../../integrations/index.js";
+import {
+  captureItemPlacement,
+  replacementAnchor as captureReplacementAnchor,
+  createPagedWindow,
+  createStickyHeaders,
+  type Page,
+  type PagedWindow,
+  type StickyHeaders,
+} from "../../src/companions/index.js";
+import {
   type AnchorRequest,
   createVirtualList,
   type EdgeSlot,
@@ -24,10 +41,6 @@ import {
   renderMarkdown,
 } from "../shared/markdown.js";
 import { replaceMessageMarkdown } from "../shared/message-order.js";
-import {
-  createStickyHeaders,
-  type StickyHeaders,
-} from "../shared/sticky-headers.js";
 import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
 import {
   at,
@@ -67,7 +80,6 @@ import {
 } from "./message-copy.js";
 import {
   buildResponseContext,
-  GENERATED_IMAGE_PATTERN,
   getAISettings,
   initAISettingsPanel,
   loadOpenAIHistory,
@@ -85,12 +97,6 @@ import {
   shareChatFile,
   supportsChatSharing,
 } from "./share.js";
-import {
-  mountUserMessageCollapse,
-  prepareUserMessageCollapse,
-  syncUserMessageCollapse,
-  unmountUserMessageCollapse,
-} from "./user-message-collapse.js";
 
 import "../shared/styles.css";
 
@@ -225,9 +231,16 @@ interface ChatOptions {
   cursor: CursorMode;
 }
 function loadChatOptions(): ChatOptions {
-  const stored: Partial<ChatOptions> = (() => {
+  const stored: { [K in keyof ChatOptions]?: unknown } = (() => {
     try {
-      return JSON.parse(localStorage.getItem(OPTIONS_KEY) ?? "{}");
+      const parsed: unknown = JSON.parse(
+        localStorage.getItem(OPTIONS_KEY) ?? "{}",
+      );
+      return parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed)
+        ? parsed
+        : {};
     } catch {
       return {};
     }
@@ -304,6 +317,9 @@ let nextMessageId = 1;
 let streamAbort: StreamAbort | null = null;
 let nextResponse = 0;
 let loadedStart = 0;
+let loadedEnd = 0;
+let latestPromptId: number | undefined;
+let paging: PagedWindow<Message, number> | undefined;
 let loadingTop = false;
 let sendGlideActive = false;
 const htmlCache = new Map<string, string>();
@@ -758,6 +774,7 @@ async function navigateTreeMessage(
   if (
     activeIndex !== undefined &&
     activeIndex >= loadedStart &&
+    activeIndex < loadedEnd &&
     !(activeIndex === 0 && edgeSlotRequested)
   ) {
     return scrollToTreeTarget(list, messageId, headingIndex);
@@ -769,6 +786,8 @@ async function navigateTreeMessage(
   const epoch = ++conversationEpoch;
   activeLoad = null;
   loadingTop = false;
+  paging?.dispose();
+  paging = undefined;
   setEdgeState("hidden");
   const ancestors: number[] = [];
   let id = messageId;
@@ -795,8 +814,11 @@ async function navigateTreeMessage(
     path.length !== transcript.length ||
     path.some((key, index) => transcript[index]?.id !== key);
   const index = ancestors.length - 1;
-  const start = Math.min(loadedStart, index);
+  const start = Math.max(0, index - pageSize());
   const nextStart = start - (start % MESSAGES_PER_DAY);
+  const nextEnd = Math.min(nextTranscript.length, nextStart + pageSize() * 3);
+  const previousPin = latestPromptId;
+  latestPromptId = lastPromptId(nextTranscript);
   const needsScrollbackSlot = edgeLoaderMode === "slot" && nextStart > 0;
   try {
     const committed = await list.updateWindow(
@@ -804,7 +826,7 @@ async function navigateTreeMessage(
         if (epoch !== conversationEpoch || controller.signal.aborted)
           return null;
         return {
-          items: rowsForTreeNavigation(nextTranscript, nextStart),
+          items: rowsForTreeNavigation(nextTranscript, nextStart, nextEnd),
           edgeSlots: { start: needsScrollbackSlot ? edgeSlotSpec : null },
           // Stage the branch without forcing the selected row to the top:
           // an explicit keyed anchor can create trailing reserve even when
@@ -822,10 +844,12 @@ async function navigateTreeMessage(
             transcript.length = 0;
             transcript.push(...nextTranscript);
             loadedStart = nextStart;
+            loadedEnd = nextEnd;
             topBoundaryLoadSeen = false;
             edgeSlotRequested = needsScrollbackSlot;
             if (!needsScrollbackSlot) edgeSlotElement = null;
             refreshLoadedWindow();
+            resetPaging();
             stickyHeaders?.refresh();
             if (branchChanged) {
               markConversationChanged();
@@ -840,9 +864,16 @@ async function navigateTreeMessage(
       controller.signal,
       { interrupt: true },
     );
-    if (!committed || epoch !== conversationEpoch) return false;
+    if (!committed || epoch !== conversationEpoch) {
+      if (epoch === conversationEpoch) latestPromptId = previousPin;
+      return false;
+    }
     return await scrollToTreeTarget(list, messageId, headingIndex);
   } finally {
+    if (epoch === conversationEpoch && !paging) {
+      latestPromptId = previousPin;
+      resetPaging();
+    }
     if (treeNavigation === controller) treeNavigation = null;
   }
 }
@@ -866,8 +897,122 @@ function canLoadOlderMessages(): boolean {
   return loadedStart > 0;
 }
 
+function pageSize(): number {
+  return Math.ceil(loadChunkCount() / MESSAGES_PER_DAY) * MESSAGES_PER_DAY;
+}
+
+function lastPromptId(items: readonly Message[]): number | undefined {
+  for (let index = items.length - 1; index >= 0; index--) {
+    const message = items[index];
+    if (message?.role === "user") return message.id;
+  }
+  return undefined;
+}
+
+// Source-window selection for explicit navigation, not viewport correction.
+function selectWindowAround(index: number): void {
+  loadedStart = Math.max(0, index - pageSize());
+  loadedStart -= loadedStart % MESSAGES_PER_DAY;
+  loadedEnd = Math.min(transcript.length, loadedStart + pageSize() * 3);
+}
+
+function sourcePage(
+  start: number,
+  end = Math.min(transcript.length, start + pageSize()),
+): Page<Message, number> {
+  return {
+    items: transcript.slice(start, end),
+    start:
+      start > 0
+        ? { available: true, cursor: Math.max(0, start - pageSize()) }
+        : { available: false },
+    end:
+      end < transcript.length
+        ? { available: true, cursor: end }
+        : { available: false },
+  };
+}
+
+function reportPagingError(error: unknown): void {
+  console.error("Could not update paged messages.", error);
+}
+
+function resetPaging(): void {
+  paging?.dispose();
+  paging = undefined;
+  const list = virtualList;
+  if (!list) return;
+  const epoch = conversationEpoch;
+  const retainedKeys = new Set(messages.map((message) => String(message.id)));
+  for (const key of htmlCache.keys()) {
+    if (!retainedKeys.has(key)) htmlCache.delete(key);
+  }
+  paging = createPagedWindow({
+    list,
+    initial: sourcePage(loadedStart, loadedEnd),
+    maxItems: pageSize() * 3,
+    trim: { offscreenPin: "evict" },
+    key: (message) => String(message.id),
+    project: rowsForRuntime,
+    live: { project: (message) => message, key: rowKey },
+    keysOf: (row) => {
+      if (!isDayHeader(row)) return [String(row.id)];
+      // A separator belongs to the first retained source message of its run.
+      const first = messages.find(
+        (message) =>
+          (dayRunStartById.get(message.id) ?? message.id) === row.runStart,
+      );
+      return first ? [String(first.id)] : [];
+    },
+    load: async ({ cursor, signal }) => {
+      await new Promise<void>((resolve) => {
+        const finish = () => {
+          window.clearTimeout(timer);
+          signal.removeEventListener("abort", finish);
+          resolve();
+        };
+        const timer = window.setTimeout(finish, LOAD_OLDER_DELAY_MS);
+        signal.addEventListener("abort", finish, { once: true });
+        if (signal.aborted) finish();
+      });
+      return sourcePage(cursor);
+    },
+    edgeSlots: ({ start }) => ({
+      start:
+        edgeLoaderMode === "slot" && (start.available || topBoundaryLoadSeen)
+          ? edgeSlotSpec
+          : null,
+    }),
+    onChange: (items) => {
+      if (epoch !== conversationEpoch) return;
+      messages = [...items];
+      loadedStart = transcriptIndexById.get(items[0]?.id ?? -1) ?? 0;
+      loadedEnd = loadedStart + items.length;
+      // The archive may receive final tokens after a reload was fetched but
+      // before it committed. Reconcile source freshness, not scroll geometry.
+      for (const [index, message] of items.entries()) {
+        const current = tree.get(message.id)?.message;
+        if (current && current !== message) {
+          messages[index] = current;
+          void paging
+            ?.updateItemLive(String(message.id), () => current)
+            .catch(reportPagingError);
+        }
+      }
+      edgeSlotRequested = shouldMountEdgeSlot();
+      stickyHeaders?.refresh();
+      conversationTree?.refreshLoaded();
+      syncMetrics();
+      syncScrollButtons(list.state);
+    },
+    onEvict: (items) => {
+      for (const message of items) htmlCache.delete(String(message.id));
+    },
+  });
+}
+
 // Recomputes `messages` (the window handed to the virtualizer — always the
-// transcript's tail from loadedStart) and the id → transcript index lookup.
+// retained interval) and the id → transcript index lookup.
 let refreshMessageId: number | undefined;
 const dayRunStartById = new Map<number, number>();
 
@@ -903,7 +1048,9 @@ function refreshLoadedWindow(): void {
   // whole days above the first loaded day's header, never between a header
   // and its messages.
   loadedStart -= loadedStart % MESSAGES_PER_DAY;
-  messages = transcript.slice(loadedStart);
+  loadedEnd = Math.max(loadedStart, Math.min(loadedEnd, transcript.length));
+  messages = transcript.slice(loadedStart, loadedEnd);
+  latestPromptId = lastPromptId(transcript);
   transcriptHasDates = transcript.some(
     (message) => message.sentAt !== undefined,
   );
@@ -1048,6 +1195,7 @@ function rowsForRuntime(
 function rowsForTreeNavigation(
   path: readonly Message[],
   start: number,
+  end = path.length,
 ): ChatRow[] {
   const rows: ChatRow[] = [];
   const dated =
@@ -1073,7 +1221,7 @@ function rowsForTreeNavigation(
           : Math.floor(index / MESSAGES_PER_DAY);
     const newDay = day !== previousDay;
     if (newDay) runStart = message.id;
-    if (index >= start) {
+    if (index >= start && index < end) {
       if (newDay || index === start)
         rows.push({
           kind: "day",
@@ -1099,10 +1247,13 @@ function dayHeaderKeys(): string[] {
 /** Submit a snapshot for conversation changes; scrollback uses updateWindow.
  * Returns the number of rows handed over (day separators included). */
 function pushItems(anchor?: AnchorRequest, interrupt = false): number {
+  paging?.dispose();
+  paging = undefined;
   refreshLoadedWindow();
   syncEdgeSlot();
   const rows = rowsForRuntime();
   virtualList?.setItems(rows, { anchor, interrupt });
+  resetPaging();
   return rows.length;
 }
 
@@ -1121,9 +1272,11 @@ function updateMessage(id: number, mutate: (message: Message) => void): void {
   htmlCache.delete(String(id));
   if (dayOf(next) !== previousDay) {
     pushItems();
-  } else if (index !== undefined && index >= loadedStart) {
+  } else if (index !== undefined && index >= loadedStart && index < loadedEnd) {
     messages[index - loadedStart] = next;
-    virtualList?.updateItem(rowKey(next), next);
+    void paging
+      ?.updateItemLive(rowKey(next), () => next)
+      .catch(reportPagingError);
   }
 }
 
@@ -1262,45 +1415,12 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
   setEdgeState("loading");
   syncMetrics();
 
-  // Simulated fetch latency; a real host would await its data source here.
-  // The epoch check discards a load that outlives its conversation (a
-  // provider switch or history clear mid-timeout).
   const epoch = conversationEpoch;
-  const fetched = new Promise<boolean>((resolve) => {
-    const timer = window.setTimeout(() => {
-      signal.removeEventListener("abort", cancel);
-      resolve(true);
-    }, LOAD_OLDER_DELAY_MS);
-    function cancel(): void {
-      window.clearTimeout(timer);
-      resolve(false);
-    }
-    signal.addEventListener("abort", cancel, { once: true });
-  });
-  const load = fetched
-    .then(async (ready) => {
-      if (!ready || epoch !== conversationEpoch) return;
-      // A boot-time reach callback can run before createVirtualList returns.
-      const list = virtualList;
-      if (!list) return;
-      // Fetching may finish during a glide. Delay rendering and measurement,
-      // not just the prepend commit: a large image-rich page can otherwise
-      // block animation frames even though its DOM is off the scroll surface.
-      await list.updateWindow(() => {
-        if (epoch !== conversationEpoch) return null;
-        const start = Math.max(0, loadedStart - loadChunkCount());
-        const nextStart = start - (start % MESSAGES_PER_DAY);
-        return {
-          items: rowsForRuntime(transcript.slice(nextStart)),
-          anchor: "viewport",
-          onCommit: () => {
-            loadedStart = nextStart;
-            refreshLoadedWindow();
-            stickyHeaders?.refresh();
-          },
-        };
-      }, signal);
-    })
+  const load = (
+    paging?.load("start", { signal, complete: () => {} }) ??
+    Promise.resolve(false)
+  )
+    .then(() => {})
     .finally(() => {
       if (activeLoad !== load) return;
       activeLoad = null;
@@ -1498,6 +1618,8 @@ function seedSyntheticBranches(
 let conversationEpoch = 0;
 
 function resetConversationState(): void {
+  paging?.dispose();
+  paging = undefined;
   userEdit = null;
   expandedUserMessages.clear();
   conversationEpoch++;
@@ -1509,6 +1631,7 @@ function resetConversationState(): void {
   tree.set(TREE_ROOT_ID, rootNode());
   transcript.length = 0;
   loadedStart = 0;
+  loadedEnd = 0;
   loadingTop = false;
   htmlCache.clear();
   nextMessageId = 1;
@@ -1698,6 +1821,7 @@ function seedActiveConversation(importedTree?: TranscriptTree | null): void {
     nextResponse = simulatedNextResponse;
   rebuildActiveTranscript();
   loadedStart = Math.max(0, transcript.length - loadChunkCount());
+  loadedEnd = transcript.length;
   refreshLoadedWindow();
 }
 
@@ -1727,15 +1851,13 @@ function replacementAnchor(
   replacementId: number | undefined,
 ): AnchorRequest | undefined {
   if (replacementId === undefined) return undefined;
-  const position = virtualList?.positionOf(String(messageId));
-  if (!position) return undefined;
+  const list = virtualList;
+  if (!list) return undefined;
   const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
-  const top = position.top - viewport.scrollTop;
-  if (top >= viewport.clientHeight || top + position.height <= inset)
-    return undefined;
+  const replacements = [{ from: String(messageId), to: String(replacementId) }];
   const previous = tree.get(messageId);
   const replacement = tree.get(replacementId);
-  if (top < inset && previous?.message?.role === "user" && replacement) {
+  if (previous?.message?.role === "user" && replacement) {
     const previousReplyId = selectedChildId(previous);
     const nextReplyId = selectedChildId(replacement);
     const previousReply =
@@ -1746,17 +1868,13 @@ function replacementAnchor(
       previousReply?.message?.role === "assistant" &&
       nextReply?.message?.role === "assistant"
     ) {
-      const replyPosition = virtualList?.positionOf(
-        String(previousReply.message.id),
-      );
-      if (replyPosition) {
-        const replyTop = replyPosition.top - viewport.scrollTop;
-        if (replyTop >= inset && replyTop < viewport.clientHeight)
-          return { key: String(nextReply.message.id), offset: replyTop };
-      }
+      replacements.push({
+        from: String(previousReply.message.id),
+        to: String(nextReply.message.id),
+      });
     }
   }
-  return { key: String(replacementId), offset: Math.max(inset, top) };
+  return captureReplacementAnchor(list, viewport, replacements, inset);
 }
 
 // Switch the active path while retaining the branch point's reading anchor.
@@ -1783,6 +1901,7 @@ function switchMessageVersion(messageId: number, offset: number): void {
   // Keep the branch row inside the loaded window even if the new path is
   // shorter than the old loadedStart.
   if (branchIndex >= 0) loadedStart = Math.min(loadedStart, branchIndex);
+  if (branchIndex >= 0) selectWindowAround(branchIndex);
   pushItems(anchor, true);
   syncMetrics();
   persistSimulatedBranchSelection();
@@ -1836,6 +1955,8 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
   loadedStart = isVersion
     ? Math.min(loadedStart, index)
     : Math.max(0, transcript.length - loadChunkCount());
+  if (isVersion) selectWindowAround(index);
+  else loadedEnd = transcript.length;
   refreshLoadedWindow();
   const turns = storedConversation();
   if (getAISettings().provider === "openai") {
@@ -1920,9 +2041,6 @@ function appendVersionNav(row: HTMLElement, message: Message): void {
   content.appendChild(nav);
 }
 
-// Matches when the (trimmed) stream currently ends with an embedded image.
-const TRAILING_IMAGE_RE = new RegExp(`${GENERATED_IMAGE_PATTERN}$`);
-
 // What the live viewer renders mid-stream. Trailing newlines (OpenAI replies
 // end with one; embedded image blocks append two) would otherwise parse into
 // an empty trailing paragraph hosting the typing cursor — a phantom line that
@@ -1935,8 +2053,7 @@ const TRAILING_IMAGE_RE = new RegExp(`${GENERATED_IMAGE_PATTERN}$`);
 // renders to nothing in the final static parse, so finalize output is
 // unchanged.
 function streamingDisplayText(message: Message): string {
-  const trimmed = message.markdown.trimEnd();
-  return TRAILING_IMAGE_RE.test(trimmed) ? `${trimmed}\n\n` : trimmed;
+  return streamingMarkdownText(message.markdown);
 }
 
 // A finished row: the static markdown render plus, when the message has
@@ -2080,7 +2197,7 @@ function buildUserEditor(row: HTMLElement, message: Message): HTMLElement {
     if (userEdit?.id !== message.id || userEdit.epoch !== conversationEpoch)
       return;
     if (!editor.innerText.trim() && !message.attachments?.length) return;
-    void handleSend({
+    handleSend({
       kind: "edit",
       messageId: message.id,
       text: editor.innerText.trim(),
@@ -2303,7 +2420,9 @@ function syncScrollButtons(state: VirtualListState): void {
   const headedToEnd = state.following && followMode === "end";
   setHiddenIfChanged(
     scrollBottomBtn,
-    state.atEnd || headedToEnd || sendGlideActive,
+    (state.atEnd && loadedEnd === transcript.length) ||
+      headedToEnd ||
+      sendGlideActive,
   );
 }
 
@@ -2312,7 +2431,7 @@ function syncMetrics(state = virtualList?.state): void {
   const loadedRange =
     messages.length === 0
       ? "loaded 0-0/0"
-      : `loaded ${formatCount(loadedStart + 1)}-${formatCount(transcript.length)}/${formatCount(transcript.length)}`;
+      : `loaded ${formatCount(loadedStart + 1)}-${formatCount(loadedEnd)}/${formatCount(transcript.length)}`;
   const topStatus = loadingTop
     ? "loading top"
     : canLoadOlderMessages()
@@ -2660,33 +2779,11 @@ function saveDraft(): void {
   }
 }
 
-function borderBlockSize(element: HTMLElement): number {
-  const style = getComputedStyle(element);
-  return (
-    (Number.parseFloat(style.borderTopWidth) || 0) +
-    (Number.parseFloat(style.borderBottomWidth) || 0)
-  );
-}
-
 function autosize(): void {
-  // Measuring at the minimum textarea height must not temporarily expand the
-  // chat viewport: WebKit clamps its bottom scroll position during that layout,
-  // even when the textarea's final height is unchanged (no resize delivery).
-  const composer = promptInput.parentElement;
-  const previousMinHeight = composer?.style.minHeight ?? "";
-  if (composer)
-    composer.style.minHeight = `${composer.getBoundingClientRect().height}px`;
-  promptInput.style.height = `${composerMinHeight}px`;
-  const next = Math.min(
-    COMPOSER_MAX_HEIGHT,
-    Math.max(
-      composerMinHeight,
-      promptInput.scrollHeight + borderBlockSize(promptInput),
-    ),
-  );
-  promptInput.style.height = `${next}px`;
-  promptInput.style.overflowY = next >= COMPOSER_MAX_HEIGHT ? "auto" : "hidden";
-  if (composer) composer.style.minHeight = previousMinHeight;
+  autosizeTextarea(promptInput, {
+    minHeight: composerMinHeight,
+    maxHeight: COMPOSER_MAX_HEIGHT,
+  });
 }
 
 function setStreamingUI(streaming: boolean): void {
@@ -2833,7 +2930,13 @@ type SendAction =
   | { kind: "regenerate"; messageId: number }
   | { kind: "edit"; messageId: number; text: string };
 
-async function handleSend(action?: SendAction): Promise<void> {
+function handleSend(action?: SendAction): void {
+  void sendMessage(action).catch((error: unknown) => {
+    console.error("Could not send message.", error);
+  });
+}
+
+async function sendMessage(action?: SendAction): Promise<void> {
   if (preparingConversation) return;
   const previous = action ? tree.get(action.messageId) : undefined;
   const originalPrompt =
@@ -2868,19 +2971,17 @@ async function handleSend(action?: SendAction): Promise<void> {
 
   const promptInset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
   const regenerating = action?.kind === "regenerate";
-  const originalPosition =
-    originalPrompt && !regenerating
-      ? virtualList?.positionOf(String(originalPrompt.id))
-      : undefined;
-  const originalOffset = originalPosition
-    ? originalPosition.top - viewport.scrollTop
-    : undefined;
-  const alreadyPinned =
-    originalOffset !== undefined && Math.abs(originalOffset - promptInset) < 1;
-  const pinInstantly =
-    alreadyPinned ||
-    (originalPosition != null &&
-      originalPosition.top + originalPosition.height <= viewport.scrollTop);
+  const placement =
+    originalPrompt && !regenerating && virtualList
+      ? captureItemPlacement(
+          virtualList,
+          viewport,
+          String(originalPrompt.id),
+          promptInset,
+        )
+      : null;
+  const originalOffset = placement?.offset;
+  const pinInstantly = placement?.pinned === true || placement?.above === true;
 
   if (!originalPrompt) {
     clearPendingAttachments();
@@ -2969,6 +3070,17 @@ async function handleSend(action?: SendAction): Promise<void> {
     // Persist the user turn immediately so a reload mid-stream keeps it (the
     // still-empty assistant placeholder is filtered out).
     persistTurns();
+    if (transcript.length - loadedStart <= pageSize() * 3) {
+      // A normal send need not replace history that still fits the budget.
+      loadedEnd = transcript.length;
+    } else {
+      selectWindowAround(
+        Math.max(
+          0,
+          transcript.findIndex((message) => message.id === userMessage.id),
+        ),
+      );
+    }
     // Refresh has already landed; preserve that pin while replacing its reply.
     // Edits keep their existing policy: pin an offscreen prompt immediately,
     // or retain its visible coordinate until the subsequent glide.
@@ -3007,18 +3119,16 @@ async function handleSend(action?: SendAction): Promise<void> {
           // Under the floating day pill, not behind it.
           offset: promptInset,
         }) ?? Promise.resolve(false));
-    void pinCommand.then(() => {
-      if (sendEpoch === conversationEpoch && streamAbort === abort)
-        endSendGlide();
-    });
-    if (shouldFlyIn) {
-      await flyInRows([userMessage.id], abort);
-      if (abort.cancelled) return;
-    }
     // Streaming begins only after the pin command resolves. An interrupted
     // command (the user took ownership mid-glide) still resolves — the
     // stream then proceeds without follow, which is exactly their intent.
-    await pinCommand;
+    await Promise.all([
+      pinCommand.then(() => {
+        if (sendEpoch === conversationEpoch && streamAbort === abort)
+          endSendGlide();
+      }),
+      shouldFlyIn ? flyInRows([userMessage.id], abort) : undefined,
+    ]);
     if (abort.cancelled) return;
 
     if (useOpenAI) {
@@ -3034,19 +3144,22 @@ async function handleSend(action?: SendAction): Promise<void> {
       await streamResponse(reply, assistantId, abort);
     }
   } finally {
-    if (sendEpoch === conversationEpoch && assistantId !== null) {
-      updateMessage(assistantId, (message) => {
-        message.status = abort.cancelled ? "cancelled" : "done";
-      });
-    }
-    // The finished (or cancelled-partial) assistant turn joins the history;
-    // empty turns are filtered out during serialization.
-    persistTurns();
-    if (streamAbort === abort) {
-      endSendGlide();
-      streamAbort = null;
-      setStreamingUI(false);
-      if (virtualList) syncScrollButtons(virtualList.state);
+    try {
+      if (sendEpoch === conversationEpoch && assistantId !== null) {
+        updateMessage(assistantId, (message) => {
+          message.status = abort.cancelled ? "cancelled" : "done";
+        });
+      }
+      // The finished (or cancelled-partial) assistant turn joins the history;
+      // empty turns are filtered out during serialization.
+      persistTurns();
+    } finally {
+      if (streamAbort === abort) {
+        endSendGlide();
+        streamAbort = null;
+        setStreamingUI(false);
+        if (virtualList) syncScrollButtons(virtualList.state);
+      }
     }
   }
 }
@@ -3156,6 +3269,12 @@ scrollTopBtn.addEventListener("click", (event) => {
 
 scrollBottomBtn.addEventListener("click", (event) => {
   if (stepsByPrompt(event) && jumpToPrompt("next")) return;
+  if (loadedEnd < transcript.length) {
+    // Explicit navigation replaces the source window; the runtime owns the
+    // end anchor and follow intent. No traversal through intervening pages.
+    selectWindowAround(transcript.length - 1);
+    pushItems("end", true);
+  }
   // Landing at the end re-engages end-follow, so a click during a stream
   // resumes following (the runtime's follow state, not demo bookkeeping).
   void virtualList?.scrollTo("end", {
@@ -3238,11 +3357,11 @@ attachmentInput.addEventListener("change", () => {
 promptInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
-    void handleSend();
+    handleSend();
   }
 });
 sendBtn.addEventListener("click", () => {
-  void handleSend();
+  handleSend();
 });
 document.addEventListener("keydown", (event) => {
   if (deleteDialog.open || largePasteDialog.open) return;
@@ -3291,7 +3410,7 @@ viewport.addEventListener("click", (event) => {
   if (refresh && !refresh.disabled) {
     const row = refresh.closest<HTMLElement>(".message.assistant");
     if (row)
-      void handleSend({
+      handleSend({
         kind: "regenerate",
         messageId: Number(row.dataset.key),
       });
@@ -3394,6 +3513,8 @@ persistSimulatedConversation();
  * it carrying the old conversation's pin, follow intent, and held work.
  */
 function mountConversation(): void {
+  paging?.dispose();
+  paging = undefined;
   virtualList?.dispose();
   // A replacement owns its loader state: do not inherit the old chat's
   // invisible scrollback strip when all imported turns are already loaded.
@@ -3406,7 +3527,7 @@ function mountConversation(): void {
     pinning:
       landingMode === "prompt"
         ? {
-            match: (row) => !isDayHeader(row) && row.role === "user",
+            match: (row) => !isDayHeader(row) && row.id === latestPromptId,
             get offset() {
               return stickyEnabled ? DAY_HEADER_HEIGHT : 0;
             },
@@ -3445,15 +3566,22 @@ function mountConversation(): void {
       // Publications also report mounted-range changes during scrolling.
       // Reuse the runtime's read instead of flushing layout after DOM writes.
       stickyHeaders?.refresh(snapshot.scrollTop);
+      void paging?.reconcile()?.catch(reportPagingError);
     },
     // State can stay unchanged through a glide. Keep the header in the
     // same frame as each scroll write, including its release above the slot.
     onViewport: (snapshot) => stickyHeaders?.update(snapshot.scrollTop),
     onReachStart: loadOlderMessages,
+    onReachEnd: (context) => {
+      if (paging && !treeNavigation)
+        void paging.load("end", context).catch(reportPagingError);
+      else context.complete();
+    },
     onMount: mountUserMessageCollapse,
     onUnmount: unmountUserMessageCollapse,
     onDestroy: handleRowDestroy,
   });
+  resetPaging();
 }
 
 mountConversation();
@@ -3808,7 +3936,7 @@ conversationTree = createConversationTree({
   tree,
   isLoaded: (id) => {
     const index = transcriptIndexById.get(id);
-    return index !== undefined && index >= loadedStart;
+    return index !== undefined && index >= loadedStart && index < loadedEnd;
   },
   currentMessage: currentTreeMessage,
   currentHeading: currentTreeHeading,
@@ -3825,6 +3953,10 @@ conversationTree = createConversationTree({
   navigate: navigateTreeMessage,
 });
 window.addEventListener("pagehide", () => {
+  if (streamAbort) cancelStream(streamAbort);
+  paging?.dispose();
+  virtualList?.dispose();
+  stickyHeaders?.destroy();
   treeNavigation?.abort();
   conversationTree?.dispose();
 });
