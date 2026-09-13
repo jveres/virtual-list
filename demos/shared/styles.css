@@ -1078,7 +1078,7 @@ p.ai-settings-note {
 
 .composer-inner {
   display: flex;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 10px;
   max-width: var(--chat-width);
   margin: 0 auto;
@@ -1100,8 +1100,7 @@ p.ai-settings-note {
 }
 
 .composer button {
-  align-self: stretch;
-  height: auto;
+  height: 42px;
   min-height: 42px;
 }
 
@@ -1194,11 +1193,9 @@ p.ai-settings-note {
 
 .composer .attach-btn {
   flex-shrink: 0;
-  align-self: stretch;
   display: grid;
   place-items: center;
   width: 42px;
-  height: auto;
   padding: 0;
 }
 
