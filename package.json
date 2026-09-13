@@ -15,7 +15,7 @@
     "test:regression-runner": "node --test scripts/regression-suite.checks.mjs",
     "test:chat-tree": "node scripts/regression-suite.mjs --group=chat-tree",
     "profile:firefox": "node scripts/firefox-profile.mjs",
-    "test:firefox-profile": "node --test scripts/firefox-profile/analyze.checks.mjs scripts/firefox-profile/attribute.checks.mjs",
+    "test:firefox-profile": "node --test scripts/firefox-profile/*.checks.mjs",
     "test:watch": "vitest"
   },
   "devDependencies": {

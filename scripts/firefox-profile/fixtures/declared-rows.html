@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>10,000-row runtime scroll control</title>
+<!-- Serve through Vite; no remote assets or personal data. -->
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #f4f5f6; color: #17212b; font: 16px system-ui; }
+  #status { height: 40px; padding: 8px 20px; }
+  #viewport { height: calc(100vh - 40px); overflow: auto; overflow-anchor: none; overscroll-behavior: contain; }
+  .row { display: flex; align-items: center; padding: 0 24px; border-bottom: 1px solid #ccd4da; }
+</style>
+</head>
+<body>
+<div id="status">Initializing</div>
+<div id="viewport"></div>
+<script type="module" src="./declared-rows.js"></script>
+</body>
+</html>

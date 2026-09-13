@@ -49,6 +49,14 @@ CPU costs of the invalidating call.
   `run-2gI7g5` (before) and `run-YhofHQ` (after); removal experiments
   `run-nShOwL` and `run-isrqtt`. All under ignored `browser-artifacts/`.
 
+The historical `complex-chat-setup.js` fixture was not tracked and is no
+longer available in this checkout. These measurements cannot be exactly
+reproduced from a fresh clone. For new investigations, use the tracked
+[rich-chat fixture](../scripts/firefox-profile/fixtures/rich-chat.js) and
+[September 13 audit](runtime-scroll-audit-2026-09-13.md). That fixture has
+160 linear turns, not the historical 400-node branch tree; don't treat it
+as an identical baseline.
+
 ## Results
 
 Animation-frame callback timing is similar in all four captures. The tables

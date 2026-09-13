@@ -2,4 +2,6 @@ node_modules
 .pnpm-store
 dist
 .DS_Store
+# Generated captures, logs, screenshots, and caches only.
+# Keep reusable tooling in scripts/ and durable reports in docs/.
 browser-artifacts

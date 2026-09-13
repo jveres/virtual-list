@@ -79,6 +79,20 @@ settle before capture. Use only trusted
 local scripts; they can interact with the page and initiate requests. The runner
 saves a copy as `setup.js` and records the returned value in `run.json`.
 
+Use the tracked fixtures for repeatable local workloads:
+
+- `scripts/firefox-profile/fixtures/rich-chat.js`: import 160 synthetic
+  turns with tables, code, math, tool panels, and local PNGs into the chat.
+- `scripts/firefox-profile/fixtures/streaming-chat.js`: start the built-in
+  fast reply before measurement. Use a 2-second post-setup warmup so the
+  reply is still streaming when capture starts.
+- `scripts/firefox-profile/fixtures/declared-rows.html`: serve this page
+  through Vite for an isolated 10,000-row runtime control. Pass its URL to
+  `--url`, with `--layout=none` and no setup script.
+
+The [September 13 audit](runtime-scroll-audit-2026-09-13.md) records the
+workload parameters and commands for paired captures.
+
 To retain renderer and GPU-process tracks that shutdown collection can omit,
 add `--live`. This requires a Firefox build that supports `moz:profiler.stop`
 (verified with the installed Firefox 155.0.1). The runner saves the profile
@@ -156,11 +170,59 @@ corrected attribution and the limits on what it can establish.
 The [measured proposal results](measured-performance-proposals.md) record
 retained optimizations, rejected experiments, and comparable captures.
 
+For sampled thread CPU and the longest content-thread awake intervals, use
+the additional offline tools. Both accept plain or compressed raw profiles
+and print JSON to stdout without changing the capture:
+
+```sh
+node scripts/firefox-profile/cpu.mjs browser-artifacts/firefox/run-EXAMPLE
+node scripts/firefox-profile/bursts.mjs browser-artifacts/firefox/run-EXAMPLE
+```
+
+CPU percentages refer to one core. Full 100 ms bins omit a final partial
+bin; missing CPU telemetry is unavailable, not zero. CPU deltas are credited
+to their sample timestamps, so bin boundaries have sampling uncertainty.
+The burst report separates nested callbacks, collection slices, and sampled
+stacks: an awake interval is not necessarily one JavaScript task.
+
 The analyzer accepts this runner's raw live and shutdown profiles, including
 compressed ones. It does not accept processed exports from Firefox Profiler
-share links.
-Both `ff-profile-start` and `ff-profile-end` markers must exist in the content
-thread. Startup, warmup, and final screenshot capture are outside that window.
+share links. Both `ff-profile-start` and `ff-profile-end` markers must exist
+in the content thread. Startup, warmup, and final screenshot capture are
+outside that window.
+
+## Keep reports and tooling in Git
+
+`browser-artifacts/` is an ignored output directory, not the home for durable
+project knowledge. Keep raw profiles, run-local setup copies, trace JSON,
+generated screenshots, compiled helpers, and caches there. Preserve raw
+captures locally until deletion is explicitly requested; ignoring them does
+not mean deleting them.
+
+Put curated reports under `docs/`, reusable profiling tools and synthetic
+fixtures under `scripts/firefox-profile/`, and browser regressions under
+`scripts/regressions/`. Reports must include the commit, workload, display,
+commands, summarized results, and limitations without requiring local raw
+captures to understand the conclusion. Label raw run IDs as local-only.
+
+Before promoting an exploratory probe, remove personal paths and transcript
+content, replace private examples with synthetic inputs, and add assertions
+and owned-process cleanup. Do not promote generated dependency copies or
+every scratch script merely because they contain JavaScript. The old
+`follow-*` probes are exploratory transcript-specific tools, not portable
+regressions; their end-follow, pointer, and rearm scenarios belong in the
+maintained runtime regression suite. Run the synthetic
+[follow/rearm regression](../scripts/regressions/runtime/follow-rearm-regression.mjs)
+and [fixture smoke test](../scripts/regressions/runtime/profiling-fixtures-regression.mjs)
+with:
+
+```sh
+pnpm run test:regression -- --group=runtime --match=follow
+pnpm run test:regression -- --group=runtime --match=profiling-fixtures
+```
+
+These browser tests check correctness, not native gesture performance. Their
+runner owns and closes its temporary server and browser instances.
 
 ## Interpret the results
 
