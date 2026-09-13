@@ -5,8 +5,8 @@ optional companions, without copying demo-owned scrolling infrastructure.
 Keep the runtime generic: applications still own message data, branch
 relationships, providers, persistence, rendering, and product choices.
 
-Status: implementation in progress on `feat/streaming-integration`; release
-gates remain open. The review baseline is
+Status: implementation committed and pushed as `732e143` on
+`feat/streaming-integration`; release gates remain open. The review baseline is
 commit `7caef9a` on `main`, reviewed on September 13, 2026. The baseline passed
 `pnpm run check` and 877 unit tests. Those results are not release-candidate
 verification or new browser/performance evidence.
@@ -14,8 +14,14 @@ verification or new browser/performance evidence.
 ## Branch and tracking workflow
 
 The integration branch `feat/streaming-integration` was created from the
-verified `main`. Implementation changes are currently uncommitted. Pushing
-and tagging remain separate actions; this document performs neither.
+verified `main`. The implementation is committed and pushed. Merging,
+publishing, and tagging remain separate actions; this document performs none.
+
+Scope decision, September 13, 2026: retain the existing basic, paged, and
+Markdown consumers. Don't add standalone sticky-header, branching, or other
+example apps for this release. Document the supported APIs directly, with
+signatures, defaults, ownership, lifecycle, errors, and integration wiring.
+Existing consumer and full-demo regressions remain the behavior evidence.
 
 - Keep `main` available for verified fixes while contracts evolve here.
 - Use small commits labeled with the task IDs below. Keep each change
@@ -69,9 +75,13 @@ SI-05 for final parity. This is the acceptance harness for the other tasks.
   Its basic example uses only the public runtime surface; advanced examples
   add supported companions without importing `demos/shared` or
   `demos/streaming` implementation files.
-- [ ] Separate minimal streaming from optional paging, sticky headers,
-  branching, and Markdown/composer examples. Share behavior assertions with
-  the full demo where practical, not demo implementations.
+- [ ] Keep the existing basic, paged, and Markdown consumers separated.
+  Cover sticky headers and branching through API documentation and existing
+  full-demo regressions, not additional example apps. Share behavior
+  assertions where practical, not demo implementations.
+- [ ] Sign off the [companion and UI API reference](integration-api.md)
+  against exported signatures, defaults, lifecycle, return/error behavior,
+  source ownership, and required styles. No new example is an acceptance gate.
 - [ ] Add an import-boundary check and document exact run commands,
   required styles, render/update/destroy wiring, and ownership rules.
 
@@ -80,8 +90,9 @@ the full demo or knowing runtime internals. Record setup steps and all matrix
 results. Do not use a line-count target as a substitute for clarity.
 
 Evidence: [consumer and API checkpoint](streaming-integration-checkpoint.md).
-Basic, paged, and Markdown consumers pass the browser matrix. Standalone
-sticky/branch examples and the final release review remain open.
+Basic, paged, and Markdown consumers pass the browser matrix. API-documentation
+signoff and the final release review remain open; standalone sticky/branch
+examples are out of scope by the decision above.
 
 ### SI-02: Live updates with bounded paging
 
@@ -122,7 +133,8 @@ history traversal pass. Native comparison and final signoff are tracked there.
 
 ### SI-03: Supported sticky-header companion
 
-Status: implemented, awaiting final signoff. Dependency: SI-01's example/import boundary.
+Status: implemented, awaiting final signoff. Dependency: SI-01's documented
+import boundary.
 
 The supported implementation lives in `src/companions/sticky-headers.ts`.
 The [old demo helper](../demos/shared/sticky-headers.ts) preserves the legacy
@@ -171,7 +183,8 @@ Unit, edit/version, partial-prompt, and tree-navigation regressions pass.
 
 ### SI-05: Renderer and composer integration boundary
 
-Status: implemented with verification gaps. Dependency: SI-01's optional UI examples.
+Status: implemented; dedicated Safari and scoped-typography checks passed,
+awaiting final evidence signoff. Dependency: SI-01's UI API documentation.
 
 The demo includes a WebKit composer-size guard, collapsed-message preparation,
 and Markdown cursor/footer/overflow rules. These are not all core defects.
@@ -195,8 +208,11 @@ test the scoped adapter with its limitation documented.
 
 Evidence: [UI integration checkpoint](streaming-integration-checkpoint.md).
 Composer, Markdown, collapse, image, tool, and cursor browser checks pass.
-Actual Safari compositor verification and custom scoped-typography coverage
-remain open; Playwright WebKit is not claimed as actual Safari evidence.
+The [installed-Safari and scoped-typography report](streaming-ui-verification-2026-09-13.md)
+records the two previously missing scenarios, now passing. It includes
+native Safari typing and inspected screenshots, not a blanket claim about
+every intermediate compositor frame. Final signoff remains open until the
+new test evidence is attached to the committed release candidate.
 
 ### SI-06: Distribution and release gate
 
@@ -233,9 +249,8 @@ pass. No package publication, commit, push, or tag is implied by these checks.
 
 ## Next steps
 
-The optional trimming design is approved and implemented on this branch. Finish
-verification and record evidence for the implemented consumer, companion,
-and UI integration work. Resolve SI-02's retention contract before migrating
-the full demo, then finalize SI-04 against that paging contract and complete
-SI-06's release review. No release gate is implied by branch creation or an
-uncommitted implementation.
+The optional trimming design and full-demo paging integration are implemented
+in `732e143`. Finish API-documentation signoff and the remaining browser and
+performance verification, then complete SI-06's review of the exact merge
+candidate. Don't expand the example apps. A pushed implementation doesn't
+imply release approval.

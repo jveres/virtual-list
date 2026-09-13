@@ -3,7 +3,9 @@
 The approved optional-trimming API and streaming integration are implemented
 on `feat/streaming-integration`, based on `main` commit `7caef9a`. These are
 September 13, 2026 working-tree results, not verification of a committed
-release candidate. Nothing has been pushed, published, or tagged.
+release candidate. The implementation was subsequently committed and pushed
+as `732e143`; see the [later cleanup audit](clean-code-audit-2026-09-13.md)
+for subsequent fixes and verification. Nothing has been published or tagged.
 
 ## API and ownership review
 
@@ -139,19 +141,27 @@ removed. The separate user-started development server was preserved.
 
 ## Remaining release gates
 
+The later [UI verification report](streaming-ui-verification-2026-09-13.md)
+covers installed-Safari composer behavior and custom scoped typography.
+The [interleaved Firefox comparison](streaming-integration-firefox-profile-2026-09-13.md)
+adds fast-streaming scrollback evidence and doesn't reproduce the earlier
+candidate CPU increase. These are scoped results, not universal compositor
+or CPU guarantees.
+
 The implementation is not a claim that every release-plan acceptance item
 has been signed off. Keep these items open:
 
-- Actual Safari verification of the composer-specific behavior. WebKit
-  automation passed but does not establish Safari compositor behavior.
-- Dedicated custom scoped-typography/measurement-container coverage and
-  standalone sticky/branch examples beyond the guide and full-demo tests.
+- Signoff of the new UI and Firefox evidence on the committed release
+  candidate, with the reports' workload and visual-verification limits.
+- Signoff of the [companion and UI API reference](integration-api.md).
+  Additional standalone examples are out of scope by the September 13, 2026
+  decision; retain existing consumer and full-demo tests as behavior evidence.
 - Final API and app/runtime ownership review, commit references, and
   verification of the exact merge candidate. The source-based package stays
   private; publishing is a separate action.
-- CPU performance signoff, native live-token throughput evidence, and
-  release approval. Rich-history frame timing and process cleanup are
-  recorded above; they do not close those remaining gates.
+- Final performance and release approval. The newer fast-reply capture
+  covers live generation during scrollback, not maximum throughput or every
+  hands-off follow workload.
 
 See the [trackable release plan](streaming-integration-plan.md) for the full
 acceptance checklist and the [consumer guide](streaming-consumer.md) for

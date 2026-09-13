@@ -1,5 +1,10 @@
 # Build a streaming consumer
 
+Use this guide for integration flow and the
+[companion and UI API reference](integration-api.md) for signatures, options,
+defaults, lifecycle, and error behavior. You don't need to extract helpers
+from a demo; the supported source entry points are listed below.
+
 Start with [the basic example](../examples/streaming-basic/main.ts) for send,
 pin, token growth, stop, follow/rearm, and conversation replacement. It uses
 only the public runtime entry point and plain text rendering. Run it with
@@ -215,5 +220,6 @@ pnpm run test:consumer
 pnpm run test:regression -- --group=runtime --match=streaming-consumer
 ```
 
-Follow [the release plan](streaming-integration-plan.md) for remaining full-demo
-migration, pinned-history retention, Markdown parity, and release gates.
+Follow [the release plan](streaming-integration-plan.md) for API-documentation
+signoff and remaining browser, performance, and release gates. Additional
+standalone examples aren't required for this release.

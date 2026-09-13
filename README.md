@@ -132,8 +132,13 @@ Everything under `src/`:
 
 ## Public API
 
+Import the core from `src/index.ts`. The
+[companion and UI API reference](docs/integration-api.md) documents optional
+paging, sticky headers, reading anchors, and UI helpers, including their
+ownership and lifecycle contracts.
+
 ```ts
-import { createVirtualList } from "./src/virtual-list";
+import { createVirtualList } from "./src/index";
 
 const list = createVirtualList(viewport, {
   items,
@@ -180,8 +185,13 @@ list.dispose();
   the held snapshot without copying its items or rebuilding its key order.
   Untouched pending rows and the anchor policy are preserved; an explicit
   anchor overrides the pending policy.
-- `updateWindow(update, signal?)` evaluates an update at idle against the
-  current protected window, then commits additions and trimming together.
+- `updateWindow(update, signal?, options?)` evaluates an update at idle
+  against the current protected window, then commits additions and trimming
+  together.
+  `options.protectPin` defaults to `true`; `false` permits offscreen-pin
+  eviction while protecting visible/overscan rows and explicit targets.
+  `options.interrupt` defaults to `false`; use `true` for explicit takeover,
+  not background paging.
   See [bounded paging](docs/bounded-paging.md) for its lifecycle and companion.
 - With `height(item)`, heights must be finite and positive. The runtime
   keeps data and heights for every item, but renders only the overscan
@@ -232,7 +242,7 @@ list.dispose();
   so a scrollback load that extends its day above it leaves that message
   where it was instead of following the header up.
 
-`demos/shared/sticky-headers.ts` is a companion that floats the current
+`createStickyHeaders` from `src/companions/index.ts` floats the current
 section header over the viewport using only `positionOf`/`elementOf`.
 Use `onState` to refresh its committed geometry, and `onViewport` to update
 its position from the supplied scroll snapshot. `onViewport` runs after
