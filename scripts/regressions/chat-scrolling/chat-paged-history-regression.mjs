@@ -3,6 +3,59 @@ import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
+
+async function smoothBottom(page) {
+  const result = await page.evaluate(async () => {
+    const viewport = document.querySelector("#viewport");
+    let lastTop = viewport.scrollTop;
+    const positions = [];
+    const capture = () => {
+      lastTop = viewport.scrollTop;
+    };
+    viewport.addEventListener("scroll", capture, { passive: true });
+    let frame;
+    const sample = () => {
+      positions.push(lastTop);
+      frame = requestAnimationFrame(sample);
+    };
+    try {
+      document.querySelector("#scroll-bottom-btn").click();
+      const initial = viewport.scrollTop;
+      const maximum = viewport.scrollHeight - viewport.clientHeight;
+      lastTop = initial;
+      frame = requestAnimationFrame(sample);
+      await new Promise((resolve) => setTimeout(resolve, 2200));
+      return {
+        initial,
+        maximum,
+        positions,
+        final: viewport.scrollTop,
+        finalMaximum: viewport.scrollHeight - viewport.clientHeight,
+      };
+    } finally {
+      cancelAnimationFrame(frame);
+      viewport.removeEventListener("scroll", capture);
+    }
+  });
+  assert.ok(
+    result.maximum - result.initial > 100,
+    "restoration must not land at the end before the glide",
+  );
+  const intermediate = new Set(
+    result.positions.filter(
+      (top) => top > result.initial + 1 && top < result.maximum - 1,
+    ),
+  );
+  assert.ok(
+    intermediate.size >= 5,
+    `expected animated progress, got ${intermediate.size} intermediate positions`,
+  );
+  assert.ok(
+    Math.abs(result.finalMaximum - result.final) <= 1,
+    "smooth navigation must reach the end",
+  );
+}
+
 for (const engine of [firefox, chromium, webkit]) {
   const browser = await engine.launch();
   try {
@@ -20,16 +73,16 @@ for (const engine of [firefox, chromium, webkit]) {
       () => !document.documentElement.classList.contains("booting"),
     );
     const transcript = Array.from(
-      { length: 160 },
+      { length: 124 },
       (_, index) =>
-        `**${index % 2 ? "Assistant" : "User"}**\n\nHistory turn ${index + 1}. ${"Synthetic paging content. ".repeat(20)}\n`,
+        `**${index % 2 ? "Assistant" : "User"}**\n\nHistory turn ${index + 1}. ${"Synthetic paging content. ".repeat(index < 96 ? 100 : 20)}\n`,
     ).join("\n");
     await page.locator("#import-file").setInputFiles({
       name: "paged-history.md",
       mimeType: "text/markdown",
       buffer: Buffer.from(transcript),
     });
-    await page.locator('#viewport [data-key="160"]').waitFor();
+    await page.locator('#viewport [data-key="124"]').waitFor();
     const readRange = () =>
       page.locator("#window-status").evaluate((node) => {
         const match = /loaded ([\d,]+)-([\d,]+)\/([\d,]+)/.exec(
@@ -39,6 +92,25 @@ for (const engine of [firefox, chromium, webkit]) {
           ?.slice(1)
           .map((value) => Number(value.replaceAll(",", "")));
       });
+    for (const first of [73, 49]) {
+      await page.locator("#scroll-top-btn").click();
+      await page.waitForFunction(
+        (first) =>
+          document
+            .querySelector("#window-status")
+            .textContent.includes(`loaded ${first}-`),
+        first,
+      );
+    }
+    const afterTwoPages = await readRange();
+    assert.equal(
+      afterTwoPages[1],
+      96,
+      "two page loads must evict the latest page",
+    );
+    await smoothBottom(page);
+    assert.equal((await readRange())[1], 124);
+
     for (let step = 0; step < 9; step++) {
       await page.locator("#viewport").evaluate((node) => {
         node.scrollTop = 0;
@@ -47,15 +119,15 @@ for (const engine of [firefox, chromium, webkit]) {
       await page.waitForTimeout(800);
     }
     const [first, last, total] = await readRange();
-    assert.equal(total, 160);
+    assert.equal(total, 124);
     assert.equal(first, 1);
-    assert.ok(last < 159, "latest prompt page must be evictable");
+    assert.ok(last < 123, "latest prompt page must be evictable");
     assert.ok(
       last - first + 1 <= 72,
       `retained ${last - first + 1} source messages`,
     );
-    await page.locator("#scroll-bottom-btn").click();
-    await page.locator('#viewport [data-key="160"]').waitFor();
+    await smoothBottom(page);
+    await page.locator('#viewport [data-key="124"]').waitFor();
     await page.waitForFunction(() => {
       const node = document.querySelector("#viewport");
       return (
@@ -63,11 +135,11 @@ for (const engine of [firefox, chromium, webkit]) {
       );
     });
     const restored = await readRange();
-    assert.equal(restored[1], 160);
+    assert.equal(restored[1], 124);
     assert.ok(restored[1] - restored[0] + 1 <= 72);
     assert.match(
-      await page.locator('#viewport [data-key="160"]').innerText(),
-      /History turn 160/,
+      await page.locator('#viewport [data-key="124"]').innerText(),
+      /History turn 124/,
     );
     assert.deepEqual(errors, []);
     console.log(

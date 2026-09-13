@@ -3270,10 +3270,12 @@ scrollTopBtn.addEventListener("click", (event) => {
 scrollBottomBtn.addEventListener("click", (event) => {
   if (stepsByPrompt(event) && jumpToPrompt("next")) return;
   if (loadedEnd < transcript.length) {
-    // Explicit navigation replaces the source window; the runtime owns the
-    // end anchor and follow intent. No traversal through intervening pages.
+    // The old viewport may exceed the restored window's entire height.
+    // Anchor its first message explicitly: either an end anchor or a clamped
+    // old offset would land immediately, leaving the glide nothing to do.
     selectWindowAround(transcript.length - 1);
-    pushItems("end", true);
+    const first = transcript[loadedStart];
+    if (first) pushItems({ key: String(first.id), offset: 0 }, true);
   }
   // Landing at the end re-engages end-follow, so a click during a stream
   // resumes following (the runtime's follow state, not demo bookkeeping).
