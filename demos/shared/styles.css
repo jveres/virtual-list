@@ -1136,6 +1136,10 @@ p.ai-settings-note {
   margin-top: 8px;
 }
 
+.message.user .message-attachments {
+  justify-content: flex-end;
+}
+
 .message-generated-files {
   display: flex;
   flex-direction: column;
@@ -1178,6 +1182,29 @@ p.ai-settings-note {
   flex-shrink: 0;
   object-fit: cover;
   border-radius: 4px;
+}
+
+.attachment-file {
+  padding: 0;
+}
+
+.attachment-chip > .attachment-open {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  height: auto;
+  min-height: 0;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: inherit;
+  color: inherit;
+  font: inherit;
+}
+
+.attachment-file > .attachment-remove {
+  margin-right: 10px;
 }
 
 .attachment-name {

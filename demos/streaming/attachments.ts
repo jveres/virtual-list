@@ -153,6 +153,28 @@ export function attachmentInput(
       };
 }
 
+function openAttachment(attachment: ChatAttachment): void {
+  const [validated] = storedAttachments([attachment]);
+  if (!validated) return;
+  const encoded = validated.dataUrl.slice(validated.dataUrl.indexOf(",") + 1);
+  const bytes = Uint8Array.from(atob(encoded), (character) =>
+    character.charCodeAt(0),
+  );
+  // Active documents must not execute in a blob URL with the app's origin.
+  const type =
+    validated.mimeType === "text/html" ||
+    validated.mimeType === "application/xml"
+      ? "text/plain"
+      : validated.mimeType;
+  const url = URL.createObjectURL(new File([bytes], validated.name, { type }));
+  try {
+    // Keep this synchronous with the click so popup blockers see the user gesture.
+    window.open(url, "_blank", "noopener,noreferrer");
+  } finally {
+    window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+}
+
 /** No file contents or filenames are interpreted as HTML. */
 export function attachmentChip(attachment: ChatAttachment): HTMLElement {
   const chip = document.createElement("div");
@@ -174,6 +196,18 @@ export function attachmentChip(attachment: ChatAttachment): HTMLElement {
     attachment.size < 1024 * 1024
       ? `${Math.max(1, Math.ceil(attachment.size / 1024))} KB`
       : `${(attachment.size / (1024 * 1024)).toFixed(1)} MB`;
-  chip.append(label, size);
+  if (attachment.mimeType.startsWith("image/")) {
+    chip.append(label, size);
+  } else {
+    chip.classList.add("attachment-file");
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "attachment-open";
+    open.title = `Open ${attachment.name} in a new tab`;
+    open.setAttribute("aria-label", open.title);
+    open.append(label, size);
+    open.addEventListener("click", () => openAttachment(attachment));
+    chip.append(open);
+  }
   return chip;
 }
