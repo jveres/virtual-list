@@ -1,5 +1,9 @@
 # Clean-code audit: September 13, 2026
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 This audit reviews the working tree on `feat/streaming-integration`, including
 the pending streaming consumers, paging extension, and integration helpers.
 The review finds and fixes four medium-severity source issues and one
@@ -39,11 +43,11 @@ runtime or actual demo pages, without exporting implementation details.
 
 | ID | Severity | Category | Location | Impact and fix |
 | --- | --- | --- | --- | --- |
-| CC-01 | Medium | Async source ownership | [`src/paging.ts`](../src/paging.ts) | A normal `updateItem` during detached preparation silently drops the fetched page. Track every committed source revision, not only live tokens, and retry preparation against current source data. |
-| CC-02 | Medium | Lifecycle cleanup | [`examples/streaming-basic/main.ts`](../examples/streaming-basic/main.ts) | A failing final render leaves Send disabled and the stream busy. Always release controls in a nested `finally`. Apply the same cleanup protection to the main chat's finalization. |
-| CC-03 | Medium | Input validation | [`demos/streaming/streaming.ts`](../demos/streaming/streaming.ts), [`demos/gallery/gallery.ts`](../demos/gallery/gallery.ts) | Stored JSON `null` crashes startup. Parse as `unknown`, accept only non-null, non-array objects, and validate gallery concurrency as a number before membership checks. |
-| CC-04 | Medium | Async error handling | [`demos/streaming/streaming.ts`](../demos/streaming/streaming.ts) | Render failure during send preparation escapes as an unhandled rejection. Send, edit, and regenerate now share a caught event boundary. Await the pin/fly-in operations together so the pin completion branch isn't detached. |
-| CC-05 | Medium | Test isolation | [`scripts/regressions/feed/feed-regression.mjs`](../scripts/regressions/feed/feed-regression.mjs) | Standalone renderer fixtures shrink the live feed viewport because they become flex siblings. Position fixtures outside normal flow and assert that the viewport height stays unchanged during mounting and image decoding. |
+| CC-01 | Medium | Async source ownership | [`src/paging.ts`](../../src/paging.ts) | A normal `updateItem` during detached preparation silently drops the fetched page. Track every committed source revision, not only live tokens, and retry preparation against current source data. |
+| CC-02 | Medium | Lifecycle cleanup | [`examples/streaming-basic/main.ts`](../../examples/streaming-basic/main.ts) | A failing final render leaves Send disabled and the stream busy. Always release controls in a nested `finally`. Apply the same cleanup protection to the main chat's finalization. |
+| CC-03 | Medium | Input validation | [`demos/streaming/streaming.ts`](../../demos/streaming/streaming.ts), [`demos/gallery/gallery.ts`](../../demos/gallery/gallery.ts) | Stored JSON `null` crashes startup. Parse as `unknown`, accept only non-null, non-array objects, and validate gallery concurrency as a number before membership checks. |
+| CC-04 | Medium | Async error handling | [`demos/streaming/streaming.ts`](../../demos/streaming/streaming.ts) | Render failure during send preparation escapes as an unhandled rejection. Send, edit, and regenerate now share a caught event boundary. Await the pin/fly-in operations together so the pin completion branch isn't detached. |
+| CC-05 | Medium | Test isolation | [`scripts/regressions/feed/feed-regression.mjs`](../../scripts/regressions/feed/feed-regression.mjs) | Standalone renderer fixtures shrink the live feed viewport because they become flex siblings. Position fixtures outside normal flow and assert that the viewport height stays unchanged during mounting and image decoding. |
 
 ### CC-01: Staged paging and concurrent edits
 

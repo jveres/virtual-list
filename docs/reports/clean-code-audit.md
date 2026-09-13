@@ -1,5 +1,9 @@
 # Clean-code audit
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 The September 11, 2026 follow-up reviews the pending core performance changes,
 their tests, and the runtime's state and resource ownership. It also checks
 the streaming markdown regression and selected demo security boundaries.

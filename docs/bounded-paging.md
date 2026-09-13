@@ -103,12 +103,12 @@ await paging.updateItem(messageId, (message) => ({
 }));
 ```
 
-The synchronous updater receives the latest committed item, must return an
-immutable replacement with the same key, and runs at the runtime's commit
-boundary. Queued edits and loads preserve each other's changes. Missing keys
-and unchanged object references resolve `false`; key changes reject. Edits
-don't evict pages. Don't edit projected rows through `list.updateItem` or
-replace them through `list.setItems`: those APIs don't update page ownership.
+The synchronous updater receives the latest retained source item, including
+submitted live edits, must return an immutable replacement with the same key,
+and runs at the runtime's commit boundary. Queued edits and loads preserve
+each other's changes. Missing keys and unchanged object references resolve
+`false`; key changes reject. Edits don't evict pages. Don't bypass page
+ownership with direct `list.updateItem` or `list.setItems` calls.
 
 For one-source-item/one-row streaming updates, configure the optional `live`
 adapter and use `paging.updateItemLive`. This submits through the runtime's
@@ -116,6 +116,46 @@ live row path rather than waiting for scroll settle. Its promise describes
 submission, not geometry commit; structural projection changes still use
 `updateItem`. See [live paging](streaming-consumer.md#live-paging) for source
 ownership, preparation retries, failure recovery, and eviction semantics.
+
+## Offscreen-pin trimming decision
+
+The user approved optional offscreen-pin trimming on September 13, 2026,
+as SI-02 of the [integration plan](streaming-integration-plan.md). It was
+implemented in `732e143`; the
+[candidate review](reports/streaming-release-review-2026-09-13.md) records
+verification on `9af905c`. Approval of this design isn't release approval.
+
+Without the opt-in, `updateWindow` protects the persistent pin even when
+it is outside the visible and overscan window. A contiguous, whole-page
+pager can therefore retain the latest pinned page and every intervening
+page while the reader browses older history. The same need occurs in a
+live event viewer: keep the current event pinned while following, but
+permit its page to leave memory while reading older events.
+
+The alternatives don't preserve the required behavior:
+
+- `pinning: false` avoids that retention but removes prompt/event pinning.
+- Ignoring `protectedItems` in the pager cannot distinguish a pin from a
+  visible row or an explicit navigation target.
+- Replacing through `setItems` bypasses the pager's idle transaction and
+  staged-preparation safeguards.
+
+The accepted extension adds only `protectPin` to the runtime transaction.
+Budget and eviction policy remain in the optional pager. Opted-in proposals
+must retain visible/overscan rows and explicit targets, including a target
+returned by the updater. Unsafe synchronous proposals resolve `false`;
+staged proposals revalidate protection before commit. Removing the pin and
+its trailing reserve belongs to that same anchor-preserving commit, not
+host-side scroll correction. No second scroll controller or per-frame
+retention scan is introduced.
+
+The [optional-trimming contract](streaming-consumer.md#optional-trimming)
+defines the three policies, soft budget, declarative pin restoration without
+navigation or follow rearming, and the lack of imperative-pin restoration.
+The [live-paging contract](streaming-consumer.md#live-paging) covers archived
+tokens and source replacement. These maintained contracts replace the
+original proposal's duplicated API description; the integration plan retains
+its SI-02a through SI-02d completion record.
 
 ## Cursor and refresh semantics
 

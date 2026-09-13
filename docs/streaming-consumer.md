@@ -26,6 +26,14 @@ This branch retains source-based distribution. Copy `src/` as a unit into a
 TypeScript/bundler project; individual internal files are not standalone.
 The project does not yet publish an installable package.
 
+The repository compiles against ES2022 and DOM libraries with TypeScript
+bundler module resolution. Use a compatible TypeScript/bundler setup and
+create DOM-backed lists and helpers only in the browser. Runtime facilities
+include `ResizeObserver`, animation frames, and abort signals; paging also
+uses `AbortSignal.any`. The source copy doesn't bundle browser polyfills.
+The locked development-tool versions are recorded in `pnpm-lock.yaml`;
+they aren't runtime dependencies of the copied core.
+
 | Import | Responsibility |
 | --- | --- |
 | `src/index` | Virtual list creation and public runtime types. |
@@ -204,8 +212,10 @@ The Markdown example uses the repository's `markdown-viewer` version
 and paged examples. The extracted CSS includes the full demo's footer
 reservation selectors; a host must supply that markup to use those rules.
 Import `integrations/collapse.css` when using the collapse helpers and supply
-your own visual button styling. Rich-content parity and actual Safari
-verification remain release gates, not implicit core guarantees.
+your own visual button styling. The
+[UI verification report](reports/streaming-ui-verification-2026-09-13.md) records
+installed-Safari composer and scoped-typography checks. Its tested scenarios
+are integration evidence, not implicit guarantees for every renderer or style.
 
 ## Verification
 
@@ -220,6 +230,7 @@ pnpm run test:consumer
 pnpm run test:regression -- --group=runtime --match=streaming-consumer
 ```
 
-Follow [the release plan](streaming-integration-plan.md) for API-documentation
-signoff and remaining browser, performance, and release gates. Additional
-standalone examples aren't required for this release.
+The [candidate review](reports/streaming-release-review-2026-09-13.md) records completed
+API and browser verification with native-performance evidence and its limits.
+Follow [the release plan](streaming-integration-plan.md) for remaining
+merge/release actions. Additional standalone examples aren't required.

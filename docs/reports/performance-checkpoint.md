@@ -1,5 +1,9 @@
 # Runtime performance checkpoint
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 The browser checks and benchmarks cover runtime commit `822a026`. The only
 code correction during validation was to the dynamic-height lab's visibility
 assertion; no runtime behavior changed.

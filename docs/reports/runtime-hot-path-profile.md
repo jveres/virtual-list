@@ -1,5 +1,9 @@
 # Runtime hot path profile
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 This report records a Firefox-first audit of the runtime's scroll, commit,
 and measurement paths on September 10, 2026, at commit `3a483d7` plus the
 change described below. Two workloads drove the installed Firefox 155.0.1
@@ -52,7 +56,7 @@ CPU costs of the invalidating call.
 The historical `complex-chat-setup.js` fixture was not tracked and is no
 longer available in this checkout. These measurements cannot be exactly
 reproduced from a fresh clone. For new investigations, use the tracked
-[rich-chat fixture](../scripts/firefox-profile/fixtures/rich-chat.js) and
+[rich-chat fixture](../../scripts/firefox-profile/fixtures/rich-chat.js) and
 [September 13 audit](runtime-scroll-audit-2026-09-13.md). That fixture has
 160 linear turns, not the historical 400-node branch tree; don't treat it
 as an identical baseline.

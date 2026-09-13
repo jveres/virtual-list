@@ -1,5 +1,9 @@
 # Demo performance audit
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 The September 6, 2026 audit covered all six demos with native macOS scroll
 input in Firefox 155.0.1 on the external LU28R55 display: a 1900 × 965 CSS-pixel
 viewport, 2× scaling, and 60 Hz. Each capture used a fresh browser profile
@@ -152,5 +156,5 @@ their Firefox and WebKit regressions.
 If physical jitter persists, capture the actual trackpad gesture with `--live`
 on the same display. Inspect presentation and renderer tracks around the
 reported hitch before proposing another application patch. See
-[Firefox-first profiling](firefox-profiling.md) for capture instructions and
+[Firefox-first profiling](../firefox-profiling.md) for capture instructions and
 limitations.

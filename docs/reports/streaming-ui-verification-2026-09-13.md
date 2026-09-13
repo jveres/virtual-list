@@ -1,8 +1,12 @@
 # Streaming UI verification — September 13, 2026
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 Installed Safari composer checks and scoped-typography checks passed without
 an application patch. This supplies the two missing SI-05 verification
-cases from the [release plan](streaming-integration-plan.md). Final API and
+cases from the [release plan](../streaming-integration-plan.md). Final API and
 release-candidate signoff remain separate.
 
 The tested application is commit `732e143` on `feat/streaming-integration`.

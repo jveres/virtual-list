@@ -19,7 +19,8 @@ and testing the code.
 
 The [streaming integration release plan](docs/streaming-integration-plan.md)
 tracks the implemented consumer examples and companions, verification
-evidence, and remaining release gates.
+evidence, and remaining release gates. Historical measurements and audits are
+listed in the [verification report index](docs/reports/README.md).
 
 Start with the [streaming consumer guide](docs/streaming-consumer.md) and
 `/examples/streaming-basic/` for the small runtime-only example, or

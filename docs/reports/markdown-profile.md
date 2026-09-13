@@ -1,5 +1,9 @@
 # Measured markdown history profile
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 This follow-up to the [runtime checkpoint](performance-checkpoint.md) profiles
 generated history with the streaming demo's static markdown renderer and chat
 row builder. Runtime code remains at `822a026`; the checkpoint and lab fix

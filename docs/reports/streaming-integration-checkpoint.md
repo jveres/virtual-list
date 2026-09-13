@@ -1,11 +1,19 @@
 # Streaming integration checkpoint
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 The approved optional-trimming API and streaming integration are implemented
 on `feat/streaming-integration`, based on `main` commit `7caef9a`. These are
 September 13, 2026 working-tree results, not verification of a committed
 release candidate. The implementation was subsequently committed and pushed
 as `732e143`; see the [later cleanup audit](clean-code-audit-2026-09-13.md)
 for subsequent fixes and verification. Nothing has been published or tagged.
+
+For current candidate `9af905c`, use the
+[release review](streaming-release-review-2026-09-13.md). The measurements and
+test counts below are the earlier checkpoint, not the latest acceptance run.
 
 ## API and ownership review
 
@@ -148,23 +156,22 @@ adds fast-streaming scrollback evidence and doesn't reproduce the earlier
 candidate CPU increase. These are scoped results, not universal compositor
 or CPU guarantees.
 
-The implementation is not a claim that every release-plan acceptance item
-has been signed off. Keep these items open:
+The final API/ownership review and branch-candidate verification are complete;
+the release review records 78 passing browser scripts and links the native
+evidence to the unchanged application source. Keep these release actions open:
 
-- Signoff of the new UI and Firefox evidence on the committed release
-  candidate, with the reports' workload and visual-verification limits.
-- Signoff of the [companion and UI API reference](integration-api.md).
-  Additional standalone examples are out of scope by the September 13, 2026
-  decision; retain existing consumer and full-demo tests as behavior evidence.
-- Final API and app/runtime ownership review, commit references, and
-  verification of the exact merge candidate. The source-based package stays
-  private; publishing is a separate action.
-- Final performance and release approval. The newer fast-reply capture
-  covers live generation during scrollback, not maximum throughput or every
-  hands-off follow workload.
+- Commit the documentation signoff and completed, approved documentation
+  consolidation/report reorganization before merging.
+- Obtain explicit merge/release approval and verify the exact resulting main
+  commit before an authorized tag. The source-based package stays private;
+  publication is separate.
 
-See the [trackable release plan](streaming-integration-plan.md) for the full
-acceptance checklist and the [consumer guide](streaming-consumer.md) for
+Acceptance remains limited to the recorded workloads. The fast-reply capture
+covers live generation during scrollback, not maximum throughput or every
+hands-off follow workload. Additional example apps remain out of scope.
+
+See the [trackable release plan](../streaming-integration-plan.md) for the full
+acceptance checklist and the [consumer guide](../streaming-consumer.md) for
 run commands and integration contracts.
 
 The user confirmed the reported top-button/page-load shift is gone. The

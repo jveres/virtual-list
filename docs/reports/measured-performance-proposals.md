@@ -1,5 +1,9 @@
 # Measured performance proposals
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 The September 11, 2026 investigation retains two internal changes: cached
 staged-input validation and clip wrappers allocated only for mounted rows.
 Neither changes the public API or delays synchronous geometry updates. The
@@ -15,7 +19,7 @@ refactoring findings.
 Measurements use installed Firefox 155.0.1, fresh temporary profiles, closed
 DevTools, and the external LU28R55 at 1920 × 1080 logical pixels, 2× scaling,
 and 60 Hz. The browser content area is 1900 × 965 pixels. Follow the
-[Firefox-first workflow](firefox-profiling.md) when repeating these results.
+[Firefox-first workflow](../firefox-profiling.md) when repeating these results.
 
 Native scroll captures use the complex streaming-chat fixture: 160 active
 turns, 400 branch nodes, local decoded images, tables, code, math, attachments,

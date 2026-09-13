@@ -1,5 +1,9 @@
 # Firefox runtime scroll audit — September 13, 2026
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 Seven native Firefox captures found no slow wheel/scroll event handler or
 animation-frame interval above 25 ms in the tested workloads. This is not a
 claim that the whole app is CPU-spike-free: active streaming has substantial

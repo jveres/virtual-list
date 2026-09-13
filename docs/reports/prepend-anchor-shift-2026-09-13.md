@@ -1,5 +1,9 @@
 # Top-page anchor shift investigation
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 The supplied transcript reproduced a rounding defect after **Scroll to top**
 and the subsequent history-page commit. The fix keeps stacked row heights
 on whole CSS pixels at integer display scales. It changes no public API,

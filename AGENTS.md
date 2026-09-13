@@ -24,8 +24,9 @@ WebKit-specific issue, must be stated explicitly.
 - Preserve raw profiles and metadata locally under ignored
   `browser-artifacts/`. Never upload captures or modify the user's regular
   browser profile without explicit authorization.
-- Keep durable reports in `docs/`, reusable profiling scripts and synthetic
-  fixtures in `scripts/firefox-profile/`, and browser regressions in
+- Keep durable reports in `docs/reports/` and index them in its `README.md`.
+  Keep reusable profiling scripts and synthetic fixtures in
+  `scripts/firefox-profile/`, and browser regressions in
   `scripts/regressions/`. Do not leave reusable work only in ignored
   `browser-artifacts/`. Remove personal paths and private inputs before
   promoting exploratory probes; preserve raw captures locally.

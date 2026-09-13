@@ -1,5 +1,9 @@
 # Streaming integration Firefox profile — September 13, 2026
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 Eight native Firefox captures did not reproduce the earlier candidate CPU
 increase or identify a new wheel/scroll-handler bottleneck. Rich-history CPU
 was lower in both candidate repeats; fast-streaming CPU overlapped the main
@@ -8,7 +12,7 @@ comparison, not a claim that streaming is CPU-spike-free or that physical
 presentation is universally smooth.
 
 This follows the [integration checkpoint](streaming-integration-checkpoint.md)
-and the [Firefox-first workflow](firefox-profiling.md). It adds native
+and the [Firefox-first workflow](../firefox-profiling.md). It adds native
 fast-reply/scrollback evidence, which the integration checkpoint's previous
 rich-history captures didn't cover.
 

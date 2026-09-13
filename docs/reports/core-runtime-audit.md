@@ -1,5 +1,9 @@
 # Core and runtime performance audit
 
+> Verification record, not current API guidance. Results and status apply
+> to the revision and workload described below. See the
+> [release plan](../streaming-integration-plan.md) for current release status.
+
 The September 11, 2026 audit of baseline `9c30774` retains two changes:
 indexed positioned-anchor lookup and boundary-only stacked-row entry work.
 It also evaluates architectural simplifications. A known-height tree-build
@@ -12,7 +16,7 @@ Measurements use installed Firefox 155.0.1 with fresh temporary profiles,
 closed DevTools, and the external LU28R55: 1920 × 1080 logical pixels at 2×
 scaling and 60 Hz. Browser content is 1900 × 965; the isolated list viewport
 is 1000 × 700. The original source is preserved in an ignored baseline copy.
-Follow the [Firefox-first workflow](firefox-profiling.md) to repeat captures.
+Follow the [Firefox-first workflow](../firefox-profiling.md) to repeat captures.
 
 CPU comparisons alternate baseline and candidate order, with five pairs per
 case in each of two fresh browser sessions, followed by a final integrated

@@ -60,6 +60,11 @@ The pager owns all retained source edits. Don't bypass it with direct
 | `reconcile()` | `Promise<boolean> \| null`; retries protected, over-budget trimming. Returns `null` when no attempt is needed, including `trim: false`. |
 | `dispose()` | Returns `void`; cancels fetches and queued work. Dispose before replacing source ownership or disposing the list. |
 
+`updateItemLive` delegates to runtime `updateItem`; it doesn't override the
+list's `scrollingUpdates` policy. Configure `scrollingUpdates: "live"` for
+height-changing tokens to render during a gesture. The pager's structural
+operations still wait for idle.
+
 Handle rejected operation promises, including
 `paging.reconcile()?.catch(reportError)`. Invalid live configuration, changed
 keys, and thrown adapters reject rather than returning `false`. Keep updaters
@@ -219,9 +224,10 @@ Wire the remaining functions to the element lifecycle:
 
 All three functions are no-ops for unprepared rows. Disconnect observation
 before discarding a row outside runtime-managed lifecycle. Keep renderer
-destruction in `onDestroy`, separate from temporary unmounts. Scoped
-typography and installed-Safari verification remain tracked release gates,
-not guarantees implied by these helpers.
+destruction in `onDestroy`, separate from temporary unmounts. The
+[UI verification report](reports/streaming-ui-verification-2026-09-13.md) covers
+matching scoped measurement ancestors and installed-Safari composer behavior.
+It doesn't guarantee arbitrary host CSS or delayed web-font behavior.
 
 ### Streaming display text
 

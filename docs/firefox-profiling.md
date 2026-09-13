@@ -90,7 +90,7 @@ Use the tracked fixtures for repeatable local workloads:
   through Vite for an isolated 10,000-row runtime control. Pass its URL to
   `--url`, with `--layout=none` and no setup script.
 
-The [September 13 audit](runtime-scroll-audit-2026-09-13.md) records the
+The [September 13 audit](reports/runtime-scroll-audit-2026-09-13.md) records the
 workload parameters and commands for paired captures.
 
 To retain renderer and GPU-process tracks that shutdown collection can omit,
@@ -165,9 +165,9 @@ and counts nonempty style passes between consecutive refresh tick starts.
 node scripts/firefox-profile/attribute.mjs browser-artifacts/firefox/run-EXAMPLE --filter=/src/
 ```
 
-The [runtime hot path profile](runtime-hot-path-profile.md) records the
+The [runtime hot path profile](reports/runtime-hot-path-profile.md) records the
 corrected attribution and the limits on what it can establish.
-The [measured proposal results](measured-performance-proposals.md) record
+The [measured proposal results](reports/measured-performance-proposals.md) record
 retained optimizations, rejected experiments, and comparable captures.
 
 For sampled thread CPU and the longest content-thread awake intervals, use
@@ -199,7 +199,8 @@ generated screenshots, compiled helpers, and caches there. Preserve raw
 captures locally until deletion is explicitly requested; ignoring them does
 not mean deleting them.
 
-Put curated reports under `docs/`, reusable profiling tools and synthetic
+Put curated reports under `docs/reports/` and list them in the
+[report index](reports/README.md). Keep reusable profiling tools and synthetic
 fixtures under `scripts/firefox-profile/`, and browser regressions under
 `scripts/regressions/`. Reports must include the commit, workload, display,
 commands, summarized results, and limitations without requiring local raw
