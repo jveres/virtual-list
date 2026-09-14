@@ -21,6 +21,19 @@ earlier native captures and preserve each investigation's limits.
 | [Prepend anchor shift](prepend-anchor-shift-2026-09-13.md) | Rounding diagnosis, regression coverage, and user acceptance. |
 | [September 13 clean-code audit](clean-code-audit-2026-09-13.md) | Five resolved findings included in `732e143`; historical working-tree status. |
 
+## September 14 runtime review
+
+The static review below lists candidates after the streaming integration.
+The measurement follow-up separates demonstrated gains from rejected or
+unproven proposals. The implementation report records the bounded hidden-row
+patch and its fresh comparison. The other candidates remain unchanged.
+
+| Report | Scope |
+| --- | --- |
+| [September 14 runtime static review](runtime-static-review-2026-09-14.md) | Six ranked candidates at `6fc4434`, led by detached streaming measurement; no source changed. |
+| [September 14 candidate measurements](runtime-candidate-measurements-2026-09-14.md) | Paired external-display Firefox captures: retention CPU gain, staging frame-cost regression, and remaining evidence limits. |
+| [Hidden streaming row implementation](hidden-streaming-row-2026-09-14.md) | Bounded retention, lifecycle coverage, WebKit Find limitation, and a 28.4% median CPU reduction in six fresh native captures. |
+
 ## Earlier investigations
 
 Keep these records for their evidence and design lessons. Old test counts,

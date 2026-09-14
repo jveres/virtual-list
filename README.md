@@ -200,6 +200,11 @@ list.dispose();
   calls `render` without an existing element, then `onMount`. Keep state
   that must survive scrolling in item data. Unknown-height rows retain
   their measured elements as before.
+- Use `onMount` and `onUnmount` to manage resources for mounted rows.
+  Do not use `element.isConnected` as a mount signal. The runtime can retain
+  one measured row in a hidden, inert root between offscreen updates.
+  Mounting moves the same element into the scroll surface. Removal and
+  disposal release it through the existing lifecycle hooks.
 - For viewport-scoped row styles, pass `measurementContainer`: an element
   outside the scroll surface with the same typography, CSS variables, and
   ancestor classes. The hidden measurement root inherits from that element.

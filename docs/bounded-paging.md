@@ -94,6 +94,12 @@ list. It cancels outstanding fetches and queued commits, so late responses
 cannot enter the replacement source. Construct the replacement companion with
 the same initial data you submit to the list.
 
+For explicit navigation to an evicted destination, follow the
+[restoration sequence](streaming-consumer.md#restoring-an-evicted-destination).
+`scrollTo("end")` targets the retained runtime window, not your archive.
+The sequence separates source replacement, its starting anchor, and the
+subsequent scroll command. It does not change routine paging transactions.
+
 Update retained source items through `paging.updateItem(key, update)`:
 
 ```ts

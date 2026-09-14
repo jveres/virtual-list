@@ -14,7 +14,8 @@ For paging and live updates together, open `/examples/streaming-paged/` and
 read [its source](../examples/streaming-paged/main.ts). This separate example
 uses a bounded history window with an evictable latest-prompt pin. The full
 streaming demo uses the same companion for history and live row updates.
-Remaining verification is tracked in [the release plan](streaming-integration-plan.md).
+The [release plan](streaming-integration-plan.md) records the completed merge
+and the remaining release actions.
 
 For renderer integration, open `/examples/streaming-markdown/` and read
 [its source](../examples/streaming-markdown/main.ts). It adds Markdown and an
@@ -22,7 +23,7 @@ autosizing composer without importing demo implementation files.
 
 ## Supported source entry points
 
-This branch retains source-based distribution. Copy `src/` as a unit into a
+The project uses source-based distribution. Copy `src/` as a unit into a
 TypeScript/bundler project; individual internal files are not standalone.
 The project does not yet publish an installable package.
 
@@ -156,6 +157,60 @@ rechecks staged work before committing and does not change gesture timing.
 Normal structural replacements can continue to use the existing default
 window update or `setItems` APIs.
 
+## Restoring an evicted destination
+
+`scrollTo("end")` targets the end of the current runtime items, not the end
+of your archive. It does not fetch a missing destination. If the latest page
+is already retained, call `scrollTo("end", { behavior: "smooth" })` directly.
+
+For an evicted latest page, the application replaces the retained window
+before it requests movement. A window is the contiguous group of source
+items currently supplied to the list. Use this sequence from a user action:
+
+1. Select or fetch a bounded window that includes the archive's latest item.
+   If fetching is asynchronous, discard results superseded by another
+   navigation or conversation change.
+2. Dispose the old pager before replacing its items.
+   Clear its application reference so runtime callbacks cannot reuse it.
+3. Submit the projected rows through `setItems` with `interrupt: true` and
+   an explicit starting `anchor: { key: firstMessageKey, offset: 0 }`.
+   Use the first message's runtime key in the replacement window, not a
+   removed key or a separator key.
+4. Create the replacement pager from the same source items and their
+   `start` and `end` continuations.
+   Keep its projection, live-update adapter, and trimming policy consistent.
+5. Request `scrollTo("end", { behavior: "smooth" })` after replacement.
+   Handle rejected promises and treat `false` as an interrupted or incomplete
+   command, not permission to force another scroll.
+
+The starting anchor determines the initial view, not the final destination.
+An `"end"` snapshot anchor reaches the destination before animation starts.
+A `"viewport"` anchor also fails to guarantee travel when the windows have
+no shared rows. The old offset can exceed the replacement's height and
+clamp directly to its end. Use a retained reading anchor instead when your
+product requires continuity and that anchor survives the replacement.
+
+This sequence applies to an event handler outside runtime callbacks.
+`setItems` returns `void` and can defer work during a runtime transaction.
+For a replacement that needs a commit result, use
+`updateWindow(updater, signal, { interrupt: true })` and await `true` before
+navigating. Recreate the pager from the committed source in `onCommit`.
+The [runtime boundary](bounded-paging.md#runtime-boundary) defines cancellation
+and errors for that path.
+
+The animation crosses only the restored window, not every evicted page in
+the archive. The window replacement can change the visible content before
+the animation starts. If its content fits within the viewport, no scroll
+distance exists. With `followBehavior: "smooth"`, a successful end landing
+rearms following. Page restoration alone does not rearm it.
+
+Source selection and the starting view remain application policy. The runtime
+owns measurement, clamping, animation, interruption, and following. Do not
+add viewport scroll writes or a second animation loop for this sequence.
+The [paged-history regression](../scripts/regressions/chat-scrolling/chat-paged-history-regression.mjs)
+covers two top-page loads followed by smooth bottom navigation and restoration
+from older history. The fix is recorded in commit `6fc4434`.
+
 ## Sticky headers and replacements
 
 Wire `onState` to `sticky.refresh(snapshot.scrollTop)` and `onViewport` to
@@ -183,7 +238,10 @@ after takeover. Do not cache these coordinates across asynchronous fetches.
 
 ## UI integration contracts
 
-The optional helpers own UI layout, not virtual-list geometry:
+The optional helpers own UI layout, not virtual-list geometry. The collapse
+helper and Markdown styles support specific chat markup. They are reusable
+adapters, not markup-independent components. Use the documented structure or
+supply your own UI adapter without duplicating list scroll control:
 
 - `autosizeTextarea(input, { minHeight, maxHeight, container? })` holds the
   composer box while probing the input. This avoids transient viewport growth
@@ -208,7 +266,8 @@ when finalizing. The helper is not an HTML sanitizer; keep the renderer's
 sanitization enabled and render plain user text through `textContent`.
 
 The Markdown example uses the repository's `markdown-viewer` version
-(`v0.1.3`). Its renderer dependency is separate from the source-only core
+(`v0.1.4`, pinned in [package.json](../package.json)). Its renderer dependency
+is separate from the source-only core
 and paged examples. The extracted CSS includes the full demo's footer
 reservation selectors; a host must supply that markup to use those rules.
 Import `integrations/collapse.css` when using the collapse helpers and supply
@@ -232,5 +291,6 @@ pnpm run test:regression -- --group=runtime --match=streaming-consumer
 
 The [candidate review](reports/streaming-release-review-2026-09-13.md) records completed
 API and browser verification with native-performance evidence and its limits.
-Follow [the release plan](streaming-integration-plan.md) for remaining
-merge/release actions. Additional standalone examples aren't required.
+The integration is merged into `main`. Follow
+[the release plan](streaming-integration-plan.md) for remaining tag and
+publication actions. Additional standalone examples are not required.

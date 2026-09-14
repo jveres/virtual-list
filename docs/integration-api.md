@@ -82,6 +82,11 @@ for overlapping ownership and late-token reconciliation, and
 [optional trimming](streaming-consumer.md#optional-trimming) for declarative
 pin restoration. Trimming bounds retained pages, not your transcript archive.
 
+There is no pager command that selects an arbitrary archived destination.
+The application selects its source window and supplies the runtime command.
+Use the [restoration sequence](streaming-consumer.md#restoring-an-evicted-destination)
+to replace pager ownership before smooth navigation to an evicted latest page.
+
 ## Sticky headers
 
 `createStickyHeaders(config: StickyHeadersConfig): StickyHeaders` creates

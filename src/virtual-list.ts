@@ -200,7 +200,11 @@ export interface VirtualListOptions<T> {
   onViewport?: (viewport: Readonly<GeometryViewport>) => void;
   onReachStart?: (context: ReachContext) => void;
   onReachEnd?: (context: ReachContext) => void;
-  /** The element joined the scroller's DOM (an image can start loading). */
+  /**
+   * The element joined the scroller's DOM (an image can start loading).
+   * Use this hook, not isConnected: off-scroller measurement can keep an
+   * element connected inside a hidden, inert root without mounting it.
+   */
   onMount?: (element: HTMLElement, item: T) => void;
   /** The element is leaving the scroller's DOM (a load can be abandoned); before onDestroy when it dies. */
   onUnmount?: (element: HTMLElement, item: T) => void;
@@ -965,8 +969,9 @@ export function createVirtualList<T>(
     try {
       return measurer.measureMany(detached.map((row) => row.element));
     } finally {
-      // The measurer detaches every element on success and failure. Restore
-      // any existing wrapper; unmounted rows retain just their elements.
+      // A single successful measurement can remain in the hidden root.
+      // Restore any existing wrapper; otherwise mounting moves the resident
+      // into a new slot. Failed batches return every element detached.
       // A row destroyed reentrantly during measurement must stay destroyed.
       for (const row of detached) {
         if (!row.destroyed) row.slot?.appendChild(row.element);

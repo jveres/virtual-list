@@ -5,19 +5,25 @@ optional companions, without copying demo-owned scrolling infrastructure.
 Keep the runtime generic: applications still own message data, branch
 relationships, providers, persistence, rendering, and product choices.
 
-Status: technical implementation and verification complete on candidate
-`9af905c` (`732e143` application source), pushed on `feat/streaming-integration`.
-The [release review](reports/streaming-release-review-2026-09-13.md) records API signoff
-and the clean 78-script sweep. Merge/release approval remains open. The review
-baseline is commit `7caef9a` on `main`, reviewed on September 13, 2026. It passed
-`pnpm run check` and 877 unit tests. Those results are not release-candidate
-verification or new browser/performance evidence.
+Status, September 14, 2026: the integration is merged and pushed to `main`.
+The user approved the merge on September 13, 2026. Main advanced to `8e197f0`
+by fast-forward, so there is no separate merge commit. The
+[release review](reports/streaming-release-review-2026-09-13.md) records API
+signoff and the 78-script sweep on candidate `9af905c`.
+
+The resulting main commit `8e197f0` passed checks, 915 unit tests, 24 profiling
+tool checks, 11 regression-runner checks, isolated consumer builds, and the
+production build. The process audit found no remaining task-owned browser
+or server processes. These are the recorded merge-time results, not checks
+rerun for this documentation update. No `v0.2.0` tag or package publication
+is recorded. Those remain separate release actions.
 
 ## Branch and tracking workflow
 
-The integration branch `feat/streaming-integration` was created from the
-verified `main`. The implementation is committed and pushed. Merging,
-publishing, and tagging remain separate actions; this document performs none.
+The integration branch `feat/streaming-integration` started from main commit
+`7caef9a`. Implementation is in `732e143`, API documentation and verification
+records are in `9af905c`, and documentation consolidation is in `8e197f0`.
+All three commits are now on `main`.
 
 Scope decision, September 13, 2026: retain the existing basic, paged, and
 Markdown consumers. Don't add standalone sticky-header, branching, or other
@@ -25,16 +31,13 @@ example apps for this release. Document the supported APIs directly, with
 signatures, defaults, ownership, lifecycle, errors, and integration wiring.
 Existing consumer and full-demo regressions remain the behavior evidence.
 
-- Keep `main` available for verified fixes while contracts evolve here.
-- Use small commits labeled with the task IDs below. Keep each change
-  buildable and include its tests and documentation.
-- Update a task's status when work starts. Mark it done only with a commit
-  reference and verification evidence. Record blockers and scope decisions.
-- Review API changes before implementation, then review the final public
-  surface before merging. Do not promise unfinished APIs through a tag.
-- After integration passes, merge to `main` and verify that exact commit
-  before tagging the next minor version. Any prerelease tag is explicit,
-  optional, and not evidence that the gates passed.
+For subsequent changes, preserve these release rules:
+
+- Keep each change buildable and include its tests and documentation.
+- Record completed work with a commit reference and scoped verification.
+- Review proposed API changes before implementation.
+- Select and verify the exact release commit before creating an authorized
+  tag. A merge does not publish a package.
 
 ## API constraints
 
@@ -60,11 +63,11 @@ application state, and calls that express user intent remain host concerns.
 
 ## Workstreams
 
-SI-01 through SI-05 are technically complete on candidate `9af905c`, with
+SI-01 through SI-05 are complete and merged, with
 implementation in `732e143`, the linked historical evidence, and the final
-[release review](reports/streaming-release-review-2026-09-13.md). Checked items record
-technical completion, not user approval to merge or tag. SI-06 retains the
-exact-main verification and release-decision gate.
+[release review](reports/streaming-release-review-2026-09-13.md). Checked items
+record completed integration work. SI-06 records the completed merge and
+retains the separate release-tag action.
 
 ### SI-01: Consumer contract and executable reference
 
@@ -100,16 +103,16 @@ remain out of scope by the decision above.
 
 ### SI-02: Live updates with bounded paging
 
-Status: technically complete. Dependency: SI-01's behavior contract. The
-branch has a pager-owned live-update path, a trimmed pinned consumer, and
+Status: technically complete and merged. Dependency: SI-01's behavior contract.
+Main contains a pager-owned live-update path, a trimmed pinned consumer, and
 full-demo integration. The
 [accepted trimming decision](bounded-paging.md#offscreen-pin-trimming-decision)
 preserves the approved rationale and alternatives. The user approved it on
 September 13, 2026; implementation, verification, and API review are complete
-for this branch candidate.
+for the merged implementation.
 
-The baseline [pager](../src/paging.ts) routes edits through the idle-only
-`updateWindow` path. The [streaming demo](../demos/streaming/streaming.ts) now
+The original pager routed all edits through the idle-only `updateWindow`
+path. The [streaming demo](../demos/streaming/streaming.ts) now
 uses `updateItemLive` and the pager's bounded scrollback window. The tree is
 the authoritative archive, including tokens received while a row is evicted.
 
@@ -225,9 +228,9 @@ application source between those captures and committed candidate `9af905c`.
 
 ### SI-06: Distribution and release gate
 
-Status: technical checks complete; merge/release approval and verification
-of the resulting main commit remain open. Dependencies: completed SI-01
-through SI-05.
+Status: integration checks, merge, and merge-time verification are complete.
+The next minor tag and package publication are not recorded.
+Dependencies: completed SI-01 through SI-05.
 
 - [x] Decide and document source-based consumption versus an installable
   package. The current private demo package is not an installable-library
@@ -247,20 +250,42 @@ through SI-05.
   integration paths, following [the profiling workflow](firefox-profiling.md).
   Capture a comparable baseline before those changes. Preserve profiles
   locally and commit the report; do not claim physical smoothness from rAF.
-- [ ] Audit process cleanup, confirm the exact merge candidate passes, and
-  record the release decision. Only then request or execute authorized tags.
+- [x] Audit process cleanup and verify the resulting main commit `8e197f0`.
+  Record the approved merge separately from tagging and publication.
+- [ ] Select and verify the final release commit, then create the next minor
+  tag only when authorized. Package publication remains a separate action.
 
 Done when all acceptance evidence is attached, all five review concerns have
 an implemented resolution, and the user approves any remaining scope changes.
 
 Evidence: [distribution and verification checkpoint](reports/streaming-integration-checkpoint.md).
-Source-based distribution remains private; basic and paged isolated builds
-pass. No package publication, commit, push, or tag is implied by these checks.
+Source-based distribution remains private. Basic and paged isolated builds
+passed at merge time. The approved merge and push are complete. Verification
+does not imply package publication or a new tag.
+
+## Post-merge integration review
+
+The September 14, 2026 review checked main commit `6fc4434` against the
+original ownership constraints. The runtime remains the owner of list
+geometry, animation, following, and scroll-settle timing. Source selection,
+conversation data, rendering, and navigation policy remain application-owned.
+
+The documentation follow-up closes these integration gaps:
+
+- Document the [evicted-destination restoration sequence](streaming-consumer.md#restoring-an-evicted-destination).
+  Commit `6fc4434` fixes smooth bottom navigation through existing public APIs.
+  Its focused paging regression passed in Firefox, Chromium, and WebKit.
+- Identify the collapse helper and Markdown styles as chat-specific adapters,
+  not markup-independent components.
+- Update the renderer dependency reference to `v0.1.4`, pinned in `400f690`,
+  and distinguish completed merge work from remaining release actions.
+
+This follow-up adds no runtime API or example application. The existing
+verification reports retain their original revision and workload labels.
 
 ## Next steps
 
-The approved documentation consolidation and report reorganization are
-complete. Commit the documentation signoff, obtain explicit merge/release
-approval, verify the resulting main commit, and tag only when authorized.
-Archive this plan after release. Don't expand the example apps. A passing
-branch candidate doesn't imply release approval.
+The integration merge and documentation follow-up are complete. Commit the
+documentation update, then select the exact commit for the next release.
+Keep verification tied to that commit and create a tag only when authorized.
+Archive this plan after release. No additional example apps are required.

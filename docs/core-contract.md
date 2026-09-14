@@ -335,7 +335,16 @@ interaction; the [README](../README.md) lists the public options.
   committed, pending snapshot superseded, or dispose), exactly once.
   `onMount`/`onUnmount`
   report an element joining or leaving the scroller's DOM (unmount
-  precedes destroy). During an explicit measured-row glide's final landing
+  precedes destroy). Use these hooks, not `element.isConnected`, to control
+  mounted resources. A successful single-row measurement can retain one
+  element in the hidden, inert measurement root between updates. It is not
+  mounted or observed there. The next nonempty measurement replaces that
+  resident, unless it reuses the same element. Mounting or destroying the
+  resident releases it. Larger batches, failures, and disposal clear the root.
+  Late resources still need stable dimensions or a host update. The runtime
+  observes the row again when it mounts and commits detected size changes
+  through the existing update policy.
+  During an explicit measured-row glide's final landing
   leg, departing rows stay mounted until settle to avoid a Safari paint hitch
   from removing slots just before arrival. This retains only landing
   departures, not the whole trip; interruption or a rebased approach releases

@@ -32,8 +32,10 @@ export interface ItemMeasurer {
   /**
    * Measure already-built, retained elements together: all are appended
    * to the root (each is absolutely positioned at its top, so they overlay
-   * independently), one layout serves every read, all are detached again.
-   * The caller keeps ownership; nothing is destroyed here.
+   * independently), one layout serves every read. A successful single-row
+   * measurement may stay connected off-scroller until the next nonempty
+   * batch, mounting, destruction, or disposal. Larger batches and failures
+   * detach every element. The caller keeps ownership; nothing is destroyed.
    */
   measureMany(elements: readonly HTMLElement[]): number[];
   dispose(): void;
@@ -103,8 +105,13 @@ function createMeasurementRoot(
     height: "0",
     overflow: "visible",
     visibility: "hidden",
+    opacity: "0",
     pointerEvents: "none",
   });
+  // Descendants can override visibility. Suppress paint and interaction
+  // without changing layout; hide the subtree from accessibility as well.
+  measureRoot.inert = true;
+  measureRoot.setAttribute("aria-hidden", "true");
   syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
   container.appendChild(measureRoot);
   return measureRoot;
@@ -179,20 +186,37 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
         throw new Error("cannot measure with a disposed item measurer");
       }
       if (elements.length === 0) return [];
-      syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
-      measureRoot.replaceChildren(...elements.map(positionRowElement));
+      let retain = false;
       try {
-        return elements.map((element) =>
+        syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
+        const single = elements.length === 1 ? elements[0] : undefined;
+        if (
+          single &&
+          measureRoot.childNodes.length === 1 &&
+          measureRoot.firstChild === single
+        ) {
+          // Preserve this row's layout tree between live updates. Still
+          // restore runtime-owned positioning if the renderer changed it.
+          positionRowElement(single);
+        } else {
+          measureRoot.replaceChildren(...elements.map(positionRowElement));
+        }
+        const heights = elements.map((element) =>
           positiveSize(element.getBoundingClientRect().height),
         );
+        retain = single !== undefined && !disposed;
+        return heights;
       } finally {
-        measureRoot.replaceChildren();
+        // Bounded to one element, with no parallel cache to keep removed or
+        // mounted rows alive. Failure must never leave a partial resident.
+        if (!retain) measureRoot.replaceChildren();
       }
     },
     dispose() {
       if (disposed) return;
       disposed = true;
       measureRoot.remove();
+      measureRoot.replaceChildren();
     },
   };
 }
