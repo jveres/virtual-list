@@ -34,6 +34,28 @@ patch and its fresh comparison. The other candidates remain unchanged.
 | [September 14 candidate measurements](runtime-candidate-measurements-2026-09-14.md) | Paired external-display Firefox captures: retention CPU gain, staging frame-cost regression, and remaining evidence limits. |
 | [Hidden streaming row implementation](hidden-streaming-row-2026-09-14.md) | Bounded retention, lifecycle coverage, WebKit Find limitation, and a 28.4% median CPU reduction in six fresh native captures. |
 
+## Renderer experiments
+
+The [renderer-owned trail release audit](streaming-trail-release-audit-2026-09-14.md)
+records the v0.2.0 renderer release and pin, lifecycle fixes, ownership review,
+and installed-tag verification. It supersedes the prototype integration status
+below, but does not replace the historical performance measurements.
+
+The [streaming trail prototype](streaming-trail-prototype-2026-09-14.md) records
+the optional renderer experiment, native Safari pixel tests, and measured
+Firefox cost. It does not change the virtual-list API or establish a zero-cost
+animation.
+
+The [CSS and overlay comparison](streaming-trail-comparison-2026-09-14.md)
+records 18 matched Firefox captures of the smaller built-in reply. CSS uses more
+content-thread CPU and less Renderer-thread CPU, without a demonstrated overall
+CPU improvement. Both options retain regular frame timing in these workloads.
+
+The [shared overlay and complex fixture comparison](shared-streaming-trail-2026-09-14.md)
+adds the shared-blend prototype and 12 captures of the 67,760-character fixture.
+Its lower CPU median is promising, but the ranges overlap. Every option records
+long frames on this workload, including the effect-off baseline.
+
 ## Earlier investigations
 
 Keep these records for their evidence and design lessons. Old test counts,

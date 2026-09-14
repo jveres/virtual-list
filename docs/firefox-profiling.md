@@ -86,6 +86,12 @@ Use the tracked fixtures for repeatable local workloads:
 - `scripts/firefox-profile/fixtures/streaming-chat.js`: start the built-in
   fast reply before measurement. Use a 2-second post-setup warmup so the
   reply is still streaming when capture starts.
+- `scripts/firefox-profile/fixtures/complex-stream.html`: serve the synthetic
+  67,760-character reply through Vite and use `complex-stream-start.js` as its
+  setup expression. The fixture uses fixed chunk deadlines and supports
+  `trail=off` and `trail=long` (the renderer-owned shared overlay). The
+  [complex trail comparison](reports/shared-streaming-trail-2026-09-14.md)
+  records the hands-off capture command and its limits.
 - `scripts/firefox-profile/fixtures/declared-rows.html`: serve this page
   through Vite for an isolated 10,000-row runtime control. Pass its URL to
   `--url`, with `--layout=none` and no setup script.

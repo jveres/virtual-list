@@ -59,6 +59,36 @@ try {
   await streamPage.waitForFunction(() =>
     document.querySelector("#send-btn").textContent.includes("Stop"),
   );
+  await streamPage.close();
+  await page.goto(
+    `${base}/scripts/firefox-profile/fixtures/complex-stream.html?trail=long`,
+  );
+  await page.waitForFunction(() => !!window.complexStream);
+  const complex = await page.evaluate(() => window.complexStream.start());
+  assert.equal(complex.sections, 70);
+  assert.ok(complex.characters > 65000);
+  await page.waitForFunction(
+    () =>
+      document.querySelectorAll("[data-trail-blend] [data-trail-group] > div")
+        .length > 0,
+  );
+  await page.waitForFunction(() => window.complexStream.snapshot().done, null, {
+    timeout: 30000,
+  });
+  await page.waitForFunction(
+    () => !document.querySelector("[data-streaming-trail]"),
+  );
+  const completed = await page.evaluate(() => ({
+    ...window.complexStream.snapshot(),
+    tables: document.querySelectorAll("#viewport table").length,
+    code: document.querySelectorAll("#viewport pre").length,
+    headings: document.querySelectorAll("#viewport h2").length,
+  }));
+  assert.equal(completed.delivered, complex.characters);
+  assert.equal(completed.following, true);
+  assert.equal(completed.tables, 70);
+  assert.equal(completed.code, 70);
+  assert.equal(completed.headings, 70);
   assert.deepEqual(errors, []);
   console.log("Tracked Firefox profiling fixtures passed");
 } finally {

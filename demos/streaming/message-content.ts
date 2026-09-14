@@ -7,6 +7,8 @@ import {
 import { messageParts, type OrderedMessage } from "../shared/message-order.js";
 import { setHiddenIfChanged } from "../shared/utils.js";
 
+export type TrailMode = "off" | "short" | "long";
+
 type Cursor = "bar" | "none";
 type TextSlot = {
   kind: "text";
@@ -22,6 +24,8 @@ type ToolSlot = {
 export interface MessageContentHandle {
   update(message: OrderedMessage, text: string, isStreaming: boolean): void;
   setCursor(cursor: Cursor): void;
+  setTrail(mode: TrailMode): void;
+  setMounted(mounted: boolean): void;
   destroy(): void;
 }
 
@@ -54,9 +58,17 @@ export function appendStaticMessageContent(
 export function createMessageContent(
   host: HTMLElement,
   initialCursor: Cursor,
+  initialTrail: TrailMode = "off",
 ): MessageContentHandle {
   const slots = new Map<string, TextSlot | ToolSlot>();
   let cursor = initialCursor;
+  let trailMode = initialTrail;
+  let mounted = false;
+  function trailOption() {
+    return mounted && trailMode !== "off"
+      ? { durationMs: trailMode === "long" ? 1200 : 600 }
+      : false;
+  }
   return {
     update(message, text, isStreaming) {
       const parts = messageParts({ ...message, markdown: text });
@@ -89,6 +101,7 @@ export function createMessageContent(
               handle: createMarkdownViewer(wrapper, {
                 text: part.text,
                 isStreaming: streaming,
+                streamingTrail: trailOption(),
                 preserveStreamingHeight: true,
                 cursor,
                 unfocusedCursorStyle: "block",
@@ -130,6 +143,21 @@ export function createMessageContent(
       cursor = next;
       for (const slot of slots.values())
         if (slot.kind === "text") slot.handle.update({ cursor });
+    },
+    setTrail(next) {
+      if (next === trailMode) return;
+      trailMode = next;
+      for (const slot of slots.values()) {
+        if (slot.kind !== "text") continue;
+        slot.handle.update({ streamingTrail: trailOption() });
+      }
+    },
+    setMounted(next) {
+      if (mounted === next) return;
+      mounted = next;
+      for (const slot of slots.values())
+        if (slot.kind === "text" && trailMode !== "off")
+          slot.handle.update({ streamingTrail: trailOption() });
     },
     destroy() {
       for (const slot of slots.values())

@@ -72,6 +72,7 @@ import {
   appendStaticMessageContent,
   createMessageContent,
   type MessageContentHandle,
+  type TrailMode,
 } from "./message-content.js";
 import {
   clearMessageCopyFeedback,
@@ -181,6 +182,7 @@ interface ReplyVariant {
     min: number;
     max: number;
   };
+  pause?: { everyWords: number; durationMs: number };
 }
 
 const COMPOSER_FALLBACK_MIN_HEIGHT = 42;
@@ -229,6 +231,7 @@ interface ChatOptions {
   follow: FollowMode;
   landing: LandingMode;
   cursor: CursorMode;
+  trail: TrailMode;
 }
 function loadChatOptions(): ChatOptions {
   const stored: { [K in keyof ChatOptions]?: unknown } = (() => {
@@ -245,12 +248,14 @@ function loadChatOptions(): ChatOptions {
       return {};
     }
   })();
+  const trail = demoParams.get("trail") ?? stored.trail;
   return {
     edge: stored.edge === "pill" ? "pill" : "slot",
     sticky: stored.sticky !== false,
     follow: stored.follow === "keep-start" ? "keep-start" : "end",
     landing: stored.landing === "end" ? "end" : "prompt",
     cursor: stored.cursor === "none" ? "none" : "bar",
+    trail: trail === "short" || trail === "long" ? trail : "off",
   };
 }
 function saveChatOptions(): void {
@@ -263,6 +268,7 @@ function saveChatOptions(): void {
         follow: followMode,
         landing: landingMode,
         cursor: cursorMode,
+        trail: trailMode,
       }),
     );
   } catch {
@@ -275,6 +281,7 @@ let stickyEnabled = chatOptions.sticky;
 let followMode: FollowMode = chatOptions.follow;
 let landingMode: LandingMode = chatOptions.landing;
 let cursorMode: CursorMode = chatOptions.cursor;
+let trailMode = chatOptions.trail;
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
@@ -306,6 +313,7 @@ const edgeLoaderSelect = mustGet("edge-loader-mode", HTMLSelectElement);
 const autoscrollSelect = mustGet("autoscroll-mode", HTMLSelectElement);
 const landingSelect = mustGet("landing-mode", HTMLSelectElement);
 const cursorSelect = mustGet("cursor-mode", HTMLSelectElement);
+const trailSelect = mustGet("trail-mode", HTMLSelectElement);
 const windowStatus = mustGet("window-status");
 const virtualListStatus = mustGet("virtual-list-status");
 const composerMinHeight = Math.max(
@@ -414,6 +422,14 @@ refreshItem(idx);
 The virtualList observes the row and maintains scroll geometry from browser
 measurements.`,
 ];
+
+// A repeatable cursor demo: slow words with pauses long enough to blink.
+const SLOW_RESPONSE: ReplyVariant = {
+  markdown: at(BULK_RESPONSES, 0),
+  thinkingDelayMs: 600,
+  tokenDelayMs: { min: 90, max: 140 },
+  pause: { everyWords: 8, durationMs: 2400 },
+};
 
 const TOOL_CALL_SETS: readonly (readonly ChatToolCall[])[] = [
   [
@@ -2084,7 +2100,7 @@ function buildStaticRow(message: Message): HTMLElement {
 
 function buildStreamingRow(message: Message): HTMLElement {
   const { row, content } = buildChatRow({ ...message, toolCalls: undefined });
-  const handle = createMessageContent(content, cursorMode);
+  const handle = createMessageContent(content, cursorMode, trailMode);
   handle.update(message, streamingDisplayText(message), true);
   streamingViewers.set(row, handle);
   return row;
@@ -2258,6 +2274,23 @@ function beginUserEdit(row: HTMLElement): void {
   window.getSelection()?.addRange(range);
 }
 
+function syncMessageActionState(
+  row: HTMLElement,
+  message: Message,
+  streaming = streamAbort !== null,
+): void {
+  if (message.role !== "assistant") return;
+  for (const button of row.querySelectorAll<HTMLButtonElement>(
+    ":scope > .message-actions > button",
+  )) {
+    const disabled =
+      streaming ||
+      preparingConversation ||
+      (button.classList.contains("message-copy-btn") && !message.markdown);
+    if (button.disabled !== disabled) button.disabled = disabled;
+  }
+}
+
 function syncMessageActions(row: HTMLElement, message: Message): void {
   if (message.role !== "assistant") return;
   let actions = row.querySelector<HTMLElement>(".message-actions");
@@ -2296,11 +2329,6 @@ function syncMessageActions(row: HTMLElement, message: Message): void {
       continue;
     }
     const button = existing ?? document.createElement("button");
-    button.disabled =
-      streamAbort !== null ||
-      preparingConversation ||
-      (action.className === "message-copy-btn" &&
-        message.markdown.length === 0);
     if (!existing) {
       button.type = "button";
       button.className = action.className;
@@ -2312,6 +2340,7 @@ function syncMessageActions(row: HTMLElement, message: Message): void {
       actions.append(button);
     }
   }
+  syncMessageActionState(row, message);
 }
 
 function syncRoleLabel(element: HTMLElement, message: Message): void {
@@ -2454,9 +2483,10 @@ function endSendGlide(): void {
 
 // --- Simulated streaming ----------------------------------------------------
 
-// The reply to stream for a prompt: the next of the rotation, or the pinned
-// fast long-form variant.
+// The reply to stream for a prompt: the next of the rotation, or a pinned
+// slow/fast variant. Explicit shortcuts do not advance the rotation.
 function replyFor(prompt = ""): ReplyVariant {
+  if (prompt.trim().toLowerCase() === "slow") return SLOW_RESPONSE;
   // The fast long-form variant is the last sample. Force it via the
   // ?fast-long URL param, or by sending a message that starts with "f" — a
   // shortcut for testing fast streaming on demand. Deliberately pinned
@@ -2510,12 +2540,20 @@ async function streamResponse(
   // tab flushes them right away.
   const delayRange = reply.tokenDelayMs;
   let due = performance.now();
+  let wordsSincePause = 0;
   for (const token of tokenize(reply.markdown)) {
     if (abort.cancelled) return;
     updateMessage(messageId, (message) => {
       message.markdown += token;
     });
     due += delayRange.min + Math.random() * (delayRange.max - delayRange.min);
+    if (reply.pause && /\S/.test(token)) {
+      wordsSincePause++;
+      if (wordsSincePause >= reply.pause.everyWords) {
+        due += reply.pause.durationMs;
+        wordsSincePause = 0;
+      }
+    }
     await waitUntil(due, abort);
   }
 }
@@ -2789,16 +2827,11 @@ function autosize(): void {
 function setStreamingUI(streaming: boolean): void {
   if (!streaming) conversationTree?.refresh();
   viewport.classList.toggle("is-streaming", streaming);
-  for (const button of viewport.querySelectorAll<HTMLButtonElement>(
-    ".message-actions > button",
+  for (const row of viewport.querySelectorAll<HTMLElement>(
+    ".message.assistant",
   )) {
-    const message = tree.get(
-      Number(button.closest<HTMLElement>(".message")?.dataset.key),
-    )?.message;
-    button.disabled =
-      streaming ||
-      preparingConversation ||
-      (button.classList.contains("message-copy-btn") && !message?.markdown);
+    const message = tree.get(Number(row.dataset.key))?.message;
+    if (message) syncMessageActionState(row, message, streaming);
   }
   sendBtn.textContent = streaming ? "Stop" : "Send";
   sendBtn.classList.toggle("stop-btn", streaming);
@@ -3579,8 +3612,17 @@ function mountConversation(): void {
         void paging.load("end", context).catch(reportPagingError);
       else context.complete();
     },
-    onMount: mountUserMessageCollapse,
-    onUnmount: unmountUserMessageCollapse,
+    onMount: (element, row) => {
+      // Retained/prepared rows can miss setStreamingUI while offscreen.
+      // Refresh only action state; mounting must not rebuild their content.
+      if (!isDayHeader(row)) syncMessageActionState(element, row);
+      mountUserMessageCollapse(element);
+      streamingViewers.get(element)?.setMounted(true);
+    },
+    onUnmount: (element) => {
+      streamingViewers.get(element)?.setMounted(false);
+      unmountUserMessageCollapse(element);
+    },
     onDestroy: handleRowDestroy,
   });
   resetPaging();
@@ -3835,6 +3877,15 @@ edgeLoaderSelect.addEventListener("change", () => {
 syncEdgeLoaderMode();
 
 cursorSelect.value = cursorMode;
+trailSelect.value = trailMode;
+trailSelect.addEventListener("change", () => {
+  trailMode =
+    trailSelect.value === "short" || trailSelect.value === "long"
+      ? trailSelect.value
+      : "off";
+  saveChatOptions();
+  syncStreamingViewerOptions();
+});
 cursorSelect.addEventListener("change", () => {
   cursorMode = cursorSelect.value === "none" ? "none" : "bar";
   saveChatOptions();
@@ -3844,6 +3895,7 @@ cursorSelect.addEventListener("change", () => {
 function syncStreamingViewerOptions(): void {
   for (const row of rowById.values()) {
     streamingViewers.get(row)?.setCursor(cursorMode);
+    streamingViewers.get(row)?.setTrail(trailMode);
   }
 }
 landingSelect.value = landingMode;
