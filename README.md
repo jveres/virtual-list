@@ -68,6 +68,10 @@ pnpm run dev
   items. See [conversation tree navigation](docs/conversation-tree-navigation.md)
   for layout rules, the runtime-owned bottom position, and browser regressions.
 
+- `/demos/cursor-geometry/index.html` displays six font and size combinations
+  with real streaming trails and cursors. Hold the animations to inspect
+  glyph coverage, or replay the fade. Controls include theme, cursor glow,
+  and rounded corners. The page uses the pinned renderer by default.
 - `/demos/gallery/index.html` — the gallery: the same photos as
   justified rows or individually positioned whole-photo masonry items, with
   declared geometry, so the runtime never measures them. A
@@ -90,6 +94,12 @@ pnpm run dev
   **Bottom** address the whole archive, not just the loaded window.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
+
+To inspect an unpublished renderer change, build the sibling
+`../markdown-viewer` checkout first. Then run
+`MARKDOWN_VIEWER_LOCAL=1 pnpm exec vite --port 4194`. This preview uses a separate
+dependency cache and leaves the GitHub tag pin unchanged. The geometry page
+labels whether it uses the local build or the pinned release.
 The dynamic-height lab can POST its trace to the dev server
 (`/__lab/report`), which appends it to `browser-artifacts/device-*.log`, one
 file per user agent.

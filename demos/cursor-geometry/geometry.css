@@ -1,0 +1,88 @@
+:root {
+  font:
+    15px / 1.5 system-ui,
+    sans-serif;
+  color-scheme: light;
+  color: #1f2328;
+  background: #fff;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  color: #e6edf3;
+  background: #161b22;
+}
+
+body {
+  margin: 0;
+}
+
+main {
+  max-width: 1100px;
+  margin: 36px auto;
+  padding: 0 24px;
+}
+
+h1 {
+  font-size: 24px;
+  margin: 0 0 8px;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  margin-top: 24px;
+}
+
+button,
+select {
+  font: inherit;
+  padding: 5px 10px;
+}
+
+#status,
+.sample-label {
+  font-size: 13px;
+  color: #687480;
+}
+
+:root[data-theme="dark"] :is(#status, .sample-label) {
+  color: #a4b0bc;
+}
+
+.sample {
+  border-top: 1px solid #8884;
+  padding: 16px 0 22px;
+}
+
+.sample-label {
+  margin: 0 0 10px;
+}
+
+.sample-host {
+  padding: 8px 20px 8px 0;
+  overflow-x: auto;
+}
+
+.sample .markdown {
+  font-family: var(--sample-font);
+  font-size: var(--sample-size);
+  line-height: var(--sample-leading);
+  white-space: nowrap;
+}
+
+/* Inspection controls change paint timing/glow, never cursor geometry. */
+:root[data-held="true"] .markdown-viewer .markdown .cursor::after {
+  animation: none;
+  opacity: 1;
+}
+
+:root[data-glow="false"] .markdown-viewer .markdown .cursor::after {
+  filter: none;
+}
+
+:root[data-rounded="false"] .markdown-viewer .markdown .cursor::after {
+  border-radius: 0;
+}

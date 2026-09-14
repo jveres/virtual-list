@@ -67,6 +67,37 @@ function labReportSink(): Plugin {
 
 export default defineConfig({
   plugins: [labReportSink()],
+  define: {
+    "import.meta.env.VITE_RENDERER_LOCAL": JSON.stringify(
+      process.env.MARKDOWN_VIEWER_LOCAL === "1",
+    ),
+  },
+  cacheDir:
+    process.env.MARKDOWN_VIEWER_LOCAL === "1"
+      ? "browser-artifacts/renderer-preview-cache"
+      : undefined,
+  // Opt-in local renderer preview; normal builds retain the GitHub tag pin.
+  resolve: {
+    alias:
+      process.env.MARKDOWN_VIEWER_LOCAL === "1"
+        ? [
+            {
+              find: /^markdown-viewer$/,
+              replacement: new URL(
+                "../markdown-viewer/dist/index.js",
+                import.meta.url,
+              ).pathname,
+            },
+            {
+              find: /^markdown-viewer\/styles\.css$/,
+              replacement: new URL(
+                "../markdown-viewer/dist/styles/index.css",
+                import.meta.url,
+              ).pathname,
+            },
+          ]
+        : [],
+  },
   build: {
     rollupOptions: {
       input: {
@@ -93,6 +124,10 @@ export default defineConfig({
         ).pathname,
         streaming: new URL("demos/streaming/index.html", import.meta.url)
           .pathname,
+        "cursor-geometry": new URL(
+          "demos/cursor-geometry/index.html",
+          import.meta.url,
+        ).pathname,
         gallery: new URL("demos/gallery/index.html", import.meta.url).pathname,
         feed: new URL("demos/feed/index.html", import.meta.url).pathname,
         newspaper: new URL("demos/newspaper/index.html", import.meta.url)

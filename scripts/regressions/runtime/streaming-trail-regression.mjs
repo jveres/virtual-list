@@ -68,8 +68,8 @@ for (const engine of [firefox, chromium, webkit]) {
                 (b) =>
                   b.left <= r.left + 1 &&
                   b.right >= r.right - 1 &&
-                  Math.abs(b.top - (r.top + 1)) < 0.5 &&
-                  Math.abs(b.bottom - (r.bottom - 1)) < 0.5,
+                  Math.abs(b.top - r.top) < 0.5 &&
+                  Math.abs(b.bottom - r.bottom) < 0.5,
               ),
             );
         }
@@ -142,8 +142,8 @@ for (const engine of [firefox, chromium, webkit]) {
           const b = e.getBoundingClientRect();
           return glyphs.some(
             (g) =>
-              Math.abs(b.top - (g.top + 1)) < 0.5 &&
-              Math.abs(b.bottom - (g.bottom - 1)) < 0.5,
+              Math.abs(b.top - g.top) < 0.5 &&
+              Math.abs(b.bottom - g.bottom) < 0.5,
           );
         },
       );

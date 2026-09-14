@@ -130,8 +130,8 @@ for (const engine of [firefox, chromium, webkit]) {
         );
         assert.equal(
           hollow.radius,
-          "0px",
-          `${name}: cursor corners stay square`,
+          "2px",
+          `${name}: cursor corners are rounded by default`,
         );
       }
       assert.deepEqual(

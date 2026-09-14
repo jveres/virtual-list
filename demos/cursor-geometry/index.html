@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Streaming cursor geometry</title>
+  </head>
+  <body>
+    <main>
+      <h1>Streaming cursor geometry</h1>
+      <p id="renderer-build"></p>
+      <p>Real markdown-viewer trail and cursor, held still for inspection. Each row appends only its last two words.</p>
+      <div class="controls">
+        <label><input id="hold" type="checkbox" checked /> Hold highlight and cursor</label>
+        <label><input id="glow" type="checkbox" checked /> Cursor glow</label>
+        <label><input id="rounded" type="checkbox" checked /> Rounded cursor</label>
+        <label>Theme <select id="theme"><option value="light">Light</option><option value="dark">Dark</option></select></label>
+        <button id="replay" type="button">Replay append</button>
+      </div>
+      <p id="status" role="status">Loading renderer…</p>
+      <div id="samples"></div>
+    </main>
+    <script type="module" src="./geometry.ts"></script>
+  </body>
+</html>
