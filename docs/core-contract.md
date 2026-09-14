@@ -386,6 +386,9 @@ interaction; the [README](../README.md) lists the public options.
   (`fetch(url, { signal })`); a host that wants a scrollback fetch to
   outlive the scroll-away simply ignores the signal. A re-approach refires
   the reach (hysteresis) and refetches.
+  Short lists can occupy both proximity zones at once. In that overlap,
+  neither edge cancels the other. Opposite-edge cancellation waits until
+  the viewport leaves the original proximity zone.
 - Invariants I0–I6 define correct behavior. An idle ResizeObserver observation
   commits in its own delivery, which is I6, and a phase-time one waits for
   the settle — or, under `"live"`, commits at once when no scroll write is

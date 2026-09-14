@@ -23,6 +23,10 @@ earlier native captures and preserve each investigation's limits.
 
 ## September 14 runtime review
 
+The [post-integration hardening audit](hardening-audit-2026-09-14.md) records
+the review of `9407fbe`, reproduced edge cases, fixes, regression coverage,
+and external-display Firefox measurements.
+
 The static review below lists candidates after the streaming integration.
 The measurement follow-up separates demonstrated gains from rejected or
 unproven proposals. The implementation report records the bounded hidden-row

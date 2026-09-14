@@ -2,6 +2,53 @@ import { describe, expect, it } from "vitest";
 import { type ReachContext, ReachController } from "../../src/reach";
 
 describe("edge reach policy", () => {
+  it.each([0, 400, 800])(
+    "should not cancel a start load when both reach zones overlap at %s px",
+    (maxScrollTop) => {
+      const signals: AbortSignal[] = [];
+      const reach = new ReachController({
+        start: ({ signal }) => signals.push(signal),
+      });
+
+      reach.update(0, maxScrollTop);
+
+      expect(signals.map((signal) => signal.aborted)).toEqual([false]);
+      reach.dispose();
+      expect(signals.map((signal) => signal.aborted)).toEqual([true]);
+    },
+  );
+
+  it("should keep both short-list loads alive until disposal", () => {
+    const signals: AbortSignal[] = [];
+    const reach = new ReachController({
+      start: ({ signal }) => signals.push(signal),
+      end: ({ signal }) => signals.push(signal),
+    });
+
+    reach.update(200, 400);
+    reach.update(400, 400);
+
+    expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+    reach.dispose();
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+  });
+
+  it("should cancel the opposite load after leaving the overlapping zone without refiring", () => {
+    const signals: AbortSignal[] = [];
+    const reach = new ReachController({
+      start: ({ signal }) => signals.push(signal),
+      end: ({ signal }) => signals.push(signal),
+    });
+    reach.update(0, 1000);
+
+    reach.update(500, 1000);
+    expect(signals.map((signal) => signal.aborted)).toEqual([false, false]);
+    reach.update(1000, 1000);
+
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, false]);
+    reach.dispose();
+  });
+
   it("should release completed reaches without aborting them or rearming the edge", () => {
     const contexts: ReachContext[] = [];
     const reach = new ReachController({
@@ -99,5 +146,22 @@ describe("edge reach policy", () => {
     reach.update(0, 5000);
     reach.update(5000, 5000);
     expect(edges).toEqual(["start"]);
+  });
+
+  it("should not duplicate a reach when an abort listener republishes the viewport", () => {
+    const edges: string[] = [];
+    const reach = new ReachController({
+      start: ({ signal }) => {
+        edges.push("start");
+        signal.addEventListener("abort", () => reach.update(5000, 5000));
+      },
+      end: () => edges.push("end"),
+    });
+    reach.update(0, 5000);
+
+    reach.update(5000, 5000);
+
+    expect(edges).toEqual(["start", "end"]);
+    reach.dispose();
   });
 });

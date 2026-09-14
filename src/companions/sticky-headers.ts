@@ -90,6 +90,7 @@ export function createStickyHeaders(
   let incomingGroup = -1;
   let visible = false;
   let enabled = true;
+  let disposed = false;
   let hiddenInline: HTMLElement[] = [];
   let lastScroll: number | undefined;
 
@@ -103,16 +104,18 @@ export function createStickyHeaders(
 
   const setActive = (ordinal: number): void => {
     if (ordinal === activeGroup) return;
-    activeGroup = ordinal;
     fillSlot(active, ordinal);
+    if (disposed || !enabled) return;
+    activeGroup = ordinal;
     overlay.style.height = `${headerHeight(ordinal)}px`;
     active.style.transform = "";
   };
 
   const setIncoming = (ordinal: number, top: number): void => {
     if (ordinal !== incomingGroup) {
-      incomingGroup = ordinal;
       fillSlot(incoming, ordinal);
+      if (disposed || !enabled) return;
+      incomingGroup = ordinal;
       incoming.style.display = "";
     }
     incoming.style.transform = `translateY(${top}px)`;
@@ -139,6 +142,7 @@ export function createStickyHeaders(
     const activeElement = elementOf?.(keys[ordinal] ?? "") ?? null;
     const incomingElement =
       next >= 0 ? (elementOf?.(keys[next] ?? "") ?? null) : null;
+    if (disposed || !enabled) return;
     if (
       activeElement === (hiddenInline[0] ?? null) &&
       incomingElement === (hiddenInline[1] ?? null)
@@ -173,7 +177,7 @@ export function createStickyHeaders(
   };
 
   const update = (scroll: number): void => {
-    if (!enabled) return;
+    if (disposed || !enabled) return;
     if (groupCount === 0 || scroll < headerTop(0)) {
       hide();
       return;
@@ -190,6 +194,7 @@ export function createStickyHeaders(
 
     show();
     setActive(lo);
+    if (disposed || !enabled) return;
 
     // Keep the incoming pill attached to its in-flow row until it reaches
     // the top. Within the sticky band it pushes the old pill out 1:1 with
@@ -204,6 +209,7 @@ export function createStickyHeaders(
       // one-header clip would make that pill disappear below the top band.
       overlay.style.height = `${Math.max(headerHeight(lo), top + headerHeight(nxt))}px`;
       setIncoming(nxt, top);
+      if (disposed || !enabled) return;
       hideInlineFor(lo, nxt);
     } else {
       active.style.transform = "";
@@ -214,6 +220,7 @@ export function createStickyHeaders(
   };
 
   const updatePosition = (scrollTop: number, refresh = false): void => {
+    if (disposed) return;
     // A runtime publication is newer than a queued native scroll sample.
     // In particular, a glide can advance again before that rAF executes.
     if (frame) {
@@ -221,11 +228,22 @@ export function createStickyHeaders(
       frame = 0;
     }
     if (!refresh && scrollTop === lastScroll) return;
-    lastScroll = scrollTop;
-    update(scrollTop);
+    try {
+      update(scrollTop);
+      lastScroll = scrollTop;
+    } catch (error) {
+      // A renderer can mutate a slot before failing. Expose the real headers
+      // and retry from a clean overlay, even when scrolling back to the last
+      // successful offset rather than retrying the failed destination.
+      lastScroll = undefined;
+      hide();
+      throw error;
+    }
   };
 
-  const refresh = (scrollTop = viewport.scrollTop): void => {
+  const refresh = (scrollTop?: number): void => {
+    if (disposed) return;
+    const scroll = scrollTop ?? viewport.scrollTop;
     const nextKeys = headerKeys();
     const positions = nextKeys.map(positionOf);
     const changed =
@@ -237,7 +255,8 @@ export function createStickyHeaders(
           (positions[index]?.height ?? 0) !== heights[index],
       );
     if (changed) {
-      keys = nextKeys;
+      // The host can reuse and mutate its array between publications.
+      keys = [...nextKeys];
       tops = positions.map((position) => position?.top ?? 0);
       heights = positions.map((position) => position?.height ?? 0);
       activeGroup = -1;
@@ -248,7 +267,7 @@ export function createStickyHeaders(
     // position and hidden inline node, but retain the existing header content.
     // A refresh must reconcile replaced inline nodes even at the same offset.
     // The matching onViewport publication that follows can then be a no-op.
-    updatePosition(scrollTop, true);
+    updatePosition(scroll, true);
   };
 
   let frame = 0;
@@ -267,16 +286,19 @@ export function createStickyHeaders(
   };
 
   const setEnabled = (next: boolean): void => {
-    if (next === enabled) return;
+    if (disposed || next === enabled) return;
     enabled = next;
     if (next) updatePosition(viewport.scrollTop, true);
     else hide();
   };
 
   const destroy = (): void => {
+    if (disposed) return;
+    disposed = true;
     restoreInline();
     viewport.removeEventListener("scroll", onScroll, true);
     if (frame) cancelAnimationFrame(frame);
+    frame = 0;
     overlay.remove();
   };
 
@@ -288,7 +310,12 @@ export function createStickyHeaders(
       capture: true,
     });
   }
-  refresh();
+  try {
+    refresh();
+  } catch (error) {
+    destroy();
+    throw error;
+  }
 
   return { update: updatePosition, refresh, setEnabled, destroy };
 }

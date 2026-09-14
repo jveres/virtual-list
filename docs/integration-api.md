@@ -98,7 +98,7 @@ limit them to the current retained window.
 | --- | --- |
 | `container` | A `position: relative` ancestor of the viewport. The overlay attaches to its top; align that top with the intended sticky boundary. |
 | `viewport` | The list's scroll element. |
-| `headerKeys()` | Current ordered `string[]` of header keys. |
+| `headerKeys()` | Current ordered `string[]` of header keys. The companion snapshots changed keys, so the host can reuse its array. |
 | `positionOf(key)` | Committed `{ top, height }` or `null`; use runtime `positionOf`. Supply keys with known geometry. |
 | `renderHeader(slot, ordinal)` | Fill the overlay slot for a zero-based index in `headerKeys()`. Replace prior content; don't move the inline header out of its row. |
 | `elementOf(key)` | Optional inline visual lookup. Return the pill/header content, **not** the runtime's measured row wrapper. |
@@ -120,7 +120,7 @@ snapshot. Don't pass the first argument as a scroll snapshot.
 | `refresh(scrollTop?: number): void` | Re-read ordered keys and committed geometry, then update the overlay and inline suppression. Without an argument, reads `viewport.scrollTop`. |
 | `update(scrollTop: number): void` | Move against cached geometry. Pass the runtime snapshot; don't add a separate geometry sampler. |
 | `setEnabled(enabled: boolean): void` | Initially enabled. Disabling hides the overlay and restores inline visuals. Re-enabling uses cached geometry; keep calling `refresh` on commits while disabled. |
-| `destroy(): void` | Restore inline visuals, cancel the fallback frame, remove its listener, and remove the overlay. Stop callback forwarding before teardown. |
+| `destroy(): void` | Restore inline visuals, cancel the fallback frame, remove its listener, and remove the overlay. Repeated destruction and later method calls are no-ops. Stop callback forwarding before teardown. |
 
 Import `src/companions/styles.css` or supply equivalent styling for
 `vl-sticky-inline-hidden`. The provided CSS uses `visibility: hidden` on
@@ -133,6 +133,11 @@ positions are unchanged. If only a label or theme-specific rendered markup
 changes, recreate the companion or update host-owned overlay content. There
 is no content-invalidation method. The companion doesn't manage loader-slot
 placement or reserve placeholder space.
+
+If initial rendering throws, construction removes the overlay and listener
+before propagating the error. If a later header render throws, the companion
+hides the overlay and restores inline visuals. A later `refresh` or `update`
+retries rendering, including at the same scroll position.
 
 ## Reading and replacement anchors
 

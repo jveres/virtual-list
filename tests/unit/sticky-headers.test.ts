@@ -6,6 +6,186 @@ import { createStickyHeaders } from "../../demos/shared/sticky-headers";
 import { createStickyHeaders as createCompanion } from "../../src/companions/index";
 
 describe("sticky headers", () => {
+  it("should remove the overlay if initial header rendering fails", () => {
+    const container = document.createElement("div");
+    const viewport = document.createElement("div");
+    container.append(viewport);
+    document.body.append(container);
+
+    expect(() =>
+      createCompanion({
+        container,
+        viewport,
+        headerKeys: () => ["a"],
+        positionOf: () => ({ top: 0, height: 40 }),
+        renderHeader: () => {
+          throw new Error("header failed");
+        },
+      }),
+    ).toThrow("header failed");
+
+    expect([...container.children]).toEqual([viewport]);
+  });
+
+  it.each(["active", "incoming"])(
+    "should retry a failed %s header render on the next refresh",
+    (target) => {
+      const container = document.createElement("div");
+      const viewport = document.createElement("div");
+      let fail = true;
+      const sticky = createCompanion({
+        container,
+        viewport,
+        headerKeys: () => ["a", "b"],
+        positionOf: (key) => ({ top: key === "a" ? 0 : 100, height: 40 }),
+        renderHeader: (slot, ordinal) => {
+          if (ordinal === 1 && fail) {
+            slot.replaceChildren();
+            throw new Error("header failed");
+          }
+          slot.textContent = String(ordinal);
+        },
+      });
+      const top = target === "active" ? 100 : 80;
+
+      expect(() => sticky.refresh(top)).toThrow("header failed");
+      fail = false;
+      sticky.refresh(top);
+
+      const index = target === "active" ? 0 : 1;
+      expect(
+        container.querySelectorAll(".sticky-group")[index]?.textContent,
+      ).toBe("1");
+      sticky.destroy();
+    },
+  );
+
+  it("should not hide inline headers again after destruction", () => {
+    const { sticky, inline } = setup();
+    sticky.destroy();
+
+    sticky.refresh(90);
+    sticky.update(110);
+    sticky.setEnabled(false);
+    sticky.setEnabled(true);
+
+    expect([...inline.values()].map((element) => element.className)).toEqual([
+      "",
+      "",
+    ]);
+  });
+
+  it("should restore the previous header when scrolling back after a failed render", () => {
+    const container = document.createElement("div");
+    const viewport = document.createElement("div");
+    const sticky = createCompanion({
+      container,
+      viewport,
+      headerKeys: () => ["a", "b"],
+      positionOf: (key) => ({ top: key === "a" ? 0 : 100, height: 40 }),
+      renderHeader: (slot, ordinal) => {
+        slot.replaceChildren();
+        if (ordinal === 1) throw new Error("header failed");
+        slot.textContent = String(ordinal);
+      },
+    });
+
+    expect(() => sticky.update(100)).toThrow("header failed");
+    sticky.update(0);
+
+    expect(container.querySelector(".sticky-group")?.textContent).toBe("0");
+    sticky.destroy();
+  });
+
+  it.each(["render", "lookup"])(
+    "should stop a refresh if %s destroys the companion",
+    (callback) => {
+      const container = document.createElement("div");
+      const viewport = document.createElement("div");
+      const inline = document.createElement("div");
+      let onRender = () => {};
+      let onLookup = () => {};
+      const sticky = createCompanion({
+        container,
+        viewport,
+        headerKeys: () => ["a", "b"],
+        positionOf: (key) => ({ top: key === "a" ? 0 : 100, height: 40 }),
+        renderHeader: () => onRender(),
+        elementOf: () => {
+          onLookup();
+          return inline;
+        },
+      });
+      if (callback === "render") onRender = () => sticky.destroy();
+      else onLookup = () => sticky.destroy();
+
+      sticky.update(100);
+
+      expect(inline.className).toBe("");
+      expect(container.children).toHaveLength(0);
+    },
+  );
+
+  it("should detect key changes when the host reuses its header array", () => {
+    const container = document.createElement("div");
+    const viewport = document.createElement("div");
+    const keys = ["a"];
+    const sticky = createCompanion({
+      container,
+      viewport,
+      headerKeys: () => keys,
+      positionOf: () => ({ top: 0, height: 40 }),
+      renderHeader: (slot, ordinal) => {
+        slot.textContent = keys[ordinal] ?? "";
+      },
+    });
+    expect(container.querySelector(".sticky-group")?.textContent).toBe("a");
+
+    keys[0] = "b";
+    sticky.refresh(0);
+
+    expect(container.querySelector(".sticky-group")?.textContent).toBe("b");
+    sticky.destroy();
+  });
+
+  it.each(["render", "lookup"])(
+    "should keep inline headers visible when %s disables the companion",
+    (callback) => {
+      const container = document.createElement("div");
+      const viewport = document.createElement("div");
+      const inline = document.createElement("div");
+      let disable = () => {};
+      const sticky = createCompanion({
+        container,
+        viewport,
+        headerKeys: () => ["a", "b"],
+        positionOf: (key) => ({ top: key === "a" ? 0 : 100, height: 40 }),
+        renderHeader: (slot, ordinal) => {
+          slot.textContent = String(ordinal);
+          if (callback === "render") disable();
+        },
+        elementOf: () => {
+          if (callback === "lookup") disable();
+          return inline;
+        },
+      });
+      disable = () => sticky.setEnabled(false);
+
+      sticky.update(100);
+
+      expect(inline.className).toBe("");
+      expect(
+        container.querySelector<HTMLElement>(".vl-sticky-header")?.style
+          .display,
+      ).toBe("none");
+      disable = () => {};
+      viewport.scrollTop = 100;
+      sticky.setEnabled(true);
+      expect(container.querySelector(".sticky-group")?.textContent).toBe("1");
+      sticky.destroy();
+    },
+  );
+
   it("should use runtime publications without a native scroll listener by default", () => {
     const viewport = document.createElement("div");
     const container = document.createElement("div");
@@ -98,6 +278,40 @@ describe("sticky headers", () => {
 
     expect(active.textContent).toBe("day 1");
     sticky.destroy();
+  });
+
+  it("should sample the default viewport before header callbacks can change layout", () => {
+    const container = document.createElement("div");
+    const viewport = document.createElement("div");
+    let dirty = false;
+    Object.defineProperty(viewport, "scrollTop", {
+      get() {
+        if (dirty) throw new Error("Read after header callback");
+        return 0;
+      },
+    });
+    const sticky = createCompanion({
+      container,
+      viewport,
+      headerKeys: () => {
+        dirty = true;
+        return ["a"];
+      },
+      positionOf: () => ({ top: 0, height: 40 }),
+      renderHeader: (slot) => {
+        slot.textContent = "Header";
+      },
+    });
+    dirty = false;
+
+    sticky.refresh();
+
+    expect(container.querySelector(".sticky-group")?.textContent).toBe(
+      "Header",
+    );
+    sticky.destroy();
+    // A late refresh must not read a destroyed viewport either.
+    sticky.refresh();
   });
 
   it("should keep a glide snapshot ahead of a queued native scroll frame", () => {
