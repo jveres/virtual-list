@@ -945,7 +945,7 @@ p.ai-settings-note {
   width: fit-content;
   min-width: min(100%, 320px);
   max-width: min(100%, 560px);
-  margin: 0 0 10px;
+  margin: 0 0 6px;
 }
 
 .message-text-intermediate:not([hidden]) + .tool-calls {
