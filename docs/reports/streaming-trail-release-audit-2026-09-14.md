@@ -101,6 +101,11 @@ headings, lists, quotes, tables, fenced and inline code, identical trail-on/off
 geometry, hollow state, and standalone spacing. This is automated browser
 correctness evidence, not an installed-Safari or performance measurement.
 
+On September 15, 2026, the renderer-only cursor checks and geometry page moved
+to `markdown-viewer`. The font-box script now lives at
+`scripts/regressions/cursor-font-box-regression.mjs` in that repository.
+The results above describe the original runs before that move.
+
 Renderer formatting, lint/type checks, all 1,079 tests, build, and package
 checks pass. Output is 483,321 total bytes and 262,871 runtime bytes, within
 the unchanged package ceilings.

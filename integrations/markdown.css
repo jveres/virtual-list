@@ -1,19 +1,16 @@
 /* The padding swap: every assistant body ends in a constant breathing room —
    except while a line-owning streaming cursor (a direct child of .markdown,
-   exactly 1em tall by markdown-viewer's bare-cursor rule) occupies that space
+   sized by markdown-viewer's --cursor-line-size token) occupies that space
    instead, as the --cursor-gap above the cursor (markdown-viewer zeroes the
    preceding block's own margin, so without it the cursor hugs the block) plus
-   the cursor's 1em line. Both states total gap + 1em and trade places
+   the cursor's line. Both states total gap + line and trade places
    atomically in one style recalc, so stream end never shifts the content
    below: the space is permanent, only its occupant changes. Rows with an
    action footer use that footer as their reservation instead (see below). */
 .message.assistant .markdown {
-  /* --cursor-line mirrors markdown-viewer's bare-cursor contract (a block
-     cursor line of exactly 1em); --cursor-gap adds optional air above the
-     cursor at the cost of the same amount of constant padding. Zero keeps
-     the reservation at the minimum that still makes stream end motionless:
-     exactly the cursor's own line. */
-  --cursor-line: 1em;
+  /* New renderer versions expose their line reservation. Keep the 1em
+     fallback for the currently pinned release until its next update. */
+  --cursor-line: var(--cursor-line-size, 1em);
   --cursor-gap: 0em;
   padding-bottom: calc(var(--cursor-line) + var(--cursor-gap));
 }

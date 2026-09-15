@@ -1060,6 +1060,7 @@ p.ai-settings-note {
    their icon + padding. */
 .markdown-viewer button {
   height: auto;
+  font-weight: var(--base-text-weight-normal, 400);
 }
 
 /* markdown-viewer renders content with GitHub's near-white `--fgColor-default`

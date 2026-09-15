@@ -69,10 +69,6 @@ pnpm run dev
   items. See [conversation tree navigation](docs/conversation-tree-navigation.md)
   for layout rules, the runtime-owned bottom position, and browser regressions.
 
-- `/demos/cursor-geometry/index.html` displays six font and size combinations
-  with real streaming trails and cursors. Hold the animations to inspect
-  glyph coverage, or replay the fade. Controls include theme, cursor glow,
-  and rounded corners. The page uses the pinned renderer by default.
 - `/demos/gallery/index.html` — the gallery: the same photos as
   justified rows or individually positioned whole-photo masonry items, with
   declared geometry, so the runtime never measures them. A

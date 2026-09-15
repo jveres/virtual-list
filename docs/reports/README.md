@@ -40,6 +40,10 @@ patch and its fresh comparison. The other candidates remain unchanged.
 
 ## Renderer experiments
 
+The [September 15 renderer hardening audit](renderer-hardening-audit-2026-09-15.md)
+records the v0.3.0 candidate review, three medium-severity fixes, geometry
+tooling migration, regression coverage, and package-size limits.
+
 The [renderer-owned trail release audit](streaming-trail-release-audit-2026-09-14.md)
 records the v0.2.0 renderer release and pin, lifecycle fixes, ownership review,
 and installed-tag verification. It supersedes the prototype integration status

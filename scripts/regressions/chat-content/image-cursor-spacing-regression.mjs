@@ -54,12 +54,17 @@ for (const [name, engine] of Object.entries({ firefox, webkit })) {
         await img.decode();
         const imageRect = img.getBoundingClientRect();
         const beforeHeight = row.getBoundingClientRect().height;
+        const cursorHeight = cursor.getBoundingClientRect().height;
         const above = imageRect.top - previous.getBoundingClientRect().bottom;
         const below = cursor.getBoundingClientRect().top - imageRect.bottom;
         viewer.update({ text, isStreaming: false });
         await frame();
         results.push({
           footer,
+          cursorHeight,
+          rendererLineSize: getComputedStyle(host.querySelector(".markdown"))
+            .getPropertyValue("--cursor-line-size")
+            .trim(),
           above,
           below,
           beforeHeight,
@@ -71,6 +76,13 @@ for (const [name, engine] of Object.entries({ firefox, webkit })) {
       return results;
     });
     for (const result of measurements) {
+      if (process.env.MARKDOWN_VIEWER_LOCAL === "1") {
+        assert.equal(
+          result.rendererLineSize,
+          "1lh",
+          "Local preview must use the rebuilt cursor CSS",
+        );
+      }
       assert.ok(result.above > 0, JSON.stringify(result));
       assert.ok(
         Math.abs(result.above - result.below) < 0.5,
