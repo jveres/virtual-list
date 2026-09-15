@@ -73,6 +73,13 @@ for (const engine of [firefox, webkit]) {
               name: "create_file",
               arguments: JSON.stringify({ filename: "page.html", content }),
             },
+            {
+              type: "image_generation_call",
+              id: "ig_saved",
+              status: "completed",
+              output_format: "png",
+              result: artwork.toString("base64"),
+            },
           ]
         : [
             {
@@ -174,6 +181,18 @@ for (const engine of [firefox, webkit]) {
       `action footer needs a 16px gap, got ${actionGap}`,
     );
     assert.equal(requests.length, 2);
+    assert.ok(
+      !requests[1].input.some((item) => item.type === "image_generation_call"),
+      "Subscription must replay generated pixels as vision input",
+    );
+    assert.ok(
+      requests[1].input
+        .flatMap((item) => (Array.isArray(item.content) ? item.content : []))
+        .filter(
+          (part) => part.type === "input_image" && part.image_url === imageUrl,
+        ).length >= 2,
+      "both uploaded and generated images must be visible during continuation",
+    );
     assert.ok(requests[0].tools.some((tool) => tool.name === "create_file"));
     assert.ok(
       requests[0].input.some((item) =>
@@ -190,8 +209,33 @@ for (const engine of [firefox, webkit]) {
           item.type === "function_call_output" && item.call_id === "call_file",
       ),
     );
-    for (const stage of ["initial", "reloaded"]) {
-      if (stage === "reloaded") {
+    for (const stage of [
+      "initial",
+      "reloaded",
+      "imported",
+      "imported-reloaded",
+    ]) {
+      if (stage === "imported") {
+        const exportPromise = page.waitForEvent("download");
+        await page.locator("#download-btn").click();
+        const exported = await exportPromise;
+        const transcript = await readFile(await exported.path(), "utf8");
+        assert.ok(
+          transcript.includes('"generatedFiles"'),
+          "export must contain generated file payloads",
+        );
+        page.once("dialog", (dialog) => dialog.accept());
+        await page.locator("#import-file").setInputFiles({
+          name: "roundtrip.md",
+          mimeType: "text/markdown",
+          buffer: Buffer.from(transcript),
+        });
+        await page.waitForFunction(
+          () => document.querySelector("#import-file").value === "",
+        );
+        await button.waitFor();
+      }
+      if (stage === "reloaded" || stage === "imported-reloaded") {
         await page.waitForFunction(async () => {
           const { loadOpenAIHistory } = await import(
             "/demos/streaming/openai.ts"
@@ -227,6 +271,36 @@ for (const engine of [firefox, webkit]) {
         0,
       );
     }
+    await page
+      .locator("#prompt")
+      .fill("Read the earlier page.html and describe its heading.");
+    await page.locator("#send-btn").click();
+    await page.waitForFunction(
+      () => document.querySelector("#send-btn").textContent === "Send",
+    );
+    assert.equal(requests.length, 3);
+    const replayParts = requests[2].input.flatMap((item) =>
+      Array.isArray(item.content) ? item.content : [],
+    );
+    const replayText = replayParts
+      .filter((part) => part.type === "input_text")
+      .map((part) => part.text)
+      .join("\n");
+    assert.ok(
+      replayText.includes("page.html") &&
+        replayText.includes("<h1>Árvíz 😀</h1>"),
+      "imported generated source must reach the next request",
+    );
+    assert.ok(
+      !replayText.includes(artwork.toString("base64")),
+      "embedded image bytes must not be text tokens",
+    );
+    assert.ok(
+      replayParts.some(
+        (part) => part.type === "input_image" && part.image_url === imageUrl,
+      ),
+      "embedded image must reach the next request as an image",
+    );
     await page.locator("#ai-settings-btn").click();
     const toggle = page.getByLabel("File download (custom)", { exact: true });
     await toggle.uncheck();
@@ -234,7 +308,7 @@ for (const engine of [firefox, webkit]) {
     assert.equal(await page.locator("#ai-tool-file").isChecked(), false);
     assert.deepEqual(errors, []);
     console.log(
-      `${engine.name()}: local HTML download preserves bytes across reload, stays inert, uses tool continuation, and File download toggle persists`,
+      `${engine.name()}: local HTML download preserves embedded image bytes across reload and export/import, stays inert, and File download toggle persists`,
     );
   } finally {
     resumeReply();

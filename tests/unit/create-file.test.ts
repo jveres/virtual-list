@@ -3,6 +3,7 @@ import {
   createTextFile,
   fileImageContext,
 } from "../../demos/streaming/create-file";
+import { generatedFileInputs } from "../../demos/streaming/file-context";
 import {
   fetchGeneratedFile,
   type GeneratedFile,
@@ -365,6 +366,7 @@ describe("local downloadable text files", () => {
         ).fallbackInput,
       ).toEqual([
         ...completed.state.output,
+        ...generatedFileInputs(created?.kind === "files" ? created.files : []),
         { role: "user", content: "Continue" },
       ]);
     },

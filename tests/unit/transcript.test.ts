@@ -13,6 +13,35 @@ const days = {
 };
 
 describe("chat transcript round trip", () => {
+  it.each(["", "Download the file below."])(
+    "should preserve generated downloads through export and import: %s",
+    (markdown) => {
+      const turns: StoredTurn[] = [
+        {
+          role: "assistant",
+          markdown,
+          generatedFiles: [
+            {
+              fileId: "local_html",
+              filename: "postcard.html",
+              content:
+                '<!-- artwork -->\r\n<img src="data:image/png;base64,YWJj">\n**User**\nÁrvíz 😀',
+            },
+            { fileId: "local_empty", filename: "empty.txt", content: "" },
+            {
+              fileId: "file_remote",
+              containerId: "cntr_remote",
+              filename: "report.csv",
+            },
+          ],
+        },
+      ];
+      expect(parseTranscriptMarkdown(transcriptMarkdown(turns, days))).toEqual(
+        turns,
+      );
+    },
+  );
+
   it.each(["", "Partial answer", "## Partial section\n\nA response."])(
     "should preserve a stopped response through export and import: %s",
     (markdown) => {

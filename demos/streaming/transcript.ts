@@ -72,6 +72,8 @@ export function transcriptMarkdown<M extends TranscriptMessage>(
       meta.stopped = true;
     if (message.sentAt !== undefined) meta.sentAt = message.sentAt;
     if (message.attachments?.length) meta.attachments = message.attachments;
+    if (message.generatedFiles?.length)
+      meta.generatedFiles = message.generatedFiles;
     // A call still running when the file is written is stored as
     // persistence stores it: settled, as an error.
     const toolCalls = message.toolCalls?.map(
@@ -261,6 +263,7 @@ export function parseTranscriptMarkdown(
       sentAt: turn.meta?.sentAt,
       stopped: turn.meta?.stopped,
       attachments: turn.meta?.attachments,
+      generatedFiles: turn.meta?.generatedFiles,
       toolCalls:
         fromMeta ?? (turn.summaries.length > 0 ? turn.summaries : undefined),
     };

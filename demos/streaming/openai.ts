@@ -19,6 +19,10 @@ import {
   fileImageContext,
 } from "./create-file.js";
 import {
+  generatedFileInputs,
+  subscriptionImageInputs,
+} from "./file-context.js";
+import {
   filesFromAnnotations,
   filesFromOutput,
   type GeneratedFile,
@@ -96,7 +100,7 @@ function replayTurn(turn: StoredTurn): Record<string, unknown>[] {
     ];
   }
   if (turn.role === "assistant" && turn.responseState?.output.length) {
-    return turn.responseState.output.map((item) => {
+    const items = turn.responseState.output.map((item) => {
       if (item.type !== "image_generation_call") return item;
       // Image output carries metadata (action, revised_prompt, format, etc.)
       // that the Responses input schema does not accept. Keep the stored
@@ -104,6 +108,7 @@ function replayTurn(turn: StoredTurn): Record<string, unknown>[] {
       const { id, type, status, result } = item;
       return { id, type, status, result };
     });
+    return items.concat(generatedFileInputs(turn.generatedFiles));
   }
   const items: Record<string, unknown>[] = [
     { role: turn.role, content: stripGeneratedImages(turn.markdown) },
@@ -124,7 +129,7 @@ function replayTurn(turn: StoredTurn): Record<string, unknown>[] {
       ],
     });
   }
-  return items;
+  return items.concat(generatedFileInputs(turn.generatedFiles));
 }
 
 export function buildResponseContext(
@@ -134,7 +139,10 @@ export function buildResponseContext(
 ): ResponseContext {
   const turns = transcript.filter(
     (turn) =>
-      turn.markdown !== "" || turn.responseState || turn.attachments?.length,
+      turn.markdown !== "" ||
+      turn.responseState ||
+      turn.attachments?.length ||
+      turn.generatedFiles?.length,
   );
   const contextStart =
     contextTurns > 0 ? Math.max(0, turns.length - contextTurns) : 0;
@@ -145,6 +153,10 @@ export function buildResponseContext(
   // A moving last-N window must not silently inherit the chain's older turns.
   // The immediate parent also keeps edits, retries, and branches independent.
   const canChain =
+    // Local artifacts (including imported ones) are not stored in the API's chain.
+    !selected.some((turn) =>
+      turn.generatedFiles?.some((file) => file.content !== undefined),
+    ) &&
     state?.provider !== "chatgpt" &&
     turns.at(-1)?.role === "user" &&
     selected.length >= 2 &&
@@ -838,7 +850,7 @@ function chunksFromEvent(parsed: unknown): OpenAIStreamChunk[] {
           kind: "tool-start",
           id,
           name: "create_file",
-          input: "Preparing a downloadable text file…",
+          input: "Preparing a downloadable file…",
         },
       ];
     }
@@ -1069,7 +1081,11 @@ async function* streamOpenAIResponse(
             : ""),
         store: !oauth,
         include: ["reasoning.encrypted_content"],
-        input: chained && !oauth ? context.input : context.fallbackInput,
+        input: oauth
+          ? subscriptionImageInputs(context.fallbackInput)
+          : chained
+            ? context.input
+            : context.fallbackInput,
         ...(chained && !oauth && context.previousResponseId
           ? { previous_response_id: context.previousResponseId }
           : {}),
@@ -1198,7 +1214,9 @@ export async function* streamOpenAIChat(
     yield* streamOpenAIResponse(context, settings, signal);
     return;
   }
-  const imageContext = fileImageContext(context.fallbackInput);
+  let imageContext = fileImageContext(
+    subscriptionImageInputs(context.fallbackInput),
+  );
   let current = {
     ...context,
     input: imageContext.input,
@@ -1274,10 +1292,15 @@ export async function* streamOpenAIChat(
     yield* feedback;
     if (files.length) yield { kind: "files", files };
     if (!calls.length) return;
-    const input = imageContext.input.concat(
+    const input = context.fallbackInput.concat(
       replayTurn({ role: "assistant", markdown: "", responseState: state }),
     );
-    current = { ...context, input, fallbackInput: input };
+    imageContext = fileImageContext(subscriptionImageInputs(input));
+    current = {
+      ...context,
+      input: imageContext.input,
+      fallbackInput: imageContext.input,
+    };
   }
   throw new Error(
     "File tool continuation limit reached. Created files remain available below.",

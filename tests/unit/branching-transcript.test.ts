@@ -244,11 +244,27 @@ describe("branching Markdown transcripts", () => {
         output: "Unique alternate output",
       },
     ];
+    message(tree, 2).generatedFiles = [
+      {
+        fileId: "local_alternate",
+        filename: "alternate.html",
+        content: "Unique alternate file <!-- -->",
+      },
+    ];
+    message(tree, 3).generatedFiles = [
+      {
+        fileId: "local_selected",
+        filename: "selected.html",
+        content: "Unique selected file <!-- -->",
+      },
+    ];
 
     const file = branchingTranscriptMarkdown(tree, days);
 
     expect(file.split("aGVsbG8=")).toHaveLength(2);
     expect(file.split("Unique alternate output")).toHaveLength(2);
+    expect(file.split("Unique alternate file")).toHaveLength(2);
+    expect(file.split("Unique selected file")).toHaveLength(2);
     expect(parseBranchingTranscript(file).tree).toEqual(tree);
   });
 

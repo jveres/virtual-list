@@ -193,6 +193,7 @@ function portableTurn(value: unknown): StoredTurn {
       sentAt: value.sentAt,
       stopped: value.stopped === true || value.status === "cancelled",
       attachments: value.attachments,
+      generatedFiles: value.generatedFiles,
       toolCalls: value.toolCalls,
     },
   ])[0];
