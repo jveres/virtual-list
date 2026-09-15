@@ -83,7 +83,7 @@ import {
   buildResponseContext,
   getAISettings,
   initAISettingsPanel,
-  loadOpenAIHistory,
+  loadOpenAIConversation,
   loadSimulatedHistory,
   type StoredTurn,
   saveOpenAIHistory,
@@ -869,7 +869,7 @@ async function navigateTreeMessage(
             stickyHeaders?.refresh();
             if (branchChanged) {
               markConversationChanged();
-              if (getAISettings().provider === "openai")
+              if (getAISettings().provider !== "simulated")
                 persistOpenAIConversation();
               else persistSimulatedBranchSelection();
             }
@@ -1122,7 +1122,7 @@ function isDatedDay(day: number): boolean {
 }
 
 function conversationIsDated(): boolean {
-  return getAISettings().provider === "openai" || transcriptHasDates;
+  return getAISettings().provider !== "simulated" || transcriptHasDates;
 }
 
 function dayOf(message: Message): number {
@@ -1215,7 +1215,7 @@ function rowsForTreeNavigation(
 ): ChatRow[] {
   const rows: ChatRow[] = [];
   const dated =
-    getAISettings().provider === "openai" ||
+    getAISettings().provider !== "simulated" ||
     path.some((message) => message.sentAt !== undefined);
   const finalDay = Math.max(
     0,
@@ -1674,6 +1674,7 @@ function historyFenceLanguages(turns: readonly StoredTurn[]): string[] {
 // the async IndexedDB read happens up front — at boot and before a provider
 // switch — into this cache; an import replaces it outright.
 let openAIHistory: readonly StoredTurn[] = [];
+let openAIHistoryTree: TranscriptTree | null = null;
 // The latest saved or imported simulated conversation, including all versions.
 let importedConversation: ImportedTranscript | null = null;
 let simulatedNextResponse = 0;
@@ -1754,12 +1755,15 @@ function persistSimulatedBranchSelection(): void {
 async function prepareOpenAIConversation(
   epoch = conversationEpoch,
 ): Promise<boolean> {
-  const history = await loadOpenAIHistory();
+  const history = await loadOpenAIConversation();
   if (epoch !== conversationEpoch) return false;
-  const languages = historyFenceLanguages(history);
+  const languages = historyFenceLanguages(
+    history.tree?.nodes.map((node) => node.message) ?? history.turns,
+  );
   if (languages.length > 0) await loadLanguages(languages);
   if (epoch !== conversationEpoch) return false;
-  openAIHistory = history;
+  openAIHistory = history.turns;
+  openAIHistoryTree = history.tree;
   return true;
 }
 
@@ -1822,7 +1826,8 @@ function seedActiveConversation(importedTree?: TranscriptTree | null): void {
   resetConversationState();
   const simulated = getAISettings().provider === "simulated";
   const snapshot =
-    importedTree ?? (simulated ? importedConversation?.tree : null);
+    importedTree ??
+    (simulated ? importedConversation?.tree : openAIHistoryTree);
   if (snapshot) {
     seedTranscriptTree(snapshot);
   } else if (!simulated) {
@@ -1920,7 +1925,8 @@ function switchMessageVersion(messageId: number, offset: number): void {
   if (branchIndex >= 0) selectWindowAround(branchIndex);
   pushItems(anchor, true);
   syncMetrics();
-  persistSimulatedBranchSelection();
+  if (getAISettings().provider !== "simulated") persistOpenAIConversation();
+  else persistSimulatedBranchSelection();
 }
 
 // Remove the selected version and descendants, preserving sibling versions.
@@ -1975,9 +1981,9 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
   else loadedEnd = transcript.length;
   refreshLoadedWindow();
   const turns = storedConversation();
-  if (getAISettings().provider === "openai") {
+  if (getAISettings().provider !== "simulated") {
     openAIHistory = turns;
-    saveOpenAIHistory(turns);
+    persistOpenAIConversation();
   } else {
     persistSimulatedConversation();
   }
@@ -2161,11 +2167,7 @@ function buildRow(message: Message): HTMLElement {
   row.dataset.toolsig = toolSignature(message);
   syncMessageActions(row, message);
   syncStoppedMarker(row, message);
-  syncGeneratedFiles(
-    row,
-    message.generatedFiles ?? [],
-    () => getAISettings().apiKey,
-  );
+  syncGeneratedFiles(row, message.generatedFiles ?? [], generatedFileApiKey);
   rowById.set(String(message.id), row);
   return row;
 }
@@ -2398,7 +2400,7 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
     syncGeneratedFiles(
       element,
       message.generatedFiles ?? [],
-      () => getAISettings().apiKey,
+      generatedFileApiKey,
     );
     return element;
   }
@@ -2412,7 +2414,7 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
     syncGeneratedFiles(
       element,
       message.generatedFiles ?? [],
-      () => getAISettings().apiKey,
+      generatedFileApiKey,
     );
     syncStoppedMarker(element, message);
     return element;
@@ -2585,6 +2587,15 @@ function waitUntil(due: number, abort: StreamAbort): Promise<void> {
 
 // --- OpenAI streaming -------------------------------------------------------
 
+function generatedFileApiKey(): string {
+  if (getAISettings().provider === "chatgpt") {
+    throw new Error(
+      "Generated-file downloads are not supported by the ChatGPT OAuth demo. No API-key request was made.",
+    );
+  }
+  return getAISettings().apiKey;
+}
+
 /** A call still "running" when its stream ended never finished: errored. */
 function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
   return toolCall.status === "running"
@@ -2592,12 +2603,15 @@ function settledToolCall(toolCall: ChatToolCall): ChatToolCall {
     : toolCall;
 }
 
-// Persist the whole active branch, including API state, not the virtualized
-// window. Local message ids are reassigned on the next load.
-function storedConversation(): StoredTurn[] {
+// Preserve API state and settle unfinished tool calls in each stored branch.
+function storedConversation(
+  messages: readonly Message[] = transcript,
+  preserveEmpty = false,
+): StoredTurn[] {
   const turns: StoredTurn[] = [];
-  for (const message of transcript) {
+  for (const message of messages) {
     if (
+      !preserveEmpty &&
       message.markdown === "" &&
       message.status !== "cancelled" &&
       !message.responseState &&
@@ -2631,15 +2645,43 @@ function storedConversation(): StoredTurn[] {
 }
 
 function persistOpenAIConversation(): void {
-  saveOpenAIHistory(storedConversation());
+  const snapshot: TranscriptTree = {
+    selectedRootId:
+      selectedChildId(tree.get(TREE_ROOT_ID) ?? rootNode()) ?? null,
+    nodes: [...tree.entries()].flatMap(([id, node]) => {
+      const message =
+        node.message && storedConversation([node.message], true)[0];
+      return message
+        ? [
+            {
+              id,
+              parentId: node.parentId,
+              selectedChildId: selectedChildId(node) ?? null,
+              message,
+            },
+          ]
+        : [];
+    }),
+  };
+  openAIHistory = storedConversation();
+  openAIHistoryTree = snapshot;
+  saveOpenAIHistory(openAIHistory, undefined, snapshot);
 }
 
 async function streamOpenAIResponse(
   messageId: number,
   abort: StreamAbort,
 ): Promise<void> {
-  const { apiKey, model, contextTurns, tools, reasoningSummary } =
-    getAISettings();
+  const {
+    apiKey,
+    provider,
+    chatgptModel,
+    model: apiModel,
+    contextTurns,
+    tools,
+    reasoningSummary,
+  } = getAISettings();
+  const model = provider === "chatgpt" ? chatgptModel : apiModel;
   const abortLink = linkedAbortSignal(abort);
   // Live tool calls by event id: where each sits in message.toolCalls and
   // when it started, so tool-end can settle the right entry with a real
@@ -2652,7 +2694,7 @@ async function streamOpenAIResponse(
     const partialImages = new Map<string, string>();
     for await (const chunk of streamOpenAIChat(
       buildResponseContext(transcript, contextTurns, model),
-      { apiKey, model, tools, reasoningSummary },
+      { apiKey, model, tools, reasoningSummary, provider },
       abortLink.signal,
     )) {
       if (abort.cancelled) return;
@@ -2746,13 +2788,13 @@ async function streamOpenAIResponse(
     // (the real status is visible in the browser console). Settings are kept
     // per browser, so a key pasted in another browser does not exist here.
     const detail =
-      error instanceof TypeError
+      error instanceof TypeError && provider === "openai"
         ? `${error.message} — the response was unreadable. If the browser console shows a 401, the API rejected the key (re-paste it in the AI settings — keys are stored per browser); otherwise check content blockers, VPN/proxy, or the network tab.`
         : error instanceof Error
           ? error.message
           : String(error);
     updateMessage(messageId, (message) => {
-      const alert = `> [!CAUTION]\n> **OpenAI request failed** — ${detail}`;
+      const alert = `> [!CAUTION]\n> **${provider === "chatgpt" ? "ChatGPT" : "OpenAI"} request failed** — ${detail}`;
       // A stream can die inside an open code fence; close it first or the
       // alert is swallowed into the fence as raw monospace text. An odd
       // fence count means the last one opened a block — close with its own
@@ -3028,7 +3070,7 @@ async function sendMessage(action?: SendAction): Promise<void> {
   setStreamingUI(true);
   let assistantId: number | null = null;
   const shouldFlyIn = transcript.length === 0;
-  const useOpenAI = getAISettings().provider === "openai";
+  const useOpenAI = getAISettings().provider !== "simulated";
   const sendEpoch = conversationEpoch;
   const persistTurns = () => {
     if (sendEpoch === conversationEpoch) {
@@ -3202,9 +3244,11 @@ async function sendMessage(action?: SendAction): Promise<void> {
 bindThemeButtons(refreshTheme);
 initAISettingsPanel({
   onProviderChange: (provider) => {
-    if (provider === "openai") {
+    if (provider !== "simulated") {
       // Stop the old provider immediately; sending its still-mounted history
       // under the newly selected provider would cross conversation ownership.
+      openAIHistory = [];
+      openAIHistoryTree = null;
       reloadConversation();
       const epoch = conversationEpoch;
       preparingConversation = true;
@@ -3230,9 +3274,10 @@ initAISettingsPanel({
   },
   onClearHistory: () => {
     openAIHistory = [];
+    openAIHistoryTree = null;
     // Only the OpenAI conversation is rendered from that history; a clear
     // while the simulated transcript is showing needs no repaint.
-    if (getAISettings().provider === "openai") reloadConversation();
+    if (getAISettings().provider !== "simulated") reloadConversation();
   },
   canRestoreConversation: () => simulatedConversationChanged,
   onRestoreConversation: () => {
@@ -3535,7 +3580,7 @@ await Promise.all([initMarkdown(), document.fonts.ready]);
 applyDocumentTheme();
 syncThemeButtons();
 autosize();
-if (getAISettings().provider === "openai") await prepareOpenAIConversation();
+if (getAISettings().provider !== "simulated") await prepareOpenAIConversation();
 await prepareSimulatedConversation();
 seedActiveConversation();
 persistSimulatedConversation();
@@ -3749,9 +3794,9 @@ async function importTranscriptNow(file: File): Promise<void> {
     window.alert(`${file.name} holds no chat turns.`);
     return;
   }
-  const useOpenAI = getAISettings().provider === "openai";
+  const useOpenAI = getAISettings().provider !== "simulated";
   const target = useOpenAI
-    ? "the OpenAI history stored in this browser"
+    ? "the selected provider's history stored in this browser"
     : "the simulated history stored in this browser";
   if (
     !window.confirm(
@@ -3768,7 +3813,8 @@ async function importTranscriptNow(file: File): Promise<void> {
   if (epoch !== conversationEpoch) return;
   if (useOpenAI) {
     openAIHistory = turns;
-    saveOpenAIHistory(turns);
+    openAIHistoryTree = importedTree;
+    saveOpenAIHistory(turns, undefined, importedTree ?? undefined);
   } else {
     importedConversation = imported;
     simulatedNextResponse = 0;

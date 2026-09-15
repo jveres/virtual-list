@@ -291,7 +291,8 @@
           Provider
           <select id="ai-provider">
             <option value="simulated">Simulated</option>
-            <option value="openai">OpenAI</option>
+            <option value="openai">OpenAI API token</option>
+            <option value="chatgpt">OpenAI Subscription</option>
           </select>
         </label>
         <label class="ai-settings-field" data-provider="openai">
@@ -315,7 +316,22 @@
             spellcheck="false"
           />
         </label>
-        <div class="ai-settings-field" data-provider="openai">
+        <div class="ai-settings-field" data-provider="chatgpt" hidden>
+          <div class="ai-settings-actions chatgpt-actions">
+            <button type="button" id="ai-chatgpt-login">Sign in</button>
+            <button type="button" id="ai-chatgpt-check">Check connection</button>
+            <button type="button" id="ai-chatgpt-logout">Sign out</button>
+          </div>
+          <span id="ai-chatgpt-status" class="ai-settings-note" role="status">Sign in to connect your ChatGPT subscription.</span>
+          <strong id="ai-chatgpt-code"></strong>
+          <a id="ai-chatgpt-link" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener noreferrer" hidden>Open ChatGPT sign-in</a>
+        </div>
+        <label class="ai-settings-field" data-provider="chatgpt" hidden>
+          Model (blank uses the account's first available model)
+          <input type="text" id="ai-chatgpt-model" list="ai-chatgpt-models" autocomplete="off" spellcheck="false" />
+          <datalist id="ai-chatgpt-models"></datalist>
+        </label>
+        <div class="ai-settings-field" data-provider="openai chatgpt">
           Tools
           <label class="ai-tool-option">
             <input type="checkbox" id="ai-tool-web-search" />
@@ -334,7 +350,7 @@
             Thinking summary
           </label>
         </div>
-        <label class="ai-settings-field" data-provider="openai">
+        <label class="ai-settings-field" data-provider="openai chatgpt">
           Request context
           <select id="ai-context">
             <option value="12">Last 12 turns</option>
@@ -342,8 +358,8 @@
             <option value="0">Full history</option>
           </select>
         </label>
-        <div class="ai-settings-actions" data-provider="openai">
-          <button type="button" id="ai-test-key">Test key</button>
+        <div class="ai-settings-actions" data-provider="openai chatgpt">
+          <button type="button" id="ai-test-key" data-provider="openai">Test key</button>
           <button type="button" id="ai-clear-history">Clear history</button>
         </div>
         <div class="ai-settings-actions" data-provider="simulated" hidden>
@@ -356,6 +372,12 @@
           OpenAI conversation in IndexedDB. The key is sent only to
           api.openai.com, straight from this page. Not every model supports
           every tool — unsupported combinations fail with an inline error.
+        </p>
+        <p class="ai-settings-note" data-provider="chatgpt" hidden>
+          Direct subscription-backed requests, without a Codex process. Enable device-code login in ChatGPT security settings.
+          OAuth credentials stay on the dev-server machine. This browser keeps a separate chat history and sends the selected context each turn.
+          Tool and attachment support depends on the model and backend; unsupported requests show an error, with no API-key fallback.
+          Any device that can reach this dev server can use the signed-in account. Signing out disconnects all devices, but does not clear their histories. Use only on a trusted network.
         </p>
       </dialog>
       <dialog id="delete-message-dialog" class="delete-message-dialog" aria-labelledby="delete-message-title" aria-describedby="delete-message-description">

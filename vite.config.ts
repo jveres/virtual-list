@@ -1,5 +1,6 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
+import { chatGPTPlugin } from "./demos/streaming/server/chatgpt-plugin.js";
 
 /**
  * Dev-only report sink for the dynamic-height lab: a device (a phone, a
@@ -66,7 +67,7 @@ function labReportSink(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [labReportSink()],
+  plugins: [labReportSink(), chatGPTPlugin()],
   define: {
     "import.meta.env.VITE_RENDERER_LOCAL": JSON.stringify(
       process.env.MARKDOWN_VIEWER_LOCAL === "1",

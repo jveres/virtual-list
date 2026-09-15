@@ -6,7 +6,13 @@ import {
   type ChatAttachment,
   storedAttachments,
 } from "./attachments.js";
-import type { TranscriptSelection } from "./branching-transcript.js";
+import {
+  type ImportedTranscript,
+  type TranscriptSelection,
+  type TranscriptTree,
+  validateStoredTranscriptTree,
+} from "./branching-transcript.js";
+import { CHATGPT_RELAY_HEADERS, initChatGPTSettings } from "./chatgpt.js";
 import {
   filesFromAnnotations,
   filesFromOutput,
@@ -14,7 +20,8 @@ import {
   storedGeneratedFiles,
 } from "./generated-files.js";
 
-type AIProvider = "simulated" | "openai";
+type AIProvider = "simulated" | "openai" | "chatgpt";
+type RemoteProvider = Exclude<AIProvider, "simulated">;
 
 interface AIToolSettings {
   webSearch: boolean;
@@ -26,6 +33,7 @@ interface AISettings {
   provider: AIProvider;
   apiKey: string;
   model: string;
+  chatgptModel: string;
   /** How many transcript turns each request carries as context; 0 = all. */
   contextTurns: number;
   /** Built-in Responses API tools to request; support varies by model. */
@@ -35,6 +43,7 @@ interface AISettings {
 }
 
 export interface ResponseState {
+  provider?: RemoteProvider;
   id: string;
   model: string;
   /** Index in the complete active branch, not the virtualized window. */
@@ -130,6 +139,7 @@ export function buildResponseContext(
   // A moving last-N window must not silently inherit the chain's older turns.
   // The immediate parent also keeps edits, retries, and branches independent.
   const canChain =
+    state?.provider !== "chatgpt" &&
     turns.at(-1)?.role === "user" &&
     selected.length >= 2 &&
     state?.model === model &&
@@ -181,6 +191,7 @@ function defaultSettings(): AISettings {
     provider: "simulated",
     apiKey: "",
     model: DEFAULT_OPENAI_MODEL,
+    chatgptModel: "",
     contextTurns: DEFAULT_CONTEXT_TURNS,
     tools: defaultToolSettings(),
     reasoningSummary: true,
@@ -217,7 +228,14 @@ function readStoredSettings(): AISettings {
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return defaultSettings();
     return {
-      provider: parsed.provider === "openai" ? "openai" : "simulated",
+      provider:
+        parsed.provider === "chatgpt"
+          ? "chatgpt"
+          : parsed.provider === "openai"
+            ? "openai"
+            : "simulated",
+      chatgptModel:
+        typeof parsed.chatgptModel === "string" ? parsed.chatgptModel : "",
       apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
       model:
         typeof parsed.model === "string" && parsed.model !== ""
@@ -342,6 +360,9 @@ function validResponseState(value: unknown): value is ResponseState {
     typeof value.id === "string" &&
     value.id.startsWith("resp_") &&
     typeof value.model === "string" &&
+    (value.provider === undefined ||
+      value.provider === "openai" ||
+      value.provider === "chatgpt") &&
     Number.isInteger(value.contextStart) &&
     Number(value.contextStart) >= 0 &&
     Number.isInteger(value.contextTurns) &&
@@ -409,7 +430,30 @@ function historyDb(): Promise<IDBDatabase> {
 let historyWriteChain: Promise<void> = Promise.resolve();
 // A failed write must not make a provider switch restore older persisted data.
 // Undefined means this session has not changed the conversation yet.
-let sessionHistory: readonly StoredTurn[] | undefined;
+type RemoteHistory =
+  | readonly StoredTurn[]
+  | { turns: readonly StoredTurn[]; tree: TranscriptTree };
+const sessionHistories = new Map<RemoteProvider, RemoteHistory>();
+
+function validateRemoteHistory(value: unknown): ImportedTranscript {
+  if (isRecord(value) && !Array.isArray(value)) {
+    return (
+      validateStoredTranscriptTree(value.tree) ?? {
+        turns: validateStoredTurns(value.turns),
+        tree: null,
+      }
+    );
+  }
+  return { turns: validateStoredTurns(value), tree: null };
+}
+
+function historyProvider(): RemoteProvider {
+  return getAISettings().provider === "chatgpt" ? "chatgpt" : "openai";
+}
+
+function historyRecord(provider: RemoteProvider): string {
+  return provider === "chatgpt" ? "chatgpt-history" : HISTORY_RECORD_KEY;
+}
 
 function queueHistoryWrite(
   write: (db: IDBDatabase) => IDBRequest,
@@ -443,46 +487,67 @@ function queueHistoryWrite(
  * ~5MB quota silently ate generated images); an existing localStorage
  * history migrates on first load.
  */
-export async function loadOpenAIHistory(): Promise<StoredTurn[]> {
+export async function loadOpenAIHistory(
+  provider = historyProvider(),
+): Promise<StoredTurn[]> {
+  return (await loadOpenAIConversation(provider)).turns;
+}
+
+export async function loadOpenAIConversation(
+  provider = historyProvider(),
+): Promise<ImportedTranscript> {
   await historyWriteChain;
-  if (sessionHistory !== undefined) return validateStoredTurns(sessionHistory);
+  let sessionHistory = sessionHistories.get(provider);
+  if (sessionHistory !== undefined)
+    return validateRemoteHistory(sessionHistory);
   try {
     const db = await historyDb();
     const stored = await new Promise<unknown>((resolve, reject) => {
       const request = db
         .transaction(HISTORY_STORE, "readonly")
         .objectStore(HISTORY_STORE)
-        .get(HISTORY_RECORD_KEY);
+        .get(historyRecord(provider));
       request.onsuccess = () => resolve(request.result);
       request.onerror = () =>
         reject(request.error ?? new Error("IndexedDB read failed"));
     });
     // A send may have happened while the database read was pending.
+    sessionHistory = sessionHistories.get(provider);
     if (sessionHistory !== undefined)
-      return validateStoredTurns(sessionHistory);
-    if (stored !== undefined) return validateStoredTurns(stored);
-    const legacy = readLegacyHistory();
+      return validateRemoteHistory(sessionHistory);
+    if (stored !== undefined) return validateRemoteHistory(stored);
+    const legacy = provider === "openai" ? readLegacyHistory() : [];
     if (legacy.length > 0) {
-      queueHistorySave(legacy, removeLegacyHistory);
+      queueHistorySave(legacy, provider, removeLegacyHistory);
     }
-    return legacy;
+    return { turns: legacy, tree: null };
   } catch {
+    sessionHistory = sessionHistories.get(provider);
     if (sessionHistory !== undefined)
-      return validateStoredTurns(sessionHistory);
-    return readLegacyHistory();
+      return validateRemoteHistory(sessionHistory);
+    return {
+      turns: provider === "openai" ? readLegacyHistory() : [],
+      tree: null,
+    };
   }
 }
 
 // Fire-and-forget by design: persistence runs on send/stream-end hot paths.
 // Callers always pass freshly built arrays, so deferring the structured
 // clone into the queued write is safe.
-export function saveOpenAIHistory(turns: readonly StoredTurn[]): void {
-  sessionHistory = turns;
-  queueHistorySave(turns);
+export function saveOpenAIHistory(
+  turns: readonly StoredTurn[],
+  provider = historyProvider(),
+  tree?: TranscriptTree,
+): void {
+  const history = tree ? { turns, tree } : turns;
+  sessionHistories.set(provider, history);
+  queueHistorySave(history, provider);
 }
 
 function queueHistorySave(
-  turns: readonly StoredTurn[],
+  turns: RemoteHistory,
+  provider: RemoteProvider,
   onCommitted?: () => void,
 ): void {
   queueHistoryWrite(
@@ -490,19 +555,20 @@ function queueHistorySave(
       db
         .transaction(HISTORY_STORE, "readwrite")
         .objectStore(HISTORY_STORE)
-        .put(turns, HISTORY_RECORD_KEY),
+        .put(turns, historyRecord(provider)),
     onCommitted,
   );
 }
 
 function clearOpenAIHistory(): void {
-  sessionHistory = [];
-  removeLegacyHistory();
+  const provider = historyProvider();
+  sessionHistories.set(provider, []);
+  if (provider === "openai") removeLegacyHistory();
   queueHistoryWrite((db) =>
     db
       .transaction(HISTORY_STORE, "readwrite")
       .objectStore(HISTORY_STORE)
-      .delete(HISTORY_RECORD_KEY),
+      .delete(historyRecord(provider)),
   );
 }
 
@@ -929,8 +995,8 @@ function chunksFromEvent(parsed: unknown): OpenAIStreamChunk[] {
 /**
  * Streams a reply from the OpenAI Responses API, yielding text deltas,
  * tool-call starts and ends, and partial and finished generated images as
- * they arrive. The key goes straight from this
- * browser to api.openai.com — there is no backend. Throws with a readable
+ * they arrive. API keys go directly to api.openai.com; ChatGPT uses the
+ * local OAuth relay with complete caller-owned context. Throws with a readable
  * message on any failure; aborting `signal` ends the stream silently (fetch
  * rejects with an AbortError the caller owns).
  */
@@ -941,10 +1007,14 @@ export async function* streamOpenAIChat(
     model,
     tools,
     reasoningSummary,
-  }: Pick<AISettings, "apiKey" | "model" | "tools" | "reasoningSummary">,
+    provider = "openai",
+  }: Pick<AISettings, "apiKey" | "model" | "tools" | "reasoningSummary"> & {
+    provider?: AIProvider;
+  },
   signal: AbortSignal,
 ): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
-  if (!apiKey) {
+  const oauth = provider === "chatgpt";
+  if (!oauth && !apiKey) {
     throw new Error(
       "no API key configured — open the AI settings in the header and paste an OpenAI key",
     );
@@ -952,20 +1022,22 @@ export async function* streamOpenAIChat(
 
   const toolList = requestTools(tools);
   const request = (chained: boolean) =>
-    fetch(RESPONSES_URL, {
+    fetch(oauth ? "/__chatgpt/responses" : RESPONSES_URL, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        authorization: `Bearer ${apiKey}`,
+        ...(oauth
+          ? CHATGPT_RELAY_HEADERS
+          : { authorization: `Bearer ${apiKey}` }),
       },
       body: JSON.stringify({
         model,
         stream: true,
         instructions: SYSTEM_PROMPT,
-        store: true,
+        store: !oauth,
         include: ["reasoning.encrypted_content"],
-        input: chained ? context.input : context.fallbackInput,
-        ...(chained && context.previousResponseId
+        input: chained && !oauth ? context.input : context.fallbackInput,
+        ...(chained && !oauth && context.previousResponseId
           ? { previous_response_id: context.previousResponseId }
           : {}),
         ...(toolList.length > 0 ? { tools: toolList } : {}),
@@ -979,6 +1051,7 @@ export async function* streamOpenAIChat(
   let response = await request(true);
   if (
     !response.ok &&
+    !oauth &&
     context.previousResponseId &&
     (response.status === 400 || response.status === 404)
   ) {
@@ -1030,8 +1103,12 @@ export async function* streamOpenAIChat(
           isRecord(event.response)
         ) {
           const state = {
+            ...(oauth ? { provider: "chatgpt" as const } : {}),
             id: event.response.id,
-            model,
+            model:
+              typeof event.response.model === "string"
+                ? event.response.model
+                : model,
             contextStart: context.contextStart,
             contextTurns: context.contextTurns,
             output: event.response.output,
@@ -1101,6 +1178,8 @@ export function initAISettingsPanel(
   const providerSelect = mustGet("ai-provider", HTMLSelectElement);
   const keyInput = mustGet("ai-api-key", HTMLInputElement);
   const modelInput = mustGet("ai-model", HTMLInputElement);
+  const chatgptModelInput = mustGet("ai-chatgpt-model", HTMLInputElement);
+  const chatgptSettings = initChatGPTSettings();
   const contextSelect = mustGet("ai-context", HTMLSelectElement);
   const clearHistoryBtn = mustGet("ai-clear-history", HTMLButtonElement);
   const testKeyBtn = mustGet("ai-test-key", HTMLButtonElement);
@@ -1114,6 +1193,7 @@ export function initAISettingsPanel(
   providerSelect.value = stored.provider;
   keyInput.value = stored.apiKey;
   modelInput.value = stored.model;
+  chatgptModelInput.value = stored.chatgptModel;
   keyStatus.textContent = keyHint(stored.apiKey);
   webSearchInput.checked = stored.tools.webSearch;
   imageToolInput.checked = stored.tools.imageGeneration;
@@ -1128,24 +1208,21 @@ export function initAISettingsPanel(
 
   const syncToggle = () => {
     // The header icon lights accent while the real provider is active.
-    toggle.classList.toggle("active", getAISettings().provider === "openai");
+    toggle.classList.toggle("active", getAISettings().provider !== "simulated");
   };
 
   // Under the simulated provider nothing but the provider choice shows —
   // plus, once an edit or import has changed the built-in conversation, the way
   // back to it; every OpenAI-specific input, action, and note belongs to
   // OpenAI.
-  const openAIFields = panel.querySelectorAll<HTMLElement>(
-    '[data-provider="openai"]',
-  );
-  const simulatedFields = panel.querySelectorAll<HTMLElement>(
-    '[data-provider="simulated"]',
-  );
+  const providerFields = panel.querySelectorAll<HTMLElement>("[data-provider]");
   const syncProviderFields = () => {
-    const openAI = providerSelect.value === "openai";
-    for (const field of openAIFields) field.hidden = !openAI;
-    const restorable = !openAI && options.canRestoreConversation?.() === true;
-    for (const field of simulatedFields) field.hidden = !restorable;
+    for (const field of providerFields) {
+      field.hidden =
+        !field.dataset.provider?.split(" ").includes(providerSelect.value) ||
+        (field.dataset.provider === "simulated" &&
+          options.canRestoreConversation?.() !== true);
+    }
   };
   syncProviderFields();
   mustGet("ai-restore-conversation", HTMLButtonElement).addEventListener(
@@ -1160,7 +1237,13 @@ export function initAISettingsPanel(
     const previousProvider = getAISettings().provider;
     const contextTurns = Number(contextSelect.value);
     const next: AISettings = {
-      provider: providerSelect.value === "openai" ? "openai" : "simulated",
+      provider:
+        providerSelect.value === "chatgpt"
+          ? "chatgpt"
+          : providerSelect.value === "openai"
+            ? "openai"
+            : "simulated",
+      chatgptModel: chatgptModelInput.value.trim(),
       // Keys are printable ASCII; pastes routed through rich-text apps can
       // pick up invisible characters (zero-width spaces survive trim) that
       // make a correct-looking key fail auth. Strip everything else.
@@ -1182,7 +1265,9 @@ export function initAISettingsPanel(
     syncProviderFields();
     keyStatus.textContent = keyHint(next.apiKey);
     if (next.provider !== previousProvider) {
+      chatgptSettings.close();
       options.onProviderChange?.(next.provider);
+      if (next.provider === "chatgpt") chatgptSettings.open();
     }
   };
 
@@ -1193,6 +1278,7 @@ export function initAISettingsPanel(
     }
     syncProviderFields(); // An import since the last open may show a field.
     panel.showModal();
+    if (getAISettings().provider === "chatgpt") chatgptSettings.open();
     // Move initial focus to the dialog surface so opening doesn't
     // focus-activate the first select control.
     panel.focus();
@@ -1205,6 +1291,7 @@ export function initAISettingsPanel(
   providerSelect.addEventListener("change", persist);
   keyInput.addEventListener("input", persist);
   modelInput.addEventListener("input", persist);
+  chatgptModelInput.addEventListener("input", persist);
   contextSelect.addEventListener("change", persist);
   webSearchInput.addEventListener("change", persist);
   imageToolInput.addEventListener("change", persist);

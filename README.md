@@ -52,7 +52,8 @@ pnpm run dev
   mode (follow to the end, or stop when the reply's start reaches the top),
   theme, scrollback loader style, and sticky day headers, and an optional
   real OpenAI
-  provider (key stored in this browser only; tool panels are live there and
+  provider, through **OpenAI API token** or **OpenAI Subscription**
+  (tool panels are live there and
   canned under the simulated provider). `?stream=instant` (or `?instant`)
   removes the simulated token delays, `?stream=fast-long` (or `?fast-long`)
   streams a long reply quickly. Every product choice (the scrollback
@@ -62,8 +63,8 @@ pnpm run dev
   only.
   The built-in simulated history is dated through yesterday; new sends use
   the current time, so the first new turn starts a **Today** section.
-  Both providers preserve history across reloads, including branch selection
-  and stopped responses. The floating conversation tree uses equal-width
+  Each provider preserves its separate history across reloads. The simulated
+  provider also preserves branch selection. The floating conversation tree uses equal-width
   version bands, response-section links, and smooth reveal for clipped tree
   items. See [conversation tree navigation](docs/conversation-tree-navigation.md)
   for layout rules, the runtime-owned bottom position, and browser regressions.
@@ -94,6 +95,12 @@ pnpm run dev
   **Bottom** address the whole archive, not just the loaded window.
 
 Serve with `pnpm run dev -- --host` to open the demos on a phone or tablet.
+
+For ChatGPT subscription access without a Codex process, run
+`pnpm run dev --host 0.0.0.0` and select **OpenAI Subscription** in the
+streaming demo. Sign in from the settings panel without copying a console
+token. Read the [subscription provider guide](docs/openai-subscription-demo.md)
+for device login, trusted-network requirements, and limitations.
 
 To inspect an unpublished renderer change, build the sibling
 `../markdown-viewer` checkout first. Then run

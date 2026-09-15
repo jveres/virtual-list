@@ -1,4 +1,143 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { TranscriptTree } from "../../demos/streaming/branching-transcript";
+
+// Structured-clone storage double survives module reload, unlike session caches.
+function installHistoryDatabase() {
+  const records = new Map<string, unknown>();
+  vi.stubGlobal("indexedDB", {
+    open: () => {
+      const request = {
+        result: {
+          transaction: () => {
+            const transaction = {
+              oncomplete: () => {},
+              objectStore: () => ({
+                put: (value: unknown, key: string) => {
+                  records.set(key, structuredClone(value));
+                  queueMicrotask(() => transaction.oncomplete());
+                  return { transaction };
+                },
+                get: (key: string) => {
+                  const read = {
+                    result: structuredClone(records.get(key)),
+                    onsuccess: () => {},
+                  };
+                  queueMicrotask(() => read.onsuccess());
+                  return read;
+                },
+              }),
+            };
+            return transaction;
+          },
+        },
+        onsuccess: () => {},
+      };
+      queueMicrotask(() => request.onsuccess());
+      return request;
+    },
+  });
+}
+
+it.each(["openai", "chatgpt"] as const)(
+  "should restore all answer versions and their selection after %s storage reload",
+  async (provider) => {
+    installHistoryDatabase();
+    const history = await import("../../demos/streaming/openai");
+    const tree: TranscriptTree = {
+      selectedRootId: 1,
+      nodes: [
+        {
+          id: 1,
+          parentId: 0,
+          selectedChildId: 3,
+          message: { role: "user", markdown: "hi" },
+        },
+        {
+          id: 2,
+          parentId: 1,
+          selectedChildId: 5,
+          message: {
+            role: "assistant",
+            markdown: "> [!CAUTION]\n> Request failed",
+          },
+        },
+        {
+          id: 3,
+          parentId: 1,
+          selectedChildId: null,
+          message: {
+            role: "assistant",
+            markdown: "Hello",
+            responseState: {
+              id: "resp_success",
+              model: "fixture",
+              contextStart: 0,
+              contextTurns: 0,
+              output: [
+                { type: "reasoning", encrypted_content: "retained-state" },
+              ],
+            },
+          },
+        },
+        {
+          id: 4,
+          parentId: 1,
+          selectedChildId: null,
+          message: { role: "assistant", markdown: "", stopped: true },
+        },
+        {
+          id: 5,
+          parentId: 2,
+          selectedChildId: null,
+          message: { role: "user", markdown: "Follow-up on the earlier path" },
+        },
+      ],
+    };
+    const [prompt, failed, success] = tree.nodes;
+    if (!prompt || !failed || !success)
+      throw new Error("Missing fixture versions");
+    const turns = [prompt.message, success.message];
+    history.saveOpenAIHistory(turns, provider, tree);
+    await history.loadOpenAIHistory(provider); // Flush queued writes before reload.
+    vi.resetModules();
+    const reloaded = await import("../../demos/streaming/openai");
+    await expect(reloaded.loadOpenAIConversation(provider)).resolves.toEqual({
+      turns,
+      tree,
+    });
+    await expect(
+      reloaded.loadOpenAIConversation(
+        provider === "openai" ? "chatgpt" : "openai",
+      ),
+    ).resolves.toEqual({ turns: [], tree: null });
+
+    const selectedTree = {
+      ...tree,
+      nodes: tree.nodes.map((node) =>
+        node.id === 1 ? { ...node, selectedChildId: 2 } : node,
+      ),
+    };
+    const followUp = tree.nodes[4];
+    if (!followUp) throw new Error("Missing fixture follow-up");
+    const selectedTurns = [prompt.message, failed.message, followUp.message];
+    reloaded.saveOpenAIHistory(selectedTurns, provider, selectedTree);
+    await reloaded.loadOpenAIHistory(provider);
+    vi.resetModules();
+    const switched = await import("../../demos/streaming/openai");
+    await expect(switched.loadOpenAIConversation(provider)).resolves.toEqual({
+      turns: selectedTurns,
+      tree: selectedTree,
+    });
+    switched.saveOpenAIHistory([], provider);
+    await switched.loadOpenAIHistory(provider);
+    vi.resetModules();
+    await expect(
+      (await import("../../demos/streaming/openai")).loadOpenAIConversation(
+        provider,
+      ),
+    ).resolves.toEqual({ turns: [], tree: null });
+  },
+);
 
 beforeEach(() => {
   vi.resetModules();
@@ -7,6 +146,33 @@ beforeEach(() => {
 });
 
 afterEach(() => vi.unstubAllGlobals());
+
+it("should keep OAuth and API-key histories independent even without browser storage", async () => {
+  const { saveOpenAIHistory, loadOpenAIHistory } = await import(
+    "../../demos/streaming/openai"
+  );
+  const api = [{ role: "user" as const, markdown: "API history" }];
+  const oauth = [{ role: "user" as const, markdown: "OAuth history" }];
+  saveOpenAIHistory(api, "openai");
+  saveOpenAIHistory(oauth, "chatgpt");
+  await expect(loadOpenAIHistory("openai")).resolves.toEqual(api);
+  await expect(loadOpenAIHistory("chatgpt")).resolves.toEqual(oauth);
+  saveOpenAIHistory([], "chatgpt");
+  await expect(loadOpenAIHistory("openai")).resolves.toEqual(api);
+  await expect(loadOpenAIHistory("chatgpt")).resolves.toEqual([]);
+});
+
+it("should never migrate legacy API history into the OAuth conversation", async () => {
+  vi.stubGlobal("localStorage", {
+    getItem: () =>
+      JSON.stringify([{ role: "user", markdown: "Legacy API chat" }]),
+  });
+  const { loadOpenAIHistory } = await import("../../demos/streaming/openai");
+  await expect(loadOpenAIHistory("chatgpt")).resolves.toEqual([]);
+  await expect(loadOpenAIHistory("openai")).resolves.toEqual([
+    { role: "user", markdown: "Legacy API chat" },
+  ]);
+});
 
 it("should return no saved simulated conversation when storage is unavailable", async () => {
   const { loadSimulatedHistory } = await import("../../demos/streaming/openai");

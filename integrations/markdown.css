@@ -22,6 +22,17 @@
   padding-bottom: 0;
 }
 
+/* Image-only paragraphs get normal block spacing on both sides, including
+   when the next block is the live cursor. Keep the same reservation after
+   finalization; footer-backed rows continue to borrow their existing space. */
+.message.assistant .markdown:has(> p:last-child > img:only-child),
+.message.assistant
+  .markdown:has(> .cursor:last-child):has(
+    > p:nth-last-child(2) > img:only-child
+  ) {
+  --cursor-gap: var(--base-size-16, 16px);
+}
+
 /* Only the final text segment reserves the streaming cursor's line. */
 .message.assistant .message-text-intermediate .markdown {
   padding-bottom: 0;

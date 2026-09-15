@@ -74,6 +74,44 @@ const TREE_TAG = "<!-- branching-tree ";
 const COMMENT_END = " -->";
 const TITLE = "# streaming-chat transcript";
 
+/** Validate a local snapshot while retaining response state for each version. */
+export function validateStoredTranscriptTree(
+  value: unknown,
+): ImportedTranscript | null {
+  if (!isRecord(value) || !Array.isArray(value.nodes)) return null;
+  if (value.selectedRootId !== null && !isId(value.selectedRootId)) return null;
+  const nodes: TranscriptNode[] = [];
+  for (const node of value.nodes) {
+    if (
+      !isRecord(node) ||
+      !isId(node.id) ||
+      (node.parentId !== 0 && !isId(node.parentId)) ||
+      (node.selectedChildId !== null && !isId(node.selectedChildId)) ||
+      !isRecord(node.message) ||
+      typeof node.message.markdown !== "string"
+    )
+      return null;
+    // Empty interrupted versions still own a place in the tree.
+    const message = validateStoredTurns([
+      { ...node.message, markdown: node.message.markdown || "-" },
+    ])[0];
+    if (!message) return null;
+    nodes.push({
+      id: node.id,
+      parentId: node.parentId,
+      selectedChildId: node.selectedChildId,
+      message: { ...message, markdown: node.message.markdown },
+    });
+  }
+  const tree: TranscriptTree = { selectedRootId: value.selectedRootId, nodes };
+  try {
+    const { active } = indexTree(tree);
+    return { tree, turns: active.map((node) => node.message) };
+  } catch {
+    return null;
+  }
+}
+
 function invalid(reason: string): never {
   throw new Error(`Invalid transcript version tree: ${reason}.`);
 }
