@@ -167,8 +167,8 @@ try {
       assert.equal(settled.buttonHeight, 24);
       assert.equal(settled.footerPadding, 40);
       assert.ok(
-        Math.abs(settled.overlap) < 1 && Math.abs(settled.buttonGap - 4) < 1,
-        "actions have a compact, hoverable gap and do not overlap markdown",
+        Math.abs(settled.overlap) < 1 && Math.abs(settled.buttonGap - 16) < 1,
+        "actions have a 16px gap and do not overlap markdown",
       );
       const hitTargets = await row
         .locator(".message-actions button")

@@ -1,9 +1,13 @@
-/** Remote artifact references, not uploaded inputs or executable URLs. */
+/** Remote artifacts or inert UTF-8 files, never executable URLs. */
 export interface GeneratedFile {
   fileId: string;
   containerId?: string;
   filename: string;
+  content?: string;
 }
+
+// Allows a 10 MiB attachment's base64 plus the generated text template.
+export const MAX_LOCAL_FILE_BYTES = 16 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -31,6 +35,7 @@ export function storedGeneratedFiles(value: unknown): GeneratedFile[] {
   if (!Array.isArray(value)) return [];
   const files: GeneratedFile[] = [];
   const seen = new Set<string>();
+  let localFiles = 0;
   for (const entry of value) {
     if (
       !isRecord(entry) ||
@@ -39,15 +44,28 @@ export function storedGeneratedFiles(value: unknown): GeneratedFile[] {
       (entry.containerId !== undefined && !validId(entry.containerId))
     )
       continue;
+    if (entry.content !== undefined) {
+      if (
+        typeof entry.content !== "string" ||
+        entry.containerId !== undefined ||
+        !entry.fileId.startsWith("local_") ||
+        entry.content.length > MAX_LOCAL_FILE_BYTES ||
+        new TextEncoder().encode(entry.content).length > MAX_LOCAL_FILE_BYTES ||
+        localFiles >= 8
+      )
+        continue;
+    } else if (entry.fileId.startsWith("local_")) continue;
     const key = `${entry.containerId ?? ""}/${entry.fileId}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    if (typeof entry.content === "string") localFiles++;
     files.push({
       fileId: entry.fileId,
       ...(entry.containerId !== undefined
         ? { containerId: entry.containerId }
         : {}),
       filename: downloadName(entry.filename, entry.fileId),
+      ...(typeof entry.content === "string" ? { content: entry.content } : {}),
     });
   }
   return files;
@@ -108,6 +126,9 @@ export async function fetchGeneratedFile(
 ): Promise<Blob> {
   const safe = storedGeneratedFiles([file])[0];
   if (!safe) throw new Error("Invalid generated-file reference.");
+  signal?.throwIfAborted();
+  if (safe.content !== undefined)
+    return new Blob([safe.content], { type: "application/octet-stream" });
   if (!apiKey.trim())
     throw new Error(
       "Enter your OpenAI API key in AI settings to download this file.",
@@ -146,6 +167,7 @@ export async function fetchGeneratedFile(
 }
 
 const rowFiles = new WeakMap<HTMLElement, readonly GeneratedFile[]>();
+const renderedFiles = new WeakMap<HTMLElement, readonly GeneratedFile[]>();
 
 function sandboxFilename(href: string): string | null {
   const path = /^sandbox:\/mnt\/data\/([^?#]+)/i.exec(href)?.[1];
@@ -225,19 +247,38 @@ export function syncGeneratedFiles(
   let list = content.querySelector<HTMLElement>(".message-generated-files");
   if (files.length === 0) {
     list?.remove();
+    renderedFiles.delete(row);
     return;
   }
-  const signature = JSON.stringify(files);
-  if (list?.dataset.files !== signature) {
+  // Keep file bytes out of DOM attributes; only rebuild when artifact objects change.
+  const previous = renderedFiles.get(row);
+  const unchanged =
+    previous?.length === files.length &&
+    previous.every((file, i) => {
+      const next = files[i];
+      return (
+        next &&
+        file.fileId === next.fileId &&
+        file.containerId === next.containerId &&
+        file.filename === next.filename &&
+        file.content === next.content
+      );
+    });
+  if (!list || !unchanged) {
     list?.remove();
     list = document.createElement("div");
     list.className = "message-generated-files";
-    list.dataset.files = signature;
+    renderedFiles.set(
+      row,
+      files.map((file) => ({ ...file })),
+    );
     list.setAttribute("role", "group");
     list.setAttribute("aria-label", "Generated files");
     const hint = document.createElement("div");
     hint.className = "generated-files-hint";
-    hint.textContent = "Generated files · Download before they expire";
+    hint.textContent = files.every((file) => file.content !== undefined)
+      ? "Generated files · Saved with this conversation"
+      : "Generated files · Download remote files before they expire";
     list.append(hint);
     for (const file of files) {
       const item = document.createElement("div");
@@ -254,7 +295,7 @@ export function syncGeneratedFiles(
         try {
           const blob = await fetchGeneratedFile(
             file,
-            getApiKey(),
+            file.content === undefined ? getApiKey() : "",
             AbortSignal.timeout(60_000),
           );
           const url = URL.createObjectURL(blob);

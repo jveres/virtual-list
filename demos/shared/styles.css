@@ -675,7 +675,7 @@ p.ai-settings-note {
      more room, but do not add another message-padding block beneath them. */
   --message-footer-height: max(
     var(--day-header-height),
-    calc(var(--message-action-height) + 4px),
+    calc(var(--message-action-height) + 16px),
     1em
   );
   padding-bottom: var(--message-footer-height);
@@ -689,7 +689,7 @@ p.ai-settings-note {
   height: var(--message-footer-height);
   display: flex;
   align-items: flex-start;
-  padding-top: 4px;
+  padding-top: 16px;
   opacity: 0;
   pointer-events: none;
 }

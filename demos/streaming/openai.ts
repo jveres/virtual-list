@@ -14,6 +14,11 @@ import {
 } from "./branching-transcript.js";
 import { CHATGPT_RELAY_HEADERS, initChatGPTSettings } from "./chatgpt.js";
 import {
+  CREATE_FILE_TOOL,
+  createTextFile,
+  fileImageContext,
+} from "./create-file.js";
+import {
   filesFromAnnotations,
   filesFromOutput,
   type GeneratedFile,
@@ -27,6 +32,7 @@ interface AIToolSettings {
   webSearch: boolean;
   imageGeneration: boolean;
   codeInterpreter: boolean;
+  fileDownload?: boolean;
 }
 
 interface AISettings {
@@ -183,7 +189,12 @@ export function stripGeneratedImages(markdown: string): string {
 function defaultToolSettings(): AIToolSettings {
   // Web search and image generation are broadly supported and make the chat
   // feel real; code interpreter is opt-in (slower turns, container cost).
-  return { webSearch: true, imageGeneration: true, codeInterpreter: false };
+  return {
+    webSearch: true,
+    imageGeneration: true,
+    codeInterpreter: false,
+    fileDownload: true,
+  };
 }
 
 function defaultSettings(): AISettings {
@@ -218,6 +229,10 @@ function storedToolSettings(value: unknown): AIToolSettings {
       typeof value.codeInterpreter === "boolean"
         ? value.codeInterpreter
         : defaults.codeInterpreter,
+    fileDownload:
+      typeof value.fileDownload === "boolean"
+        ? value.fileDownload
+        : defaults.fileDownload,
   };
 }
 
@@ -379,6 +394,8 @@ function validResponseState(value: unknown): value is ResponseState {
               "image_generation_call",
               "web_search_call",
               "code_interpreter_call",
+              "function_call",
+              "function_call_output",
             ].includes(item.type)),
     )
   );
@@ -815,6 +832,16 @@ function chunksFromEvent(parsed: unknown): OpenAIStreamChunk[] {
     const item = parsed.item;
     if (!isRecord(item) || typeof item.type !== "string") return [];
     const id = toolCallId(item);
+    if (item.type === "function_call" && item.name === "create_file") {
+      return [
+        {
+          kind: "tool-start",
+          id,
+          name: "create_file",
+          input: "Preparing a downloadable text file…",
+        },
+      ];
+    }
     if (item.type === "image_generation_call") {
       const input = imageCallInput(item);
       return [
@@ -1000,7 +1027,7 @@ function chunksFromEvent(parsed: unknown): OpenAIStreamChunk[] {
  * message on any failure; aborting `signal` ends the stream silently (fetch
  * rejects with an AbortError the caller owns).
  */
-export async function* streamOpenAIChat(
+async function* streamOpenAIResponse(
   context: ResponseContext,
   {
     apiKey,
@@ -1021,6 +1048,8 @@ export async function* streamOpenAIChat(
   }
 
   const toolList = requestTools(tools);
+  const fileDownload = oauth && tools.fileDownload !== false;
+  if (fileDownload) toolList.push(CREATE_FILE_TOOL);
   const request = (chained: boolean) =>
     fetch(oauth ? "/__chatgpt/responses" : RESPONSES_URL, {
       method: "POST",
@@ -1033,7 +1062,11 @@ export async function* streamOpenAIChat(
       body: JSON.stringify({
         model,
         stream: true,
-        instructions: SYSTEM_PROMPT,
+        instructions:
+          SYSTEM_PROMPT +
+          (fileDownload
+            ? "\nWhen asked for a downloadable text file, use create_file instead of pasting its content in the reply. After success, briefly link to the returned download_url. Never claim a file exists before the tool succeeds. create_file does not execute code or generate binary formats."
+            : ""),
         store: !oauth,
         include: ["reasoning.encrypted_content"],
         input: chained && !oauth ? context.input : context.fallbackInput,
@@ -1076,6 +1109,7 @@ export async function* streamOpenAIChat(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  const completedItems = new Map<number, Record<string, unknown>>();
   try {
     while (true) {
       const { done, value } = await reader.read();
@@ -1099,6 +1133,18 @@ export async function* streamOpenAIChat(
         }
         if (
           isRecord(event) &&
+          event.type === "response.output_item.done" &&
+          isRecord(event.item)
+        ) {
+          const index =
+            Number.isInteger(event.output_index) &&
+            Number(event.output_index) >= 0
+              ? Number(event.output_index)
+              : completedItems.size;
+          completedItems.set(index, event.item);
+        }
+        if (
+          isRecord(event) &&
           event.type === "response.completed" &&
           isRecord(event.response)
         ) {
@@ -1111,10 +1157,19 @@ export async function* streamOpenAIChat(
                 : model,
             contextStart: context.contextStart,
             contextTurns: context.contextTurns,
-            output: event.response.output,
+            // Subscription streams can send every item via output_item.done
+            // and an empty output array in the terminal response envelope.
+            output:
+              Array.isArray(event.response.output) &&
+              event.response.output.length
+                ? event.response.output
+                : [...completedItems]
+                    .sort(([a], [b]) => a - b)
+                    .map(([, item]) => item),
           };
           if (validResponseState(state)) {
-            const files = filesFromOutput(state.output);
+            // Streamed items already emitted their file annotations.
+            const files = filesFromOutput(event.response.output);
             if (files.length) yield { kind: "files", files };
             yield { kind: "response-completed", state };
             return;
@@ -1128,6 +1183,105 @@ export async function* streamOpenAIChat(
     // release the connection instead of letting the body stream run on.
     void reader.cancel().catch(() => {});
   }
+}
+
+/** Subscription-only local tool loop; API-token requests keep their existing behavior. */
+export async function* streamOpenAIChat(
+  context: ResponseContext,
+  settings: Parameters<typeof streamOpenAIResponse>[1],
+  signal: AbortSignal,
+): AsyncGenerator<OpenAIStreamChunk, void, undefined> {
+  if (
+    settings.provider !== "chatgpt" ||
+    settings.tools.fileDownload === false
+  ) {
+    yield* streamOpenAIResponse(context, settings, signal);
+    return;
+  }
+  const imageContext = fileImageContext(context.fallbackInput);
+  let current = {
+    ...context,
+    input: imageContext.input,
+    fallbackInput: imageContext.input,
+  };
+  let output: Record<string, unknown>[] = [];
+  const seenCalls = new Set<string>();
+  for (let round = 0; round < 4; round++) {
+    signal.throwIfAborted();
+    let completed: ResponseState | undefined;
+    for await (const chunk of streamOpenAIResponse(current, settings, signal)) {
+      if (chunk.kind === "response-completed") completed = chunk.state;
+      else yield chunk;
+    }
+    if (!completed) throw new Error("Response ended without completion state.");
+    signal.throwIfAborted();
+    const calls = completed.output.filter(
+      (item) => item.type === "function_call",
+    );
+    output = output.concat(completed.output);
+    const files: GeneratedFile[] = [];
+    const feedback: OpenAIStreamChunk[] = [];
+    for (const call of calls) {
+      if (
+        typeof call.call_id !== "string" ||
+        !/^[a-zA-Z0-9_-]+$/.test(call.call_id) ||
+        seenCalls.has(call.call_id)
+      )
+        throw new Error("Invalid or repeated function call identifier.");
+      seenCalls.add(call.call_id);
+      if (seenCalls.size > 8)
+        throw new Error("File tool call limit reached (8 per reply).");
+      let result: Record<string, unknown>;
+      try {
+        if (call.name !== "create_file" || typeof call.arguments !== "string")
+          throw new Error("Unsupported function call.");
+        const file = createTextFile(
+          call.arguments,
+          `local_${completed.id}_${call.call_id}`,
+          imageContext.images,
+        );
+        files.push(file);
+        result = {
+          filename: file.filename,
+          download_url: `sandbox:/mnt/data/${encodeURIComponent(file.filename)}`,
+        };
+      } catch (error) {
+        result = {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not create the file.",
+        };
+      }
+      output.push({
+        type: "function_call_output",
+        call_id: call.call_id,
+        output: JSON.stringify(result),
+      });
+      feedback.push({
+        kind: "tool-end",
+        id: toolCallId(call),
+        name: typeof call.name === "string" ? call.name : "create_file",
+        ok: !("error" in result),
+        input:
+          typeof result.filename === "string" ? result.filename : "create_file",
+        output: JSON.stringify(result),
+      });
+    }
+    // Save the complete call/output pairs before yielding files or starting another request.
+    const state = { ...completed, output };
+    yield { kind: "response-completed", state };
+    yield* feedback;
+    if (files.length) yield { kind: "files", files };
+    if (!calls.length) return;
+    const input = imageContext.input.concat(
+      replayTurn({ role: "assistant", markdown: "", responseState: state }),
+    );
+    current = { ...context, input, fallbackInput: input };
+  }
+  throw new Error(
+    "File tool continuation limit reached. Created files remain available below.",
+  );
 }
 
 /**
@@ -1187,6 +1341,7 @@ export function initAISettingsPanel(
   const webSearchInput = mustGet("ai-tool-web-search", HTMLInputElement);
   const imageToolInput = mustGet("ai-tool-image", HTMLInputElement);
   const codeToolInput = mustGet("ai-tool-code", HTMLInputElement);
+  const fileToolInput = mustGet("ai-tool-file", HTMLInputElement);
   const reasoningInput = mustGet("ai-reasoning", HTMLInputElement);
 
   const stored = getAISettings();
@@ -1198,6 +1353,7 @@ export function initAISettingsPanel(
   webSearchInput.checked = stored.tools.webSearch;
   imageToolInput.checked = stored.tools.imageGeneration;
   codeToolInput.checked = stored.tools.codeInterpreter;
+  fileToolInput.checked = stored.tools.fileDownload !== false;
   reasoningInput.checked = stored.reasoningSummary;
   contextSelect.value = String(stored.contextTurns);
   // A stored value the markup doesn't offer leaves the select unselected;
@@ -1253,6 +1409,7 @@ export function initAISettingsPanel(
         webSearch: webSearchInput.checked,
         imageGeneration: imageToolInput.checked,
         codeInterpreter: codeToolInput.checked,
+        fileDownload: fileToolInput.checked,
       },
       reasoningSummary: reasoningInput.checked,
       contextTurns:
@@ -1296,6 +1453,7 @@ export function initAISettingsPanel(
   webSearchInput.addEventListener("change", persist);
   imageToolInput.addEventListener("change", persist);
   codeToolInput.addEventListener("change", persist);
+  fileToolInput.addEventListener("change", persist);
   reasoningInput.addEventListener("change", persist);
   clearHistoryBtn.addEventListener("click", () => {
     clearOpenAIHistory();

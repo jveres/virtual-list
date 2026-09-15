@@ -16,6 +16,30 @@ afterEach(() => {
   localStorage.clear();
 });
 
+it("should persist the File download toggle in the existing Tools list", async () => {
+  localStorage.setItem(
+    "virtual-list:ai-settings",
+    JSON.stringify({ provider: "chatgpt" }),
+  );
+  const { initAISettingsPanel, getAISettings } = await import(
+    "../../demos/streaming/openai"
+  );
+  initAISettingsPanel();
+  const file = document.querySelector<HTMLInputElement>("#ai-tool-file");
+  if (!file) throw new Error("Missing File download toggle");
+  expect(file.closest("label")?.textContent?.trim()).toBe(
+    "File download (custom)",
+  );
+  expect(file.checked).toBe(true);
+  file.checked = false;
+  file.dispatchEvent(new Event("change"));
+  expect(getAISettings().tools.fileDownload).toBe(false);
+  expect(
+    JSON.parse(localStorage.getItem("virtual-list:ai-settings") ?? "{}").tools
+      .fileDownload,
+  ).toBe(false);
+});
+
 it("should keep code interpreter selectable when switching providers", async () => {
   localStorage.setItem(
     "virtual-list:ai-settings",

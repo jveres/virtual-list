@@ -68,6 +68,7 @@ describe("ChatGPT stateless Responses adapter", () => {
       { type: "web_search" },
       { type: "image_generation", output_format: "jpeg", partial_images: 2 },
       { type: "code_interpreter", container: { type: "auto" } },
+      expect.objectContaining({ type: "function", name: "create_file" }),
     ]);
     expect(options.tools.codeInterpreter).toBe(true);
   });

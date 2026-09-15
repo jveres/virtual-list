@@ -47,12 +47,17 @@
 /* The footer is row padding, outside the markdown hit-test area. A bare
    cursor paints into it without adding a line to the measured body. At
    stream end the toolbar occupies that same footer; its size never depends
-   on cursor presence, hover, or whether the last text ends with a block. */
-.message.assistant:has(> .message-actions) .markdown {
+   on cursor presence, hover, or whether the last text ends with a block.
+   Download controls between markdown and actions need the normal line
+   reservation: the cursor cannot borrow space beyond those controls. */
+.message.assistant:has(> .message-actions):not(:has(.message-generated-files))
+.markdown {
   padding-bottom: 0;
 }
 
-.message.assistant:has(> .message-actions) .markdown > .cursor {
+.message.assistant:has(> .message-actions):not(:has(.message-generated-files))
+  .markdown
+  > .cursor {
   /* Override markdown-viewer's important last-child margin reset. */
   /* biome-ignore lint/complexity/noImportantStyles: the upstream reset is important */
   margin-bottom: calc(-1 * (var(--cursor-line) + var(--cursor-gap))) !important;

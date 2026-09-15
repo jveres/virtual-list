@@ -167,29 +167,13 @@ try {
       if (stage === "reloaded") {
         // Wait for the history transaction, not a guessed storage delay.
         await page.waitForFunction(async () => {
-          const request = indexedDB.open("virtual-list-demo", 1);
-          return new Promise((resolve) => {
-            request.onsuccess = () => {
-              const db = request.result;
-              const read = db
-                .transaction("openai-history")
-                .objectStore("openai-history")
-                .get("history");
-              read.onsuccess = () => {
-                db.close();
-                resolve(
-                  read.result?.some(
-                    (turn) => turn.generatedFiles?.length || turn.responseState,
-                  ),
-                );
-              };
-              read.onerror = () => {
-                db.close();
-                resolve(false);
-              };
-            };
-            request.onerror = () => resolve(false);
-          });
+          const { loadOpenAIHistory } = await import(
+            "/demos/streaming/openai.ts"
+          );
+          const turns = await loadOpenAIHistory("openai");
+          return turns.some(
+            (turn) => turn.generatedFiles?.length || turn.responseState,
+          );
         });
         await page.reload();
         await report.waitFor();
