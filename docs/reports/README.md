@@ -5,7 +5,7 @@ approaches for specific revisions and workloads. They aren't current API
 specifications or a promise that every historical observation still applies.
 Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
-[release plan](../streaming-integration-plan.md) for current release status.
+[release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
 ## Streaming integration evidence
 
@@ -63,6 +63,16 @@ The [shared overlay and complex fixture comparison](shared-streaming-trail-2026-
 adds the shared-blend prototype and 12 captures of the 67,760-character fixture.
 Its lower CPU median is promising, but the ranges overlap. Every option records
 long frames on this workload, including the effect-off baseline.
+
+## Safari 27 investigation
+
+The [September 16 manual-scroll investigation](safari27-scroll-investigation-2026-09-16.md)
+records native Safari measurements, rejected diagnostics, compositor hints,
+and the mounting-order fix. The retained candidate is nearly perfect in the
+user's external-display repeat, but occasional shifts remain. Repeated Firefox
+controls motivate scoping `preserve-3d` to WebKit while retaining Safari's
+rendering setup. The `v0.2.0` release retains this improvement. The remaining
+shifts stay open as a known limitation.
 
 ## Earlier investigations
 

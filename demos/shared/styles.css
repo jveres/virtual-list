@@ -671,21 +671,24 @@ p.ai-settings-note {
 .message.assistant:has(> .message-actions) {
   /* One permanent footer, owned by row padding. Cursor and toolbar use the
      same space, never two stacked reservations. Keep text above the floating
-     date strip when the following prompt is pinned; touch controls may need
-     more room, but do not add another message-padding block beneath them. */
+     date strip when the following prompt is pinned. Preserve the normal
+     message bottom padding below the toolbar, including at the list end. */
   --message-footer-height: max(
     var(--day-header-height),
     calc(var(--message-action-height) + 16px),
     1em
   );
-  padding-bottom: var(--message-footer-height);
+  padding-bottom: calc(
+    var(--message-footer-height) +
+    var(--message-block-padding)
+  );
 }
 
 .message-actions {
   position: absolute;
   left: var(--chat-gutter);
   right: var(--chat-gutter);
-  bottom: 0;
+  bottom: var(--message-block-padding);
   height: var(--message-footer-height);
   display: flex;
   align-items: flex-start;
@@ -1086,7 +1089,7 @@ p.ai-settings-note {
 
 .composer {
   border-top: 1px solid var(--border);
-  padding: 10px 0 14px;
+  padding: 10px 0;
 }
 
 .composer-inner {

@@ -42,6 +42,14 @@ for (const engine of [firefox, chromium, webkit]) {
       await page.selectOption("#scrolling-updates", mode);
       await page.waitForTimeout(300);
 
+      assert.equal(
+        await page
+          .locator("#viewport > div")
+          .evaluate((canvas) => getComputedStyle(canvas).transformStyle),
+        engine === webkit ? "preserve-3d" : "flat",
+        `${engine.name()}/${mode}: 3D preservation is scoped to WebKit`,
+      );
+
       // A width change explicitly takes over the old scroll phase. These
       // events exercise the detector contract, not native momentum timing.
       const beforeWidth = await page

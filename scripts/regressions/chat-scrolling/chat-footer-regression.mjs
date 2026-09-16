@@ -66,6 +66,15 @@ try {
     await page.waitForFunction(
       () => !document.documentElement.classList.contains("booting"),
     );
+    const composerPadding = await page.locator(".composer").evaluate((el) => {
+      const style = getComputedStyle(el);
+      return [style.paddingTop, style.paddingBottom];
+    });
+    assert.deepEqual(
+      composerPadding,
+      ["10px", "10px"],
+      "the input area has equal top and bottom padding",
+    );
     const image = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
       canvas.width = 160;
@@ -162,10 +171,13 @@ try {
         "the actions replace the unused cursor padding",
       );
       assert.equal(settled.position, "absolute");
-      assert.equal(settled.footerHeight, settled.footerPadding);
-      assert.ok(Math.abs(settled.footerBottom) < 0.01, JSON.stringify(settled));
+      assert.equal(settled.footerHeight + 12, settled.footerPadding);
+      assert.ok(
+        Math.abs(settled.footerBottom + 12) < 0.01,
+        "the toolbar keeps 12px of bottom breathing room",
+      );
       assert.equal(settled.buttonHeight, 24);
-      assert.equal(settled.footerPadding, 40);
+      assert.equal(settled.footerPadding, 52);
       assert.ok(
         Math.abs(settled.overlap) < 1 && Math.abs(settled.buttonGap - 16) < 1,
         "actions have a 16px gap and do not overlap markdown",

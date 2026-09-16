@@ -289,6 +289,45 @@ beforeEach(() => {
   vi.useFakeTimers();
 });
 
+describe("canvas compositing", () => {
+  it.each([
+    {
+      environment: "WebKit",
+      css: {
+        supports: (property: string, value: string) =>
+          property === "-webkit-nbsp-mode" && value === "space",
+      },
+      expected: "preserve-3d",
+    },
+    {
+      environment: "other engines",
+      css: { supports: () => false },
+      expected: "",
+    },
+    { environment: "missing supports API", css: {}, expected: "" },
+    { environment: "missing CSS API", css: undefined, expected: "" },
+  ])(
+    "should limit 3D preservation while retaining row layers in $environment",
+    ({ css, expected }) => {
+      vi.stubGlobal("CSS", css);
+      const h = mount(range(0, 40), { boot: "start" });
+      try {
+        expect(h.canvas().style.transformStyle).toBe(expected);
+        expect(h.canvas().style.transform).toBe("translateZ(0)");
+
+        h.userScroll(2000);
+
+        const row = h.list.elementOf("m20");
+        expect(row?.isConnected).toBe(true);
+        expect(row?.parentElement?.style.willChange).toBe("transform");
+        expect(h.canvas().style.transformStyle).toBe(expected);
+      } finally {
+        h.list.dispose();
+      }
+    },
+  );
+});
+
 describe("settle-time window updates", () => {
   it.each([Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, -1])(
     "should use default overscan for invalid configuration (%s)",
@@ -1268,6 +1307,40 @@ describe("incremental window preparation", () => {
 });
 
 describe("positioned declared items", () => {
+  it.each([
+    ["", "transform"],
+    ["auto", "transform"],
+    ["initial", "transform"],
+    ["opacity", "opacity, transform"],
+    ["contents, opacity", "contents, opacity, transform"],
+    ["opacity, transform", "opacity, transform"],
+  ])(
+    "should preserve direct-card hints when promoting %s",
+    (hint, expected) => {
+      const h = mount([]);
+      h.list.dispose();
+      const element = document.createElement("div");
+      element.style.setProperty("will-change", hint, "important");
+      element.style.transform = "scale(0.9)";
+      const priority = element.style.getPropertyPriority("will-change");
+      const list = createVirtualList(h.viewport, {
+        items: [message(0)],
+        key: (item) => String(item.id),
+        height: () => ROW_H,
+        position: () => ({ top: 0, lane: 0 }),
+        scrollingUpdates: "freeze",
+        render: () => element,
+      });
+      try {
+        expect(element.style.willChange).toBe(expected);
+        expect(element.style.getPropertyPriority("will-change")).toBe(priority);
+        expect(element.style.transform).toBe("scale(0.9)");
+      } finally {
+        list.dispose();
+      }
+    },
+  );
+
   it("should fully reconcile after protected-window queries advance past the last mounted window", async () => {
     const h = mount(range(0, 100), {
       boot: "start",
@@ -2571,6 +2644,7 @@ describe("bounded paging on the runtime", () => {
 });
 
 afterEach(() => {
+  vi.unstubAllGlobals();
   vi.useRealTimers();
   document.body.replaceChildren();
 });
@@ -6926,6 +7000,53 @@ describe("host-named anchor", () => {
 });
 
 describe("mount hooks", () => {
+  it.each(["measured", "declared", "positioned"] as const)(
+    "should expose final placement to mount hooks for %s rows",
+    (mode) => {
+      const observed: { id: number; connected: boolean; placement: string }[] =
+        [];
+      const h = mount(range(0, 40), {
+        boot: "start",
+        overscanPx: 0,
+        scrollingUpdates: "freeze",
+        itemHeight: mode === "measured" ? undefined : () => ROW_H,
+        position:
+          mode === "positioned"
+            ? (item) => ({ top: item.id * ROW_H, lane: 0 })
+            : undefined,
+        onMount: (element, item) => {
+          observed.push({
+            id: item.id,
+            connected: element.isConnected,
+            placement:
+              mode === "positioned"
+                ? element.style.translate
+                : (element.parentElement as HTMLElement).style.transform,
+          });
+        },
+      });
+      try {
+        for (const top of [0, 2000, 0]) {
+          if (top !== 0 || observed.length === 0) h.userScroll(top);
+          expect(observed.length).toBeGreaterThan(0);
+          expect(observed).toEqual(
+            observed.map(({ id }) => ({
+              id,
+              connected: true,
+              placement:
+                mode === "positioned"
+                  ? `0 ${id * ROW_H}px`
+                  : `translateY(${id * ROW_H}px)`,
+            })),
+          );
+          observed.length = 0;
+        }
+      } finally {
+        h.list.dispose();
+      }
+    },
+  );
+
   it("cleans up a failed initial render", () => {
     const disconnect = vi.spyOn(
       ControlledResizeObserver.prototype,

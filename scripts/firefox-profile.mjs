@@ -150,6 +150,13 @@ await response.body?.cancel();
 if (!response.ok) throw new Error(`Demo server returned ${response.status}`);
 const browserProfile = join(directory, "browser-profile");
 await mkdir(browserProfile);
+// macOS 27 can reject direct launches during profile discovery even with an
+// explicit --profile. Isolate discovery/cache data too (Mozilla bug 2060476).
+// Both directories share the temporary profile's owned cleanup lifecycle.
+const browserAppData = join(browserProfile, "app-data");
+const browserLocalData = join(browserProfile, "local-data");
+await mkdir(browserAppData);
+await mkdir(browserLocalData);
 await writeFile(
   join(browserProfile, "user.js"),
   [
@@ -196,6 +203,8 @@ const child = spawn(
   {
     env: {
       ...process.env,
+      MOZ_APP_DATA: browserAppData,
+      MOZ_LOCAL_APP_DATA: browserLocalData,
       MOZ_PROFILER_STARTUP: "1",
       MOZ_PROFILER_STARTUP_INTERVAL: "1",
       MOZ_PROFILER_STARTUP_ENTRIES: "16777216",

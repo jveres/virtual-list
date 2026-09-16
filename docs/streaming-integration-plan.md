@@ -1,11 +1,16 @@
-# Streaming integration release plan
+# Streaming integration release record
 
 Make the streaming chat reproducible through supported library APIs and
 optional companions, without copying demo-owned scrolling infrastructure.
 Keep the runtime generic: applications still own message data, branch
 relationships, providers, persistence, rendering, and product choices.
 
-Status, September 14, 2026: the integration is merged and pushed to `main`.
+Status, September 16, 2026: the integration is complete. The `v0.2.0` source
+release closes this plan. Package publication remains out of scope because
+the repository uses source-based distribution and a private demo package.
+The sections below preserve the implementation and merge evidence.
+
+The integration is merged and pushed to `main`.
 The user approved the merge on September 13, 2026. Main advanced to `8e197f0`
 by fast-forward, so there is no separate merge commit. The
 [release review](reports/streaming-release-review-2026-09-13.md) records API
@@ -15,8 +20,28 @@ The resulting main commit `8e197f0` passed checks, 915 unit tests, 24 profiling
 tool checks, 11 regression-runner checks, isolated consumer builds, and the
 production build. The process audit found no remaining task-owned browser
 or server processes. These are the recorded merge-time results, not checks
-rerun for this documentation update. No `v0.2.0` tag or package publication
-is recorded. Those remain separate release actions.
+rerun for this documentation update. The minor release also includes the
+subsequent changes summarized below.
+
+## v0.2.0 release scope
+
+The source release includes these changes since `v0.1.1`:
+
+- Retain renderer-owned streaming trails and cursor geometry improvements,
+  with `markdown-viewer` pinned to `v0.3.1`.
+- Add the demo's OpenAI Subscription provider, custom file downloads, and
+  attachment replay. Preserve conversation versions across reloads.
+- Harden short-list paging and sticky-header cleanup.
+- Position rows before attachment and retain canvas and row rendering hints.
+  Apply `preserve-3d` only in WebKit to avoid the measured Firefox CPU cost.
+- Balance composer spacing and add space below assistant toolbars.
+- Keep reusable Safari diagnostics, Firefox comparison fixtures, and
+  hover-layout regressions in the repository. Keep raw captures outside Git.
+
+The [Safari 27 report](reports/safari27-scroll-investigation-2026-09-16.md)
+records the browser measurements and limits. Scrolling improves on the external
+4K display, but occasional shifts remain unresolved. This release does not
+claim a complete Safari jitter fix or measured GPU-memory savings.
 
 ## Branch and tracking workflow
 
@@ -66,8 +91,7 @@ application state, and calls that express user intent remain host concerns.
 SI-01 through SI-05 are complete and merged, with
 implementation in `732e143`, the linked historical evidence, and the final
 [release review](reports/streaming-release-review-2026-09-13.md). Checked items
-record completed integration work. SI-06 records the completed merge and
-retains the separate release-tag action.
+record completed integration work. SI-06 records the merge and source release.
 
 ### SI-01: Consumer contract and executable reference
 
@@ -228,8 +252,8 @@ application source between those captures and committed candidate `9af905c`.
 
 ### SI-06: Distribution and release gate
 
-Status: integration checks, merge, and merge-time verification are complete.
-The next minor tag and package publication are not recorded.
+Status: integration checks, merge, and the `v0.2.0` source release are complete.
+Package publication remains out of scope.
 Dependencies: completed SI-01 through SI-05.
 
 - [x] Decide and document source-based consumption versus an installable
@@ -252,16 +276,16 @@ Dependencies: completed SI-01 through SI-05.
   locally and commit the report; do not claim physical smoothness from rAF.
 - [x] Audit process cleanup and verify the resulting main commit `8e197f0`.
   Record the approved merge separately from tagging and publication.
-- [ ] Select and verify the final release commit, then create the next minor
-  tag only when authorized. Package publication remains a separate action.
+- [x] Select and verify the `v0.2.0` release commit and tag it with user
+  authorization. Package publication remains a separate action.
 
 Done when all acceptance evidence is attached, all five review concerns have
 an implemented resolution, and the user approves any remaining scope changes.
 
 Evidence: [distribution and verification checkpoint](reports/streaming-integration-checkpoint.md).
 Source-based distribution remains private. Basic and paged isolated builds
-passed at merge time. The approved merge and push are complete. Verification
-does not imply package publication or a new tag.
+passed at merge time. The approved merge and push are complete. The `v0.2.0`
+tag identifies the final source-release commit, not a published package.
 
 ## Post-merge integration review
 
@@ -283,9 +307,10 @@ The documentation follow-up closes these integration gaps:
 This follow-up adds no runtime API or example application. The existing
 verification reports retain their original revision and workload labels.
 
-## Next steps
+## Archive status
 
-The integration merge and documentation follow-up are complete. Commit the
-documentation update, then select the exact commit for the next release.
-Keep verification tied to that commit and create a tag only when authorized.
-Archive this plan after release. No additional example apps are required.
+This completed plan remains at its original path to preserve inbound links.
+Use the [consumer guide](streaming-consumer.md) and
+[API reference](integration-api.md) for current integration contracts.
+No additional example apps are required. The remaining Safari shifts stay
+tracked in the linked investigation, separately from this completed integration.

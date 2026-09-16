@@ -615,6 +615,14 @@ export function createVirtualList<T>(
   canvas.style.position = "relative";
   canvas.style.width = "100%";
   canvas.style.overflowAnchor = "none";
+  // Keep one stable compositing surface while the virtual window changes.
+  // Safari can otherwise rebuild the scrolling layer as rows enter/leave.
+  canvas.style.transform = "translateZ(0)";
+  // WebKit's non-flattening layer path reduces Safari 27 scroll jitter.
+  // Keep this engine workaround out of Firefox's measured hot rendering path.
+  // This WebKit-only CSS capability also works on desktop (touch-callout does not).
+  if (globalThis.CSS?.supports?.("-webkit-nbsp-mode", "space"))
+    canvas.style.transformStyle = "preserve-3d";
   viewport.appendChild(canvas);
   let lastViewportWidth = viewport.clientWidth;
   let lastViewportHeight = viewport.clientHeight;
@@ -837,6 +845,7 @@ export function createVirtualList<T>(
         slot.style.overflow === "clip" ? SLOT_STYLE_CLIP : SLOT_STYLE_HIDDEN;
     }
     slot.style.cssText = slotStyle;
+    slot.style.willChange = "transform";
     return slot;
   }
 
@@ -852,6 +861,17 @@ export function createVirtualList<T>(
     if (slot) {
       slot.style.position = "absolute";
       slot.style.top = "0";
+      // Direct cards are host-owned. Preserve their explicit animation hints.
+      const hint = slot.style.willChange.trim();
+      if (!hint.split(",").some((value) => value.trim() === "transform")) {
+        const automatic =
+          !hint || /^(auto|initial|inherit|unset|revert(-layer)?)$/.test(hint);
+        slot.style.setProperty(
+          "will-change",
+          automatic ? "transform" : `${hint}, transform`,
+          slot.style.getPropertyPriority("will-change"),
+        );
+      }
     }
     const quantized = quantizeHeight(height);
     if (slot) slot.style.height = `${quantized}px`;
@@ -1918,6 +1938,9 @@ export function createVirtualList<T>(
     }
     row.mounted = true;
     mountedRows.add(row);
+    // Attach at the committed offset. Host mount hooks can force layout;
+    // they must never observe a newly connected row at a provisional zero.
+    placeRow(row);
     canvas.appendChild(row.slot);
     observeRow(row);
     if (!row.edge) hostHook(options.onMount, row);
@@ -2076,9 +2099,6 @@ export function createVirtualList<T>(
       if (!row) continue;
       const entering = !row.mounted;
       if (entering) mountRow(row);
-      // Every geometry commit already positioned surviving mounted rows
-      // before its layout reads. Only entrants still need an offset lookup.
-      if (entering) placeRow(row);
     }
     // Memoized only once the window is complete: nothing in the loop may
     // leave a partial window behind a memo.

@@ -35,6 +35,12 @@ its window to the selected display's usable area. It checks the browser's
 position and pixel ratio against that display. It then records six downward
 and four upward gestures, including pauses for native release and paging.
 
+The child also receives temporary `MOZ_APP_DATA` and `MOZ_LOCAL_APP_DATA`
+directories inside its profile. This avoids the macOS 27 profile-discovery
+failure described in [Mozilla bug 2060476](https://bugzilla.mozilla.org/show_bug.cgi?id=2060476).
+The runner does not request access to your regular Firefox application data
+or change macOS permissions. Profile cleanup removes these directories too.
+
 The runner requires at least 10 GiB of free disk space before starting. Swift
 compilation uses one shared `.swift-cache/` in the output parent, rather than
 a separate cache for every capture. After its browser exits, the runner removes

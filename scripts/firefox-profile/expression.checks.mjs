@@ -13,7 +13,12 @@ test("serializes expressions with comments and a trailing semicolon", () => {
 });
 
 test("compiles the tracked setup files in the profiler wrapper", async () => {
-  for (const name of ["rich-chat", "streaming-chat"]) {
+  for (const name of [
+    "rich-chat",
+    "streaming-chat",
+    "idle-chat-scroll",
+    "canvas-compositing",
+  ]) {
     const source = await readFile(
       new URL(`./fixtures/${name}.js`, import.meta.url),
       "utf8",
