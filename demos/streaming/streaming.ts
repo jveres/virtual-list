@@ -3600,6 +3600,11 @@ function mountConversation(): void {
   // invisible scrollback strip when all imported turns are already loaded.
   edgeSlotRequested = shouldMountEdgeSlot();
   edgeSlotElement = null;
+  // Boot publishes synchronously, before the assignment below completes.
+  // Defer header queries until they can read the replacement list, not the
+  // disposed list's geometry paired with the new transcript's day keys.
+  let mounting = true;
+  let bootScrollTop = 0;
   virtualList = createVirtualList<ChatRow>(viewport, {
     items: rowsForRuntime(),
     key: rowKey,
@@ -3645,12 +3650,15 @@ function mountConversation(): void {
       syncMetrics(state);
       // Publications also report mounted-range changes during scrolling.
       // Reuse the runtime's read instead of flushing layout after DOM writes.
-      stickyHeaders?.refresh(snapshot.scrollTop);
+      if (mounting) bootScrollTop = snapshot.scrollTop;
+      else stickyHeaders?.refresh(snapshot.scrollTop);
       void paging?.reconcile()?.catch(reportPagingError);
     },
     // State can stay unchanged through a glide. Keep the header in the
     // same frame as each scroll write, including its release above the slot.
-    onViewport: (snapshot) => stickyHeaders?.update(snapshot.scrollTop),
+    onViewport: (snapshot) => {
+      if (!mounting) stickyHeaders?.update(snapshot.scrollTop);
+    },
     onReachStart: loadOlderMessages,
     onReachEnd: (context) => {
       if (paging && !treeNavigation)
@@ -3670,6 +3678,8 @@ function mountConversation(): void {
     },
     onDestroy: handleRowDestroy,
   });
+  mounting = false;
+  stickyHeaders?.refresh(bootScrollTop);
   resetPaging();
 }
 
