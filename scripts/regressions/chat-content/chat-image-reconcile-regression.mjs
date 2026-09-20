@@ -32,7 +32,25 @@ for (const engine of [chromium, firefox, webkit]) {
         return image;
       });
       await Promise.all(images.map((image) => image.decode()));
-      const preview = createChatImagePreview(host);
+      const messages = [1, 2, 3].map((id) => ({
+        id,
+        markdown: `![Image ${id}](${canvas.toDataURL()})`,
+      }));
+      const normalizedReads = [0, 0];
+      const normalizedSource = Object.getOwnPropertyDescriptor(
+        HTMLImageElement.prototype,
+        "src",
+      );
+      images.forEach((image, index) => {
+        Object.defineProperty(image, "src", {
+          configurable: true,
+          get() {
+            normalizedReads[index]++;
+            return normalizedSource.get.call(this);
+          },
+        });
+      });
+      const preview = createChatImagePreview(host, () => messages);
       const reads = [0, 0];
       const source = Object.getOwnPropertyDescriptor(
         HTMLImageElement.prototype,
@@ -48,6 +66,29 @@ for (const engine of [chromium, firefox, webkit]) {
         });
       });
       const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+      const replaceSource = async (image, url) => {
+        await new Promise((resolve, reject) => {
+          const finish = (error) => {
+            clearTimeout(timer);
+            image.removeEventListener("load", onLoad);
+            image.removeEventListener("error", onError);
+            if (error) reject(error);
+            else resolve();
+          };
+          const onLoad = () => finish();
+          const onError = () => finish(new Error("Image replacement failed"));
+          const timer = setTimeout(
+            () => finish(new Error("Image replacement timed out")),
+            5000,
+          );
+          image.addEventListener("load", onLoad);
+          image.addEventListener("error", onError);
+          image.setAttribute("src", url);
+        });
+        await image.decode();
+        await settle();
+      };
+      let blobUrl;
       try {
         const textRow = document.createElement("div");
         textRow.textContent = "An unrelated virtual row";
@@ -73,10 +114,36 @@ for (const engine of [chromium, firefox, webkit]) {
         rows[0].append(images[0]);
         await settle();
         const restored = images[0].classList.contains("photo-preview-card");
-        return { unrelated, rekeyed, label, moved, removed, restored };
+        canvas.width = canvas.height = 32;
+        const replacement = canvas.toDataURL();
+        await replaceSource(images[0], replacement);
+        const replaced =
+          images[0].currentSrc === replacement &&
+          images[0].classList.contains("photo-preview-card");
+        const dataSourceReads = [...normalizedReads];
+        const blob = await new Promise((resolve) => canvas.toBlob(resolve));
+        blobUrl = URL.createObjectURL(blob);
+        await replaceSource(images[0], blobUrl);
+        const blobFallback = {
+          selected: images[0].currentSrc === blobUrl,
+          bound: images[0].classList.contains("photo-preview-card"),
+          normalized: normalizedReads[0] > dataSourceReads[0],
+        };
+        return {
+          unrelated,
+          rekeyed,
+          label,
+          moved,
+          removed,
+          restored,
+          replaced,
+          blobFallback,
+          normalizedReads: dataSourceReads,
+        };
       } finally {
         preview.dispose();
         host.remove();
+        if (blobUrl) URL.revokeObjectURL(blobUrl);
       }
     });
     assert.deepEqual(
@@ -93,6 +160,17 @@ for (const engine of [chromium, firefox, webkit]) {
     );
     assert.equal(result.removed, false);
     assert.equal(result.restored, true);
+    assert.equal(result.replaced, true, "changed data sources stay bound");
+    assert.deepEqual(
+      result.blobFallback,
+      { selected: true, bound: true, normalized: true },
+      `${engine.name()}: blob sources retain src identity`,
+    );
+    assert.deepEqual(
+      result.normalizedReads,
+      [0, 0],
+      "loaded data images reuse their selected URL without normalized src reads",
+    );
     console.log(JSON.stringify({ engine: engine.name(), result: "passed" }));
   } finally {
     await browser.close();

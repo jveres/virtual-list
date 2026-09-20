@@ -72,6 +72,13 @@ header .ua {
   transition: opacity 240ms ease-out;
 }
 
+/* Compose load and press feedback regardless of stylesheet load order. */
+.photo.photo-preview-image {
+  transition:
+    opacity 240ms ease-out,
+    filter 150ms ease;
+}
+
 .photo.loaded {
   opacity: 1;
 }
@@ -79,6 +86,13 @@ header .ua {
 /* Remounted photos are already present to the user, not new arrivals. */
 .photo.cached {
   transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .photo,
+  .photo.photo-preview-image {
+    transition: none;
+  }
 }
 
 /* A photo the provider never delivered: its box, flat. */

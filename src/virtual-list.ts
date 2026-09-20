@@ -1633,24 +1633,43 @@ export function createVirtualList<T>(
     }
     let published = false;
     guarded(() => {
-      const vp = viewportState();
-      const anchor = geometry.anchorAt(vp);
-      const anchorIndex = anchor === null ? 0 : geometry.indexOf(anchor.key);
-      const committable: Row<T>[] = [];
-      for (const row of dirtyRows) {
-        if (geometry.indexOf(row.key) >= anchorIndex) committable.push(row);
+      let vp = viewportState();
+      let committed = false;
+      try {
+        while (dirtyRows.size > 0) {
+          const anchor = geometry.anchorAt(vp);
+          const anchorIndex =
+            anchor === null ? 0 : geometry.indexOf(anchor.key);
+          const committable: Row<T>[] = [];
+          for (const row of dirtyRows) {
+            if (geometry.indexOf(row.key) >= anchorIndex) committable.push(row);
+          }
+          if (committable.length === 0) break;
+          const capture = geometry.capture(vp, "none");
+          commitMeasured(committable);
+          geometryEpoch += 1;
+          const result = geometry.resolve(capture);
+          syncCanvasHeight(result.totalSize);
+          repositionMounted();
+          committed = true;
+          // Shrinking the range can clamp the browser upward onto another
+          // dirty row. Finish its height before mounting/publishing this window,
+          // or its stale slot clips the newly exposed content until a later event.
+          // Each pass consumes dirty rows; ordinary growth needs only one pass.
+          const previousTop = vp.scrollTop;
+          vp = viewportState();
+          if (vp.scrollTop >= previousTop) break;
+        }
+      } catch (error) {
+        if (!committed) throw error;
+        // A later measurement/host predicate failed after a real commit.
+        // Publish that committed window before surfacing the failure; remaining
+        // dirty rows stay retryable, rather than stranding stale public state.
+        deferTeardown(failuresOf(error));
       }
-      if (committable.length === 0) return;
-      const capture = geometry.capture(vp, "none");
-      commitMeasured(committable);
-      geometryEpoch += 1;
-      const result = geometry.resolve(capture);
-      syncCanvasHeight(result.totalSize);
-      repositionMounted();
-      // There is no explicit scroll write, but shrinking the scroll range
-      // can make the browser clamp scrollTop. Re-read after the canvas write
-      // and reconcile that real position before this frame paints.
-      reconcileAndPublish();
+      if (!committed) return;
+      const range = reconcileWindow(vp);
+      publish(vp, range);
       if (followController.armed) followIfBehindEnd();
       published = true;
     });

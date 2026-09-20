@@ -66,6 +66,16 @@ long frames on this workload, including the effect-off baseline.
 
 ## Safari 27 investigation
 
+The [September 20 scroll-presentation investigation](scroll-presentation-investigation-2026-09-20.md)
+records a user-observed Chrome pause, GPU-process waits, Safari production
+controls, and a user-supplied Safari timeline. The timeline identifies repeated
+image-source reads, page-preparation costs, and separate long paints. The native
+Firefox/Safari follow-up measures a demo-only image-binding improvement and
+rejects a raw-attribute candidate. The audit follow-up fixes live-shrink
+reconciliation and the gallery fade, and rejects a segment cache that would
+not benefit normal scrolling. The compositor cause and expensive page
+preparation remain unresolved. Compositing CSS remains unchanged.
+
 The [September 16 manual-scroll investigation](safari27-scroll-investigation-2026-09-16.md)
 records native Safari measurements, rejected diagnostics, compositor hints,
 and the mounting-order fix. The retained candidate is nearly perfect in the

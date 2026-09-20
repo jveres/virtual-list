@@ -179,7 +179,8 @@ export function createChatImagePreview(
       unbind(image);
       return;
     }
-    const url = image.currentSrc || image.src;
+    const selectedUrl = image.currentSrc;
+    const url = selectedUrl || image.src;
     const previous = photos.get(image);
     const row = image.closest<HTMLElement>("[data-key]");
     const message = getMessages?.().find(
@@ -191,9 +192,21 @@ export function createChatImagePreview(
     const photo: ChatImage = {
       // Navigation checks this identity against sanitized message content.
       // A live DOM image ahead of the model cannot match another image's ID.
+      // Ordinary data images already expose their source in currentSrc.
+      // Reading src (even via getAttribute) again is costly for large data URLs.
+      // Keep logical src resolution for responsive and base-relative images.
       ...(message && ordinal >= 0
         ? {
-            id: imageId(message, ordinal, image.src),
+            id: imageId(
+              message,
+              ordinal,
+              !selectedUrl ||
+                (url.startsWith("data:") &&
+                  !image.hasAttribute("srcset") &&
+                  image.parentElement?.tagName !== "PICTURE")
+                ? url
+                : image.src,
+            ),
             messageId: message.id,
             ordinal,
           }

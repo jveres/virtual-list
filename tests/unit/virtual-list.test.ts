@@ -4535,6 +4535,148 @@ describe("runtime — commits and slots", () => {
     expect(h.rowElement("msg 44")).toBeDefined();
   });
 
+  it("should commit a dirty row exposed by a live shrink without writing scrollTop", () => {
+    const writes: number[] = [];
+    const h = mount(range(0, 50), {
+      scrollingUpdates: "live",
+      onScrollWrite: (top) => writes.push(top),
+    });
+    try {
+      const tail = h.rowElement("msg 49");
+      h.heights.set(49, 1000);
+      fireResize(0, tail, 1000);
+      h.userScroll(5298); // The tall tail owns the viewport's top.
+      h.heights.set(44, 200);
+      h.list.updateItem("m44", message(44, "grown above"));
+      expect(h.list.positionOf("m44")).toEqual({ top: 4400, height: 100 });
+      expect(h.list.state.held).toBe(true);
+      writes.length = 0;
+
+      // A late size change clamps the viewport up to m44, whose dirty
+      // content must fit its slot now, without another scroll/RO delivery.
+      h.heights.set(49, 100);
+      fireResize(0, tail, 100);
+
+      expect(writes).toEqual([]);
+      expect(h.viewport.scrollTop).toBe(4400);
+      expect(h.list.positionOf("m44")).toEqual({ top: 4400, height: 200 });
+      const exposed = h.rowElement("grown above");
+      expect(exposed.isConnected).toBe(true);
+      expect(h.slotOf(exposed).style.height).toBe("200px");
+      expect(h.list.state.totalSize).toBe(5100);
+      expect(h.list.state.held).toBe(false);
+    } finally {
+      h.list.dispose();
+    }
+  });
+
+  it("should finish successive live clamps that expose more dirty rows without writing scrollTop", () => {
+    const writes: number[] = [];
+    const h = mount(range(0, 50), {
+      scrollingUpdates: "live",
+      onScrollWrite: (top) => writes.push(top),
+    });
+    try {
+      const tail = h.rowElement("msg 49");
+      h.heights.set(49, 1000);
+      fireResize(0, tail, 1000);
+      h.userScroll(5298);
+      h.heights.set(44, 20);
+      h.list.updateItem("m44", message(44, "shorter m44"));
+      h.heights.set(43, 30);
+      h.list.updateItem("m43", message(43, "shorter m43"));
+      h.heights.set(42, 200);
+      h.list.updateItem("m42", message(42, "grown m42"));
+      h.heights.set(41, 200);
+      h.list.updateItem("m41", message(41, "still above the final anchor"));
+      expect(h.list.state.held).toBe(true);
+      expect(h.viewport.scrollTop).toBe(5298);
+      writes.length = 0;
+      const published = h.states.length;
+
+      // The tail exposes m44; its shrink exposes m43; that shrink exposes
+      // m42. All must finish in this delivery, not on later scroll events.
+      h.heights.set(49, 100);
+      fireResize(0, tail, 100);
+
+      expect(writes).toEqual([]);
+      expect(h.viewport.scrollTop).toBe(4250);
+      expect(h.list.positionOf("m42")).toEqual({ top: 4200, height: 200 });
+      expect(h.list.positionOf("m43")).toEqual({ top: 4400, height: 30 });
+      expect(h.list.positionOf("m44")).toEqual({ top: 4430, height: 20 });
+      expect(h.list.positionOf("m41")).toEqual({ top: 4100, height: 100 });
+      const exposed = h.rowElement("grown m42");
+      expect(exposed.isConnected).toBe(true);
+      expect(h.slotOf(exposed).style.height).toBe("200px");
+      expect(h.list.state.totalSize).toBe(4950);
+      expect(h.list.state.held).toBe(true);
+      expect(h.states.slice(published)).toEqual([h.list.state]);
+    } finally {
+      h.list.dispose();
+    }
+  });
+
+  it.each(["measurement", "anchor"] as const)(
+    "should publish committed geometry and recover after a later live-clamp %s failure",
+    (failure) => {
+      let fail = false;
+      const writes: number[] = [];
+      const h = mount(range(0, 50), {
+        scrollingUpdates: "live",
+        onScrollWrite: (top) => writes.push(top),
+        onMeasure: (item) => {
+          if (fail && failure === "measurement" && item.id === 44)
+            throw new Error("late measurement failed");
+        },
+        anchorable: (item) => {
+          if (fail && failure === "anchor" && item.id === 44)
+            throw new Error("late anchor failed");
+          return true;
+        },
+      });
+      try {
+        const tail = h.rowElement("msg 49");
+        h.heights.set(49, 1000);
+        fireResize(0, tail, 1000);
+        h.userScroll(5298);
+        h.heights.set(44, 200);
+        h.list.updateItem("m44", message(44, "grown above"));
+        writes.length = 0;
+        const published = h.states.length;
+        fail = true;
+
+        h.heights.set(49, 100);
+        expect(() => fireResize(0, tail, 100)).toThrow(
+          `late ${failure} failed`,
+        );
+
+        // The first pass already shrank the canvas. An error in the next
+        // pass must still leave its real viewport reconciled and published.
+        expect(writes).toEqual([]);
+        expect(h.viewport.scrollTop).toBe(4400);
+        expect(h.list.state.totalSize).toBe(5000);
+        expect(h.list.state.start).toBe(38);
+        expect(h.list.state.held).toBe(true);
+        expect(h.states.slice(published)).toEqual([h.list.state]);
+        const exposed = h.rowElement("grown above");
+        expect(exposed.isConnected).toBe(true);
+        expect(h.slotOf(exposed).style.height).toBe("100px");
+
+        fail = false;
+        fireResize(0, exposed, 200);
+
+        expect(writes).toEqual([]);
+        expect(h.viewport.scrollTop).toBe(4400);
+        expect(h.list.positionOf("m44")).toEqual({ top: 4400, height: 200 });
+        expect(h.slotOf(exposed).style.height).toBe("200px");
+        expect(h.list.state.totalSize).toBe(5100);
+        expect(h.list.state.held).toBe(false);
+      } finally {
+        h.list.dispose();
+      }
+    },
+  );
+
   it('"live" keeps a dirty row above the anchor for settle, or for the scroll that reaches it', () => {
     const initial = range(0, 50);
     const h = mount(initial, { scrollingUpdates: "live" });
