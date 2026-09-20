@@ -602,6 +602,136 @@ duplicates, reclaiming another 171,174,803 bytes. The combined cleanup removed
 101 plain copies and reclaimed 7,938,681,109 bytes, with every compressed capture
 retained.
 
+## Remaining-findings review after `5dd2a8b`
+
+The user reported that Safari jitter was almost gone, with occasional shifts in
+both demos. This feedback did not isolate which preceding change helped. This
+follow-up preserved the application code and compositing CSS.
+
+The review started with installed Firefox 156.0, then used Safari 27.0 for the
+engine-specific questions. All runs used the external LU28R55 at 1920 × 1080
+logical pixels, DPR 2, and maximum 60 Hz, with DevTools closed. Firefox's page
+was 1900 × 965; Safari's page was 1920 × 997. Native scripted gestures verified
+movement and release events, but did not generate a real trackpad momentum tail.
+
+An optional source overlay recorded numeric mount, position, height, and
+preparation events. It added no layout reads to the animation sampler. Image
+snapshots recorded dimensions and decoding policy only at capture boundaries.
+No capture exceeded the 50,000-event limit. These diagnostics added work and did
+not measure physical display presentation.
+
+### Runtime geometry and image decoding
+
+| Capture | Workload | Mounts / unmounts | Actual resize changes / live passes | Largest callback gap |
+| --- | --- | --- | --- | --- |
+| Firefox `run-o3toYS` | Masonry baseline, two down/up rounds | Not instrumented | Not instrumented | 17.66 ms |
+| Firefox `run-q6RVh9` | Same workload with numeric audit | 180 / 180 | 0 / 0 | 17.64 ms |
+| Safari `run-lcwFP7` | Small masonry, native CPU sampling | 130 / 130 | 0 / 0 | 268 ms |
+| Safari `run-om7h5o` | Small masonry, no CPU sampling | 129 / 129 | 0 / 0 | 24 ms |
+| Safari `run-SqGQ4B` | Imported image chat, three up/down rounds, CPU sampling | 16 / 16 | 0 / 0 | 76 ms |
+
+Both Firefox runs recorded 328 scroll events, four scroll ends, no programmatic
+scroll writes, and successful paging. Content-main-thread CPU was 322.8 ms over
+10.05 seconds in the baseline and 354.8 ms over 10.12 seconds with instrumentation.
+Maximum scroll-handler time was 2.24 ms and 2.07 ms respectively. This single
+pair checked diagnostic behavior; it did not establish a performance change.
+
+Gallery paging wrote canvas height once per audited pass. All recorded row
+height commits kept the previous height, and existing row offsets did not
+change. The chat pass recorded no height commits, image loads, or canvas changes.
+These runs did not reproduce the proposed live-resize contributor. They did not
+exclude it for late-loading images or other inputs.
+
+The unsampled Safari gallery run began at scrollTop 317 instead of zero. It was
+not a matched control for the sampled run. CPU sampling also added overhead.
+The largest sampled callback gaps had no nearby audited runtime events. These
+gaps alone did not establish a mounting defect or a sampling-induced defect.
+
+Safari's native stacks included image decoding on `org.webkit.ImageDecoder`
+workers, including in chat, where images used `decoding="auto"`. Therefore, the
+claim that a missing decoding attribute necessarily caused synchronous raster
+decoding was unsupported. The sample did not establish asynchronous decoding
+for every image. Gallery already requested `decoding="async"`.
+
+Layer-tree transaction stacks appeared in the native sample. The sample did not
+identify native layer counts, tiled backing ownership, or stale presented
+offsets. Those compositor claims remained unverified.
+
+### Confirmed page-preparation stall
+
+Two unsampled Safari captures clicked Scroll to top twice after a native up/down
+round in the same imported image chat. Both loaded two earlier pages. Their final
+scroll position was 4,784 px with total height 25,759 px: the prepend preserved
+the old visible anchor rather than leaving it at zero.
+
+The runtime-only capture, `run-PhphxH`, recorded a 36 ms row preparation and a
+37 ms preparation frame. Its largest animation callback gap was 43 ms. The
+attribution capture, `run-bxBRV5`, separated these synchronous operations:
+
+| Operation | Calls | Total elapsed time | Maximum call |
+| --- | --- | --- | --- |
+| Preparation frame | 23 | 289 ms | 37 ms |
+| Row construction and retention | 37 | 257 ms | 37 ms |
+| Markdown rendering | 42 | 99 ms | 11 ms |
+| Ordered-message innerHTML assignment | 21 | 47 ms | 5 ms |
+| Attachment image `src` assignment | 4 | 88 ms | 34 ms |
+
+These operations nested; their totals must not be added. Timer resolution was
+approximately 1 ms. The attribution run's largest callback gap was 52 ms.
+
+The slowest attachment assignment passed a 1,552,274-character data URL to
+`img.src`. It occupied 34 ms inside a 37 ms row preparation. The other three
+assignments took 25, 20, and 9 ms. This was synchronous source-assignment cost,
+not proof of synchronous raster decoding. The runtime's preparation budget
+could yield between rows, but could not interrupt a single synchronous renderer.
+Neither capture recorded a ResizeObserver mismatch or live-commit pass.
+
+The sibling markdown-viewer checkout matched the pinned `v0.4.0`. Static review
+confirmed that glyph geometry was published once per document, with a new
+measurement after a DPR change, rather than on every row mount. Its pipeline
+already distinguished generated HTML from raw HTML for sanitization. The measured
+rendering cost did not justify changing sanitizer guarantees or compositing CSS.
+No renderer change was made.
+
+The clearest remaining optimization target was the demo's attachment display
+source. A Blob URL experiment would need bounded ownership, revocation, stable
+preview identity, and unchanged export/provider data. The earlier synthetic
+conversion timings did not substitute for this real paging workload. This review
+did not implement that change or claim that it would resolve gallery shifts.
+
+### Reproduce the numeric audit
+
+Start the isolated Firefox diagnostic server, then run the normal native runner:
+
+```sh
+node scripts/firefox-profile/runtime-audit-server.mjs 4196
+pnpm run profile:firefox -- --display=LU28R55 --url=http://127.0.0.1:4196/demos/gallery/ --layout=masonry --down=2 --up=2 --ticks=90 --live
+```
+
+Stop the diagnostic server after the run. It disables HMR and applies exact-match
+source overlays without editing application files. Changed source targets fail
+explicitly. Audit data is stored in `frames.json.runtimeAudit`.
+
+Safari owns its server and production build. Use `RUNTIME_AUDIT=1` with the
+existing native runner; add `TOP_COMMANDS=2` for the streaming button path:
+
+```sh
+RUNTIME_AUDIT=1 SERVE_MODE=production DEMO=gallery GALLERY_LAYOUT=masonry GALLERY_SIZE=s ROUNDS=2 node scripts/firefox-profile/safari-scroll.mjs
+RUNTIME_AUDIT=1 TOP_COMMANDS=2 SERVE_MODE=production DEMO=streaming MATCH_OPTIONS=1 CHAT_FILE=/path/to/local-chat.md ROUNDS=1 node scripts/firefox-profile/safari-scroll.mjs
+```
+
+The runner waits six seconds after each top command and records whether the
+button was available. Check paging progress and errors before interpreting a
+capture. `SAMPLE=1` adds native CPU sampling and its overhead. Safari stores audit
+data in `capture.json.runtimeAudit`. Private inputs and captures remain ignored
+and local. This follow-up changed diagnostic tooling and documentation only.
+
+Verification passed: formatting, `pnpm run check`, all 68 profiling-tool tests,
+and all 1,062 unit tests. The first sandboxed unit run blocked 24 localhost relay
+tests; the rerun with loopback permission passed. The owned diagnostic server
+and profiling processes were closed. The user's existing server and browsers
+were left running.
+
 ## Retained tooling and next measurement
 
 The offline Safari analyzer reads a Web Inspector JSON export without opening

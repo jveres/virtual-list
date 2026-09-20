@@ -11,6 +11,11 @@ import {
   build as viteBuild,
 } from "vite";
 import {
+  installRuntimeAudit,
+  instrumentDemo,
+  instrumentRuntime,
+} from "./runtime-audit.mjs";
+import {
   cleanupCapture,
   selectDisplay,
   validateCapture,
@@ -39,6 +44,9 @@ if (process.argv.includes("--help")) {
   console.log(
     "SERVE_MODE=dev|production (default dev) selects the development server or a fresh production build served by Vite preview. Production output and cache stay in the ignored capture directory; existing dist is unchanged.",
   );
+  console.log(
+    "RUNTIME_AUDIT=1 logs bounded numeric mount/height/preparation events without extra layout reads. TOP_COMMANDS=0..5 (streaming only) clicks Scroll to top after the native gestures and waits six seconds per command. This is a button-path diagnostic, not trackpad momentum.",
+  );
   process.exit(0);
 }
 assert.equal(
@@ -48,6 +56,19 @@ assert.equal(
 );
 const demo = process.env.DEMO || "gallery";
 assert.ok(["gallery", "streaming"].includes(demo), "Invalid DEMO");
+const topCommands = Number(process.env.TOP_COMMANDS || 0);
+assert.ok(
+  Number.isInteger(topCommands) && topCommands >= 0 && topCommands <= 5,
+  "Invalid TOP_COMMANDS",
+);
+assert.ok(
+  topCommands === 0 || demo === "streaming",
+  "TOP_COMMANDS requires streaming",
+);
+assert.ok(
+  [undefined, "0", "1"].includes(process.env.RUNTIME_AUDIT),
+  "Invalid RUNTIME_AUDIT",
+);
 const serveMode = process.env.SERVE_MODE || "dev";
 assert.ok(["dev", "production"].includes(serveMode), "Invalid SERVE_MODE");
 const galleryLayout = process.env.GALLERY_LAYOUT || "rows";
@@ -197,7 +218,9 @@ const report = {
   pill,
   fixedItems,
   rounds,
+  topCommands,
   chatImport,
+  runtimeAudit: process.env.RUNTIME_AUDIT === "1",
   input: manual ? "manual-trackpad" : "scripted-native-no-momentum",
   manualSeconds: manual,
 };
@@ -210,6 +233,7 @@ let server,
   sampler,
   sampleDone,
   calibrated;
+let commandAcknowledged = 0;
 let aborted = false;
 const channels = new Set();
 const interrupt = () => {
@@ -553,6 +577,7 @@ async function browserProbe(compositing, richChat, pill, chat) {
       await post("calibrated", { iterations: n });
     } else if (message.action === "start") {
       shield.remove();
+      globalThis.__runtimeAudit?.start();
       active = true;
       Object.defineProperty(v, "scrollTop", {
         configurable: true,
@@ -623,8 +648,22 @@ async function browserProbe(compositing, richChat, pill, chat) {
       await post("started", data.initial);
     } else if (message.action === "mark") {
       data.marks.push({ ...message, ...state() });
+    } else if (message.action === "top") {
+      const button = document.querySelector("#scroll-top-btn");
+      data.marks.push({
+        label: "top-command",
+        sequence: message.sequence,
+        disabled: button?.disabled ?? null,
+        ...state(),
+      });
+      if (!button || button.disabled) {
+        data.errors.push("Top command unavailable");
+      } else button.click();
+      await post("command", { sequence: message.sequence });
     } else if (message.action === "stop" && active) {
       active = false;
+      if (globalThis.__runtimeAudit)
+        data.runtimeAudit = globalThis.__runtimeAudit.stop();
       cancelAnimationFrame(frame);
       for (const timer of geometryTimers) clearTimeout(timer);
       geometryTimers.clear();
@@ -690,6 +729,7 @@ try {
     name: "local-safari-probe",
     enforce: "pre",
     transform(code, id) {
+      if (report.runtimeAudit) code = instrumentDemo(code, id);
       if (fixedItems && id.endsWith("/demos/gallery/gallery.ts")) {
         const signature =
           "function loadMore(edge: Edge, context: ReachContext): void {";
@@ -707,6 +747,7 @@ try {
         report.runtimeSourceSha256 = createHash("sha256")
           .update(code)
           .digest("hex");
+        if (report.runtimeAudit) code = instrumentRuntime(code);
         if (recycling === "all") {
           const needle = "const requestedOverscan = options.overscanPx;";
           assert.equal(code.split(needle).length, 2, "Overscan setup changed");
@@ -747,6 +788,15 @@ try {
       )
         return html;
       return [
+        ...(report.runtimeAudit
+          ? [
+              {
+                tag: "script",
+                children: `(${installRuntimeAudit.toString()})();`,
+                injectTo: "head-prepend",
+              },
+            ]
+          : []),
         {
           tag: "script",
           children: `localStorage.setItem('virtual-list:gallery-options',${JSON.stringify(JSON.stringify(report.gallery))});`,
@@ -825,6 +875,8 @@ try {
             else if (req.url.endsWith("/started")) started = value;
             else if (req.url.endsWith("/result")) result = value;
             else if (req.url.endsWith("/calibrated")) calibrated = value;
+            else if (req.url.endsWith("/command"))
+              commandAcknowledged = value.sequence;
             else if (req.url.endsWith("/import-status"))
               Object.assign(report.chatImport, value);
             res.end("ok");
@@ -1015,6 +1067,12 @@ try {
       send({ action: "mark", label: "gesture-end", delta });
       console.log("Finished gesture", delta);
     }
+  }
+  for (let sequence = 1; sequence <= topCommands; sequence++) {
+    send({ action: "top", sequence });
+    await waitFor(() => commandAcknowledged === sequence);
+    await pause(6000);
+    send({ action: "mark", label: "top-command-end", sequence });
   }
   send({ action: "stop" });
   await waitFor(() => result);

@@ -73,8 +73,10 @@ image-source reads, page-preparation costs, and separate long paints. The native
 Firefox/Safari follow-up measures a demo-only image-binding improvement and
 rejects a raw-attribute candidate. The audit follow-up fixes live-shrink
 reconciliation and the gallery fade, and rejects a segment cache that would
-not benefit normal scrolling. The compositor cause and expensive page
-preparation remain unresolved. Compositing CSS remains unchanged.
+not benefit normal scrolling. A further numeric audit finds no live geometry
+changes in the captured ordinary scroll passes and attributes a 34 ms paging
+stall to an attachment image's data-URL assignment. The native compositor cause
+remains unverified. Compositing CSS remains unchanged.
 
 The [September 16 manual-scroll investigation](safari27-scroll-investigation-2026-09-16.md)
 records native Safari measurements, rejected diagnostics, compositor hints,

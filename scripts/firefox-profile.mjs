@@ -448,7 +448,7 @@ try {
     if(!descriptor?.get||!descriptor.set||!descriptor.configurable)throw new Error('Cannot instrument scrollTop safely');
     Object.defineProperty(owner,'scrollTop',{...descriptor,set(value){if(this===viewport)window.__ffProfile.writes.push({time:performance.now(),value,phase:window.__ffProfile.phase});descriptor.set.call(this,value);}});
     const sample=time=>{window.__ffProfile.frames.push([time,window.__ffProfile.lastTop,window.__ffProfile.phase]);window.__ffProfile.frame=requestAnimationFrame(sample);};
-    performance.mark('ff-profile-start');window.__ffProfile.frame=requestAnimationFrame(sample);return true;
+    window.__runtimeAudit?.start();performance.mark('ff-profile-start');window.__ffProfile.frame=requestAnimationFrame(sample);return true;
   })()`);
   recordingStarted = true;
   if (manual) {
@@ -505,7 +505,7 @@ try {
     }
   if (interrupted) throw new Error("Capture interrupted");
   const recording = await evaluate(
-    `(() => {performance.mark('ff-profile-end');cancelAnimationFrame(window.__ffProfile.frame);return window.__ffProfile;})()`,
+    `(() => {performance.mark('ff-profile-end');cancelAnimationFrame(window.__ffProfile.frame);if(window.__runtimeAudit)window.__ffProfile.runtimeAudit=window.__runtimeAudit.stop();return window.__ffProfile;})()`,
   );
   await writeFile(
     join(directory, "frames.json"),
