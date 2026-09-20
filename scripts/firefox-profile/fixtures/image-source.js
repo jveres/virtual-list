@@ -3,13 +3,16 @@ import {
   initMarkdown,
   renderMarkdown,
 } from "../../../demos/shared/markdown.ts";
-import { attachmentChip } from "../../../demos/streaming/attachments.ts";
+import * as attachments from "../../../demos/streaming/attachments.ts";
 import { createChatImagePreview } from "../../../demos/streaming/image-preview.ts";
 import { appendStaticMessageContent } from "../../../demos/streaming/message-content.ts";
 
 const viewport = document.querySelector("#viewport");
 const status = document.querySelector("#status");
 const delay = () => new Promise((resolve) => setTimeout(resolve, 0));
+const { attachmentChip } = attachments;
+// The frozen pre-optimization revision has no owned display URLs to release.
+const disposeAttachmentChips = attachments.disposeAttachmentChips ?? (() => {});
 await initMarkdown();
 const metadata = await (await fetch("/__image-source/metadata")).json();
 status.textContent =
@@ -425,7 +428,7 @@ globalThis.runImageSourceBenchmark = async ({
         url.length,
         -1,
         () => {
-          attachmentChip(attachment);
+          disposeAttachmentChips(attachmentChip(attachment));
         },
         1,
       );
@@ -444,6 +447,7 @@ globalThis.runImageSourceBenchmark = async ({
             const chip = attachmentChip(attachment);
             viewport.append(chip);
             chip.remove();
+            disposeAttachmentChips(chip);
           }
         });
         await measure("static-content-construction", url.length, repeat, () => {

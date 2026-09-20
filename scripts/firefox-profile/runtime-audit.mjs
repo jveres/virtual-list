@@ -69,9 +69,9 @@ export function instrumentDemo(source, id) {
   try { return renderToHtml(markdown); }
   finally { globalThis.__runtimeAudit?.event("markdown", performance.now() - auditStart, markdown.length); }`;
   } else if (id.endsWith("/demos/streaming/attachments.ts")) {
-    needle = "image.src = attachment.dataUrl;";
+    needle = "setAttachmentImageSource(image, attachment);";
     replacement = `const auditStart = performance.now();
-    image.src = attachment.dataUrl;
+    setAttachmentImageSource(image, attachment);
     globalThis.__runtimeAudit?.event("attachment-src", performance.now() - auditStart, attachment.dataUrl.length);`;
   } else if (id.endsWith("/demos/streaming/message-content.ts")) {
     needle = "markdown.innerHTML = renderMarkdown(part.text);";

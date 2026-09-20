@@ -732,6 +732,110 @@ tests; the rerun with loopback permission passed. The owned diagnostic server
 and profiling processes were closed. The user's existing server and browsers
 were left running.
 
+## Deferred hover investigation
+
+The user requested that hover remain unchanged for this round. The external
+review associates pointer-over events with action-bar paints, including an
+812 × 40 CSS-pixel region. That correlation does not establish that hover caused
+the nearby layout: scrolling and row changes can occur in the same interval.
+The action-bar hover rules change opacity and pointer events, not padding,
+margins, font size, or height.
+
+A [Safari 27 user report](https://discussions.apple.com/thread/256358247)
+describes smooth scrolling with the pointer at the page edge and stuttering over
+hoverable cards. This supports a future controlled comparison, not a confirmed
+cause in this application. Keep the workload and pointer location matched; park
+the pointer outside the content for the control. Do not change hover behavior
+until that comparison is measured.
+
+The two latest user exports contain no rendering-frame records, including the
+export recorded with Frames enabled. The user also saw an empty Frames view.
+Wheel/scroll cadence and long composite intervals are useful diagnostic evidence,
+but neither proves physical frame presentation or a specific compositor race.
+
+## Attachment thumbnail follow-up after a605dfe
+
+The retained change is demo-only. Attachment thumbnails use a short Blob URL
+when native `Uint8Array.fromBase64` is available. The original data URL remains
+unchanged in the message, IndexedDB, exports, and provider input. Unsupported
+browsers or conversion failures retain the data-URL path. Each chip owns its
+display URL: row destruction, composer replacement, and page teardown release
+it. Temporary viewport unmounts do not release retained rows. Preview navigation
+uses the original source so discarding a thumbnail cannot invalidate an open
+preview or change the image's logical identity.
+
+### Firefox-first construction comparison
+
+Installed Firefox 156.0 used fresh temporary profiles, closed DevTools, and the
+external LU28R55 at 1920 × 1080 logical pixels, 2× scaling, 60 Hz. The baseline
+server froze `a605dfe`; the candidate server froze the changed demo sources.
+Both used five batches of eight constructions per source size. Median batch
+time fell from 5 to 4 ms for a 524,286-character source, and from 20 to 15 ms for
+a 2,097,150-character source. The single first-call results were 2 versus 4 ms
+and 6 versus 6 ms respectively: there is no demonstrated cold-call gain in
+Firefox. Candidate timing includes URL disposal.
+
+Local evidence: `image-source/run-bZmgtS` and `image-source/run-xM0j4l`.
+These are synthetic 64 × 64 PNGs padded to match source length, not measurements
+of full-image raster cost, scroll CPU, or display presentation. Firefox native
+scroll baselines earlier in this report remain separate evidence. The actual
+page-preparation comparison below is Safari-specific because the measured
+long data-URL assignment was in WebKit.
+
+### Production Safari comparison with the image-heavy transcript
+
+Safari 27.0, build `22625.1.29.11.27`, ran on the same external display at
+1920 × 997 page size and DPR 2. DevTools were closed, HMR was absent, and the
+runtime/compositing CSS was unchanged. The same private 60-turn transcript,
+native scripted gesture pair, and two Scroll to top commands were used for the
+baseline and both candidate repeats. No CPU sampler was attached.
+
+| Measurement | Baseline | Candidate 1 | Candidate 2 |
+| --- | ---: | ---: | ---: |
+| Four attachment-source operations, total | 85 ms | 3 ms | 4 ms |
+| Slowest attachment-source operation | 32 ms | 2 ms | 2 ms |
+| 37 row constructions, total | 248 ms | 183 ms | 176 ms |
+| Slowest row construction | 35 ms | 18 ms | 18 ms |
+| Preparation-frame work, total | 277 ms | 213 ms | 212 ms |
+| Slowest preparation frame | 35 ms | 19 ms | 20 ms |
+| Largest animation-callback gap | 46 ms | 44 ms | 47 ms |
+
+Candidate source-operation timing includes base64 conversion, Blob creation,
+URL creation, and source assignment. Timer resolution is approximately 1 ms;
+a recorded zero is not zero cost. Row and preparation-frame durations include
+the source operations, so these totals must not be added together.
+
+All three captures had no page errors or invalidations and identical paging
+progress: total height 10,661 → 20,975 → 25,759 CSS px, ending at scrollTop 4,784
+after the anchor-preserving prepends. Evidence is local under
+`safari-native-scroll/run-ttxUWo`, `run-WvntPb`, and `run-KWPwxR`.
+Attempts `run-AltbSv` and `run-L0hLmQ` failed their initial focus check and are
+excluded. The earlier `run-bxBRV5` baseline independently recorded 88 ms total
+and 34 ms maximum for these four assignments.
+
+This removes a demonstrated main-thread paging stall. It does **not** establish
+that Safari's momentum/compositor issue is fixed: the maximum callback gap did
+not improve consistently, the input has no trackpad momentum, and no physical
+presentation timestamps were captured. Other preparation work still reaches
+18–20 ms and needs separate attribution before another patch. Hover remains
+deferred as requested; no runtime API, scroll scheduling, layering, or renderer
+styles changed.
+
+Verification passed: formatting, `pnpm run check`, direct type-checks of the
+changed tests, all 1,071 unit tests, and all 68 profiling-tool checks. The
+attachment and image-preview browser regressions passed in Firefox and WebKit.
+Coverage includes decoded thumbnail bytes, composer removal, row teardown on
+import, persistence across reload, unchanged API image input, preview navigation,
+fallback paths, and idempotent URL cleanup.
+
+The browser regression now creates a valid PNG with canvas: Firefox rejected
+the old hard-coded fixture when real decoding was first asserted. Its composer
+assertion now checks fixed 42 px buttons and top alignment, rather than requiring
+the textarea and buttons to have identical heights. No composer CSS changed.
+The initial Playwright Firefox launch failed macOS profile discovery; the
+successful runs used owned temporary `MOZ_APP_DATA` and `MOZ_LOCAL_APP_DATA`
+directories, removed afterward. These launch failures are not passing runs.
+
 ## Retained tooling and next measurement
 
 The offline Safari analyzer reads a Web Inspector JSON export without opening
@@ -792,3 +896,51 @@ expanded categories. Safari's saved timeline now supplies concrete code and pain
 costs, but not native display-present events. Preserve the current rendering
 setup while addressing source-attributed work. Do not claim that regular page
 callbacks prove correct physical presentation.
+
+## September 21: Pencil button taps interrupted scroll ownership
+
+A real iPad running iPadOS 27 reproduced the flashing during Pencil taps on
+the scroll buttons. The viewport measured 1180 × 734 CSS pixels at DPR 2,
+with visual viewport scale 1. This input-specific investigation used Safari
+instead of Firefox. The captures measured event order and scroll positions,
+not physical frame presentation.
+
+The first capture recorded one click per Pencil tap, not duplicate clicks.
+After runtime animation writes, scroll events returned positions about
+2,330 px and 1,726 px back along the previous motion. No viewport zoom
+occurred in that capture.
+
+The second capture added non-pausing debugger probes at takeover and settle.
+At 27,795 ms, a Pencil contact ended over the top button, outside the list.
+At 27,796 ms, the controller settled its existing gesture, only 36 ms after
+the last scroll sample. At 27,798 ms, the button received its click.
+At 27,799 ms, `interruptNativeScroll` found an inactive phase and skipped
+the native momentum interruption.
+
+The window-level release handler rejected untracked mouse pointers but
+accepted untracked pen pointers. The fix requires a tracked pointer ID for
+every pointer release. Owned drags can still end outside the viewport.
+Two regression cases failed before the fix and passed afterward. Two
+additional cases cover owned Pencil releases and cancellations.
+
+Raw captures remain in ignored `browser-artifacts/ipad-scroll/`:
+`run-oX6jrB/trace.json` contains the first reproduction, and
+`run-TlNlY0/trace.json` contains the state probes. The reusable
+`scripts/firefox-profile/ipad-scroll-trace.mjs` tool connects to an existing
+local `ios_webkit_debug_proxy` page endpoint. Its optional `--state` argument
+adds the debugger probes. Each capture stops after three minutes and removes
+its injected listeners and probes. Keep other debugger sessions closed when
+using these probes.
+
+The user confirmed that the fix worked on the iPad. The follow-up capture,
+`run-LaWbTU/trace.json`, recorded an active phase at command takeover. The
+runtime then performed the overflow reset that the failing capture skipped.
+The capture reached `scrollTop: 0`. Across 76 scroll samples within 100 ms
+of a runtime write, the largest difference from the latest write was 0.979 px.
+The capture ended before the final settle notification. The separate
+missed-tap and double-tap zoom reports remain unverified.
+
+All 1,075 unit tests, 68 profiling-tool tests, type checks, and six WebKit
+landing cases passed. The Firefox browser regression could not start because
+Firefox reported an inaccessible temporary profile. That run supplied no
+browser regression evidence.

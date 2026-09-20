@@ -16,7 +16,12 @@ import type {
   PhotoPreviewItem,
   PhotoPreviewOptions,
 } from "../../demos/shared/photo-preview.js";
+import {
+  attachmentChip,
+  disposeAttachmentChips,
+} from "../../demos/streaming/attachments.js";
 import { createChatImagePreview } from "../../demos/streaming/image-preview.js";
+import { attachmentImagePlatform } from "../helpers/attachment-image-platform.js";
 
 // Keep the real Markdown parser and DOM observer; replace only the animated
 // viewer boundary so tests can inspect the photos and navigation it receives.
@@ -69,6 +74,7 @@ beforeEach(() => {
 afterEach(() => {
   for (const dispose of disposers) dispose();
   document.body.replaceChildren();
+  vi.unstubAllGlobals();
 });
 
 function message(id: number, ...sources: string[]): Message {
@@ -125,6 +131,43 @@ function photoFor(image: HTMLImageElement): PhotoPreviewItem {
 }
 
 describe("chat image preview source identity", () => {
+  it("should navigate past an attachment and preserve preview identity after its display URL is released", () => {
+    const platform = attachmentImagePlatform();
+    const attachment = {
+      name: "image.png",
+      mimeType: "image/png",
+      size: 3,
+      dataUrl: "data:image/png;base64,YWJj",
+    };
+    const entry = { id: 1, markdown: "", attachments: [attachment] };
+    const row = rowFor(entry);
+    const chip = attachmentChip(attachment);
+    row.append(chip);
+    const image = imageAt(row);
+    Object.defineProperties(image, {
+      complete: { value: true },
+      naturalWidth: { value: 40 },
+      naturalHeight: { value: 40 },
+      currentSrc: { get: () => image.src },
+    });
+    const { options, adjacent } = bindRows(
+      [entry, message(2, "/next.png")],
+      row,
+    );
+    const photo = photoFor(image);
+
+    disposeAttachmentChips(row);
+    const next = adjacent(photo, 1);
+
+    expect(platform.blobs.size).toBe(0);
+    expect(options.previewUrl(photo, 1800)).toBe(attachment.dataUrl);
+    if (!next) throw new Error("Missing next image");
+    expect(options.previewUrl(next, 1800)).toBe(
+      new URL("/next.png", document.baseURI).href,
+    );
+    expect(adjacent(next, -1)?.id).toBe(photo.id);
+  });
+
   it("should navigate relative sources to an unseen message while displaying the selected responsive source", async () => {
     const messages = [
       message(1, "./first.png?width=1&variant=2"),

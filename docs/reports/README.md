@@ -75,7 +75,9 @@ rejects a raw-attribute candidate. The audit follow-up fixes live-shrink
 reconciliation and the gallery fade, and rejects a segment cache that would
 not benefit normal scrolling. A further numeric audit finds no live geometry
 changes in the captured ordinary scroll passes and attributes a 34 ms paging
-stall to an attachment image's data-URL assignment. The native compositor cause
+stall to an attachment image's data-URL assignment. Row-owned thumbnail Blob
+URLs reduce four measured Safari assignments from 85 ms to 3–4 ms, with unchanged
+paging progress. Hover is documented and deferred. The native compositor cause
 remains unverified. Compositing CSS remains unchanged.
 
 The [September 16 manual-scroll investigation](safari27-scroll-investigation-2026-09-16.md)

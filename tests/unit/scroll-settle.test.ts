@@ -21,6 +21,7 @@ const VIEWPORT_HEIGHT = 300;
 const CONTENT_HEIGHT = 5000;
 
 interface Harness {
+  viewport: HTMLElement;
   controller: ScrollSettleController;
   settled: () => number;
   started: () => number;
@@ -95,6 +96,7 @@ function mount(
   });
 
   const harness: Harness = {
+    viewport,
     controller,
     settled: () => settleCount,
     started: () => startCount,
@@ -157,6 +159,60 @@ beforeEach(() => {
 afterEach(() => {
   for (const harness of live.splice(0)) harness.dispose();
   vi.useRealTimers();
+});
+
+describe("pointer ownership", () => {
+  it.each(["pointerup", "pointercancel"])(
+    "should ignore an unrelated Pencil %s during native momentum",
+    (type) => {
+      const h = mount("safari-wheel");
+      h.touchStart();
+      h.scrollTo(1000);
+      h.touchEnd();
+      vi.advanceTimersByTime(36);
+
+      // The jump button is outside the viewport. Its pointerdown was never
+      // owned by this controller, but the release bubbles to window.
+      window.dispatchEvent(
+        new PointerEvent(type, {
+          pointerType: "pen",
+          pointerId: 125,
+        }),
+      );
+
+      expect(h.controller.isScrollPhaseActive()).toBe(true);
+      expect(h.settled()).toBe(0);
+      h.scrollTo(975);
+      h.scrollEnd();
+      vi.advanceTimersByTime(300);
+      expect(h.controller.isScrollPhaseActive()).toBe(false);
+      expect(h.settled()).toBe(1);
+    },
+  );
+
+  it.each(["pointerup", "pointercancel"])(
+    "should still release an owned Pencil through a window %s",
+    (type) => {
+      const h = mount("safari-wheel");
+      h.viewport.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerType: "pen",
+          pointerId: 124,
+        }),
+      );
+      h.scrollTo(1000);
+      window.dispatchEvent(
+        new PointerEvent(type, {
+          pointerType: "pen",
+          pointerId: 124,
+        }),
+      );
+      vi.advanceTimersByTime(300);
+
+      expect(h.controller.isScrollPhaseActive()).toBe(false);
+      expect(h.settled()).toBe(1);
+    },
+  );
 });
 
 describe("Firefox startup scroll restoration", () => {

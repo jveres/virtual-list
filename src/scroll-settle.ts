@@ -932,10 +932,10 @@ export function createScrollSettleController(
 
   function handlePointerScrollEnd(event: PointerEvent): void {
     if (event.pointerType === "touch" && supportsTouchEvents) return;
-    if (event.pointerType === "mouse" && !activePointers.has(event.pointerId)) {
-      return;
-    }
-    activePointers.delete(event.pointerId);
+    // Releases are observed on window so an owned drag can end outside the
+    // viewport. Unrelated contacts (for example a Pencil tap on a sibling
+    // jump button) must not settle this viewport's ongoing momentum.
+    if (!activePointers.delete(event.pointerId)) return;
     markPointerReleaseScrollEnd();
     handleScrollPhaseMaybeEnd();
   }

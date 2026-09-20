@@ -14,6 +14,19 @@ try {
   let missingParent = false;
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
+    // Track the real browser URL lifecycle, not a replacement implementation.
+    const create = URL.createObjectURL.bind(URL);
+    const revoke = URL.revokeObjectURL.bind(URL);
+    window.attachmentDisplayUrls = new Set();
+    URL.createObjectURL = (blob) => {
+      const url = create(blob);
+      window.attachmentDisplayUrls.add(url);
+      return url;
+    };
+    URL.revokeObjectURL = (url) => {
+      window.attachmentDisplayUrls.delete(url);
+      revoke(url);
+    };
     localStorage.setItem(
       "virtual-list:ai-settings",
       JSON.stringify({
@@ -106,7 +119,14 @@ try {
     name: "pixel.png",
     mimeType: "image/png",
     buffer: Buffer.from(
-      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6w1sAAAAASUVORK5CYII=",
+      await page.evaluate(() => {
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 1;
+        const context = canvas.getContext("2d");
+        context.fillStyle = "#6389a1";
+        context.fillRect(0, 0, 1, 1);
+        return canvas.toDataURL("image/png").split(",")[1];
+      }),
       "base64",
     ),
   };
@@ -137,10 +157,28 @@ try {
     );
   }
 
+  async function assertThumbnail(selector) {
+    const image = page.locator(selector);
+    await image.evaluate((image) => image.decode());
+    const result = await image.evaluate(async (image) => {
+      const response = await fetch(image.src);
+      return {
+        shortSource: image.src.startsWith("blob:"),
+        nativeDecoder: typeof Uint8Array.fromBase64 === "function",
+        bytes: [...new Uint8Array(await response.arrayBuffer())],
+        width: image.naturalWidth,
+      };
+    });
+    assert.equal(result.shortSource, result.nativeDecoder);
+    assert.deepEqual(result.bytes, [...imageFile.buffer]);
+    assert.equal(result.width, 1);
+  }
+
   const chooser = page.waitForEvent("filechooser");
   await page.getByRole("button", { name: "Attach files", exact: true }).click();
   assert.equal((await chooser).isMultiple(), true);
   await select([textFile, imageFile]);
+  await assertThumbnail("#pending-attachments img");
   assert.equal(requests.length, 0, "selecting files must not upload them");
   assert.equal(
     await page.locator("#pending-attachments .attachment-chip").count(),
@@ -166,8 +204,11 @@ try {
       { width: 28, height: 28 },
     ]);
     assert.equal(layout.overflow, false);
-    assert.deepEqual(layout.composer[0], layout.composer[1]);
-    assert.deepEqual(layout.composer[2], layout.composer[1]);
+    // Buttons stay fixed-height and top-aligned; the textarea may be taller.
+    assert.equal(layout.composer[0].top, layout.composer[1].top);
+    assert.equal(layout.composer[2].top, layout.composer[1].top);
+    assert.equal(layout.composer[0].bottom - layout.composer[0].top, 42);
+    assert.equal(layout.composer[2].bottom - layout.composer[2].top, 42);
   }
   await page
     .getByRole("button", { name: "Remove notes.txt", exact: true })
@@ -177,6 +218,7 @@ try {
     .getByRole("button", { name: "Remove pixel.png", exact: true })
     .click();
   assert.equal(await page.locator("#pending-attachments").isVisible(), false);
+  assert.equal(await page.evaluate(() => window.attachmentDisplayUrls.size), 0);
   assert.equal(await page.locator("#attachment-status").textContent(), "");
 
   await page.fill("#prompt", "Keep my draft");
@@ -212,10 +254,15 @@ try {
     },
   ]);
   assert.equal(await page.locator(".message.user .attachment-chip").count(), 2);
+  await assertThumbnail(".message.user .attachment-chip img");
   assert.equal(await page.locator("#attachment-status").textContent(), "");
   assert.equal(await page.locator("#pending-attachments").isVisible(), false);
   await page.reload();
   await page.waitForSelector(".message.user .attachment-chip");
+  await assertThumbnail(".message.user .attachment-chip img");
+  const retainedSource = await page
+    .locator(".message.user .attachment-chip img")
+    .getAttribute("src");
   assert.equal(
     await page
       .locator(".message.user .attachment-name")
@@ -260,6 +307,13 @@ try {
   });
   await page.waitForFunction(() =>
     document.getElementById("window-status")?.textContent.includes("/4"),
+  );
+  assert.equal(
+    await page.evaluate(
+      (url) => window.attachmentDisplayUrls.has(url),
+      retainedSource,
+    ),
+    false,
   );
   await page.waitForTimeout(500);
   for (let cycle = 0; cycle < 2; cycle++) {

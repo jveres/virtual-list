@@ -175,13 +175,73 @@ function openAttachment(attachment: ChatAttachment): void {
   }
 }
 
-/** No file contents or filenames are interpreted as HTML. */
+const imageSources = new WeakMap<
+  HTMLImageElement,
+  { objectUrl: string; dataUrl: string }
+>();
+
+function setAttachmentImageSource(
+  image: HTMLImageElement,
+  attachment: ChatAttachment,
+): void {
+  // A multi-megabyte data URL is expensive to assign in WebKit. Keep it in the
+  // model, but give the thumbnail a short, row-owned display URL when the native
+  // decoder is available. Older browsers keep the existing data-URL path.
+  const decoder = Uint8Array as typeof Uint8Array & {
+    fromBase64?: (text: string) => Uint8Array<ArrayBuffer>;
+  };
+  const prefix = `data:${attachment.mimeType};base64,`;
+  if (
+    decoder.fromBase64 &&
+    typeof URL.createObjectURL === "function" &&
+    /^(?:image\/png|image\/jpeg|image\/webp)$/.test(attachment.mimeType) &&
+    attachment.dataUrl.startsWith(prefix)
+  ) {
+    let objectUrl: string | undefined;
+    try {
+      const bytes = decoder.fromBase64(attachment.dataUrl.slice(prefix.length));
+      objectUrl = URL.createObjectURL(
+        new Blob([bytes], { type: attachment.mimeType }),
+      );
+      image.src = objectUrl;
+      imageSources.set(image, { objectUrl, dataUrl: attachment.dataUrl });
+      return;
+    } catch {
+      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      // A display optimization must not prevent an attachment from rendering.
+    }
+  }
+  image.src = attachment.dataUrl;
+}
+
+/** Preview identity and navigation must survive thumbnail URL replacement. */
+export function attachmentImageSource(
+  image: HTMLImageElement,
+  displayedUrl: string,
+): string {
+  const source = imageSources.get(image);
+  return source?.objectUrl === displayedUrl ? source.dataUrl : displayedUrl;
+}
+
+/** Release only URLs owned by these chips, when their DOM is discarded. */
+export function disposeAttachmentChips(container: ParentNode): void {
+  for (const image of container.querySelectorAll<HTMLImageElement>(
+    ".attachment-chip img",
+  )) {
+    const source = imageSources.get(image);
+    if (!source) continue;
+    URL.revokeObjectURL(source.objectUrl);
+    imageSources.delete(image);
+  }
+}
+
+/** No file contents or filenames are interpreted as HTML. Dispose discarded chips. */
 export function attachmentChip(attachment: ChatAttachment): HTMLElement {
   const chip = document.createElement("div");
   chip.className = "attachment-chip";
   if (attachment.mimeType.startsWith("image/")) {
     const image = document.createElement("img");
-    image.src = attachment.dataUrl;
+    setAttachmentImageSource(image, attachment);
     image.alt = "";
     image.width = image.height = 40;
     chip.append(image);

@@ -3,7 +3,7 @@ import {
   createPhotoPreview,
   type PhotoPreviewItem,
 } from "../shared/photo-preview.js";
-import type { ChatAttachment } from "./attachments.js";
+import { attachmentImageSource, type ChatAttachment } from "./attachments.js";
 
 interface ImageMessage {
   id: number;
@@ -180,7 +180,7 @@ export function createChatImagePreview(
       return;
     }
     const selectedUrl = image.currentSrc;
-    const url = selectedUrl || image.src;
+    const url = attachmentImageSource(image, selectedUrl || image.src);
     const previous = photos.get(image);
     const row = image.closest<HTMLElement>("[data-key]");
     const message = getMessages?.().find(

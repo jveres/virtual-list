@@ -55,6 +55,7 @@ import {
   ATTACHMENT_ACCEPT,
   attachmentChip,
   type ChatAttachment,
+  disposeAttachmentChips,
   readAttachments,
 } from "./attachments.js";
 import {
@@ -2426,6 +2427,7 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
 // good (its key removed, the row replaced, the snapshot superseded, or the
 // list disposed) via onDestroy; the animation lookup is pruned there too.
 function handleRowDestroy(element: HTMLElement): void {
+  disposeAttachmentChips(element);
   clearMessageCopyFeedback(element);
   if (touchActionRow === element) touchActionRow = null;
   const handle = streamingViewers.get(element);
@@ -2884,6 +2886,7 @@ function setStreamingUI(streaming: boolean): void {
 }
 
 function renderPendingAttachments(): void {
+  disposeAttachmentChips(pendingAttachmentList);
   pendingAttachmentList.replaceChildren(
     ...pendingAttachments.map((attachment, index) => {
       const chip = attachmentChip(attachment);
@@ -4063,6 +4066,7 @@ conversationTree = createConversationTree({
   navigate: navigateTreeMessage,
 });
 window.addEventListener("pagehide", () => {
+  disposeAttachmentChips(pendingAttachmentList);
   if (streamAbort) cancelStream(streamAbort);
   paging?.dispose();
   virtualList?.dispose();
