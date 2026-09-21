@@ -71,6 +71,7 @@ import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
 import { createChatImagePreview } from "./image-preview.js";
 import {
   appendStaticMessageContent,
+  type CursorMode,
   createMessageContent,
   type MessageContentHandle,
   type TrailMode,
@@ -225,7 +226,6 @@ const OPTIONS_KEY = "virtual-list:chat-options";
 const DRAFT_KEY = "virtual-list:chat-draft";
 /** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
 type LandingMode = "prompt" | "end";
-type CursorMode = "bar" | "none";
 interface ChatOptions {
   edge: "slot" | "pill";
   sticky: boolean;
@@ -255,7 +255,10 @@ function loadChatOptions(): ChatOptions {
     sticky: stored.sticky !== false,
     follow: stored.follow === "keep-start" ? "keep-start" : "end",
     landing: stored.landing === "end" ? "end" : "prompt",
-    cursor: stored.cursor === "none" ? "none" : "bar",
+    cursor:
+      stored.cursor === "none" || stored.cursor === "idle"
+        ? stored.cursor
+        : "bar",
     trail: trail === "short" || trail === "long" ? trail : "off",
   };
 }
@@ -4051,7 +4054,10 @@ trailSelect.addEventListener("change", () => {
   syncStreamingViewerOptions();
 });
 cursorSelect.addEventListener("change", () => {
-  cursorMode = cursorSelect.value === "none" ? "none" : "bar";
+  cursorMode =
+    cursorSelect.value === "none" || cursorSelect.value === "idle"
+      ? cursorSelect.value
+      : "bar";
   saveChatOptions();
   syncStreamingViewerOptions();
 });

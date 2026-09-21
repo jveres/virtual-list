@@ -9,7 +9,7 @@ import { setHiddenIfChanged } from "../shared/utils.js";
 
 export type TrailMode = "off" | "short" | "long";
 
-type Cursor = "bar" | "none";
+export type CursorMode = "bar" | "idle" | "none";
 type TextSlot = {
   kind: "text";
   host: HTMLElement;
@@ -23,7 +23,7 @@ type ToolSlot = {
 };
 export interface MessageContentHandle {
   update(message: OrderedMessage, text: string, isStreaming: boolean): void;
-  setCursor(cursor: Cursor): void;
+  setCursor(cursor: CursorMode): void;
   setTrail(mode: TrailMode): void;
   setMounted(mounted: boolean): void;
   destroy(): void;
@@ -57,7 +57,7 @@ export function appendStaticMessageContent(
 /** Only the trailing text segment streams; earlier segments and tools stay put. */
 export function createMessageContent(
   host: HTMLElement,
-  initialCursor: Cursor,
+  initialCursor: CursorMode,
   initialTrail: TrailMode = "off",
 ): MessageContentHandle {
   const slots = new Map<string, TextSlot | ToolSlot>();
