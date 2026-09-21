@@ -330,6 +330,7 @@ let loadedEnd = 0;
 let latestPromptId: number | undefined;
 let paging: PagedWindow<Message, number> | undefined;
 let loadingTop = false;
+let loadingBottom = false;
 let sendGlideActive = false;
 const htmlCache = new Map<string, string>();
 // Live markdown-viewer instances for streaming rows, keyed by row element so
@@ -806,6 +807,7 @@ async function navigateTreeMessage(
   paging?.dispose();
   paging = undefined;
   setEdgeState("hidden");
+  setBottomLoading(false);
   const ancestors: number[] = [];
   let id = messageId;
   while (id !== TREE_ROOT_ID) {
@@ -844,7 +846,13 @@ async function navigateTreeMessage(
           return null;
         return {
           items: rowsForTreeNavigation(nextTranscript, nextStart, nextEnd),
-          edgeSlots: { start: needsScrollbackSlot ? edgeSlotSpec : null },
+          edgeSlots: {
+            start: needsScrollbackSlot ? edgeSlotSpec : null,
+            end:
+              edgeLoaderMode === "slot" && nextEnd < nextTranscript.length
+                ? bottomEdgeSlotSpec
+                : null,
+          },
           // Stage the branch without forcing the selected row to the top:
           // an explicit keyed anchor can create trailing reserve even when
           // the subsequent scrollTo omits align/pin. Navigation below
@@ -865,6 +873,9 @@ async function navigateTreeMessage(
             topBoundaryLoadSeen = false;
             edgeSlotRequested = needsScrollbackSlot;
             if (!needsScrollbackSlot) edgeSlotElement = null;
+            bottomEdgeSlotRequested =
+              edgeLoaderMode === "slot" && nextEnd < nextTranscript.length;
+            if (!bottomEdgeSlotRequested) bottomEdgeSlotElement = null;
             refreshLoadedWindow();
             resetPaging();
             stickyHeaders?.refresh();
@@ -957,6 +968,7 @@ function reportPagingError(error: unknown): void {
 function resetPaging(): void {
   paging?.dispose();
   paging = undefined;
+  setBottomLoading(false);
   const list = virtualList;
   if (!list) return;
   const epoch = conversationEpoch;
@@ -994,11 +1006,13 @@ function resetPaging(): void {
       });
       return sourcePage(cursor);
     },
-    edgeSlots: ({ start }) => ({
+    edgeSlots: ({ start, end }) => ({
       start:
         edgeLoaderMode === "slot" && (start.available || topBoundaryLoadSeen)
           ? edgeSlotSpec
           : null,
+      end:
+        edgeLoaderMode === "slot" && end.available ? bottomEdgeSlotSpec : null,
     }),
     onChange: (items) => {
       if (epoch !== conversationEpoch) return;
@@ -1017,6 +1031,8 @@ function resetPaging(): void {
         }
       }
       edgeSlotRequested = shouldMountEdgeSlot();
+      bottomEdgeSlotRequested = shouldMountBottomEdgeSlot();
+      if (!bottomEdgeSlotRequested) bottomEdgeSlotElement = null;
       stickyHeaders?.refresh();
       conversationTree?.refreshLoaded();
       syncMetrics();
@@ -1318,6 +1334,15 @@ edgePill.append(edgeSpinner, edgeLabel);
 edgeOverlay.appendChild(edgePill);
 viewportWrap.appendChild(edgeOverlay);
 
+const bottomEdgeOverlay = edgeOverlay.cloneNode(true) as HTMLElement;
+bottomEdgeOverlay.classList.add("edge-overlay-end");
+const bottomEdgeLabel = (() => {
+  const label = bottomEdgeOverlay.querySelector(".edge-pill")?.lastElementChild;
+  if (!label) throw new Error("Bottom loading label missing");
+  return label;
+})();
+viewportWrap.appendChild(bottomEdgeOverlay);
+
 type EdgeState = "hidden" | "loading" | "no-more";
 let edgeState: EdgeState = "hidden";
 
@@ -1333,6 +1358,55 @@ function edgeLabelFor(state: EdgeState): string {
 
 let edgeSlotElement: HTMLElement | null = null;
 let edgeSlotRequested = false;
+let bottomEdgeSlotElement: HTMLElement | null = null;
+let bottomEdgeSlotRequested = false;
+
+function createBoundarySlot(): HTMLElement {
+  const element = document.createElement("div");
+  element.className = "boundary-slot";
+  element.setAttribute("role", "status");
+  const spinner = document.createElement("span");
+  spinner.className = "boundary-spinner";
+  spinner.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.className = "boundary-slot-label";
+  element.append(spinner, label);
+  return element;
+}
+
+function applyBottomSlotState(element: HTMLElement): void {
+  element.dataset.state = loadingBottom ? "loading" : "idle";
+  const label = element.querySelector(".boundary-slot-label");
+  if (label) label.textContent = loadingBottom ? "Loading newer messages" : "";
+}
+
+const bottomEdgeSlotSpec: EdgeSlot = {
+  key: "scrollforward",
+  height: EDGE_SLOT_HEIGHT,
+  render: () => {
+    const element = createBoundarySlot();
+    element.dataset.edge = "end";
+    applyBottomSlotState(element);
+    bottomEdgeSlotElement = element;
+    return element;
+  },
+};
+
+function shouldMountBottomEdgeSlot(): boolean {
+  return (
+    edgeLoaderMode === "slot" &&
+    messages.length > 0 &&
+    loadedEnd < transcript.length
+  );
+}
+
+function setBottomLoading(loading: boolean): void {
+  loadingBottom = loading;
+  if (bottomEdgeSlotElement) applyBottomSlotState(bottomEdgeSlotElement);
+  bottomEdgeOverlay.dataset.state =
+    loading && edgeLoaderMode === "pill" ? "loading" : "hidden";
+  bottomEdgeLabel.textContent = loading ? "Loading newer messages" : "";
+}
 
 function applyEdgeSlotState(element: HTMLElement, state: EdgeState): void {
   // In the flow, "hidden" is an invisible strip; "At the
@@ -1346,15 +1420,7 @@ const edgeSlotSpec: EdgeSlot = {
   key: "scrollback",
   height: EDGE_SLOT_HEIGHT,
   render: () => {
-    const element = document.createElement("div");
-    element.className = "boundary-slot";
-    element.setAttribute("role", "status");
-    const spinner = document.createElement("span");
-    spinner.className = "boundary-spinner";
-    spinner.setAttribute("aria-hidden", "true");
-    const label = document.createElement("span");
-    label.className = "boundary-slot-label";
-    element.append(spinner, label);
+    const element = createBoundarySlot();
     applyEdgeSlotState(element, edgeState);
     edgeSlotElement = element;
     return element;
@@ -1373,10 +1439,17 @@ function shouldMountEdgeSlot(): boolean {
 /** Mount or unmount the slot when its need changes (a structural change). */
 function syncEdgeSlot(): void {
   const wanted = shouldMountEdgeSlot();
-  if (wanted === edgeSlotRequested) return;
-  edgeSlotRequested = wanted;
-  if (!wanted) edgeSlotElement = null;
-  virtualList?.setEdgeSlot("start", wanted ? edgeSlotSpec : null);
+  if (wanted !== edgeSlotRequested) {
+    edgeSlotRequested = wanted;
+    if (!wanted) edgeSlotElement = null;
+    virtualList?.setEdgeSlot("start", wanted ? edgeSlotSpec : null);
+  }
+  const bottomWanted = shouldMountBottomEdgeSlot();
+  if (bottomWanted !== bottomEdgeSlotRequested) {
+    bottomEdgeSlotRequested = bottomWanted;
+    if (!bottomWanted) bottomEdgeSlotElement = null;
+    virtualList?.setEdgeSlot("end", bottomWanted ? bottomEdgeSlotSpec : null);
+  }
 }
 
 function setEdgeState(state: EdgeState): void {
@@ -1400,6 +1473,7 @@ function setEdgeState(state: EdgeState): void {
 
 function syncEdgeLoaderMode(): void {
   syncEdgeSlot();
+  setBottomLoading(loadingBottom);
   const inFlow = edgeLoaderMode === "slot";
   edgeLoaderSelect.value = edgeLoaderMode;
   edgeOverlay.dataset.state = inFlow ? "hidden" : edgeState;
@@ -1482,6 +1556,34 @@ function loadOlderMessages({ signal, complete }: ReachContext): void {
       console.error("Could not load older messages.", error);
     })
     .finally(complete);
+}
+
+function loadNewerMessages(context: ReachContext): void {
+  const owner = paging;
+  if (
+    !owner ||
+    treeNavigation ||
+    owner.loading ||
+    !owner.canLoad("end") ||
+    context.signal.aborted
+  ) {
+    context.complete();
+    return;
+  }
+  setBottomLoading(true);
+  syncMetrics();
+  // Keep the indicator until the fetched page commits, including time held
+  // behind a native gesture. Never insert a new slot under that gesture.
+  void owner
+    .load("end", { signal: context.signal, complete: () => {} })
+    .catch(reportPagingError)
+    .finally(() => {
+      if (paging === owner) {
+        setBottomLoading(false);
+        syncMetrics();
+      }
+      context.complete();
+    });
 }
 
 // --- Conversations ----------------------------------------------------------
@@ -1637,6 +1739,7 @@ let conversationEpoch = 0;
 function resetConversationState(): void {
   paging?.dispose();
   paging = undefined;
+  setBottomLoading(false);
   userEdit = null;
   expandedUserMessages.clear();
   conversationEpoch++;
@@ -2472,7 +2575,7 @@ function syncMetrics(state = virtualList?.state): void {
       : "none";
   const mountedEnd = Math.max(state.start, state.end - 1);
 
-  const windowText = `${loadedRange} · load ${topStatus}`;
+  const windowText = `${loadedRange} · load ${topStatus}${loadingBottom ? " · loading bottom" : ""}`;
   const listText = `dom ${formatCount(state.end - state.start)}/${formatCount(state.count)} · mounted ${formatCount(state.start)}-${formatCount(mountedEnd)} · height ${formatCount(state.totalSize)}px`;
   // Streaming commits can publish new content without changing these labels.
   setTextIfChanged(windowStatus, windowText);
@@ -3598,11 +3701,14 @@ persistSimulatedConversation();
 function mountConversation(): void {
   paging?.dispose();
   paging = undefined;
+  setBottomLoading(false);
   virtualList?.dispose();
   // A replacement owns its loader state: do not inherit the old chat's
   // invisible scrollback strip when all imported turns are already loaded.
   edgeSlotRequested = shouldMountEdgeSlot();
   edgeSlotElement = null;
+  bottomEdgeSlotRequested = shouldMountBottomEdgeSlot();
+  bottomEdgeSlotElement = null;
   // Boot publishes synchronously, before the assignment below completes.
   // Defer header queries until they can read the replacement list, not the
   // disposed list's geometry paired with the new transcript's day keys.
@@ -3640,7 +3746,10 @@ function mountConversation(): void {
       }
       return buildRow(row);
     },
-    edgeSlots: { start: edgeSlotRequested ? edgeSlotSpec : null },
+    edgeSlots: {
+      start: edgeSlotRequested ? edgeSlotSpec : null,
+      end: bottomEdgeSlotRequested ? bottomEdgeSlotSpec : null,
+    },
     // The product choice for a chat: the streaming reply keeps rendering under
     // a scroll (see the header). Structural changes above the anchor stay
     // settle-gated; one below it (a version switch) applies at once.
@@ -3663,11 +3772,7 @@ function mountConversation(): void {
       if (!mounting) stickyHeaders?.update(snapshot.scrollTop);
     },
     onReachStart: loadOlderMessages,
-    onReachEnd: (context) => {
-      if (paging && !treeNavigation)
-        void paging.load("end", context).catch(reportPagingError);
-      else context.complete();
-    },
+    onReachEnd: loadNewerMessages,
     onMount: (element, row) => {
       // Retained/prepared rows can miss setStreamingUI while offscreen.
       // Refresh only action state; mounting must not rebuild their content.

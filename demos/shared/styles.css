@@ -437,6 +437,11 @@ p.ai-settings-note {
   top: calc(var(--day-header-height) + 10px);
 }
 
+.viewport-wrap .edge-overlay.edge-overlay-end {
+  top: auto;
+  bottom: 10px;
+}
+
 /* The in-flow scrollback slot (edge loader "slot" mode, the default): a
    runtime edge slot at a fixed height; the row clips, the label swaps. */
 .boundary-slot {

@@ -56,7 +56,10 @@ async function smoothBottom(page) {
   );
 }
 
-for (const engine of [firefox, chromium, webkit]) {
+const engines = { firefox, chromium, webkit };
+const selected = process.env.BROWSER_ENGINE;
+if (selected && !engines[selected]) throw new Error("Unknown BROWSER_ENGINE");
+for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage({

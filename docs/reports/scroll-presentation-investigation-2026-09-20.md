@@ -944,3 +944,55 @@ All 1,075 unit tests, 68 profiling-tool tests, type checks, and six WebKit
 landing cases passed. The Firefox browser regression could not start because
 Firefox reported an inaccessible temporary profile. That run supplied no
 browser regression evidence.
+
+## September 21: Clean-code audit follow-up
+
+The audit covered commit `a97e393`: pointer ownership, attachment display URLs,
+preview identity, cleanup, tests, and diagnostic tooling. No high-severity
+finding remained. The review found and fixed three medium-severity groups
+in the iPad trace tool:
+
+1. Partial installation and connection loss left page hooks installed.
+   Setup now rolls back on failure. A renewable 30-second timer removes
+   hooks if polling stops. Cleanup preserves newer accessors and probe owners.
+2. Bridge errors and malformed responses did not reliably reject pending
+   commands. The transport now handles outer and nested errors, disconnects,
+   timeouts, and target closure. A second pass added target-response isolation.
+3. Saved traces omitted the startup viewport metadata and overwrote their
+   only snapshot directly. Captures now include browser and viewport metadata
+   and replace each completed snapshot through a temporary file.
+
+The tool now requires an explicit local page endpoint. Run its `--help`
+command for the invocation. Portable tests cover the failure paths without
+a device. Pointer ownership tests also cover all four settle strategies.
+The final review found no remaining high- or medium-severity issue in scope.
+
+Verification passed: 1,081 unit tests, 88 profiling-tool tests, repository
+checks, and direct type checking of the changed TypeScript test file. Isolated
+WebKit and Chromium pages also passed probe installation, scroll recording,
+metadata, and cleanup assertions. These tests did not repeat physical iPad
+input or establish a new performance measurement. No runtime behavior changed
+during this audit. The attachment tests retained byte-equivalence and repeated
+cleanup coverage without a new property-testing dependency.
+
+## September 21: Missing bottom history loader
+
+After paging upward evicted the newer messages, reaching the retained bottom
+boundary loaded them again without showing a loading indicator. The demo
+provided only a start edge slot and passed end-reach events straight to the
+pager. The runtime already supported both edge slots.
+
+The demo now reserves an end slot whenever newer messages remain outside the
+loaded window. Its spinner stays visible through fetching and any commit
+held until scrolling settles. The final page removes the slot. The optional
+floating-pill mode shows a bottom indicator instead. Replacing the conversation
+clears the indicator, and an old load cannot clear a replacement pager's state.
+No runtime API or compositor behavior changed.
+
+The new `chat-bottom-loader-regression.mjs` covers both loader modes, actual
+viewport visibility, held commits, terminal cleanup, and replacement during a
+pending load. It and the existing paged-history regression passed in WebKit
+and Chromium. Repository checks, all 1,081 unit tests, and all 88 profiling-tool
+tests passed. Firefox could not start with its temporary profile, so no Firefox
+browser result is claimed. These synthetic-input checks establish loader
+correctness, not native momentum or physical presentation quality.

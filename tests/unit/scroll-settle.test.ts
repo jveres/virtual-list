@@ -162,10 +162,16 @@ afterEach(() => {
 });
 
 describe("pointer ownership", () => {
-  it.each(["pointerup", "pointercancel"])(
-    "should ignore an unrelated Pencil %s during native momentum",
-    (type) => {
-      const h = mount("safari-wheel");
+  it.each(
+    (
+      ["default", "safari-wheel", "firefox-wheel", "chromium-wheel"] as const
+    ).flatMap((strategy) =>
+      ["pointerup", "pointercancel"].map((type) => ({ strategy, type })),
+    ),
+  )(
+    "should ignore an unrelated Pencil $type during $strategy momentum",
+    ({ strategy, type }) => {
+      const h = mount(strategy);
       h.touchStart();
       h.scrollTo(1000);
       h.touchEnd();
