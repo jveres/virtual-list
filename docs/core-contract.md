@@ -238,10 +238,10 @@ interaction; the [README](../README.md) lists the public options.
   settleStrategy?, scrollingUpdates?, followBehavior?, prepareDuringScroll? })`,
   `boot` chooses where the list opens: `"end"` (the default, following
   armed) or `"start"` (the initial position, never follow intent).
-  `prepareDuringScroll` (prototype, default false) renders and measures a
-  staged `updateWindow` proposal in idle callbacks during an active scroll
-  phase; the commit still waits for the settle. Engines without
-  `requestIdleCallback` keep settle-time preparation.
+  `prepareDuringScroll` (default true) renders and measures a staged
+  `updateWindow` proposal in idle callbacks during an active scroll phase;
+  the commit still waits for the settle. `false`, and engines without
+  `requestIdleCallback` (Safari), keep settle-time preparation.
   `setItems(items, { anchor? })` — a policy, or a host-named anchor
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a

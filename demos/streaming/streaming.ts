@@ -3720,8 +3720,8 @@ function mountConversation(): void {
   virtualList = createVirtualList<ChatRow>(viewport, {
     items: rowsForRuntime(),
     key: rowKey,
-    // Temporary A/B flag for the idle page-preparation prototype.
-    prepareDuringScroll: demoParams.has("prestage"),
+    // Test flag: ?prestage=off restores settle-time page preparation.
+    prepareDuringScroll: demoParams.get("prestage") !== "off",
     // Reserve is a runtime invariant, independent of how a row is reached.
     pinning:
       landingMode === "prompt"

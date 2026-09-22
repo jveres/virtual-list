@@ -4,11 +4,9 @@ This report records a Firefox review of the runtime's scroll hot path on a
 real, image-heavy transcript. It also records a prototype that prepares a
 held history page during the scroll phase. The runtime's own scroll path used
 0.2–0.5% of content-thread samples. The prototype committed older pages about
-240 ms sooner after release and lowered the longest frame work. It is off by
-default behind the `prepareDuringScroll` option.
-
-> **Note:** `prepareDuringScroll` is a prototype. It has two native captures,
-> one workload, and Firefox only.
+240 ms sooner after release and lowered the longest frame work. After the
+user's manual check in Firefox and Chrome, `prepareDuringScroll` is on by
+default where the engine supports `requestIdleCallback`.
 
 ## Environment and workload
 
@@ -43,7 +41,9 @@ pnpm run profile:firefox -- --display=LU28R55 \
   --interval-ms=16.667 --settle-ms=700 --live
 ```
 
-Add `&prestage` to the URL to enable the prototype in the streaming demo.
+The prototype captures added `&prestage`, which then enabled the option. Now
+that it's on by default, `?prestage=off` restores settle-time preparation in
+the streaming demo.
 Every capture loaded one page (10,740 to 20,530 px) during gesture 2 and
 reached the start of history by gesture 4. Gestures 5–11 are stationary, so
 only the first five gestures are scrolling evidence.
@@ -139,30 +139,44 @@ The change passes `pnpm run check`, all unit tests, and the profiling-tool
 checks. Three new unit tests cover the option. They show 40 rows prepared
 before the settle when enabled, none when disabled, and full teardown when
 the update aborts mid-phase. The browser chat suite passes in Chromium,
-Firefox, and WebKit with the option at its default, off, with no violations
-or errors. On macOS 27, Playwright's Firefox fails to launch with "Could not
+Firefox, and WebKit with the option off, with no violations or errors. On macOS 27, Playwright's Firefox fails to launch with "Could not
 find profile folder" unless `MOZ_APP_DATA` and `MOZ_LOCAL_APP_DATA` name
 temporary directories. This is the same launch failure that the Firefox
 profiling runner already avoids.
 
+## Default change
+
+The prototype captures didn't cover the riskiest case: preparing a page
+while a fast fling is still moving. The user tested that case by hand on the
+external display with the same transcript. They flung upward so older pages
+loaded mid-motion, with and without the option, in Firefox and Chrome. They
+reported smooth scrolling in both browsers, with no hitch when preparation
+started.
+
+`prepareDuringScroll` now defaults to true. Pass `false` to restore
+settle-time preparation. Safari and other engines without
+`requestIdleCallback` keep settle-time preparation. Unit tests cover the
+default, explicit true, and explicit false. After the change, the browser
+chat suite passes again in all three engines, with the option on in Chromium
+and Firefox.
+
 ## Limitations
 
-These results support further evaluation, not a default change:
+The default change rests on this evidence and its gaps:
 
-- Two prototype captures on one workload, in Firefox only.
+- Two native captures on one workload, in Firefox only.
+- The mid-fling case rests on the user's visual check. No capture measured
+  it.
 - Scripted native ticks arrive about every 20 ms against a 16.67 ms frame, so
-  every fifth frame receives no input. Real trackpad input is untested.
-- Safari has no `requestIdleCallback` and keeps the existing behavior. Chrome
-  is unmeasured.
+  every fifth frame receives no input.
 - The measured cost moved into idle time. The total rendering work is
   unchanged.
 
 ## Next steps
 
-Before enabling the option by default, test these cases:
+These follow-ups remain:
 
-1. Capture a real trackpad fling that reaches the load threshold while
-   moving, and check moving-frame intervals.
-2. Measure Chrome with the same workload.
-3. Consider a demo-side render cache for static messages. It would reduce the
+1. Capture a real-trackpad fling with `input-cadence.mjs` and the presented
+   frames, to measure the mid-fling case.
+2. Consider a demo-side render cache for static messages. It would reduce the
    single-row cost that neither staging path can split.

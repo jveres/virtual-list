@@ -73,7 +73,7 @@ display frames in real trackpad captures.
 
 | Report | Scope |
 | --- | --- |
-| [Hot path review and idle page preparation](idle-page-preparation-2026-09-22.md) | Runtime scroll path at 0.2–0.5% of samples; the off-by-default `prepareDuringScroll` prototype commits older pages about 240 ms sooner in two Firefox captures. |
+| [Hot path review and idle page preparation](idle-page-preparation-2026-09-22.md) | Runtime scroll path at 0.2–0.5% of samples; `prepareDuringScroll` commits older pages about 240 ms sooner in two Firefox captures and is on by default after a manual Firefox and Chrome check. |
 | [External-display scroll jitter](external-display-scroll-jitter-2026-09-22.md) | Trackpad events miss the external display's frames about 3.6 times as often as on the built-in display; the cause lies before Firefox's parent process, outside the page. |
 
 ## Safari 27 investigation

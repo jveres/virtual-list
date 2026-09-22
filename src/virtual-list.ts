@@ -159,9 +159,9 @@ export interface VirtualListOptions<T> {
    */
   measurementContainer?: HTMLElement;
   /**
-   * Prototype: render and measure a staged window update in idle callbacks
-   * while a scroll phase is active. The commit still waits for the settle.
-   * Default false.
+   * Render and measure a staged window update in idle callbacks while a
+   * scroll phase is active; the commit still waits for the settle.
+   * Default true. Engines without requestIdleCallback prepare at the settle.
    */
   prepareDuringScroll?: boolean;
   /**
@@ -464,7 +464,7 @@ function positionedOrigin(top: number): number {
   return Math.floor(top * ratio) / ratio;
 }
 const AT_EDGE_EPSILON_PX = 1;
-// Prototype: idle time an idle-staged row needs before its render starts.
+// Idle time an idle-staged row needs before its render starts.
 const IDLE_STAGE_MIN_MS = 4;
 const FOLLOW_LANDING_MS = 320;
 /** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
@@ -2450,7 +2450,7 @@ export function createVirtualList<T>(
       let frame = 0;
       let idleHandle = 0;
       const prestage =
-        options.prepareDuringScroll === true &&
+        options.prepareDuringScroll !== false &&
         !interrupt &&
         typeof requestIdleCallback === "function";
       let working = false;
@@ -2599,7 +2599,7 @@ export function createVirtualList<T>(
         }
       };
 
-      /** Prototype: stage during an active phase; the settle commits. */
+      /** Stage during an active phase; the settle commits. */
       const stageIdle = (deadline: IdleDeadline): void => {
         idleHandle = 0;
         if (!current()) {

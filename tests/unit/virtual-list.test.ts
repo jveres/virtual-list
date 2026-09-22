@@ -778,6 +778,7 @@ describe("settle-time window updates", () => {
     });
 
     it.each([
+      [undefined, 40],
       [true, 40],
       [false, 0],
     ])(
