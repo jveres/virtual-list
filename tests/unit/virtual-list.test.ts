@@ -145,6 +145,7 @@ function mount(
     throwOn?: string;
     /** getBoundingClientRect throws for items with this body (post-build). */
     measureFailOn?: string;
+    prepareDuringScroll?: boolean;
   } = {},
 ): Harness {
   const viewport = document.createElement("div");
@@ -218,6 +219,7 @@ function mount(
     position: hooks.position,
     boot: hooks.boot,
     pinning: hooks.pinning,
+    prepareDuringScroll: hooks.prepareDuringScroll,
     onMount: hooks.onMount,
     onUnmount: hooks.onUnmount,
     render: (m, existing) => {
@@ -755,6 +757,80 @@ describe("settle-time window updates", () => {
     expect(end).toBeGreaterThan(46);
     expect(h.viewport.scrollTop).toBe(3000);
     h.list.dispose();
+  });
+
+  describe("prepareDuringScroll", () => {
+    // Measured rows only: declared heights render lazily and never stage.
+    // Deterministic idle callbacks on the fake clock, with a generous budget.
+    beforeEach(() => {
+      vi.stubGlobal("requestIdleCallback", (callback: IdleRequestCallback) =>
+        setTimeout(
+          () => callback({ didTimeout: false, timeRemaining: () => 50 }),
+          1,
+        ),
+      );
+      vi.stubGlobal("cancelIdleCallback", (handle: number) =>
+        clearTimeout(handle),
+      );
+    });
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it.each([
+      [true, 40],
+      [false, 0],
+    ])(
+      "should prepare a held page mid-phase only when enabled (%s)",
+      async (enabled, renderedBeforeSettle) => {
+        let rendered = 0;
+        const h = mount(range(40, 80), {
+          boot: "start",
+          prepareDuringScroll: enabled,
+          onRender: (m) => {
+            if (m.id < 40) rendered += 1;
+          },
+        });
+        h.userScroll(500);
+        const applied = h.list.updateWindow(({ items }) => ({
+          items: [...range(0, 40), ...items],
+        }));
+        vi.advanceTimersByTime(200);
+        expect(rendered).toBe(renderedBeforeSettle);
+        // Preparation never commits under an active phase.
+        expect(h.list.state.count).toBe(40);
+        expect(h.list.state.held).toBe(true);
+        h.settle();
+        advanceFramesUntil(() => h.list.state.count === 80);
+        await expect(applied).resolves.toBe(true);
+        expect(rendered).toBe(40);
+        expect(h.list.positionOf("m40")?.top).toBe(40 * ROW_H);
+        h.list.dispose();
+      },
+    );
+
+    it("should tear down rows prepared mid-phase when the update aborts", async () => {
+      const h = mount(range(40, 80), {
+        boot: "start",
+        prepareDuringScroll: true,
+      });
+      h.userScroll(500);
+      const abort = new AbortController();
+      const applied = h.list.updateWindow(
+        ({ items }) => ({ items: [...range(0, 40), ...items] }),
+        abort.signal,
+      );
+      vi.advanceTimersByTime(200);
+      abort.abort();
+      await expect(applied).resolves.toBe(false);
+      expect(h.destroyed.filter((id) => id < 40).sort((a, b) => a - b)).toEqual(
+        range(0, 40).map((m) => m.id),
+      );
+      h.settle();
+      expect(h.list.state.count).toBe(40);
+      expect(h.list.state.held).toBe(false);
+      h.list.dispose();
+    });
   });
 
   it("should cancel fetched work before it runs and clear held state", async () => {

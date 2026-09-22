@@ -159,6 +159,12 @@ export interface VirtualListOptions<T> {
    */
   measurementContainer?: HTMLElement;
   /**
+   * Prototype: render and measure a staged window update in idle callbacks
+   * while a scroll phase is active. The commit still waits for the settle.
+   * Default false.
+   */
+  prepareDuringScroll?: boolean;
+  /**
    * Where the list boots: `"end"` (default; a chat opens at its latest
    * message, following armed) or `"start"` (a gallery opens at its first
    * photo). Booting at the end and then commanding the start would mount,
@@ -458,6 +464,8 @@ function positionedOrigin(top: number): number {
   return Math.floor(top * ratio) / ratio;
 }
 const AT_EDGE_EPSILON_PX = 1;
+// Prototype: idle time an idle-staged row needs before its render starts.
+const IDLE_STAGE_MIN_MS = 4;
 const FOLLOW_LANDING_MS = 320;
 /** Rows are mounted at least this far beyond the viewport (a full viewport when taller). */
 const MIN_OVERSCAN_PX = 300;
@@ -2440,6 +2448,11 @@ export function createVirtualList<T>(
       }
       let finished = false;
       let frame = 0;
+      let idleHandle = 0;
+      const prestage =
+        options.prepareDuringScroll === true &&
+        !interrupt &&
+        typeof requestIdleCallback === "function";
       let working = false;
       let cancelRequested = false;
       let staged: {
@@ -2463,6 +2476,8 @@ export function createVirtualList<T>(
         signal?.removeEventListener("abort", cancel);
         if (frame !== 0) cancelAnimationFrame(frame);
         frame = 0;
+        if (idleHandle !== 0) cancelIdleCallback(idleHandle);
+        idleHandle = 0;
       };
       const finish = (applied: boolean, error?: unknown): void => {
         if (finished) return;
@@ -2525,6 +2540,40 @@ export function createVirtualList<T>(
             (!interrupt || staged.input === inputEpoch) &&
             sourceCurrent()));
 
+      /** One render/measure batch; `deadline` bounds an idle-time batch. */
+      const stageBatch = (
+        job: NonNullable<typeof staged>,
+        deadline?: IdleDeadline,
+      ): void => {
+        guarded(() => {
+          const batch: Row<T>[] = [];
+          const started = performance.now();
+          while (job.cursor < job.fresh.length && batch.length < 8) {
+            if (deadline && deadline.timeRemaining() < IDLE_STAGE_MIN_MS) break;
+            const [key, item] = job.fresh[job.cursor] as [string, T];
+            const row = retain(key, item, render(item), 1);
+            // A host can abort/dispose inside render, before this row
+            // belongs to the job. It still gets exactly one teardown.
+            if (!current()) {
+              destroyRow(row);
+              cancel();
+              return;
+            }
+            job.rows.set(key, row);
+            batch.push(row);
+            job.cursor += 1;
+            if (!deadline && performance.now() - started >= 3) break;
+          }
+          if (batch.length > 0)
+            job.measurer.append(batch.map((row) => row.element));
+          if (!current()) {
+            cancel();
+            return;
+          }
+          job.ready = job.cursor === job.fresh.length;
+        });
+      };
+
       const stageFrame = (): void => {
         frame = 0;
         if (!current()) {
@@ -2536,31 +2585,7 @@ export function createVirtualList<T>(
         if (!job) return;
         working = true;
         try {
-          guarded(() => {
-            const batch: Row<T>[] = [];
-            const started = performance.now();
-            while (job.cursor < job.fresh.length && batch.length < 8) {
-              const [key, item] = job.fresh[job.cursor] as [string, T];
-              const row = retain(key, item, render(item), 1);
-              // A host can abort/dispose inside render, before this row
-              // belongs to the job. It still gets exactly one teardown.
-              if (!current()) {
-                destroyRow(row);
-                cancel();
-                return;
-              }
-              job.rows.set(key, row);
-              batch.push(row);
-              job.cursor += 1;
-              if (performance.now() - started >= 3) break;
-            }
-            job.measurer.append(batch.map((row) => row.element));
-            if (!current()) {
-              cancel();
-              return;
-            }
-            job.ready = job.cursor === job.fresh.length;
-          });
+          stageBatch(job);
           if (!current()) finish(false);
           else {
             // Final reads/commit get their own frame, not the tail of the
@@ -2574,26 +2599,54 @@ export function createVirtualList<T>(
         }
       };
 
+      /** Prototype: stage during an active phase; the settle commits. */
+      const stageIdle = (deadline: IdleDeadline): void => {
+        idleHandle = 0;
+        if (!current()) {
+          cancel();
+          return;
+        }
+        if (idle()) return; // The settle path owns the job from here.
+        const job = staged;
+        if (!job || job.ready) return;
+        working = true;
+        try {
+          stageBatch(job, deadline);
+          if (!current()) finish(false);
+          else if (!job.ready) idleHandle = requestIdleCallback(stageIdle);
+        } catch (error) {
+          finish(false, error);
+        } finally {
+          working = false;
+        }
+      };
+
       const runFrame = (): void => {
         frame = 0;
         run();
       };
 
-      const run = (): void => {
+      const run = (prepare = false): void => {
         if (working || finished) return;
         if (!current()) {
           cancel();
           return;
         }
-        if (!idle()) return;
+        if (!idle() && !prepare) return;
         try {
           let applied = false;
           guarded(() => {
             const job = staged;
             if (job && !job.ready) {
-              if (frame === 0) frame = requestAnimationFrame(stageFrame);
+              if (prepare) {
+                if (idleHandle === 0)
+                  idleHandle = requestIdleCallback(stageIdle);
+              } else if (frame === 0) frame = requestAnimationFrame(stageFrame);
               return;
             }
+            // A ready job, or a proposal too small to stage, commits at
+            // the settle; nothing here may apply mid-phase.
+            if (prepare && job) return;
             const context = windowUpdateContext(protectPin);
             const next = job?.next ?? update(context);
             if (!next || !current()) return;
@@ -2653,11 +2706,13 @@ export function createVirtualList<T>(
                   ready: false,
                 };
                 windowUpdates.add(run);
-                frame = requestAnimationFrame(stageFrame);
+                if (prepare) idleHandle = requestIdleCallback(stageIdle);
+                else frame = requestAnimationFrame(stageFrame);
                 publish();
                 return;
               }
             }
+            if (prepare) return;
             if (job) {
               // A gesture may expose rows the updater was allowed to trim
               // earlier. Never evict that newly protected reading window.
@@ -2699,6 +2754,7 @@ export function createVirtualList<T>(
             notifyCommitted(() => next.onCommit?.());
             applied = true;
           }, true);
+          if (prepare && !disposed) return;
           if (applied || !staged || disposed) finish(applied);
         } catch (error) {
           finish(false, error);
@@ -2725,6 +2781,11 @@ export function createVirtualList<T>(
         if (idle()) run();
         else {
           windowUpdates.add(run);
+          if (prestage)
+            idleHandle = requestIdleCallback(() => {
+              idleHandle = 0;
+              run(true);
+            });
           try {
             guarded(publish);
           } catch (error) {
