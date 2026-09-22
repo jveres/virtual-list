@@ -21,15 +21,17 @@ WebKit-specific issue, must be stated explicitly.
 - Save a baseline and a comparable repeat after a change. Report browser
   version, display geometry, workload, timing, and limitations. Do not infer
   smooth physical presentation from regular animation-frame callbacks.
-- Preserve raw profiles and metadata locally under ignored
-  `browser-artifacts/`. Never upload captures or modify the user's regular
-  browser profile without explicit authorization.
+- Keep raw profiles and metadata locally under ignored `browser-artifacts/`
+  while their investigation is open. Once its report is committed, they may
+  be pruned; keep irreproducible inputs, such as manual recordings, until
+  the user approves removal. Never upload captures or modify the user's
+  regular browser profile without explicit authorization.
 - Keep durable reports in `docs/reports/` and index them in its `README.md`.
   Keep reusable profiling scripts and synthetic fixtures in
   `scripts/firefox-profile/`, and browser regressions in
   `scripts/regressions/`. Do not leave reusable work only in ignored
   `browser-artifacts/`. Remove personal paths and private inputs before
-  promoting exploratory probes; preserve raw captures locally.
+  promoting exploratory probes.
 - Treat failed, stationary, interrupted, or mismatched-display runs as
   invalid evidence. Do not claim a jitter fix without reproducing it and
   measuring the relevant improvement.

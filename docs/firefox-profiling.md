@@ -226,9 +226,12 @@ outside that window.
 
 `browser-artifacts/` is an ignored output directory, not the home for durable
 project knowledge. Keep raw profiles, run-local setup copies, trace JSON,
-generated screenshots, compiled helpers, and caches there. Preserve raw
-captures locally until deletion is explicitly requested; ignoring them does
-not mean deleting them.
+generated screenshots, compiled helpers, and caches there. Keep raw captures
+while their investigation is open. After its report is committed, you can
+prune them with the user's approval; the report, its commands, and the
+tracked fixtures reproduce the workload. Keep irreproducible inputs, such as
+manual trackpad captures and Web Inspector recordings, until the user
+approves their removal.
 
 Put curated reports under `docs/reports/` and list them in the
 [report index](reports/README.md). Keep reusable profiling tools and synthetic

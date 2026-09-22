@@ -119,7 +119,24 @@ candidate status; it doesn't erase earlier failures or measurements.
 | [Runtime performance checkpoint](performance-checkpoint.md) | Simple-row update costs and acceptance at `822a026`. |
 | [Demo performance audit](demo-performance-audit.md) | September 6 multi-demo measurements, resize/gallery fixes, and unresolved physical-presentation limits. |
 
-Raw profiles, screenshots, and trace data remain local under ignored
-`browser-artifacts/`. Follow the [Firefox workflow](../firefox-profiling.md)
-for new investigations. Add future curated reports here with their revision,
+## Raw capture retention
+
+Raw profiles, screenshots, and trace data stay local under ignored
+`browser-artifacts/` and are never committed. On September 22, 2026, raw
+captures cited by reports before that date were pruned. Their run IDs and
+folder names remain in the reports as historical labels. Each report's
+commands, with the tracked fixtures and scripts, reproduce its workload; a
+new capture gets a new run ID.
+
+The pruning kept these irreproducible inputs:
+
+- The two real-trackpad captures of the
+  [external-display jitter report](external-display-scroll-jitter-2026-09-22.md),
+  `run-xRJClr` and `run-Z5EGQC`.
+- The three September 20 Safari Web Inspector recordings.
+- The compiled native helper at `safari-native-scroll/native`, which
+  `run-image-source.mjs` requires.
+
+Follow the [Firefox workflow](../firefox-profiling.md) for new
+investigations. Add future curated reports here with their revision,
 workload, results, and limitations; link them from this index.
