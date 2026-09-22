@@ -101,6 +101,12 @@ Use the tracked fixtures for repeatable local workloads:
 - `scripts/firefox-profile/fixtures/declared-rows.html`: serve this page
   through Vite for an isolated 10,000-row runtime control. Pass its URL to
   `--url`, with `--layout=none` and no setup script.
+- `scripts/firefox-profile/fixtures/imported-chat-wheel.js` and
+  `imported-chat-marks.js`: import a private transcript served under ignored
+  `browser-artifacts/`, named by the chat URL's `profile-transcript`
+  parameter. The wheel variant leaves scripted gestures as the only input.
+  The marks variant records a mark in `frames.json` each time you press `j`
+  during a manual capture.
 
 The [September 13 audit](reports/runtime-scroll-audit-2026-09-13.md) records the
 workload parameters and commands for paired captures.
@@ -131,6 +137,19 @@ pnpm run profile:firefox -- --display=LU28R55 --manual-seconds=30
 Wait for the terminal's manual-capture message, then scroll the test window.
 The script records your input without injecting gestures and closes its
 browser when the requested interval ends. No scrolling makes the trial fail.
+
+Keep manual live captures to about 50 seconds. A 90-second capture can
+overflow the profiler buffer and lose its start, which the runner's analysis
+requires. To compare trackpad-event delivery with display frames, run the
+input analyzer. It reads captures whose buffer wrapped:
+
+```sh
+node scripts/firefox-profile/input-cadence.mjs browser-artifacts/firefox/run-ID
+```
+
+The [external-display jitter report](reports/external-display-scroll-jitter-2026-09-22.md)
+explains its measures and limits. Scripted gestures can't reproduce this
+kind of defect, because the helper's ticks don't match the display's frames.
 
 ## Inspect the artifacts
 

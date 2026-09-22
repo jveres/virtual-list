@@ -64,6 +64,18 @@ adds the shared-blend prototype and 12 captures of the 67,760-character fixture.
 Its lower CPU median is promising, but the ranges overlap. Every option records
 long frames on this workload, including the effect-off baseline.
 
+## September 22 review and jitter investigation
+
+These reports use the user's image-heavy transcript on the external display.
+The first reviews the runtime's scroll hot path and measures the
+idle-preparation prototype. The second measures input delivery against
+display frames in real trackpad captures.
+
+| Report | Scope |
+| --- | --- |
+| [Hot path review and idle page preparation](idle-page-preparation-2026-09-22.md) | Runtime scroll path at 0.2–0.5% of samples; the off-by-default `prepareDuringScroll` prototype commits older pages about 240 ms sooner in two Firefox captures. |
+| [External-display scroll jitter](external-display-scroll-jitter-2026-09-22.md) | Trackpad events miss the external display's frames about 3.6 times as often as on the built-in display; the cause lies before Firefox's parent process, outside the page. |
+
 ## Safari 27 investigation
 
 The [September 20 scroll-presentation investigation](scroll-presentation-investigation-2026-09-20.md)
