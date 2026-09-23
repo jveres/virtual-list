@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createPagedWindow, type Page } from "../../src/paging";
 import {
   createVirtualList,
   type VirtualList,
@@ -114,6 +115,61 @@ beforeEach(() => {
 afterEach(() => {
   document.body.replaceChildren();
   vi.useRealTimers();
+});
+
+describe("window jobs", () => {
+  it("lands a page mid-stream: each retry adopts the rows already staged", async () => {
+    const page = (start: number): Page<Msg, number> => ({
+      items: range(start, start + 20),
+      start:
+        start > 0
+          ? { available: true, cursor: start - 20 }
+          : { available: false },
+      end: { available: true, cursor: start + 20 },
+    });
+    const renders = new Map<number, number>();
+    const initial = page(0);
+    const h = mount([...initial.items], {
+      boot: "start",
+      render: (m, existing) => {
+        renders.set(m.id, (renders.get(m.id) ?? 0) + 1);
+        const element = existing ?? document.createElement("div");
+        element.textContent = m.body;
+        element.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
+        return element;
+      },
+    });
+    const paging = createPagedWindow({
+      list: h.list,
+      initial,
+      maxItems: 60,
+      key: (m) => `m${m.id}`,
+      keysOf: (m) => [`m${m.id}`],
+      project: (items) => items,
+      live: { project: (item) => item, key: (m) => `m${m.id}` },
+      load: async ({ cursor }) => page(cursor),
+    });
+    let landed = false;
+    const load = paging.load("end").then((applied) => {
+      landed = applied;
+      return applied;
+    });
+    // A token every frame: each changes the source the page was built on.
+    for (let token = 1; token <= 20 && !landed; token++) {
+      await paging.updateItemLive("m19", (m) => ({
+        ...m,
+        body: `token ${token}`,
+      }));
+      await vi.advanceTimersByTimeAsync(16);
+    }
+    expect(landed).toBe(true); // Mid-stream, not after it.
+    await expect(load).resolves.toBe(true);
+    expect(h.list.state.count).toBe(40);
+    // The cancelled attempts' rows were adopted, never rendered again.
+    for (let id = 20; id < 40; id++) expect(renders.get(id)).toBe(1);
+    paging.dispose();
+    h.list.dispose();
+  });
 });
 
 describe("rows measured where they mount", () => {

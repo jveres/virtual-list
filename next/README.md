@@ -101,7 +101,11 @@ it never shows new content in its old box.
 snapshot merge, promotion, or `partial` flag. Window jobs (`updateWindow`,
 which the paging companion uses) keep their `main` semantics: they prepare
 during a gesture and commit only when the list is idle. Native anchoring
-(F5) relaxes both rules away from the scroll edges.
+(F5) relaxes both rules away from the scroll edges. A job whose source
+items change in place (a streamed token) keeps staging, and its commit is
+still cancelled, so the companion retries against current data. The retry
+adopts the rows the cancelled job staged, so a page lands while a reply
+streams instead of restarting on every token.
 
 ### F2. Rows are measured where they mount
 
@@ -259,6 +263,7 @@ BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:regression
 BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/hidden-row-regression.mjs
 BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/native-anchoring-regression.mjs
 BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/native-glide-regression.mjs
+BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/stream-paging-regression.mjs
 BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:browser -- --suite=lab --mode=live
 ```
 
@@ -270,7 +275,7 @@ server with `VITE_VL_ANCHORING=runtime`.
 `vitest.next.config.ts` runs `src/`'s own contract suite,
 `tests/unit/virtual-list.test.ts` (384 tests), against `next`. Its harness
 default is switched from `same-height` to `live`, the rule `next` keeps.
-**359 pass.** The 25 exclusions are listed with reasons in
+**358 pass.** The 26 exclusions are listed with reasons in
 [`tests/parity.ts`](tests/parity.ts):
 
 - 15 pin the old modes' held semantics. They also fail on `src/` once the
@@ -278,10 +283,13 @@ default is switched from `same-height` to `live`, the rule `next` keeps.
 - 5 request a removed mode or option.
 - 5 assert the detached measurement root or wrapper release that F2
   replaces.
+- 1 pins that an in-place item update stops a staged page at once. `next`
+  keeps staging and lets the retry adopt the rows.
 
 `next/tests/foundation.test.ts` covers what `next` adds: hidden in-canvas
 staging, reveal without re-parenting, the offscreen resident, the post-commit
-sweep, DOM order, the one commit rule, and the pass.
+sweep, DOM order, the one commit rule, the pass, and a page landing while a
+reply streams.
 `next/tests/native.test.ts` covers the native surface: spacers that reproduce
 committed geometry, a mid-gesture prepend without a scroll write, the settle
 rule at an edge and during a glide, and the host's opt-out.
@@ -306,26 +314,29 @@ evidence.
   scripts that fail the same way on `main` and
   `runtime/hidden-measurement`, which asserts the detached measurement root
   that F2 removes.
-- **`next` regressions:** the hidden-row, native-anchoring, and native-glide
-  regressions in [`regressions/`](regressions/) pass in all three engines.
+- **`next` regressions:** the hidden-row, native-anchoring, native-glide,
+  and stream-paging regressions in [`regressions/`](regressions/) pass in
+  all three engines.
   The native-anchoring regression lands an older page mid-gesture with zero
   script scroll writes and a reader drift of at most 1 px.
 
-The runs found and fixed ten defects in `next`. Examples: hidden rows that
-were findable, focusable, or under the viewport for rect queries, a "scroll
-to top" glide that loaded the whole history under native anchoring, and
-native anchoring overriding a host's `overflow-anchor: none`. The
+The runs found and fixed eleven defects in `next`. Examples: hidden rows
+that were findable, focusable, or under the viewport for rect queries, a
+"scroll to top" glide that loaded the whole history under native anchoring,
+native anchoring overriding a host's `overflow-anchor: none`, and older
+pages that couldn't load while a reply streamed. The
 [verification report](../docs/reports/virtual-list-next-2026-09-23.md)
 lists them.
 
 ### Measurements
 
-The orchestration layer shrinks from 3,910 to 2,942 lines (−25%), or from
-2,840 to 2,542 code lines (−10%). The physics modules are shared. Native
+The orchestration layer shrinks from 3,910 to 3,010 lines (−23%), or from
+2,840 to 2,593 code lines (−9%). The physics modules are shared. Native
 anchoring (F5) accounts for 292 of those lines (209 code lines). It adds to
 the runtime path rather than replacing it, because the runtime remains the
-fallback. Without F5, `next` is 2,650 lines and 2,333 code lines (−32% and
-−18%).
+fallback. Keeping staged rows for a paging retry adds 68 (51 code lines).
+The first commit, without either, was 2,650 lines and 2,333 code lines
+(−32% and −18%).
 
 The headless CPU benchmarks in [`bench/`](bench/) put `next` within ±10%
 of `main`:

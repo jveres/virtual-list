@@ -42,10 +42,21 @@ const measuredInPlace = [
   "should report teardown failure after a render-time abort without leaking other rows",
 ];
 
+/**
+ * Pin that an in-place item update stops a staged window job at once. next
+ * keeps staging (the rows stay valid), still cancels at the commit, and lets
+ * the host's retry adopt them, so a page lands while a reply streams
+ * (next/tests/foundation.test.ts, "lands a page mid-stream").
+ */
+const stagingThroughUpdates = [
+  "should invalidate a cached staged source after an in-place item update",
+];
+
 export const knownDifferences = [
   ...modeSemantics,
   ...removedOptions,
   ...measuredInPlace,
+  ...stagingThroughUpdates,
 ];
 
 const literal = (text: string): string =>

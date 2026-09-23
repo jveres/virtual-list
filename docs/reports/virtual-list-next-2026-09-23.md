@@ -14,7 +14,7 @@ that mode.
 
 On this evidence, `next` behaves like the current runtime:
 
-- It passes 359 of the 384 tests in `src/`'s contract suite. The 25
+- It passes 358 of the 384 tests in `src/`'s contract suite. The 26
   exclusions are intended changes.
 - The chat invariants report no violations in Chromium, Firefox, or WebKit,
   with native or runtime anchoring. The dynamic-height lab reports none. Its
@@ -22,9 +22,10 @@ On this evidence, `next` behaves like the current runtime:
 - The feature regression suite finds no `next`-only failure (see
   [Regression suite](#regression-suite)).
 
-The orchestration layer shrinks from 3,910 to 2,942 lines (−25%), or from
-2,840 to 2,542 code lines (−10%). Without native anchoring, it's 2,650 lines
-and 2,333 code lines (−32% and −18%). Runtime CPU cost is within ±10% of
+The orchestration layer shrinks from 3,910 to 3,010 lines (−23%), or from
+2,840 to 2,593 code lines (−9%). The first commit, before native anchoring
+and the streaming paging fix, was 2,650 lines and 2,333 code lines (−32% and
+−18%). Runtime CPU cost is within ±10% of
 `main` in headless engines. Beyond the removed modes, two behaviors change
 on purpose: DOM order now always follows list order, and with native
 anchoring, changes above the reader land during a gesture.
@@ -58,12 +59,13 @@ same live-default suite ran against `src/` as a control.
 
 | Group | Tests | Why they're excluded |
 | --- | ---: | --- |
-| Pass on `next` | 359 | — |
+| Pass on `next` | 358 | — |
 | Old modes' held semantics | 15 | They fail on `src/` too once the harness is live. |
 | Removed mode or option | 5 | They request `freeze`, `same-height`, or `prepareDuringScroll: false`. |
 | Measurement root and wrapper release | 5 | They assert the detached root or wrapper recreation that `next` replaces. |
+| Staging through in-place updates | 1 | It pins that an in-place item update stops a staged page at once. `next` keeps staging, still cancels the commit, and lets the host's retry adopt the rows. |
 
-`next/tests/foundation.test.ts` adds nine tests for `next`-specific behavior:
+`next/tests/foundation.test.ts` adds ten tests for `next`-specific behavior:
 
 - No measurement root in `<body>`.
 - Hidden, inert staging and reveal of the same slot.
@@ -72,6 +74,10 @@ same live-default suite ran against `src/` as a control.
 - DOM order in both scroll directions.
 - The one commit rule.
 - The pass queue and host failure reporting.
+- A paging-companion page landing while a reply streams a token every
+  frame, with each page row rendered once.
+
+`next/tests/native.test.ts` adds seven tests for native anchoring.
 
 `pnpm test` (1,085 tests) still passes, because `src/` is unchanged.
 
@@ -127,6 +133,21 @@ pass on the final revision.
 The first runs found these defects in `next`. Each was fixed, and the checks
 that found it were rerun:
 
+- **Older pages didn't load while a reply streamed.** The user found it in
+  the streaming demo, in both directions. Each token replaces the streaming
+  message in place, which invalidates a staged page, as the paging
+  companion's contract requires. The companion retried, but every retry
+  staged the page from scratch, and the next token cancelled it again, so
+  pages loaded only once the stream stopped. A staged job now keeps staging
+  through in-place updates, its commit is still cancelled, and the retry
+  adopts the rows it staged. The new page lands within a few tokens.
+  [`next/regressions/stream-paging-regression.mjs`](../../next/regressions/stream-paging-regression.mjs)
+  streams a token every 50 ms while an older page loads, and passes in all
+  three engines. Without the fix, it times out with the page still loading,
+  as does a unit test that streams a token every frame. The paging
+  regressions rerun after the fix pass, except `chat-scrollback`, which
+  fails the same way on `main`.
+
 - **Hidden rows were findable and focusable.** A staged row with a
   `visibility: visible` descendant was reachable by `window.find` and focus.
   Hidden slots are now `inert` and `aria-hidden`, like the old measurement
@@ -163,11 +184,12 @@ shared and unchanged: 1,843 code lines.
 | Orchestration layer | Lines | Code lines |
 | --- | ---: | ---: |
 | `main`: `virtual-list.ts`, `snapshot.ts`, `render-state.ts`, `premeasure.ts` | 3,910 | 2,840 |
-| `next` without F5 (first commit) | 2,650 | 2,333 |
-| `next` with F5: `virtual-list.ts`, `types.ts`, `index.ts` | 2,942 | 2,542 |
-| Change from `main`, with F5 | −25% | −10% |
+| `next`, first commit | 2,650 | 2,333 |
+| `next` now: `virtual-list.ts`, `types.ts`, `index.ts` | 3,010 | 2,593 |
+| Change from `main` | −23% | −9% |
 
-F5 adds 292 lines (209 code lines). The runtime path stays as the fallback,
+F5 adds 292 lines (209 code lines), and keeping staged rows for a paging
+retry adds 68 (51 code lines). The runtime path stays as the fallback,
 so native anchoring doesn't yet remove code. Removing that path for engines
 that anchor natively is the largest remaining reduction; see the
 [README roadmap](../../next/README.md#5-roadmap).
@@ -265,10 +287,13 @@ the adjustment when a page landed.
 ### Native anchoring verification
 
 These runs used the servers in [Scope and environment](#scope-and-environment).
-The `auto` rows ran after the last runtime change. The runtime-server rows
-ran before the two fixes below. Neither fix changes a list in runtime mode:
-the glide fix only applies to native anchoring, and the detection fix only
-decides the mode.
+The `auto` rows for the chat invariants and the regressions ran after the
+last runtime change. The `auto` lab rows ran before the
+[streaming paging fix](#defects-found-and-fixed), which only changes window
+jobs whose source is updated in place. The runtime-server rows ran before
+the two fixes below. Neither changes a list in runtime mode: the glide fix
+only applies to native anchoring, and the detection fix only decides the
+mode.
 
 | Check | Chromium | Firefox | WebKit |
 | --- | --- | --- | --- |
@@ -279,6 +304,7 @@ decides the mode.
 | [Native anchoring regression](../../next/regressions/native-anchoring-regression.mjs) | Passes | Passes | Passes |
 | [Native glide regression](../../next/regressions/native-glide-regression.mjs) | Passes | Passes | Passes |
 | [Hidden-row regression](../../next/regressions/hidden-row-regression.mjs) | Passes | Passes | Passes |
+| [Stream-paging regression](../../next/regressions/stream-paging-regression.mjs) | Passes | Passes | Passes |
 
 The lab reports zero clipped paints in every run.
 

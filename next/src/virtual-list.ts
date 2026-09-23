@@ -1806,6 +1806,39 @@ export function createVirtualList<T>(
   let takingOver: "command" | "resize" | null = null;
   const windowJobs = new Set<(prepare?: boolean) => void>();
   const cancelJobs = new Set<() => void>();
+  /**
+   * Rows a cancelled window job staged, kept for its retry. A paging
+   * companion re-submits the same page once its source changed (a streamed
+   * token); the retry adopts these instead of rendering the page again, so
+   * it lands before the next change. Unclaimed at the end of the task, or
+   * after a width change, they are destroyed.
+   */
+  let spares: { rows: Map<string, Row<T>>; width: number } | null = null;
+  let sparesTimer = 0;
+  function dropSpares(): void {
+    if (sparesTimer !== 0) window.clearTimeout(sparesTimer);
+    sparesTimer = 0;
+    const dropped = spares;
+    spares = null;
+    for (const row of dropped?.rows.values() ?? []) destroyRow(row);
+  }
+  function keepSpares(kept: Map<string, Row<T>>): void {
+    dropSpares();
+    if (kept.size === 0) return;
+    spares = { rows: kept, width: viewportWidth };
+    sparesTimer = window.setTimeout(dropSpares, 0);
+  }
+  function claimSpares(): Map<string, Row<T>> {
+    if (spares?.width !== viewportWidth) {
+      dropSpares();
+      return new Map();
+    }
+    const claimed = spares.rows;
+    spares = null;
+    window.clearTimeout(sparesTimer);
+    sparesTimer = 0;
+    return claimed;
+  }
 
   const idle = (): boolean => !controller.isScrollPhaseActive();
 
@@ -2134,6 +2167,8 @@ export function createVirtualList<T>(
       let frame = 0;
       let idleHandle = 0;
       const canIdle = !interrupt && typeof requestIdleCallback === "function";
+      /** Rows a cancelled predecessor staged, adopted when the item is the same. */
+      const reuse = claimSpares();
 
       const cleanup = (): void => {
         windowJobs.delete(run);
@@ -2152,7 +2187,13 @@ export function createVirtualList<T>(
         const errors = error === undefined ? [] : flatten(error);
         const abandoned = job;
         job = null;
-        for (const row of abandoned?.rows.values() ?? []) destroyRow(row);
+        const leftovers = new Map([...reuse, ...(abandoned?.rows ?? [])]);
+        reuse.clear();
+        // Cancelled over an in-place change, the staged rows wait for the
+        // host's retry; otherwise they die with the job.
+        if (retry && !applied && error === undefined && !disposed)
+          keepSpares(leftovers);
+        else for (const row of leftovers.values()) destroyRow(row);
         errors.push(...failures.splice(mark));
         try {
           if (!disposed && !defer(() => pass(publish))) pass(publish);
@@ -2186,7 +2227,20 @@ export function createVirtualList<T>(
         checkedRevision = revision;
         return true;
       };
-      const current = (): boolean =>
+      /** Only items replaced in place (a streamed token): same keys, same order. */
+      const sameStructure = (j: Job): boolean =>
+        j.source.length === lastItems.length &&
+        j.source.every(
+          (item, index) =>
+            item === lastItems[index] ||
+            keyOf(item) === keyOf(lastItems[index] as T),
+        );
+      /**
+       * Staging goes on while items are replaced in place: rows staged for
+       * new keys stay valid, and the retry that follows the cancelled commit
+       * adopts them. Only the commit needs the exact source (`current`).
+       */
+      const alive = (): boolean =>
         !finished &&
         !cancelRequested &&
         !disposed &&
@@ -2194,7 +2248,10 @@ export function createVirtualList<T>(
         (!job ||
           (job.width === viewportWidth &&
             (!interrupt || job.input === inputEpoch) &&
-            sourceCurrent(job)));
+            (sourceCurrent(job) || sameStructure(job))));
+      const current = (): boolean => alive() && (!job || sourceCurrent(job));
+      /** Cancelled at commit over an in-place change: its rows wait for a retry. */
+      let retry = false;
 
       /** Render one bounded slice, hidden in the canvas; one warm read. */
       const slice = (j: Job, deadline?: IdleDeadline): void => {
@@ -2206,7 +2263,7 @@ export function createVirtualList<T>(
             if (deadline && deadline.timeRemaining() < IDLE_SLICE_MIN_MS) break;
             const [key, item] = j.fresh[j.cursor] as [string, T];
             const row = createRow(key, item, render(item), 1);
-            if (!current()) {
+            if (!alive()) {
               destroyRow(row);
               cancel();
               return;
@@ -2228,7 +2285,7 @@ export function createVirtualList<T>(
             if (!deadline && performance.now() - started >= 3) break;
           }
           last?.element.getBoundingClientRect();
-          if (!current()) {
+          if (!alive()) {
             cancel();
             return;
           }
@@ -2247,7 +2304,7 @@ export function createVirtualList<T>(
       };
       const stageFrame = (): void => {
         frame = 0;
-        if (!current()) {
+        if (!alive()) {
           cancel();
           return;
         }
@@ -2256,13 +2313,13 @@ export function createVirtualList<T>(
         const j = job;
         work(() => {
           slice(j);
-          if (!current()) finish(false);
+          if (!alive()) finish(false);
           else frame = requestAnimationFrame(j.ready ? runFrame : stageFrame);
         });
       };
       const stageIdle = (deadline: IdleDeadline): void => {
         idleHandle = 0;
-        if (!current()) {
+        if (!alive()) {
           cancel();
           return;
         }
@@ -2271,7 +2328,7 @@ export function createVirtualList<T>(
         if (!j.ready) {
           work(() => {
             slice(j, deadline);
-            if (!current()) finish(false);
+            if (!alive()) finish(false);
             else if (!j.ready) idleHandle = requestIdleCallback(stageIdle);
           });
         }
@@ -2284,6 +2341,7 @@ export function createVirtualList<T>(
       function run(prepareOnly = false): void {
         if (working || finished) return;
         if (!current()) {
+          retry = alive();
           cancel();
           return;
         }
@@ -2330,9 +2388,17 @@ export function createVirtualList<T>(
               : null;
             if (!j && !declared && pending === null) {
               const { keys, byKey } = indexItems(snapshot, false);
-              const fresh = [...byKey].filter(([key]) => !rows.has(key));
+              const reused = new Map<string, Row<T>>();
+              const fresh = [...byKey].filter(([key, item]) => {
+                if (rows.has(key)) return false;
+                const row = reuse.get(key);
+                if (row?.item !== item) return true;
+                reused.set(key, row);
+                return false;
+              });
               if (!current()) return;
               if (fresh.length > JOB_MIN_ROWS) {
+                for (const key of reused.keys()) reuse.delete(key);
                 job = {
                   next: {
                     ...next,
@@ -2349,7 +2415,7 @@ export function createVirtualList<T>(
                   index: new Map(keys.map((key, index) => [key, index])),
                   fresh,
                   cursor: 0,
-                  rows: new Map(),
+                  rows: reused,
                   ready: false,
                 };
                 windowJobs.add(run);
@@ -2371,6 +2437,7 @@ export function createVirtualList<T>(
               return;
             }
             if (!current()) {
+              retry = alive();
               cancel();
               return;
             }
@@ -2390,7 +2457,7 @@ export function createVirtualList<T>(
               ownAnchor(next.anchor ?? "viewport"),
               false,
               j ? j.slots : slots,
-              j?.rows,
+              j?.rows ?? reuse,
             );
             if (disposed) return;
             host(() => next.onCommit?.());
@@ -2703,6 +2770,7 @@ export function createVirtualList<T>(
     const mark = failures.length;
     cancelRepaint?.();
     for (const cancel of [...cancelJobs]) cancel();
+    dropSpares();
     for (const tasks of openScopes) discard(tasks);
     glide?.cancel();
     settleParked(false);
