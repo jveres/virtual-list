@@ -29,8 +29,14 @@ export function nextRuntime(): Plugin {
   };
 }
 
+/** "auto" (native anchoring where supported), "native", or "runtime". */
+const anchoring = process.env.VITE_VL_ANCHORING ?? "auto";
+
 export default mergeConfig(base, {
   plugins: [nextRuntime()],
-  // Keep the dependency cache apart from a concurrently running main server.
-  cacheDir: "node_modules/.vite-next",
+  define: {
+    "import.meta.env.VITE_VL_ANCHORING": JSON.stringify(anchoring),
+  },
+  // Keep each server's dependency cache apart, so they can run side by side.
+  cacheDir: `node_modules/.vite-next-${anchoring}`,
 });

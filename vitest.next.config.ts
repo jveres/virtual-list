@@ -3,16 +3,20 @@ import { defineConfig } from "vitest/config";
 import { parityPattern } from "./next/tests/parity.js";
 import { nextRuntime } from "./vite.next.config.js";
 
-/** Run the src/ contract suite under next's one commit rule ("live"). */
+/** Run the src/ contract suite under next's one commit rule ("live") and runtime anchoring. */
 function liveHarness(): Plugin {
   return {
     name: "virtual-list-next-live-harness",
     transform(code, id) {
       if (!id.endsWith("tests/unit/virtual-list.test.ts")) return null;
       const harness = 'hooks.scrollingUpdates ?? "same-height"';
-      if (!code.includes(harness))
-        throw new Error("the contract suite's harness default moved");
-      return code.replace(harness, 'hooks.scrollingUpdates ?? "live"');
+      const strategy = 'settleStrategy: hooks.settleStrategy ?? "default",';
+      if (!code.includes(harness) || !code.includes(strategy))
+        throw new Error("the contract suite's harness moved");
+      // The suite describes runtime anchoring; jsdom claims native support.
+      return code
+        .replace(harness, 'hooks.scrollingUpdates ?? "live"')
+        .replace(strategy, `${strategy} anchoring: "runtime",`);
     },
   };
 }

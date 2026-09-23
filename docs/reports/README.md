@@ -81,8 +81,10 @@ display frames in real trackpad captures.
 The [virtual-list-next verification](virtual-list-next-2026-09-23.md)
 records the replacement orchestration layer on branch `virtual-list-next`:
 contract parity, browser invariants, the feature regression suite, code
-size, headless CPU comparisons, and a native scroll anchoring probe. The
-architecture recommendation is in [`next/README.md`](../../next/README.md).
+size, and headless CPU comparisons. It also covers native CSS scroll
+anchoring (F5): which structural changes each engine anchors, its
+verification, and the "scroll to top" loop it fixed. The architecture
+recommendation is in [`next/README.md`](../../next/README.md).
 
 ## Safari 27 investigation
 

@@ -49,6 +49,13 @@ export interface VirtualListOptions<T> {
   followMode?: FollowMode;
   followInset?: number;
   settleStrategy?: VirtualListScrollSettleStrategy;
+  /**
+   * Who keeps the reading position still when content above it changes.
+   * "auto" (default): the engine's CSS scroll anchoring where supported,
+   * otherwise the runtime. "native" forces the engine, "runtime" forces
+   * settle-gated runtime writes. Positioned layouts always use the runtime.
+   */
+  anchoring?: "auto" | "native" | "runtime";
   onState?: (
     state: VirtualListState,
     viewport: Readonly<GeometryViewport>,

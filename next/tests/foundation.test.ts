@@ -75,6 +75,7 @@ function mount(
     items,
     key: (m) => `m${m.id}`,
     settleStrategy: "default",
+    anchoring: "runtime",
     render: (m, existing) => {
       const element = existing ?? document.createElement("div");
       element.textContent = m.body;

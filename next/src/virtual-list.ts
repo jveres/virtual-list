@@ -71,6 +71,10 @@ const SLOT_PREFIX = "\u0000edge:";
 const SLOT_BASE = "position:absolute;top:0;left:0;right:0;";
 /** Where hidden slots wait: above the scroll origin, out of every rect query. */
 const PARKED_TOP = "-100000px";
+/** Native flow parks the row instead: its slot must never change position. */
+const PARKED_TRANSLATE = "0 -100000px";
+/** Within this of a scroll edge, a mid-gesture anchoring change waits (F5). */
+const EDGE_GUARD_PX = 2;
 /** How far a mounting slot looks ahead for a connected successor. */
 const INSERTION_SCAN = 64;
 
@@ -130,6 +134,21 @@ function flatten(error: unknown): unknown[] {
 function throwAll(failures: readonly unknown[], message: string): void {
   if (failures.length === 1) throw failures[0];
   if (failures.length > 1) throw new AggregateError([...failures], message);
+}
+
+/**
+ * The anchoring mode a list asks for. `VITE_VL_ANCHORING` ("native" or
+ * "runtime") overrides "auto" for side-by-side comparison in development.
+ */
+function requestedAnchoring(
+  option: "auto" | "native" | "runtime" | undefined,
+): "auto" | "native" | "runtime" {
+  if (option) return option;
+  const env =
+    typeof import.meta.env === "object"
+      ? import.meta.env.VITE_VL_ANCHORING
+      : undefined;
+  return env === "native" || env === "runtime" ? env : "auto";
 }
 
 /** The host disposed the list from inside a render: abandon the update. */
@@ -277,14 +296,41 @@ export function createVirtualList<T>(
   };
 
   // --- Surface --------------------------------------------------------------
+  // F5: where the engine anchors natively, rows sit in normal flow between
+  // two spacers, and the engine keeps the reading position still when
+  // content above it changes. Positioned layouts, engines without CSS
+  // scroll anchoring, and scrollers the host turned it off for use the
+  // runtime instead; only an explicit "native" overrides the host.
+  const requested = requestedAnchoring(options.anchoring);
+  const native =
+    !place &&
+    requested !== "runtime" &&
+    (requested === "native" ||
+      (globalThis.CSS?.supports?.("overflow-anchor", "auto") === true &&
+        getComputedStyle(viewport).overflowAnchor !== "none"));
+  let viewportAnchor: string | null = null;
+  if (requested === "native" && native) {
+    viewportAnchor = viewport.style.overflowAnchor;
+    viewport.style.overflowAnchor = "auto";
+  }
   const canvas = document.createElement("div");
   canvas.style.position = "relative";
   canvas.style.width = "100%";
-  canvas.style.overflowAnchor = "none";
+  if (!native) canvas.style.overflowAnchor = "none";
+  canvas.dataset.anchoring = native ? "native" : "runtime";
   // One stable compositing surface while rows enter and leave (Safari).
   canvas.style.transform = "translateZ(0)";
   if (globalThis.CSS?.supports?.("-webkit-nbsp-mode", "space"))
     canvas.style.transformStyle = "preserve-3d";
+  const spacer = (): HTMLElement => {
+    const element = document.createElement("div");
+    element.style.cssText = "overflow-anchor:none;height:0px";
+    canvas.appendChild(element);
+    return element;
+  };
+  /** Native flow: the unmounted rows above and below the window. */
+  const topSpacer = native ? spacer() : null;
+  const bottomSpacer = native ? spacer() : null;
   viewport.appendChild(canvas);
   let clip: "clip" | "hidden" | null = null;
   let viewportWidth = viewport.clientWidth;
@@ -298,8 +344,15 @@ export function createVirtualList<T>(
     return { scrollTop: viewport.scrollTop, height: viewport.clientHeight };
   }
 
-  function syncCanvasHeight(totalSize: number): void {
-    canvas.style.height = `${totalSize}px`;
+  /**
+   * `floor`: also refresh the pin's viewport-relative floor. A native commit
+   * mid-gesture must not: any size change on an ancestor of the engine's
+   * anchor node suppresses anchoring for that layout.
+   */
+  function syncCanvasHeight(totalSize: number, floor = true): void {
+    // A native canvas takes its height from its flow, for the same reason.
+    if (!native) canvas.style.height = `${totalSize}px`;
+    if (!floor) return;
     // The pin's shortfall grows in the same layout as its viewport.
     const pinTop = geometry.pinTop;
     canvas.style.minHeight =
@@ -435,6 +488,9 @@ export function createVirtualList<T>(
       style.top = "0";
       style.left = "0";
       style.right = "0";
+      // Native anchoring picks the slot, never a node inside the row: a
+      // re-render replaces those, and the engine would lose its anchor.
+      if (native) style.overflowAnchor = "none";
       slot = newSlot();
       slot.appendChild(element);
     }
@@ -476,7 +532,7 @@ export function createVirtualList<T>(
       const row = rowAt(next);
       if (row && row.place !== "detached") return row.slot;
     }
-    return null;
+    return bottomSpacer;
   }
 
   const committedRowAt = (index: number): Row<T> | undefined =>
@@ -492,7 +548,13 @@ export function createVirtualList<T>(
     if (row.place !== "detached" || row.slot === row.element) return;
     // Parked far above the scroll origin: unreachable, outside the scroll
     // range, and never intersecting the viewport for a host's rect query.
-    row.slot.style.cssText = `${SLOT_BASE}overflow:${clip};max-height:0;visibility:hidden;top:${PARKED_TOP}`;
+    // Native flow keeps the slot in flow at zero height and parks the row:
+    // revealing it must not change `position`, which suppresses anchoring.
+    if (native) {
+      row.slot.style.cssText = `position:relative;overflow:${clip};height:0px;visibility:hidden;overflow-anchor:none`;
+      row.element.style.translate = PARKED_TRANSLATE;
+    } else
+      row.slot.style.cssText = `${SLOT_BASE}overflow:${clip};max-height:0;visibility:hidden;top:${PARKED_TOP};overflow-anchor:none`;
     row.slot.inert = true;
     row.slot.setAttribute("aria-hidden", "true");
     row.offset = Number.NaN;
@@ -506,6 +568,7 @@ export function createVirtualList<T>(
     row.slot.remove();
     row.slot.inert = false;
     row.slot.removeAttribute("aria-hidden");
+    if (native) row.element.style.translate = "";
     row.place = "detached";
     hiddenRows.delete(row);
     if (resident === row) resident = null;
@@ -513,6 +576,7 @@ export function createVirtualList<T>(
 
   /** Move a slot to its committed offset (a no-op when unchanged). */
   function placeRow(row: Row<T>): void {
+    if (native) return; // The flow places it.
     const offset = geometry.offsetOf(row.key);
     if (offset < 0 || row.offset === offset) return;
     row.offset = offset;
@@ -523,29 +587,108 @@ export function createVirtualList<T>(
   function mountRow(row: Row<T>): void {
     const hidden = row.place === "hidden";
     if (row.slot !== row.element) {
-      row.slot.style.cssText = `${SLOT_BASE}overflow:${clip};will-change:transform;height:${row.height}px`;
+      row.slot.style.cssText = native
+        ? `position:relative;overflow:${clip};height:${row.height}px${anchors(row) ? "" : ";overflow-anchor:none"}`
+        : `${SLOT_BASE}overflow:${clip};will-change:transform;height:${row.height}px`;
       row.offset = Number.NaN;
       if (hidden) {
         row.slot.inert = false;
         row.slot.removeAttribute("aria-hidden");
+        if (native) row.element.style.translate = "";
       }
     }
     // Placed before it connects: a mount hook never sees a provisional zero.
     placeRow(row);
-    if (!hidden) canvas.insertBefore(row.slot, committedPoint(row.key));
+    if (native) flowInsert(row);
+    else if (!hidden) canvas.insertBefore(row.slot, committedPoint(row.key));
     hiddenRows.delete(row);
     if (resident === row) resident = null;
     row.place = "mounted";
     mountedRows.add(row);
     observeRow(row);
-    if (!row.edge) host(() => options.onMount?.(row.element, row.item));
+    if (!row.edge) hook(() => options.onMount?.(row.element, row.item));
+  }
+
+  /** Whether the engine may anchor on this row (never loaders or separators). */
+  function anchors(row: Row<T>): boolean {
+    return !row.edge && (anchorable === undefined || anchorable(row.item));
+  }
+
+  /**
+   * In native flow, DOM order is layout order: a mounting slot must sit
+   * after its mounted predecessor and before its mounted successor. A slot
+   * staged elsewhere moves (a relayout) only when it is out of place.
+   */
+  function flowInsert(row: Row<T>): void {
+    const index = geometry.indexOf(row.key);
+    const previous = committedRowAt(index - 1);
+    const after =
+      previous?.place === "mounted" ? previous.slot : (topSpacer as Node);
+    let before: Node = bottomSpacer as Node;
+    const limit = Math.min(geometry.count, index + 1 + INSERTION_SCAN);
+    for (let next = index + 1; next < limit; next++) {
+      const candidate = committedRowAt(next);
+      if (candidate?.place === "mounted") {
+        before = candidate.slot;
+        break;
+      }
+    }
+    const placed =
+      row.slot.isConnected &&
+      after.compareDocumentPosition(row.slot) &
+        Node.DOCUMENT_POSITION_FOLLOWING &&
+      row.slot.compareDocumentPosition(before) &
+        Node.DOCUMENT_POSITION_FOLLOWING;
+    if (!placed) canvas.insertBefore(row.slot, before);
+  }
+
+  /**
+   * Native flow: size the spacers around the mounted window from committed
+   * geometry, so every row's flow position equals its committed offset.
+   */
+  function layoutFlow(): void {
+    if (!topSpacer || !bottomSpacer) return;
+    let first = Number.POSITIVE_INFINITY;
+    let last = -1;
+    for (const row of mountedRows) {
+      const index = geometry.indexOf(row.key);
+      if (index < first) first = index;
+      if (index > last) last = index;
+    }
+    let top = 0;
+    let bottom = geometry.totalSize;
+    if (last >= 0) {
+      const lastKey = geometry.keyAt(last) as string;
+      top = geometry.offsetOf(geometry.keyAt(first) as string);
+      bottom =
+        geometry.totalSize -
+        geometry.offsetOf(lastKey) -
+        geometry.heightOf(lastKey);
+    }
+    const topHeight = `${top}px`;
+    const bottomHeight = `${Math.max(0, bottom)}px`;
+    if (topSpacer.style.height !== topHeight)
+      topSpacer.style.height = topHeight;
+    if (bottomSpacer.style.height !== bottomHeight)
+      bottomSpacer.style.height = bottomHeight;
+  }
+
+  /**
+   * Host hooks raised while the native flow is being rebuilt wait until it
+   * is consistent again, so a hook reading layout never sees a half-moved
+   * window (and the engine never anchors on one).
+   */
+  let hookQueue: (() => void)[] | null = null;
+  function hook(callback: () => void): void {
+    if (hookQueue) hookQueue.push(callback);
+    else host(callback);
   }
 
   function unmountRow(row: Row<T>): void {
     row.place = "detached";
     mountedRows.delete(row);
     rowObserver.unobserve(row.element);
-    if (!row.edge) host(() => options.onUnmount?.(row.element, row.item));
+    if (!row.edge) hook(() => options.onUnmount?.(row.element, row.item));
     row.slot.remove();
     row.offset = Number.NaN;
   }
@@ -559,7 +702,7 @@ export function createVirtualList<T>(
     dirtyRows.delete(row);
     row.slot.remove();
     row.element.remove();
-    if (!row.edge) host(() => options.onDestroy?.(row.element, row.item));
+    if (!row.edge) hook(() => options.onDestroy?.(row.element, row.item));
   }
 
   function markDirty(row: Row<T>): void {
@@ -591,12 +734,11 @@ export function createVirtualList<T>(
   }
 
   /**
-   * Commit the heights of these rows. Detached rows are hidden in the canvas
-   * first, so every read happens in one layout, before any write.
+   * Read the heights of these rows in one layout, before any write. Detached
+   * rows are hidden in the canvas first, so they lay out with real styles.
    */
-  function measureRows(toMeasure: Iterable<Row<T>>): void {
-    const list = [...toMeasure];
-    if (list.length === 0) return;
+  function readHeights(list: readonly Row<T>[]): number[] {
+    if (list.length === 0) return [];
     let connected: Row<T> | null = null;
     let connections = 0;
     if (!declared) {
@@ -623,11 +765,17 @@ export function createVirtualList<T>(
       for (const row of list) if (rows.get(row.key) === row) detachRow(row);
       throw error;
     }
+    // A lone offscreen update (a streaming row out of view) stays laid out.
+    if (connections === 1 && connected !== null) resident = connected;
+    return heights;
+  }
+
+  function measureRows(toMeasure: Iterable<Row<T>>): void {
+    const list = [...toMeasure];
+    const heights = readHeights(list);
     list.forEach((row, index) => {
       commitHeight(row, heights[index] as number);
     });
-    // A lone offscreen update (a streaming row out of view) stays laid out.
-    if (connections === 1 && connected !== null) resident = connected;
   }
 
   /** Detach hidden committed rows the window did not reveal. */
@@ -954,7 +1102,8 @@ export function createVirtualList<T>(
               declared &&
               !idle() &&
               (place !== undefined ||
-                p.declared?.get(key)?.height !== committed.height)
+                (p.declared?.get(key)?.height !== committed.height &&
+                  !nativeFree()))
             ) {
               p.deferred.set(key, item);
             } else {
@@ -1111,8 +1260,18 @@ export function createVirtualList<T>(
     if (noop) {
       // In-place renders wait as dirty rows; nothing structural is held.
       pending = null;
-    } else if (p.target === null && p.anchor !== "end" && confined(p)) {
-      commit(p, { policy: "none", write: false, keepFollow: true });
+    } else if (
+      p.target === null &&
+      p.anchor !== "end" &&
+      (confined(p) || nativeFree())
+    ) {
+      // No scroll write: nothing above the anchor changes, or the engine
+      // anchors natively (F5).
+      commit(p, {
+        policy: native ? "viewport" : "none",
+        write: false,
+        keepFollow: true,
+      });
       return;
     } else {
       const waiting =
@@ -1182,13 +1341,12 @@ export function createVirtualList<T>(
       policy,
       policy === "viewport" ? (p?.target ?? null) : null,
     );
-    const toMeasure = new Set<Row<T>>();
+    // Adopt the staged rows; a key removed or replaced dies after it left
+    // the map, so a host disposing from onDestroy cannot destroy it twice.
+    const keysChanged = p !== null && !sameKeys(p.keys);
+    const doomed: Row<T>[] = [];
     if (p) {
       if (p.deferred.size > 0) renderDeferred(p);
-      // Adopt the staged rows; a key removed or replaced dies after it left
-      // the map, so a host disposing from onDestroy cannot destroy it twice.
-      const keysChanged = !sameKeys(p.keys);
-      const doomed: Row<T>[] = [];
       if (keysChanged) {
         const next = new Set(p.keys);
         for (const [key, row] of rows) {
@@ -1203,64 +1361,95 @@ export function createVirtualList<T>(
         if (old && old !== row) doomed.push(old);
       }
       if (p.staged.size > 0) sweep = true;
+    }
+    // Every height this commit lands is read before its first DOM write.
+    // Rows that waited for a settle are read again (an image decoded).
+    const gone = new Set(doomed);
+    const toMeasure = new Set<Row<T>>();
+    for (const row of p?.staged.values() ?? [])
+      if (row.dirty) toMeasure.add(row);
+    for (const row of dirtyRows) if (!gone.has(row)) toMeasure.add(row);
+    const measured = [...toMeasure];
+    const heights = readHeights(measured);
+    // Native flow: host hooks wait until the window is whole again (F5).
+    const owner = native && hookQueue === null;
+    if (owner) hookQueue = [];
+    let glideFollow = false;
+    try {
       for (const row of doomed) destroyRow(row);
       if (disposed) return;
-      if (keysChanged) {
-        geometry.setKeys(p.keys, p.target);
-        committedKeys = p.keys;
-      }
-      if (pinPolicy) {
-        committedPinOffset = p.pinOffset ?? 0;
-        geometry.pin(p.pinKey ?? null, committedPinOffset);
-      }
-      if (p.declared) {
-        for (const [key, entry] of p.declared) {
-          const row = rows.get(key);
-          if (row && row.item === entry.item) commitHeight(row, entry.height);
-          else if (declaredItems.get(key)?.height !== entry.height)
-            geometry.measure(key, entry.height);
+      if (p) {
+        if (keysChanged) {
+          geometry.setKeys(p.keys, p.target);
+          committedKeys = p.keys;
         }
-        declaredItems = p.declared;
+        if (pinPolicy) {
+          committedPinOffset = p.pinOffset ?? 0;
+          geometry.pin(p.pinKey ?? null, committedPinOffset);
+        }
+        if (p.declared) {
+          for (const [key, entry] of p.declared) {
+            const row = rows.get(key);
+            if (row && row.item === entry.item) commitHeight(row, entry.height);
+            else if (declaredItems.get(key)?.height !== entry.height)
+              geometry.measure(key, entry.height);
+          }
+          declaredItems = p.declared;
+        }
+        for (const row of p.staged.values()) {
+          if (!toMeasure.has(row)) commitHeight(row, row.height);
+        }
+        if (place) {
+          geometry.setPositioned(p.positioned);
+          positionedNow = p.positioned !== null;
+        }
       }
-      // Rows that waited for a settle are read again (an image decoded).
-      for (const row of p.staged.values()) {
-        if (row.dirty) toMeasure.add(row);
-        else commitHeight(row, row.height);
+      measured.forEach((row, index) => {
+        commitHeight(row, heights[index] as number);
+      });
+      epoch += 1;
+
+      const result = geometry.resolve(capture);
+      syncCanvasHeight(result.totalSize, !native || o.write !== false);
+      // A derived end-follow goes only as far as the follow mode allows.
+      const derivedFollow =
+        !booting && result.mode === "end" && policy === "auto";
+      const resolvedTop = derivedFollow
+        ? follow.target(before.scrollTop, result.scrollTop)
+        : result.scrollTop;
+      const target =
+        result.mode === "end"
+          ? Math.ceil(resolvedTop)
+          : toDevicePixel(resolvedTop);
+      const moves = Math.abs(target - before.scrollTop) > EPSILON_PX;
+      glideFollow =
+        !o.instant &&
+        !booting &&
+        !follow.catchingUp &&
+        smoothFollow &&
+        result.mode === "end" &&
+        takingOver === null &&
+        moves;
+      if (smoothFollow && !o.keepFollow && takingOver === null)
+        follow.resolveCommit(policy, target);
+      // Native flow: the rows on screen stay mounted in the new geometry, so
+      // the engine can measure how far its anchor node moved and follow it.
+      if (native) holdWindow();
+      else repositionMounted();
+      if (!glideFollow && moves) {
+        if (o.write !== false) writeScrollTop(target);
+        // Mid-phase, the engine moves the viewport: expect it, so the settle
+        // sensor never reads the adjustment as user input.
+        else if (native) controller.recordProgrammaticScrollTop(target);
       }
-      if (place) {
-        geometry.setPositioned(p.positioned);
-        positionedNow = p.positioned !== null;
+    } finally {
+      if (owner) {
+        const queued = hookQueue ?? [];
+        hookQueue = null;
+        for (const callback of queued) host(callback);
       }
     }
-    for (const row of dirtyRows) toMeasure.add(row);
-    measureRows(toMeasure);
-    epoch += 1;
-
-    const result = geometry.resolve(capture);
-    syncCanvasHeight(result.totalSize);
-    repositionMounted();
-    // A derived end-follow goes only as far as the follow mode allows.
-    const derivedFollow =
-      !booting && result.mode === "end" && policy === "auto";
-    const resolvedTop = derivedFollow
-      ? follow.target(before.scrollTop, result.scrollTop)
-      : result.scrollTop;
-    const target =
-      result.mode === "end"
-        ? Math.ceil(resolvedTop)
-        : toDevicePixel(resolvedTop);
-    const moves = Math.abs(target - before.scrollTop) > EPSILON_PX;
-    const glideFollow =
-      !o.instant &&
-      !booting &&
-      !follow.catchingUp &&
-      smoothFollow &&
-      result.mode === "end" &&
-      takingOver === null &&
-      moves;
-    if (smoothFollow && !o.keepFollow && takingOver === null)
-      follow.resolveCommit(policy, target);
-    if (!glideFollow && o.write !== false && moves) writeScrollTop(target);
+    if (disposed) return;
     reconcileAndPublish();
     if (disposed) return;
     if (glideFollow) startFollowGlide();
@@ -1271,6 +1460,8 @@ export function createVirtualList<T>(
   /**
    * Mid-phase: commit the dirty heights at or below the anchor row. Nothing
    * above the anchor changes, so nothing on screen moves but those rows.
+   * Under native anchoring, rows above it commit too, away from the edges:
+   * the engine keeps the reading position still.
    */
   function liveCommit(): boolean {
     if (disposed || dirtyRows.size === 0 || remeasurePolicy !== undefined)
@@ -1284,17 +1475,24 @@ export function createVirtualList<T>(
           const anchor = geometry.anchorAt(vp);
           const anchorIndex =
             anchor === null ? 0 : geometry.indexOf(anchor.key);
+          const everything = nativeFree();
           const ready: Row<T>[] = [];
           for (const row of dirtyRows) {
-            if (geometry.indexOf(row.key) >= anchorIndex) ready.push(row);
+            if (everything || geometry.indexOf(row.key) >= anchorIndex)
+              ready.push(row);
           }
           if (ready.length === 0) break;
-          const capture = geometry.capture(vp, "none");
+          const capture = geometry.capture(vp, native ? "viewport" : "none");
           measureRows(ready);
           epoch += 1;
           const result = geometry.resolve(capture);
-          syncCanvasHeight(result.totalSize);
+          syncCanvasHeight(result.totalSize, !native);
           repositionMounted();
+          if (native) {
+            const expected = toDevicePixel(result.scrollTop);
+            if (Math.abs(expected - vp.scrollTop) > EPSILON_PX)
+              controller.recordProgrammaticScrollTop(expected);
+          }
           committed = true;
           // A shrink can clamp the engine upward onto another dirty row.
           const previousTop = vp.scrollTop;
@@ -1316,7 +1514,8 @@ export function createVirtualList<T>(
   // --- The window -----------------------------------------------------------
   /** I6: every mounted slot moves before any layout-forcing access. */
   function repositionMounted(): void {
-    for (const row of mountedRows) placeRow(row);
+    if (native) layoutFlow();
+    else for (const row of mountedRows) placeRow(row);
   }
 
   let lastReconcile = { top: Number.NaN, height: Number.NaN, epoch: -1 };
@@ -1327,7 +1526,7 @@ export function createVirtualList<T>(
 
   function reconcileWindow(vp: GeometryViewport): GeometryWindow {
     if (glide !== null)
-      holdLanding = !declared && !followGlide && glide.landing;
+      holdLanding = !native && !declared && !followGlide && glide.landing;
     if (
       !heldRetirements &&
       !sweep &&
@@ -1358,6 +1557,74 @@ export function createVirtualList<T>(
     const kept = unchanged && stacked ? previous : undefined;
     lastRange = range;
     heldRetirements = false;
+    // Native flow: rebuild the window and its spacers before any hook runs.
+    const owner = native && hookQueue === null;
+    if (owner) hookQueue = [];
+    try {
+      return mountWindow(vp, range, delta, kept);
+    } finally {
+      if (native) layoutFlow();
+      if (owner) {
+        const queued = hookQueue ?? [];
+        hookQueue = null;
+        for (const callback of queued) host(callback);
+      }
+    }
+  }
+
+  /**
+   * Native flow, inside a commit: keep the mounted rows mounted at their new
+   * offsets and fill the rows inserted between them, so the flow stays
+   * contiguous and the engine's anchor node survives the layout.
+   */
+  function holdWindow(): void {
+    let first = Number.POSITIVE_INFINITY;
+    let last = -1;
+    for (const row of mountedRows) {
+      const index = geometry.indexOf(row.key);
+      if (index < 0) continue;
+      if (index < first) first = index;
+      if (index > last) last = index;
+    }
+    for (let index = first; index <= last; index++) {
+      const row = materialize(index);
+      if (row && row.place !== "mounted") mountRow(row);
+      if (disposed) return;
+    }
+    layoutFlow();
+  }
+
+  /** The row at `index`, rendering a declared one; null if it can't render. */
+  function materialize(index: number): Row<T> | null {
+    const key = geometry.keyAt(index);
+    if (key === undefined) return null;
+    const existing = rows.get(key);
+    if (existing) return existing;
+    const entry = declaredItems.get(key);
+    if (!entry) return null;
+    let element: HTMLElement;
+    try {
+      element = render(entry.item);
+    } catch (error) {
+      // Geometry stands; this row retries at the next reconciliation.
+      failures.push(error);
+      return null;
+    }
+    if (disposed) {
+      host(() => options.onDestroy?.(element, entry.item));
+      return null;
+    }
+    const row = createRow(key, entry.item, element, entry.height);
+    rows.set(key, row);
+    return row;
+  }
+
+  function mountWindow(
+    vp: GeometryViewport,
+    range: GeometryWindow,
+    delta: GeometryWindow["delta"],
+    kept: GeometryWindow | undefined,
+  ): GeometryWindow {
     const retire = (row: Row<T>): void => {
       if (holdLanding && geometry.indexOf(row.key) >= 0) {
         heldRetirements = true;
@@ -1400,27 +1667,12 @@ export function createVirtualList<T>(
         if (n >= length) break;
         index = range.start + n;
       }
-      const key = geometry.keyAt(index);
-      if (key === undefined) continue;
-      let row = rows.get(key);
+      const row = materialize(index);
+      if (disposed) return range;
       if (!row) {
-        const entry = declaredItems.get(key);
-        if (!entry) continue;
-        let element: HTMLElement;
-        try {
-          element = render(entry.item);
-        } catch (error) {
-          // Geometry stands; this row retries at the next reconciliation.
-          failures.push(error);
-          complete = false;
-          continue;
-        }
-        if (disposed) {
-          host(() => options.onDestroy?.(element, entry.item));
-          return range;
-        }
-        row = createRow(key, entry.item, element, entry.height);
-        rows.set(key, row);
+        // A declared row whose render failed retries next time.
+        if (declaredItems.has(geometry.keyAt(index) ?? "")) complete = false;
+        continue;
       }
       if (row.place !== "mounted") mountRow(row);
     }
@@ -1556,6 +1808,21 @@ export function createVirtualList<T>(
   const cancelJobs = new Set<() => void>();
 
   const idle = (): boolean => !controller.isScrollPhaseActive();
+
+  /** At a scroll edge, or past it (a rubber-band bounce). */
+  function atEdge(): boolean {
+    const top = viewport.scrollTop;
+    const max = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
+    return top <= EDGE_GUARD_PX || top >= max - EDGE_GUARD_PX;
+  }
+
+  /**
+   * F5: under native anchoring, a change above the reading position lands
+   * mid-gesture. Edges keep the settle: a bounce, Firefox's scroll limit,
+   * and an early scrollend all live there. So does a glide: it heads for a
+   * target in the committed snapshot, and held work waits for its landing.
+   */
+  const nativeFree = (): boolean => native && glide === null && !atEdge();
 
   const follow = new FollowController(
     {
@@ -1984,7 +2251,8 @@ export function createVirtualList<T>(
           cancel();
           return;
         }
-        if (!idle() || !job) return; // The settle resumes this job.
+        // The settle resumes this job, unless native anchoring lands it now.
+        if ((!idle() && !nativeFree()) || !job) return;
         const j = job;
         work(() => {
           slice(j);
@@ -1998,13 +2266,16 @@ export function createVirtualList<T>(
           cancel();
           return;
         }
-        if (idle() || !job || job.ready) return; // The settle owns it now.
+        if (idle() || !job) return; // The settle owns it now.
         const j = job;
-        work(() => {
-          slice(j, deadline);
-          if (!current()) finish(false);
-          else if (!j.ready) idleHandle = requestIdleCallback(stageIdle);
-        });
+        if (!j.ready) {
+          work(() => {
+            slice(j, deadline);
+            if (!current()) finish(false);
+            else if (!j.ready) idleHandle = requestIdleCallback(stageIdle);
+          });
+        }
+        if (j.ready && !finished && nativeFree()) run();
       };
       const runFrame = (): void => {
         frame = 0;
@@ -2016,16 +2287,20 @@ export function createVirtualList<T>(
           cancel();
           return;
         }
-        if (!idle() && !prepareOnly) return;
+        if (!idle() && !prepareOnly && !nativeFree()) return;
+        const staging = (): void => {
+          if (prepareOnly || (!idle() && canIdle)) {
+            if (idleHandle === 0) idleHandle = requestIdleCallback(stageIdle);
+          } else if (frame === 0) frame = requestAnimationFrame(stageFrame);
+        };
         try {
           let applied = false;
+          /** Evaluated mid-phase but left for the settle (a scroll write). */
+          let waiting = false;
           pass(() => {
             const j = job;
             if (j && !j.ready) {
-              if (prepareOnly) {
-                if (idleHandle === 0)
-                  idleHandle = requestIdleCallback(stageIdle);
-              } else if (frame === 0) frame = requestAnimationFrame(stageFrame);
+              staging();
               return;
             }
             // Nothing lands mid-phase: a ready job waits for the settle.
@@ -2078,8 +2353,7 @@ export function createVirtualList<T>(
                   ready: false,
                 };
                 windowJobs.add(run);
-                if (prepareOnly) idleHandle = requestIdleCallback(stageIdle);
-                else frame = requestAnimationFrame(stageFrame);
+                staging();
                 publish();
                 return;
               }
@@ -2100,6 +2374,16 @@ export function createVirtualList<T>(
               cancel();
               return;
             }
+            // Mid-phase (native anchoring), only a snapshot that needs no
+            // scroll write lands; a named or end anchor waits for the settle.
+            const anchor = next.anchor ?? "viewport";
+            if (
+              !idle() &&
+              (!nativeFree() || typeof anchor === "object" || anchor === "end")
+            ) {
+              waiting = true;
+              return;
+            }
             cleanup();
             applyItems(
               snapshot,
@@ -2112,7 +2396,7 @@ export function createVirtualList<T>(
             host(() => next.onCommit?.());
             applied = true;
           }, true);
-          if (prepareOnly && !disposed) return;
+          if (waiting || (prepareOnly && !disposed)) return;
           if (applied || !job || disposed) finish(applied);
         } catch (error) {
           finish(false, error);
@@ -2131,11 +2415,11 @@ export function createVirtualList<T>(
             return;
           }
         }
-        if (idle()) {
+        windowJobs.add(run);
+        if (idle() || nativeFree()) {
           run();
           return;
         }
-        windowJobs.add(run);
         if (canIdle)
           idleHandle = requestIdleCallback(() => {
             idleHandle = 0;
@@ -2431,6 +2715,7 @@ export function createVirtualList<T>(
     rowObserver.disconnect();
     viewportObserver.disconnect();
     canvas.remove();
+    if (viewportAnchor !== null) viewport.style.overflowAnchor = viewportAnchor;
     if (!booting) disposedViewports.add(viewport);
     const doomed = [
       ...rows.values(),

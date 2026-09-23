@@ -75,8 +75,9 @@ orchestration layer's structure:
 
 ## 3. Recommendation: the next foundation
 
-`next` keeps the physics layer unchanged and rebuilds orchestration on three
-ideas.
+`next` keeps the physics layer unchanged (F4) and rebuilds orchestration on
+three ideas (F1–F3). Where the engine supports it, it also hands scroll
+anchoring to the engine (F5).
 
 ### F1. One commit rule over a desired state
 
@@ -99,7 +100,8 @@ it never shows new content in its old box.
 `updateItem` patches the desired state in place in O(1). There is no
 snapshot merge, promotion, or `partial` flag. Window jobs (`updateWindow`,
 which the paging companion uses) keep their `main` semantics: they prepare
-during a gesture and commit only when the list is idle.
+during a gesture and commit only when the list is idle. Native anchoring
+(F5) relaxes both rules away from the scroll edges.
 
 ### F2. Rows are measured where they mount
 
@@ -138,15 +140,89 @@ unchanged. They encode engine behavior verified on real hardware, including
 the Firefox, Chrome, and Safari edge battery. Replacing them needs that
 battery again, not a rewrite on a desk (see [Roadmap](#5-roadmap)).
 
+### F5. Native scroll anchoring where the engine has it
+
+Chromium, Firefox, and Safari 27 implement CSS scroll anchoring: when content
+above the reading position changes, the engine itself moves the scroll
+position, inside its own scroll machinery, so no page `scrollTop` write
+reaches a running gesture. Where it's available, `next` uses it, and
+cornerstone 1 relaxes. Mid-gesture, away from the edges, a prepend or a
+height change above the reader lands at once, and the engine keeps the
+reader still. Where it isn't available, the settle rule of F1 applies
+unchanged.
+
+The `anchoring` option chooses the mode:
+
+| Value | Behavior |
+| --- | --- |
+| `"auto"` (default) | Native where `CSS.supports("overflow-anchor", "auto")` holds and the scroller doesn't compute to `overflow-anchor: none`. Otherwise runtime. |
+| `"native"` | Native. |
+| `"runtime"` | Settle-gated runtime writes (F1), as on `main`. |
+
+Positioned (masonry) layouts always use the runtime. The canvas records the
+mode in `data-anchoring`. The feed, gallery, dynamic-height lab, and
+scroll-settle demos set `overflow-anchor: none` on their scroller, so they
+keep runtime anchoring in `auto` mode. The streaming demo uses native
+anchoring.
+
+In native mode, the surface is a flow layout that reproduces the committed
+geometry exactly:
+
+- **Rows sit in normal flow between two spacers.** The top spacer is as tall
+  as the offset of the first mounted row, and the bottom spacer holds the
+  rest of the total size. Each slot has its exact committed height.
+- **Only rows can be the anchor.** Spacers, staged slots, edge slots, and
+  items the host marks as not `anchorable` carry `overflow-anchor: none`.
+  So does each row element, so the engine anchors on the slot, which
+  survives a re-render.
+- **Staged rows wait in flow.** A staged slot is zero-height, relative,
+  hidden, and inert. Its row is parked with `translate: 0 -100000px`, still
+  laid out at the slot's width. A reveal sets the slot's height and clears
+  the translate. It never changes `position`.
+- **A commit keeps the current window mounted in the new geometry** and
+  reconciles the window afterwards, so the engine's anchor node survives the
+  change. An earlier revision mounted the new window first, and Firefox
+  lost the adjustment.
+- **The runtime doesn't write mid-gesture.** It records the position it
+  expects, so the settle sensor doesn't read the engine's own adjustment as
+  user input. Mid-gesture commits also leave the canvas `min-height` floor
+  alone.
+
+The settle rule still applies in three cases:
+
+- **Within 2 px of an edge.** A rubber-band bounce, Firefox's stale scroll
+  limit, and an early `scrollend` all live there.
+- **During a glide.** A glide heads for a target in the committed snapshot,
+  so held work waits for its landing, as on `main`. Without this rule, a
+  "scroll to top" glide kept heading for the new start after each older
+  page landed, and one press loaded the whole history.
+- **For window jobs with an explicit or end anchor.** The engine only keeps
+  the viewport's own content still.
+
+A probe of all three engines
+([`bench/anchoring-structure-probe.mjs`](bench/anchoring-structure-probe.mjs))
+found two changes that suppress the adjustment they cause, which ruled out
+simpler designs:
+
+- Revealing an absolutely positioned staging slot in flow, a `position`
+  change.
+- A `min-height` change on the canvas, an ancestor of the anchor.
+
+These changes anchor correctly in all three engines: spacer height changes,
+slots inserted above the viewport, a height change of a zero-height slot,
+removing a hidden absolute slot, and replacing the slot of a partly visible
+row.
+
 ### API changes
 
-`next` removes three options and keeps the rest of the API:
+`next` removes three options, adds one, and keeps the rest of the API:
 
-| Removed | Reason |
-| --- | --- |
-| `scrollingUpdates` | One commit rule (F1). The option is accepted and ignored. |
-| `measurementContainer` | Rows are measured in the viewport itself (F2). |
-| `prepareDuringScroll` | Idle-time page preparation is always on. |
+| Change | Option | Reason |
+| --- | --- | --- |
+| Removed | `scrollingUpdates` | One commit rule (F1). The option is accepted and ignored. |
+| Removed | `measurementContainer` | Rows are measured in the viewport itself (F2). |
+| Removed | `prepareDuringScroll` | Idle-time page preparation is always on. |
+| Added | `anchoring` | Native or runtime anchoring (F5). |
 
 Every other option, method, callback, and companion (`createPagedWindow`,
 sticky headers, reading anchors) works unchanged. The demos run on `next`
@@ -162,20 +238,32 @@ pnpm test           # src/ suites; src/ is unchanged
 pnpm run test:next  # the src/ contract suite and next's own tests, on next
 ```
 
-To try the demos on `next`, run `pnpm run dev:next` and open
-`http://localhost:5174/demos/streaming/`. It uses port 5174 and its own
-dependency cache, so it runs beside your `pnpm run dev` server on `main`'s
-runtime.
+To try the demos on `next`, run one of these servers. Each has its own port
+and dependency cache, so both run beside your `pnpm run dev` server on
+`main`'s runtime:
+
+| Command | Anchoring | Demos |
+| --- | --- | --- |
+| `pnpm run dev:next` | Native where supported (`auto`) | `http://localhost:5174/demos/streaming/` |
+| `pnpm run dev:next:runtime` | Runtime (F1), as on `main` | `http://localhost:5175/demos/streaming/` |
+
+The servers set the default mode through `VITE_VL_ANCHORING`. An explicit
+`anchoring` option still wins.
 
 To run the browser checks on `next`, point them at a `next` server:
 
 ```sh
 pnpm exec vite --config vite.next.config.ts --host 127.0.0.1 --port 4273 --strictPort
 BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:browser -- --suite=chat
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:browser -- --suite=lab --mode=live
 BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:regression
 BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/hidden-row-regression.mjs
+BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/native-anchoring-regression.mjs
+BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/native-glide-regression.mjs
+BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:browser -- --suite=lab --mode=live
 ```
+
+To check the runtime fallback of the streaming demo as well, start the
+server with `VITE_VL_ANCHORING=runtime`.
 
 ### Contract parity
 
@@ -194,35 +282,50 @@ default is switched from `same-height` to `live`, the rule `next` keeps.
 `next/tests/foundation.test.ts` covers what `next` adds: hidden in-canvas
 staging, reveal without re-parenting, the offscreen resident, the post-commit
 sweep, DOM order, the one commit rule, and the pass.
+`next/tests/native.test.ts` covers the native surface: spacers that reproduce
+committed geometry, a mid-gesture prepend without a scroll write, the settle
+rule at an edge and during a glide, and the host's opt-out.
+
+jsdom reports `overflow-anchor` as supported but lays nothing out, so the
+contract suite and the foundation tests run with `anchoring: "runtime"`.
 
 ### Browser verification
 
 These runs used the Playwright engines (Chromium, Firefox, WebKit) against a
-private `next` server. They are correctness evidence, not native-input or
-physical-smoothness evidence.
+private `next` server in `auto` mode, which anchors natively in all three.
+They are correctness evidence, not native-input or physical-smoothness
+evidence.
 
 - **Chat invariants:** zero violations and zero errors in all three
-  engines.
+  engines, with native anchoring and with runtime anchoring.
 - **Dynamic-height lab (live mode, full scenario):** zero violations and
-  zero clipped paints in all three engines.
-- **Feature regression suite (95 scripts):** 87 pass. The other 8 are 7 scripts that fail the same way on `main` and
-`runtime/hidden-measurement`, which asserts the detached measurement root
-that F2 removes.
-- **Hidden-row regression:** the `next` variant of
-  `runtime/hidden-measurement`
-  ([`regressions/hidden-row-regression.mjs`](regressions/hidden-row-regression.mjs))
-  passes in all three engines.
+  zero clipped paints in all three engines. The lab's page opts out of
+  native anchoring, and the lab can't observe native mode: it reads slot
+  geometry from `translateY` offsets, which native slots don't have.
+- **Feature regression suite (95 scripts):** 87 pass. The other 8 are 7
+  scripts that fail the same way on `main` and
+  `runtime/hidden-measurement`, which asserts the detached measurement root
+  that F2 removes.
+- **`next` regressions:** the hidden-row, native-anchoring, and native-glide
+  regressions in [`regressions/`](regressions/) pass in all three engines.
+  The native-anchoring regression lands an older page mid-gesture with zero
+  script scroll writes and a reader drift of at most 1 px.
 
-The runs found and fixed eight defects in `next`, including hidden rows that
-were findable, focusable, or under the viewport for rect queries, and DOM
-order that diverged from list order.
-The [verification report](../docs/reports/virtual-list-next-2026-09-23.md)
+The runs found and fixed ten defects in `next`. Examples: hidden rows that
+were findable, focusable, or under the viewport for rect queries, a "scroll
+to top" glide that loaded the whole history under native anchoring, and
+native anchoring overriding a host's `overflow-anchor: none`. The
+[verification report](../docs/reports/virtual-list-next-2026-09-23.md)
 lists them.
 
 ### Measurements
 
-The orchestration layer shrinks from 3,910 to 2,650 lines (−32%), or from
-2,840 to 2,333 code lines (−18%). The physics modules are shared.
+The orchestration layer shrinks from 3,910 to 2,942 lines (−25%), or from
+2,840 to 2,542 code lines (−10%). The physics modules are shared. Native
+anchoring (F5) accounts for 292 of those lines (209 code lines). It adds to
+the runtime path rather than replacing it, because the runtime remains the
+fallback. Without F5, `next` is 2,650 lines and 2,333 code lines (−32% and
+−18%).
 
 The headless CPU benchmarks in [`bench/`](bench/) put `next` within ±10%
 of `main`:
@@ -251,21 +354,21 @@ check. See the
 
 A probe ([`bench/anchoring-probe.mjs`](bench/anchoring-probe.mjs)) confirms
 that Chromium 153, Firefox 155, and WebKit 26.6 all perform native scroll
-anchoring at rest, which is the premise of research track 1 below.
+anchoring at rest, the premise of F5. The CPU benchmarks predate F5.
 
 ## 5. Roadmap
 
 These items were considered and not built. Each needs evidence this branch
 can't produce on a desk.
 
-1. **Native scroll anchoring (research).** Safari 27 enables CSS scroll
-   anchoring, so all three engines now anchor natively. A flow-layout list
-   with `overflow-anchor` could hand anchoring and compensation to the
-   engine, possibly removing the geometry kernel's anchor resolution and
-   most scroll writes. That would be the largest possible code reduction.
-   It conflicts with cornerstone 1 and depends on each engine's behavior
-   under momentum and at edges (Firefox's stale limit, iOS rubber-band). It
-   needs a native-input spike on real devices before any adoption.
+1. **Native anchoring only.** F5 hands mid-gesture compensation to the
+   engine but keeps the runtime path for edges, glides, explicit anchors,
+   and engines without support. If real-device runs show native anchoring
+   holds under momentum and at edges (Firefox's stale limit, iOS
+   rubber-band), the runtime path and the geometry kernel's anchor
+   resolution could go for browsers that anchor natively. That is the
+   largest remaining code reduction. It needs the Firefox native profile
+   and a device check of `dev:next` against `dev:next:runtime` first.
 2. **Row residency.** Keep recently unmounted rows laid out but hidden in a
    band beyond the overscan, so re-entry during back-and-forth scrolling
    avoids a full relayout. A band for staged rows only was measured and
@@ -288,8 +391,8 @@ can't produce on a desk.
 | `next/src/virtual-list.ts` | The engine. |
 | `next/src/types.ts` | Public types. |
 | `next/src/index.ts` | Entry point. |
-| `next/tests/` | Parity exclusions and foundation tests. |
+| `next/tests/` | Parity exclusions, foundation tests, and native-surface tests. |
 | `next/regressions/` | Browser regressions specific to `next`. |
-| `next/bench/` | CPU comparisons of two servers and the anchoring probe. |
+| `next/bench/` | CPU comparisons of two servers and the anchoring probes. |
 | `vite.next.config.ts` | Serves the unchanged demos on `next`. |
 | `vitest.next.config.ts` | Runs the contract suite on `next`. |
