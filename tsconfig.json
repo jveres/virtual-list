@@ -21,7 +21,10 @@
     "demos",
     "examples",
     "integrations",
+    "next",
     "vite.config.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "vite.next.config.ts",
+    "vitest.next.config.ts"
   ]
 }

@@ -76,6 +76,14 @@ display frames in real trackpad captures.
 | [Hot path review and idle page preparation](idle-page-preparation-2026-09-22.md) | Runtime scroll path at 0.2–0.5% of samples; `prepareDuringScroll` commits older pages about 240 ms sooner in two Firefox captures and is on by default after a manual Firefox and Chrome check. |
 | [External-display scroll jitter](external-display-scroll-jitter-2026-09-22.md) | Trackpad events miss the external display's frames about 3.6 times as often as on the built-in display; the cause lies before Firefox's parent process, outside the page. |
 
+## September 23 virtual-list-next
+
+The [virtual-list-next verification](virtual-list-next-2026-09-23.md)
+records the replacement orchestration layer on branch `virtual-list-next`:
+contract parity, browser invariants, the feature regression suite, code
+size, headless CPU comparisons, and a native scroll anchoring probe. The
+architecture recommendation is in [`next/README.md`](../../next/README.md).
+
 ## Safari 27 investigation
 
 The [September 20 scroll-presentation investigation](scroll-presentation-investigation-2026-09-20.md)
