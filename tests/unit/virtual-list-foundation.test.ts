@@ -3,8 +3,15 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { createPagedWindow, type Page } from "../../src/paging";
-import type { VirtualList } from "../src/virtual-list";
-import { type Msg, message, mount, ROW_H, range, useHarness } from "./harness";
+import type { VirtualList } from "../../src/virtual-list";
+import {
+  type Msg,
+  message,
+  mount,
+  ROW_H,
+  range,
+  useHarness,
+} from "../helpers/list-harness";
 
 // What virtual-list-next adds on top of the shared contract suite: rows are
 // measured where they mount, the desired state lands under one commit rule,
@@ -170,18 +177,6 @@ describe("one commit rule", () => {
     h.settle();
     expect(h.list.state.count).toBe(52);
     expect(h.viewport.scrollTop).toBe(1100);
-    h.list.dispose();
-  });
-
-  it("ignores the removed update modes", () => {
-    const items = range(0, 50);
-    const h = mount(items, {
-      boot: "start",
-      ...({ scrollingUpdates: "freeze" } as object),
-    });
-    h.userScroll(1000);
-    h.list.setItems([...items, message(50)]);
-    expect(h.list.state.count).toBe(51);
     h.list.dispose();
   });
 });

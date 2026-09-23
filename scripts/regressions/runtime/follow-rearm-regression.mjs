@@ -36,7 +36,6 @@ for (const engine of [chromium, firefox, webkit]) {
           followBehavior: "smooth",
           followMode: "keep-start",
           followInset: 40,
-          scrollingUpdates: "live",
           onState: (state) => following.push(state.following),
         });
         const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

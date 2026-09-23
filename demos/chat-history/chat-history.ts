@@ -404,7 +404,6 @@ list = createVirtualList(viewport, {
   boot: "end",
   pinning: false,
   overscanPx: 900,
-  scrollingUpdates: "freeze",
   anchorable: (row) => row.kind === "message",
   edgeSlots: edgeSlots(initial),
   onDestroy: () => {

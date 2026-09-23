@@ -118,16 +118,17 @@ try {
     const reserved = Number.parseFloat(
       getComputedStyle(markdown).paddingBottom,
     );
-    return (
-      reserved === 0 &&
-      Math.abs(icon.top - content.bottom - 4) < 1 &&
-      Math.abs(icon.left - content.left) < 1
-    );
+    return {
+      reserved,
+      gap: Math.round(icon.top - content.bottom),
+      left: Math.round(icon.left - content.left),
+    };
   });
-  assert.equal(
+  // The actions keep the shared footer's 16px gap (chat-footer-regression).
+  assert.deepEqual(
     placement,
-    true,
-    "refresh is left aligned with a compact gap and no extra cursor padding",
+    { reserved: 0, gap: 16, left: 0 },
+    "refresh is left aligned below the reply, with no extra cursor padding",
   );
   await refresh.hover();
   assert.equal(

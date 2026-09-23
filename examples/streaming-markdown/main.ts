@@ -33,7 +33,6 @@ const list = createVirtualList(viewport, {
   items: messages,
   key: (item) => item.id,
   pinning: { match: (item) => item.role === "user" },
-  scrollingUpdates: "live",
   followBehavior: "smooth",
   render: (item, existing) => {
     const row = existing ?? document.createElement("article");

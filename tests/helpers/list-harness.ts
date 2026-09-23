@@ -4,7 +4,7 @@ import {
   type VirtualList,
   type VirtualListOptions,
   type VirtualListState,
-} from "../src/virtual-list";
+} from "../../src/virtual-list";
 
 // jsdom has no layout: the viewport's geometry is stubbed, and each row
 // reports its height from `heights` (ROW_H by default).

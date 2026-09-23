@@ -69,7 +69,7 @@ try {
         request.onerror = () => reject(request.error);
       });
       try {
-        const turns = await new Promise((resolve, reject) => {
+        const history = await new Promise((resolve, reject) => {
           const request = database
             .transaction("openai-history")
             .objectStore("openai-history")
@@ -77,6 +77,8 @@ try {
           request.onsuccess = () => resolve(request.result);
           request.onerror = () => reject(request.error);
         });
+        // Stored as { turns, tree } since the conversation tree; arrays before.
+        const turns = Array.isArray(history) ? history : history?.turns;
         return turns?.at(-1)?.stopped === true;
       } finally {
         database.close();

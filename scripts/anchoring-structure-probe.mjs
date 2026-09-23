@@ -3,7 +3,7 @@
 // slots, spacer) is scrolled into its slots, then one change adds 300 px
 // above the reader. "moved" is how far the engine moved scrollTop on its
 // own; 300 means it anchored, 0 means the change suppressed anchoring.
-//   node next/bench/anchoring-structure-probe.mjs
+//   node scripts/anchoring-structure-probe.mjs
 // Playwright engine builds, at rest; this says nothing about momentum.
 import { chromium, firefox, webkit } from "playwright";
 

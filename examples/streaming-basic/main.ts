@@ -27,7 +27,6 @@ function mount(): void {
     items: messages,
     key: (message) => message.id,
     pinning: { match: (message) => message.role === "user" },
-    scrollingUpdates: "live",
     followBehavior: "smooth",
     followMode: follow.value === "keep-start" ? "keep-start" : "end",
     render: (message, existing) => {

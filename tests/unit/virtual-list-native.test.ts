@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   createVirtualList,
   type VirtualListOptions,
-} from "../src/virtual-list";
+} from "../../src/virtual-list";
 import {
   flowHeight,
   type Msg,
@@ -13,7 +13,7 @@ import {
   ROW_H,
   range,
   useHarness,
-} from "./harness";
+} from "../helpers/list-harness";
 
 // F5: native CSS scroll anchoring. jsdom lays nothing out and never anchors,
 // so these tests pin the structure (rows in flow between spacers whose

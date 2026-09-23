@@ -1,15 +1,14 @@
-// virtual-list-next F5: a glide keeps the settle rule under native
+// Native anchoring (F5): a glide keeps the settle rule under native
 // anchoring. One press of the streaming demo's "scroll to top" glides to the
 // committed start; the older page the reach loads commits once the glide
 // lands, and the reader stays on the old first row. Before the fix, the page
 // committed mid-glide, the engine anchored it, and the glide went on to the
-// new start, loading every page down to the first. Run against a next server
-// (vite.next.config.ts) with BROWSER_MATRIX_URL.
+// new start, loading every page down to the first.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
-import { openTranscript } from "./transcript.mjs";
+import { openTranscript } from "../shared/transcript.mjs";
 
-const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4273";
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
   const browser = await engine.launch();

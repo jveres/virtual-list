@@ -1,21 +1,21 @@
-import type { FollowMode } from "../../src/follow";
+import type { FollowMode } from "./follow";
 import type {
   AnchorPolicy,
   ExplicitAnchor,
   GeometryViewport,
-} from "../../src/geometry";
-import type { ItemPosition } from "../../src/positioned-geometry";
-import type { Edge, ReachContext } from "../../src/reach";
-import type { VirtualListScrollSettleStrategy } from "../../src/scroll-settle";
+} from "./geometry";
+import type { ItemPosition } from "./positioned-geometry";
+import type { Edge, ReachContext } from "./reach";
+import type { VirtualListScrollSettleStrategy } from "./scroll-settle";
 
-export type { FollowMode } from "../../src/follow";
+export type { FollowMode } from "./follow";
 export type {
   AnchorPolicy,
   ExplicitAnchor,
   GeometryViewport,
-} from "../../src/geometry";
-export type { ItemPosition } from "../../src/positioned-geometry";
-export type { Edge, ReachContext } from "../../src/reach";
+} from "./geometry";
+export type { ItemPosition } from "./positioned-geometry";
+export type { Edge, ReachContext } from "./reach";
 
 /** How a snapshot resolves the viewport: a policy, or a host-named anchor. */
 export type AnchorRequest = AnchorPolicy | ExplicitAnchor;

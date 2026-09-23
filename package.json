@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --config vite.next.config.ts",
+    "dev": "vite",
     "build": "pnpm run check && vite build",
     "preview": "vite preview",
     "lint": "biome lint .",
@@ -17,8 +17,7 @@
     "test:chat-tree": "node scripts/regression-suite.mjs --group=chat-tree",
     "profile:firefox": "node scripts/firefox-profile.mjs",
     "test:firefox-profile": "node --test scripts/firefox-profile/*.checks.mjs",
-    "test:watch": "vitest",
-    "test:next": "vitest run --config vitest.next.config.ts"
+    "test:watch": "vitest"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

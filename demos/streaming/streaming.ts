@@ -117,13 +117,13 @@ import "../shared/styles.css";
 // keyed renderer re-renders exactly the changed rows (render(item, existing)),
 // and end-compatible snapshots keep end-follow engaged while streaming.
 //
-// On the runtime (docs/core-contract.md): every row is premeasured
-// off-scroller before it commits; a structural change above the anchor (a
-// scrollback prepend) commits only when the scroll phase settles, one below
-// it (a new turn, a version switch) at once; and the streaming reply runs
-// under `scrollingUpdates: "live"` — its tokens render in place
-// and its height commits at once whenever no anchor-preserving scroll write
-// is needed, so the reply keeps flowing under a scroll. Scrollback loads are
+// On the runtime (docs/architecture.md): every row is measured where it
+// mounts before it commits; a change above the reader lands mid-gesture
+// where the browser anchors natively, otherwise when the scroll phase
+// settles, and one below it (a new turn, a version switch) at once. The
+// streaming reply's tokens render in place and its height commits at once
+// whenever no anchor-preserving scroll write is needed, so the reply keeps
+// flowing under a scroll. Scrollback loads are
 // wired to the reach signal: reaching the other edge aborts them.
 //
 // Two presentation options, both configurable:
@@ -3720,8 +3720,6 @@ function mountConversation(): void {
   virtualList = createVirtualList<ChatRow>(viewport, {
     items: rowsForRuntime(),
     key: rowKey,
-    // Test flag: ?prestage=off restores settle-time page preparation.
-    prepareDuringScroll: demoParams.get("prestage") !== "off",
     // Reserve is a runtime invariant, independent of how a row is reached.
     pinning:
       landingMode === "prompt"
@@ -3758,7 +3756,6 @@ function mountConversation(): void {
     // The product choice for a chat: the streaming reply keeps rendering under
     // a scroll (see the header). Structural changes above the anchor stay
     // settle-gated; one below it (a version switch) applies at once.
-    scrollingUpdates: "live",
     followBehavior: "smooth",
     followMode,
     followInset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,

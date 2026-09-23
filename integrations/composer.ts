@@ -33,10 +33,19 @@ export function autosizeTextarea(
     const borders =
       (Number.parseFloat(style.borderTopWidth) || 0) +
       (Number.parseFloat(style.borderBottomWidth) || 0);
-    const height = Math.min(
-      maxHeight,
-      Math.max(minHeight, input.scrollHeight + borders),
-    );
+    const padding =
+      (Number.parseFloat(style.paddingTop) || 0) +
+      (Number.parseFloat(style.paddingBottom) || 0);
+    const lineHeight = Number.parseFloat(style.lineHeight);
+    let content = input.scrollHeight;
+    // Engines round scrollHeight differently (Firefox reports a pixel less
+    // for an empty last line): snap overflowing text to whole lines of its
+    // grid, so typing within a line never resizes the composer. Text that
+    // fits the minimum box reports the box instead; leave that alone.
+    if (lineHeight > 0 && content + borders > minHeight)
+      content =
+        Math.round((content - padding) / lineHeight) * lineHeight + padding;
+    const height = Math.min(maxHeight, Math.max(minHeight, content + borders));
     input.style.height = `${height}px`;
     input.style.overflowY = height >= maxHeight ? "auto" : "hidden";
   } catch (error) {

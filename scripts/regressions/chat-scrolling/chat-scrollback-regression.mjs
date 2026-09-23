@@ -1,4 +1,6 @@
-// Offline scrollback scheduling: preparation must not run under a top glide.
+// Offline scrollback: a top glide loads an older page that keeps the reading
+// position, and the date pill hands back to its inline row. (Pages are
+// prepared in idle time, during the glide too, since idle preparation.)
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 
@@ -90,10 +92,6 @@ for (const engine of [firefox, webkit, chromium]) {
     );
     const prepared = await page.evaluate(() => window.scrollbackProbe);
     assert.ok(prepared.measurements.length > 0);
-    assert.ok(
-      prepared.measurements.every((entry) => entry.landed),
-      "older rows are not prepared before the top glide lands",
-    );
     assert.equal(await initialStart(), 1);
     assert.ok(
       prepared.writes.at(-1) > 0,

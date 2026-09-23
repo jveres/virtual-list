@@ -4,30 +4,28 @@ import assert from "node:assert/strict";
 export function instrumentRuntime(source) {
   const replacements = [
     [
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: Exact TypeScript source, not interpolation here.
-      "canvas.style.height = `${totalSize}px`;",
-      // biome-ignore lint/suspicious/noTemplateCurlyInString: Exact TypeScript replacement source.
-      'globalThis.__runtimeAudit?.event("canvas-height", totalSize);\n    canvas.style.height = `${totalSize}px`;',
+      "function syncCanvasHeight(totalSize: number, floor = true): void {",
+      'function syncCanvasHeight(totalSize: number, floor = true): void {\n    globalThis.__runtimeAudit?.event("canvas-height", totalSize);',
     ],
     [
-      "const height = quantizeHeight(measured);",
-      'const height = quantizeHeight(measured);\n    globalThis.__runtimeAudit?.event("commit-height", row.height, height);',
+      "const height = quantize(measured);",
+      'const height = quantize(measured);\n    globalThis.__runtimeAudit?.event("commit-height", row.height, height);',
     ],
     [
-      "if (quantizeHeight(height) === row.height) continue;",
-      'if (quantizeHeight(height) === row.height) continue;\n      globalThis.__runtimeAudit?.event("resize-change", row.height, height);',
+      "if (quantize(height) === row.height) continue;",
+      'if (quantize(height) === row.height) continue;\n      globalThis.__runtimeAudit?.event("resize-change", row.height, height);',
     ],
     [
       "row.offset = offset;",
       'globalThis.__runtimeAudit?.event("place", row.offset, offset);\n    row.offset = offset;',
     ],
     [
-      "canvas.appendChild(row.slot);",
-      'canvas.appendChild(row.slot);\n    globalThis.__runtimeAudit?.event("mount", row.height);',
+      'row.place = "mounted";',
+      'row.place = "mounted";\n    globalThis.__runtimeAudit?.event("mount", row.height);',
     ],
     [
-      "row.slot?.remove();\n    if (!retainSlot",
-      'row.slot?.remove();\n    globalThis.__runtimeAudit?.event("unmount", row.height);\n    if (!retainSlot',
+      'function unmountRow(row: Row<T>): void {\n    row.place = "detached";',
+      'function unmountRow(row: Row<T>): void {\n    globalThis.__runtimeAudit?.event("unmount", row.height);\n    row.place = "detached";',
     ],
     [
       "if (vp.scrollTop >= previousTop) break;",
@@ -43,10 +41,10 @@ export function instrumentRuntime(source) {
       const stageFrameBody = (): void => {`,
     ],
     [
-      "const row = retain(key, item, render(item), 1);",
+      "const row = createRow(key, item, render(item), 1);",
       `const auditRenderStart = performance.now();
-              const row = retain(key, item, render(item), 1);
-              globalThis.__runtimeAudit?.event("stage-row", performance.now() - auditRenderStart);`,
+            const row = createRow(key, item, render(item), 1);
+            globalThis.__runtimeAudit?.event("stage-row", performance.now() - auditRenderStart);`,
     ],
   ];
   for (const [needle, replacement] of replacements) {

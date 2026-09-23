@@ -1,14 +1,14 @@
 # virtual-list-next
 
-`virtual-list-next` is a new orchestration engine for the virtual list. It
-keeps the parts of `src/` that encode verified browser behavior and replaces
-the part that grew too heavy to change: the 3,474-line `src/virtual-list.ts`
-and its helpers. The unchanged demos run on it through a module switch, so
-the two runtimes can be compared side by side.
+`virtual-list-next` is the virtual list's orchestration engine on this
+branch. It keeps the parts of the original runtime that encode verified
+browser behavior and replaces the part that grew too heavy to change: the
+3,474-line `src/virtual-list.ts` and its `snapshot`, `render-state`, and
+`premeasure` helpers.
 
-This document has three parts: a review of the current architecture, the
-recommended architecture and why, and the verification and measurements for
-the implementation on this branch (`virtual-list-next`).
+This document has three parts: a review of the original architecture, the
+new architecture and why, and the verification and measurements for its
+implementation on this branch (`virtual-list-next`).
 
 ## 1. What virtual-list is for
 
@@ -47,7 +47,7 @@ The runtime has two layers:
 
 The profiles in `docs/reports/` agree on one point: the runtime's own
 scroll path costs 0.2–0.5% of content-thread samples
-([idle page preparation](../docs/reports/idle-page-preparation-2026-09-22.md)).
+([idle page preparation](reports/idle-page-preparation-2026-09-22.md)).
 Micro-optimizing that path no longer pays. The remaining costs come from the
 orchestration layer's structure:
 
@@ -204,7 +204,7 @@ The settle rule still applies in three cases:
   the viewport's own content still.
 
 A probe of all three engines
-([`bench/anchoring-structure-probe.mjs`](bench/anchoring-structure-probe.mjs))
+([`scripts/anchoring-structure-probe.mjs`](../scripts/anchoring-structure-probe.mjs))
 found two changes that suppress the adjustment they cause, which ruled out
 simpler designs:
 
@@ -229,74 +229,49 @@ row.
 | Added | `anchoring` | Native or runtime anchoring (F5). |
 
 Every other option, method, callback, and companion (`createPagedWindow`,
-sticky headers, reading anchors) works unchanged. The demos run on `next`
-without modification.
+sticky headers, reading anchors) works unchanged. The demos only dropped
+the removed options, and the dynamic-height lab checks the one remaining
+commit rule.
 
 ## 4. Verification
 
-Run the static checks and both unit configurations on this branch:
+Run the static checks, the unit suite, and the browser checks against a
+`pnpm dev` server:
 
 ```sh
-pnpm run check      # Biome and TypeScript, including next/
-pnpm test           # src/ suites; src/ is unchanged
-pnpm run test:next  # the src/ contract suite and next's own tests, on next
+pnpm run check
+pnpm test
+pnpm run test:browser -- --suite=chat
+pnpm run test:browser -- --suite=lab --mode=live
+pnpm run test:regression
 ```
 
-To try the demos on `next`, run one of these servers. Each has its own port
-and dependency cache, so both run beside your `pnpm run dev` server on
-`main`'s runtime:
+### Contract suite
 
-| Command | Anchoring | Demos |
-| --- | --- | --- |
-| `pnpm run dev:next` | Native where supported (`auto`) | `http://localhost:5174/demos/streaming/` |
-| `pnpm run dev:next:runtime` | Runtime (F1), as on `main` | `http://localhost:5175/demos/streaming/` |
+`tests/unit/virtual-list.test.ts` is the original runtime's contract suite,
+now run under `next`'s one commit rule. Replacing the runtime removed 26 of
+its 384 tests, each pinning behavior `next` changes on purpose:
 
-The servers read `VITE_VL_ANCHORING`, and the module swap in
-`vite.next.config.ts` gives `createVirtualList` that default. An explicit
-`anchoring` option still wins. The runtime itself reads no environment.
-
-To run the browser checks on `next`, point them at a `next` server:
-
-```sh
-pnpm exec vite --config vite.next.config.ts --host 127.0.0.1 --port 4273 --strictPort
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:browser -- --suite=chat
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:regression
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/hidden-row-regression.mjs
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/native-anchoring-regression.mjs
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/native-glide-regression.mjs
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 node next/regressions/stream-paging-regression.mjs
-BROWSER_MATRIX_URL=http://127.0.0.1:4273 pnpm run test:browser -- --suite=lab --mode=live
-```
-
-To check the runtime fallback of the streaming demo as well, start the
-server with `VITE_VL_ANCHORING=runtime`.
-
-### Contract parity
-
-`vitest.next.config.ts` runs `src/`'s own contract suite,
-`tests/unit/virtual-list.test.ts` (384 tests), against `next`. Its harness
-default is switched from `same-height` to `live`, the rule `next` keeps.
-**358 pass.** The 26 exclusions are listed with reasons in
-[`tests/parity.ts`](tests/parity.ts):
-
-- 15 pin the old modes' held semantics. They also fail on `src/` once the
-  harness runs in `live`.
-- 5 request a removed mode or option.
-- 5 assert the detached measurement root or wrapper release that F2
+- 15 pinned the old modes' held semantics. They also failed on the original
+  runtime once its harness ran in `live`.
+- 5 requested a removed mode or option.
+- 5 asserted the detached measurement root or wrapper release that F2
   replaces.
-- 1 pins that an in-place item update cancels a staged page. `next` keeps
+- 1 pinned that an in-place item update cancels a staged page. `next` keeps
   staging and asks the updater again at the commit.
 
-`next/tests/foundation.test.ts` covers what `next` adds: hidden in-canvas
-staging, reveal without re-parenting, the offscreen resident, the post-commit
-sweep, DOM order, the one commit rule, the pass, and a page landing while a
-reply streams.
-`next/tests/native.test.ts` covers the native surface: spacers that reproduce
-committed geometry, a mid-gesture prepend without a scroll write, the settle
-rule at an edge and during a glide, and the host's opt-out.
+`tests/unit/virtual-list-foundation.test.ts` covers what `next` adds: hidden
+in-canvas staging, reveal without re-parenting, the offscreen resident, the
+post-commit sweep, DOM order, the one commit rule, the pass, and a page
+landing while a reply streams. `tests/unit/virtual-list-native.test.ts`
+covers the native surface: spacers that reproduce committed geometry, a
+mid-gesture prepend without a scroll write, the settle rule at an edge and
+during a glide, and the host's opt-out. Both share
+`tests/helpers/list-harness.ts`.
 
 jsdom reports `overflow-anchor` as supported but lays nothing out, so the
-contract suite and the foundation tests run with `anchoring: "runtime"`.
+unit suites run with `anchoring: "runtime"`, except the native-surface
+tests.
 
 ### Browser verification
 
@@ -311,12 +286,12 @@ evidence.
   zero clipped paints in all three engines. The lab's page opts out of
   native anchoring, and the lab can't observe native mode: it reads slot
   geometry from `translateY` offsets, which native slots don't have.
-- **Feature regression suite (95 scripts):** 87 pass. The other 8 are 7
-  scripts that fail the same way on `main` and
-  `runtime/hidden-measurement`, which asserts the detached measurement root
-  that F2 removes.
+- **Feature regression suite (98 scripts):** all pass. The seven scripts
+  that also failed on `main` were reviewed and fixed; see the
+  [report](reports/virtual-list-next-2026-09-23.md#suite-cleanup-after-the-restructure).
 - **`next` regressions:** the hidden-row, native-anchoring, native-glide,
-  and stream-paging regressions in [`regressions/`](regressions/) pass in
+  and stream-paging regressions in
+  [`scripts/regressions/runtime/`](../scripts/regressions/runtime/) pass in
   all three engines.
   The native-anchoring regression lands an older page mid-gesture with zero
   script scroll writes and a reader drift of at most 1 px.
@@ -326,7 +301,7 @@ that were findable, focusable, or under the viewport for rect queries, a
 "scroll to top" glide that loaded the whole history under native anchoring,
 native anchoring overriding a host's `overflow-anchor: none`, and older
 pages that couldn't load while a reply streamed. The
-[verification report](../docs/reports/virtual-list-next-2026-09-23.md)
+[verification report](reports/virtual-list-next-2026-09-23.md)
 lists them.
 
 ### Measurements
@@ -337,8 +312,9 @@ commit was 2,650 lines and 2,333 code lines (−32% and −18%); native
 anchoring (F5) is most of the difference. It adds to the runtime path
 rather than replacing it, because the runtime remains the fallback.
 
-The headless CPU benchmarks in [`bench/`](bench/) put `next` within ±10%
-of `main`:
+Headless CPU benchmarks, run while both runtimes coexisted on this branch,
+put `next` within ±10% of `main`
+([report](reports/virtual-list-next-2026-09-23.md#cpu-measurements)):
 
 - **Faster:** streaming tokens (−4% in every engine), appends that land in
   view (−11% in Chromium), and scrolling into a just-committed page (−12% in
@@ -358,13 +334,13 @@ The runtime's own CPU was never the bottleneck: 0.2–0.5% of samples on
 - **Rows that commit in view skip their second layout.**
 - **DOM order always follows list order.**
 
-Physical smoothness still needs the native Firefox profile and a device
-check. See the
-[report's next steps](../docs/reports/virtual-list-next-2026-09-23.md#next-steps).
+The user checked `next` by hand in Firefox, Chrome, and Safari, on macOS
+and iOS: no bugs found, and smoother than `main`. A native Firefox profile
+hasn't been captured.
 
-A probe ([`bench/anchoring-probe.mjs`](bench/anchoring-probe.mjs)) confirms
-that Chromium 153, Firefox 155, and WebKit 26.6 all perform native scroll
-anchoring at rest, the premise of F5. The CPU benchmarks predate F5.
+A probe ([`scripts/anchoring-probe.mjs`](../scripts/anchoring-probe.mjs))
+confirms that Chromium 153, Firefox 155, and WebKit 26.6 all perform native
+scroll anchoring at rest, the premise of F5. The CPU benchmarks predate F5.
 
 ## 5. Roadmap
 
@@ -378,7 +354,7 @@ can't produce on a desk.
    rubber-band), the runtime path and the geometry kernel's anchor
    resolution could go for browsers that anchor natively. That is the
    largest remaining code reduction. It needs the Firefox native profile
-   and a device check of `dev:next` against `dev:next:runtime` first.
+   first.
 2. **Row residency.** Keep recently unmounted rows laid out but hidden in a
    band beyond the overscan, so re-entry during back-and-forth scrolling
    avoids a full relayout. A band for staged rows only was measured and
@@ -391,18 +367,16 @@ can't produce on a desk.
 4. **Settle sensor consolidation.** Express the per-engine release rules
    over one input model. Only with the user's real-hardware edge battery.
 5. **API trims.** Model edge slots as ordinary items with per-item declared
-   heights, and re-evaluate `updateWindow` at commit instead of cancelling
-   stale staged work. Each changes demo code or pinned semantics.
+   heights. It changes demo code.
 
 ## 6. Layout
 
 | Path | Contents |
 | --- | --- |
-| `next/src/virtual-list.ts` | The engine. |
-| `next/src/types.ts` | Public types. |
-| `next/src/index.ts` | Entry point. |
-| `next/tests/` | Parity exclusions, foundation tests, and native-surface tests. |
-| `next/regressions/` | Browser regressions specific to `next`. |
-| `next/bench/` | CPU comparisons of two servers and the anchoring probes. |
-| `vite.next.config.ts` | Serves the unchanged demos on `next`. |
-| `vitest.next.config.ts` | Runs the contract suite on `next`. |
+| `src/virtual-list.ts` | The engine. |
+| `src/types.ts` | Public types. |
+| `src/index.ts` | Entry point. |
+| `tests/unit/virtual-list*.test.ts` | Contract suite, foundation tests, and native-surface tests. |
+| `tests/helpers/list-harness.ts` | The jsdom harness of the foundation and native-surface tests. |
+| `scripts/regressions/runtime/` | Browser regressions, including hidden-row, native-anchoring, native-glide, and stream-paging. |
+| `scripts/anchoring-probe.mjs`, `scripts/anchoring-structure-probe.mjs` | Native anchoring probes. |

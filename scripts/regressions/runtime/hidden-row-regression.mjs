@@ -1,7 +1,5 @@
-// virtual-list-next variant of runtime/hidden-measurement: an offscreen
-// streaming row stays laid out between updates, now inside the canvas in a
-// hidden, zero-height, inert slot instead of a measurement root in <body>.
-// Run against a next server (vite.next.config.ts) with BROWSER_MATRIX_URL.
+// An offscreen streaming row stays laid out between updates, inside the
+// canvas in a hidden, zero-height, inert slot (no measurement root in <body>).
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 

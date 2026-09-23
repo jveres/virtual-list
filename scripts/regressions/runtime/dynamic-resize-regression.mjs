@@ -5,7 +5,8 @@ const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4193";
 for (const engine of [firefox, chromium, webkit]) {
   const browser = await engine.launch();
   try {
-    for (const mode of ["live", "freeze", "same-height"]) {
+    // One commit rule; the label keeps the lab's mode name in messages.
+    for (const mode of ["live"]) {
       const page = await browser.newPage();
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -39,7 +40,6 @@ for (const engine of [firefox, chromium, webkit]) {
       );
       await page.goto(`${base}/demos/dynamic-height/`);
       await page.waitForSelector("#viewport > div");
-      await page.selectOption("#scrolling-updates", mode);
       await page.waitForTimeout(300);
 
       assert.equal(

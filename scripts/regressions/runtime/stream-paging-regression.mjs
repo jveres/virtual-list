@@ -1,13 +1,13 @@
-// virtual-list-next: scrollback paging keeps working while a reply streams.
+// Scrollback paging keeps working while a reply streams.
 // Every token replaces the streaming message through updateItem; an older
 // page staged meanwhile must still land, carrying the latest reply. Before
 // the fix, each token cancelled the staged page until the stream ended.
-// Run against a next server (vite.next.config.ts) with BROWSER_MATRIX_URL.
+//
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
-import { openTranscript } from "./transcript.mjs";
+import { openTranscript } from "../shared/transcript.mjs";
 
-const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4273";
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
   const browser = await engine.launch();

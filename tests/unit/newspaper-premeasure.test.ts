@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   createItemMeasurementStage,
   createItemMeasurer,
-} from "../../src/premeasure";
+} from "../../demos/newspaper/premeasure";
 
 // Lifecycle characterization only: jsdom has no layout engine, so measured
 // heights here are the positiveSize fallback (1) — real premeasurement

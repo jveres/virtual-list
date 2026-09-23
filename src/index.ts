@@ -11,7 +11,6 @@ export type {
   ItemPosition,
   ReachContext,
   RemeasureOptions,
-  ScrollingUpdates,
   ScrollOptions,
   ScrollTarget,
   VirtualList,
@@ -19,5 +18,5 @@ export type {
   VirtualListState,
   WindowUpdate,
   WindowUpdateContext,
-} from "./virtual-list";
+} from "./types";
 export { createVirtualList } from "./virtual-list";

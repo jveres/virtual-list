@@ -1,4 +1,3 @@
-import { createItemMeasurer } from "../../src/premeasure.js";
 import {
   createVirtualList,
   type VirtualList,
@@ -12,6 +11,7 @@ import {
   mustGet,
   refreshTheme,
 } from "../shared/utils.js";
+import { createItemMeasurer } from "./premeasure.js";
 
 import "../shared/styles.css";
 import "./newspaper.css";

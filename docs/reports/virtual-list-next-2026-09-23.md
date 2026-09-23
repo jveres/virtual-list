@@ -1,9 +1,13 @@
 # virtual-list-next verification: September 23, 2026
 
+> **Note:** After this verification, `next` replaced the original runtime in
+> `src/` on this branch, and the module swap, the parity exclusions, and the
+> comparison benches were removed. Paths below point to the new locations.
+
 This report records the verification of `virtual-list-next`, a replacement
 for the runtime's orchestration layer, on branch `virtual-list-next` from
 main `37a21e6`. The architecture and its rationale are in
-[`next/README.md`](../../next/README.md). `next` keeps the physics modules of
+[`docs/architecture.md`](../architecture.md). `next` keeps the physics modules of
 `src/` unchanged and rebuilds `virtual-list.ts` around one commit rule, rows
 measured where they mount, and a single pass for every entry point.
 
@@ -54,7 +58,7 @@ Raw logs and benchmark JSON are kept locally under ignored
 `vitest.next.config.ts` runs `tests/unit/virtual-list.test.ts` against `next`
 with the harness default switched from `same-height` to `live`. The
 exclusions are listed with reasons in
-[`next/tests/parity.ts`](../../next/tests/parity.ts). To classify them, the
+`next/tests/parity.ts` (removed with the swap; see commit `a752504`). To classify them, the
 same live-default suite ran against `src/` as a control.
 
 | Group | Tests | Why they're excluded |
@@ -65,7 +69,7 @@ same live-default suite ran against `src/` as a control.
 | Measurement root and wrapper release | 5 | They assert the detached root or wrapper recreation that `next` replaces. |
 | Staging through in-place updates | 1 | It pins that an in-place item update cancels a staged page. `next` keeps staging and asks the updater again at the commit, adopting the staged rows. |
 
-`next/tests/foundation.test.ts` adds ten tests for `next`-specific behavior:
+`tests/unit/virtual-list-foundation.test.ts` adds ten tests for `next`-specific behavior:
 
 - No measurement root in `<body>`.
 - Hidden, inert staging and reveal of the same slot.
@@ -77,7 +81,7 @@ same live-default suite ran against `src/` as a control.
 - A paging-companion page landing while a reply streams a token every
   frame, with each page row rendered once.
 
-`next/tests/native.test.ts` adds seven tests for native anchoring.
+`tests/unit/virtual-list-native.test.ts` adds seven tests for native anchoring.
 
 `pnpm test` (1,085 tests) still passes, because `src/` is unchanged.
 
@@ -122,7 +126,7 @@ remaining failures is specific to `next`:
 | `chat-storage/chat-stop-reload` | Same failure | `turns.at is not a function` inside the test's own predicate. |
 | `runtime/profiling-fixtures` | Same failure | Not investigated. |
 | `runtime/streaming-trail` | Same failure | Not investigated. |
-| `runtime/hidden-measurement` | Passes | Asserts the detached measurement root. `next` replaces it with its [hidden-row variant](../../next/regressions/hidden-row-regression.mjs), which passes in all three engines. |
+| `runtime/hidden-measurement` | Passes | Asserts the detached measurement root. `next` replaces it with its [hidden-row variant](../../scripts/regressions/runtime/hidden-row-regression.mjs), which passes in all three engines. |
 
 The first run was on an earlier revision of `next`, before F5, and it found
 the `provider-versions` and `chat-prepend-anchor` defects listed below. Both
@@ -142,7 +146,7 @@ that found it were rerun:
   through in-place updates, and at its commit asks the updater again for
   current data, adopting the rows it staged by item identity. The new page
   lands within a few tokens. A key-order change still cancels the job.
-  [`next/regressions/stream-paging-regression.mjs`](../../next/regressions/stream-paging-regression.mjs)
+  [`scripts/regressions/runtime/stream-paging-regression.mjs`](../../scripts/regressions/runtime/stream-paging-regression.mjs)
   streams a token every 50 ms while an older page loads, and passes in all
   three engines. Without the fix, it times out with the page still loading,
   as does a unit test that streams a token every frame. The paging
@@ -152,7 +156,7 @@ that found it were rerun:
 - **Hidden rows were findable and focusable.** A staged row with a
   `visibility: visible` descendant was reachable by `window.find` and focus.
   Hidden slots are now `inert` and `aria-hidden`, like the old measurement
-  root. [`next/regressions/hidden-row-regression.mjs`](../../next/regressions/hidden-row-regression.mjs)
+  root. [`scripts/regressions/runtime/hidden-row-regression.mjs`](../../scripts/regressions/runtime/hidden-row-regression.mjs)
   covers this in all three engines.
 - **Swept rows kept their inert state.** A staged row detached by the sweep
   kept `inert` when it later mounted.
@@ -193,11 +197,11 @@ Native anchoring (F5) is most of the growth since the first commit. A
 cleanup pass after it removed 64 lines. The runtime path stays as the fallback,
 so native anchoring doesn't yet remove code. Removing that path for engines
 that anchor natively is the largest remaining reduction; see the
-[README roadmap](../../next/README.md#5-roadmap).
+[architecture roadmap](../architecture.md#5-roadmap).
 
 ## CPU measurements
 
-[`next/bench/compare.mjs`](../../next/bench/compare.mjs) runs the same
+`next/bench/compare.mjs` (removed; see commit `a752504`) runs the same
 workloads on both servers in the same browser. It alternates the order each
 round and reports medians of 9 rounds. Rows carry heading, paragraph, code,
 and list content. Firefox and WebKit report `performance.now()` in whole
@@ -213,7 +217,7 @@ hasn't been measured.
 | Scroll step, 240 px | 0.59 → 0.58 ms (−1%) | 0.48 → 0.43 ms (−10%) | 0.85 → 0.90 ms (+6%) |
 | Streaming token into the last row | 0.61 → 0.58 ms (−4%) | 0.69 → 0.67 ms (−4%) | 0.87 → 0.83 ms (−4%) |
 
-[`next/bench/scrollback.mjs`](../../next/bench/scrollback.mjs) scrolls up
+`next/bench/scrollback.mjs` (removed; see commit `a752504`) scrolls up
 through a 60-row page just committed above the reader. Its median step is
 0.54 → 0.48 ms in Chromium (−12%), 0.398 → 0.394 ms in Firefox, and 0.877 →
 0.903 ms in WebKit.
@@ -241,14 +245,14 @@ smoother than `main` in real browsers, with minor jumps during mount and
 unmount in all of them. `next` now uses CSS scroll anchoring where the
 engine supports it, and falls back to the runtime's settle-gated anchoring
 elsewhere. The design is in
-[`next/README.md`](../../next/README.md#f5-native-scroll-anchoring-where-the-engine-has-it).
+[`docs/architecture.md`](../architecture.md#f5-native-scroll-anchoring-where-the-engine-has-it).
 In short, a change above the reader lands during a gesture, and the engine,
 not a script write, keeps the reader still. Edges, glides, and window jobs
 with an explicit or end anchor keep the settle rule.
 
 ### Engine support
 
-[`next/bench/anchoring-probe.mjs`](../../next/bench/anchoring-probe.mjs)
+[`scripts/anchoring-probe.mjs`](../../scripts/anchoring-probe.mjs)
 scrolls a plain flow list to 2,000 px. It then inserts 500 px above the
 viewport and grows a row above it by 200 px, with no script scroll write.
 
@@ -262,7 +266,7 @@ viewport and grows a row above it by 200 px, with no script scroll write.
 
 CSS scroll anchoring skips its adjustment after some changes near the
 anchor. The first native attempts lost adjustments, so
-[`next/bench/anchoring-structure-probe.mjs`](../../next/bench/anchoring-structure-probe.mjs)
+[`scripts/anchoring-structure-probe.mjs`](../../scripts/anchoring-structure-probe.mjs)
 measures each structural change of the native surface. Each case adds 300 px
 above the reader, with no script scroll write. The table shows how far each
 engine moved `scrollTop` on its own. 300 means it anchored, and 0 means the
@@ -302,10 +306,10 @@ mode.
 | Chat invariants, runtime server | 0 violations, 0 errors | 0 violations, 0 errors | 0 violations, 0 errors |
 | Lab, live mode, `auto` (the page opts out) | 0 violations, 229 commits (29 live) | 0 violations, 217 commits (31 live) | 0 violations, 243 commits (31 live) |
 | Lab, live mode, runtime server | 0 violations, 238 commits (36 live) | 0 violations, 243 commits (39 live) | 0 violations, 250 commits (35 live) |
-| [Native anchoring regression](../../next/regressions/native-anchoring-regression.mjs) | Passes | Passes | Passes |
-| [Native glide regression](../../next/regressions/native-glide-regression.mjs) | Passes | Passes | Passes |
-| [Hidden-row regression](../../next/regressions/hidden-row-regression.mjs) | Passes | Passes | Passes |
-| [Stream-paging regression](../../next/regressions/stream-paging-regression.mjs) | Passes | Passes | Passes |
+| [Native anchoring regression](../../scripts/regressions/runtime/native-anchoring-regression.mjs) | Passes | Passes | Passes |
+| [Native glide regression](../../scripts/regressions/runtime/native-glide-regression.mjs) | Passes | Passes | Passes |
+| [Hidden-row regression](../../scripts/regressions/runtime/hidden-row-regression.mjs) | Passes | Passes | Passes |
+| [Stream-paging regression](../../scripts/regressions/runtime/stream-paging-regression.mjs) | Passes | Passes | Passes |
 
 The lab reports zero clipped paints in every run.
 
@@ -324,7 +328,7 @@ zero-height slots counted as clipped rows. Staged rows don't paint. The
 lab's page sets `overflow-anchor: none`, so it now runs with runtime
 anchoring on every server.
 
-`next/tests/native.test.ts` pins the surface and the commit rule in jsdom.
+`tests/unit/virtual-list-native.test.ts` pins the surface and the commit rule in jsdom.
 
 ### Native anchoring defects
 
@@ -344,6 +348,32 @@ anchoring on every server.
   in every engine and leaves the reader on the old first row
   (`scrollTop` 5,120), as runtime mode does. The native glide regression
   and a unit test fail without the fix.
+
+## Suite cleanup after the restructure
+
+After `next` replaced the runtime in `src/`, the seven regression scripts
+that also failed on `main` were reviewed one by one. Each is now expected to
+pass. Two were real bugs:
+
+| Script | Finding | Change |
+| --- | --- | --- |
+| `chat-storage/chat-stop-reload` | Stale test: history is stored as `{ turns, tree }` since the conversation tree | Its predicate reads both shapes. |
+| `chat-storage/chat-refresh` | Stale geometry from before the shared footer (4 px gap) | Expects the footer's 16 px gap. |
+| `chat-editing/chat-version-toolbox` | Stale geometry: expected the toolbar flush with the message bottom | Expects the footer's 12 px of breathing room. |
+| `chat-scrolling/chat-composer-resize` | Real bug: in Firefox the composer grew by 1 px while typing within a line, because `scrollHeight` is rounded differently for an empty last line | `integrations/composer.ts` snaps overflowing text to the line grid; the composer is 66.8 px in every engine. |
+| `chat-scrolling/chat-scrollback` | Obsolete assertion: forbade preparing older rows during the top glide, which idle page preparation does by design | Assertion removed; the prepend and date-pill checks stay. |
+| `runtime/streaming-trail` | Pinned to `markdown-viewer` v0.2.5: in-cell edits and DOM mutations no longer start a trail in v0.5.0 | Rewritten for the append-driven trail; coverage, fades, bounds, reduced motion, and cleanup stay. |
+| `runtime/profiling-fixtures` | Real bug: under a fast stream in Firefox, a token commit judged the lagging follow glide by position and dropped following | While a follow glide runs, an `auto` commit captures the end. |
+| `chat-content/chat-image-reconcile` | Flaky under load: an image `load` event dispatched after `decode()` resolved and landed in a measured window | The test waits for both images' `load` events. |
+
+`runtime/dynamic-resize` now runs the lab's one remaining mode, and
+`runtime/hidden-measurement` was replaced by `runtime/hidden-row`.
+
+The final full run of the 98 scripts, after all of these changes, passed 97.
+The one failure was `chat-image-reconcile`, which ran before its load-race
+fix; rerun through the runner, it passes. Chat invariants report 0
+violations in Chromium, Firefox, and WebKit, and `pnpm test` passes 1,050
+tests.
 
 ## Limitations
 
@@ -388,4 +418,4 @@ These follow-ups remain before `next` could replace `src/`:
    `main`, native, and runtime servers, using the idle-page-preparation
    workload for a comparable baseline.
 3. Decide on the API trims and the research tracks listed in
-   [`next/README.md`](../../next/README.md#5-roadmap).
+   [`docs/architecture.md`](../architecture.md#5-roadmap).

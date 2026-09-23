@@ -84,7 +84,7 @@ contract parity, browser invariants, the feature regression suite, code
 size, and headless CPU comparisons. It also covers native CSS scroll
 anchoring (F5): which structural changes each engine anchors, its
 verification, and the "scroll to top" loop it fixed. The architecture
-recommendation is in [`next/README.md`](../../next/README.md).
+is in [`docs/architecture.md`](../architecture.md).
 
 ## Safari 27 investigation
 

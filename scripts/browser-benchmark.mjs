@@ -56,7 +56,6 @@ for (const [engine, type] of Object.entries(browserTypes)) {
                 key: (item) => String(item.id),
                 height: declared ? () => 40 : undefined,
                 boot: "start",
-                scrollingUpdates: "live",
                 settleStrategy: "default",
                 render: (item, existing) => {
                   const element = existing ?? document.createElement("div");

@@ -2,7 +2,6 @@ import { detectScrollSettleStrategy } from "../../src/scroll-settle.js";
 import {
   createVirtualList,
   type ReachContext,
-  type ScrollingUpdates,
   type VirtualList,
   type VirtualListState,
 } from "../../src/virtual-list.js";
@@ -788,9 +787,9 @@ function onState(state: VirtualListState): void {
   scheduleStatus();
 }
 
-function scrollingMode(): ScrollingUpdates {
-  return mustGet("scrolling-updates", HTMLSelectElement)
-    .value as ScrollingUpdates;
+/** The runtime has one commit rule; the lab checks its live contract. */
+function scrollingMode(): "live" {
+  return "live";
 }
 
 let viewportWidthObserver: ResizeObserver | null = null;
@@ -830,7 +829,6 @@ function createList(): void {
       clippedKeys.delete(row.dataset.id ?? "?");
     },
     onDestroy,
-    scrollingUpdates: scrollingMode(),
   });
   canvas = viewport.firstElementChild as HTMLElement | null;
   if (!canvas) throw new Error("runtime canvas not found");
@@ -1620,7 +1618,7 @@ function burst(): void {
 // A randomized adversary: every operation the lab exposes, at random, at a
 // random cadence, on top of streaming/toggles/images — including a render
 // that throws (the runtime must roll back atomically), mid-list inserts and
-// reorders, commands, width flips, and scrollingUpdates switches (the list
+// reorders, commands, width flips, and recreating the list (the list
 // is recreated, counters carry on). The driver adds random wheel input.
 
 const CHAOS_RENDER_ERROR = "chaos: render failure";
@@ -1744,15 +1742,9 @@ const CHAOS_OPS: { weight: number; name: string; run: () => void }[] = [
   },
   {
     weight: 0.3,
-    name: "switch scrollingUpdates",
+    name: "recreate the list",
     run: () => {
-      const modes: ScrollingUpdates[] = ["same-height", "freeze", "live"];
-      const next = pick(
-        modes.filter((mode) => mode !== scrollingMode()),
-        random,
-      );
-      mustGet("scrolling-updates", HTMLSelectElement).value = next;
-      log(`chaos: scrollingUpdates → ${next} (recreate)`, "mark");
+      log("chaos: recreate", "mark");
       recreate();
     },
   },
@@ -1951,10 +1943,6 @@ mustGet("burst").addEventListener("click", burst);
 mustGet("reset").addEventListener("click", () => {
   log("reset", "mark");
   reset();
-});
-mustGet("scrolling-updates").addEventListener("change", () => {
-  log(`scrollingUpdates → ${scrollingMode()} (recreate)`, "mark");
-  recreate();
 });
 checkbox("chaos").addEventListener("change", () => {
   if (checkbox("chaos").checked) startChaos();

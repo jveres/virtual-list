@@ -44,7 +44,6 @@ const list = createVirtualList(viewport, {
   key: (item) => String(item.id),
   // Match the source's actual latest prompt, never an older retained message.
   pinning: { match: (item) => item.id === 118 },
-  scrollingUpdates: "live",
   followBehavior: "smooth",
   render: (item, existing) => {
     const row = existing ?? document.createElement("article");

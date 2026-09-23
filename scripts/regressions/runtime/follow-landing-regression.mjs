@@ -33,7 +33,6 @@ for (const engine of [chromium, firefox, webkit]) {
           return row;
         },
         followBehavior: "smooth",
-        scrollingUpdates: "live",
         onState: (state) => following.push(state.following),
         onViewport: (snapshot) => {
           if (armed && !grew && snapshot.scrollTop === 1500) {

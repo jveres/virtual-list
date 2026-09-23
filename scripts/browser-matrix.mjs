@@ -26,7 +26,7 @@ const PORT = 4173;
 const DEFAULT_URL = `http://${HOST}:${PORT}`;
 const LAB_PATH = "/demos/dynamic-height/index.html";
 const ALL_ENGINES = ["chromium", "firefox", "webkit"];
-const ALL_MODES = ["same-height", "freeze", "live"];
+const ALL_MODES = ["live"];
 const KNOWN_WARNINGS = ["scroll-linked positioning effect"];
 const EXPECTED_STRATEGY = {
   chromium: "chromium-wheel",
@@ -348,7 +348,6 @@ async function runCase(engine, mode) {
     await page.goto(`${baseUrl}${LAB_PATH}`);
     await page.waitForSelector("#viewport > div");
     await page.check("#verbose");
-    await page.selectOption("#scrolling-updates", mode);
     await page.waitForTimeout(600);
     const box = await page.locator("#viewport").boundingBox();
     if (!box) throw new Error("dynamic-height viewport has no bounding box");

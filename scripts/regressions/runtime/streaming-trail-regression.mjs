@@ -50,6 +50,12 @@ for (const engine of [firefox, chromium, webkit]) {
         createStreamingTrail,
         trail: createStreamingTrail(root, "long"),
       };
+      // Each trail group fades on its own; the groups needn't sit inside the
+      // [data-streaming-trail] layer element.
+      window.trailFades = () =>
+        document
+          .getAnimations()
+          .filter((a) => a.effect?.target?.matches?.("[data-trail-group]"));
       window.covered = (expected) => {
         const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
         for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
@@ -149,20 +155,22 @@ for (const engine of [firefox, chromium, webkit]) {
       );
     });
     assert.ok(geometry.length >= 3 && geometry.every(Boolean));
-    await page.screenshot({ path: `${output}/${engine.name()}-wrapped.png` });
-    await page.evaluate((text) => {
-      window.probe.viewer.update({ text, isStreaming: false });
-      window.probe.trail.finish();
-    }, text);
+    // Each streamed chunk starts its own fade, and finish() only waits for
+    // the running ones: pause the newest before anything slow can end it.
     const animation = await page.evaluate(() => {
-      const layer = document.querySelector("[data-streaming-trail]");
-      const a = layer.getAnimations({ subtree: true })[0];
+      const a = window.trailFades().at(-1);
+      if (!a) throw new Error("no running fade after the wrapped text");
       a.pause();
       a.currentTime = 0;
       window.probe.fade = a;
       return a.effect.getKeyframes().map((f) => f.opacity);
     });
     assert.deepEqual(animation, ["0.65", "0"]);
+    await page.screenshot({ path: `${output}/${engine.name()}-wrapped.png` });
+    await page.evaluate((text) => {
+      window.probe.viewer.update({ text, isStreaming: false });
+      window.probe.trail.finish();
+    }, text);
     const opacity = [];
     for (const time of [0, 600, 1100]) {
       opacity.push(
@@ -248,12 +256,12 @@ for (const engine of [firefox, chromium, webkit]) {
     await page.waitForFunction(
       () => !document.querySelector("[data-streaming-trail]"),
     );
-    // Rebinding a rebuilt table cell preserves the original fade's age.
-    const table = (cell) =>
-      `| Heading | Other |\n| --- | --- |\n| base ${cell} | fixed |\n`;
-    await page.evaluate(
-      (text) => window.probe.viewer.update({ text, isStreaming: true }),
-      table(""),
+    // Reduced motion: no trail; it resumes once motion is allowed again.
+    // (Since markdown-viewer v0.5.0 the trail follows appended text only;
+    // an edit mid-source, such as a table cell, animates formulas alone.)
+    await page.evaluate(() => window.probe.trail.destroy());
+    await page.evaluate(() =>
+      window.probe.viewer.update({ text: "", isStreaming: true }),
     );
     await page.evaluate(
       () =>
@@ -262,40 +270,12 @@ for (const engine of [firefox, chromium, webkit]) {
           "long",
         )),
     );
-    await update(table("first"));
-    await page.evaluate(() => {
-      const a = document
-        .querySelector("[data-streaming-trail]")
-        .getAnimations({ subtree: true })[0];
-      a.pause();
-      a.currentTime = 250;
-      window.probe.firstFade = a;
-    });
-    for (const cell of [
-      "first second",
-      "**first** second",
-      "**first** second third",
-    ]) {
-      await update(table(cell));
-      assert.equal(await page.evaluate(() => window.covered("first")), true);
-      assert.deepEqual(
-        await page.evaluate(() => ({
-          connected: window.probe.firstFade.effect.target.isConnected,
-          age: window.probe.firstFade.currentTime,
-        })),
-        { connected: true, age: 250 },
-      );
-    }
-    await page.screenshot({ path: `${output}/${engine.name()}-table.png` });
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.waitForFunction(
-      () => document.querySelectorAll("[data-trail-group]").length === 0,
-    );
-    await update(table("**first** second third fourth"));
+    await update("Reduced motion start");
     assert.equal(await page.locator("[data-trail-group]").count(), 0);
     await page.emulateMedia({ reducedMotion: "no-preference" });
     await page.waitForTimeout(100);
-    await update(table("**first** second third fourth resumed"));
+    await update("Reduced motion start resumed");
     assert.equal(await page.evaluate(() => window.covered("resumed")), true);
     await page.evaluate(() => window.probe.trail.destroy());
     await update("```text\n");
@@ -308,8 +288,7 @@ for (const engine of [firefox, chromium, webkit]) {
     );
     await update(`\`\`\`text\n${"wide ".repeat(80)}scroll_target`);
     await page.evaluate(() => {
-      const layer = document.querySelector("[data-streaming-trail]");
-      for (const a of layer.getAnimations({ subtree: true })) {
+      for (const a of window.trailFades()) {
         a.pause();
         a.currentTime = 250;
       }
@@ -319,11 +298,15 @@ for (const engine of [firefox, chromium, webkit]) {
     await page.waitForFunction(() => window.covered("scroll_target"));
     await page.evaluate(() => window.probe.trail.destroy());
     await update("bounded");
+    // 400 streamed tokens stay within a bounded number of groups and rects.
+    // (The trail follows appended source, not DOM edits, since v0.5.0.)
     await page.evaluate(async () => {
-      const { root, createStreamingTrail } = window.probe;
+      const { root, createStreamingTrail, viewer } = window.probe;
       window.probe.trail = createStreamingTrail(root, "long");
+      let text = "bounded";
       for (let i = 0; i < 400; i++) {
-        root.querySelector("p").firstChild.appendData(` token-${i}`);
+        text += ` token-${i}`;
+        viewer.update({ text });
         await Promise.resolve();
       }
     });
@@ -420,7 +403,7 @@ for (const engine of [firefox, chromium, webkit]) {
     );
     assert.deepEqual(errors, []);
     console.log(
-      `${engine.name()}: content coverage, wrapped geometry, final fade, idle reads, morph ages, bounds, reduced motion, cleanup and demo toggle passed`,
+      `${engine.name()}: content coverage, wrapped geometry, final fade, idle reads, bounds, reduced motion, cleanup and demo toggle passed`,
     );
   } finally {
     await browser.close();

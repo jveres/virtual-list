@@ -657,7 +657,6 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     overscanPx: 600,
     // A page that lands mid-gesture waits for the settle, whole: no photos
     // appear under a moving finger or an overscroll bounce.
-    scrollingUpdates: "freeze",
     edgeSlots: { end: loaderSlot },
     onReachStart: (context) => loadMore("start", context),
     onReachEnd: (context) => loadMore("end", context),

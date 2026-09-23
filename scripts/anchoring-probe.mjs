@@ -2,7 +2,7 @@
 // gets content inserted above the viewport and an above-viewport row grown,
 // with no script scroll write. Native CSS scroll anchoring keeps the first
 // visible row in place by moving scrollTop itself.
-//   node next/bench/anchoring-probe.mjs
+//   node scripts/anchoring-probe.mjs
 // Playwright engine builds only; this says nothing about native momentum.
 import process from "node:process";
 import { chromium, firefox, webkit } from "playwright";

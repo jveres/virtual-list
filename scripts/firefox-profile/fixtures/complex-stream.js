@@ -26,7 +26,6 @@ const list = createVirtualList(viewport, {
   ],
   key: (item) => item.id,
   followBehavior: "smooth",
-  scrollingUpdates: "live",
   render(item, existing) {
     const row = existing ?? document.createElement("article");
     if (item.id === "history") {

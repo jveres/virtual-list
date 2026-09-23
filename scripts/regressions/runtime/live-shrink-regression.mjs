@@ -71,7 +71,6 @@ for (const engine of [firefox, chromium, webkit]) {
         const list = createVirtualList(viewport, {
           items,
           key: (item) => item.id,
-          scrollingUpdates: "live",
           settleStrategy: "default",
           pinning: false,
           render(item, existing) {

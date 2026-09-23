@@ -24,13 +24,22 @@ for (const engine of [chromium, firefox, webkit]) {
         host.append(row);
         return row;
       });
+      const loads = [];
       const images = rows.map((row, index) => {
         const image = new Image();
+        // The preview binds on load: a late load event must not land in a
+        // measured window, so wait for it, not only for decoding.
+        loads.push(
+          new Promise((resolve) =>
+            image.addEventListener("load", resolve, { once: true }),
+          ),
+        );
         image.src = canvas.toDataURL();
         image.alt = `Image ${index}`;
         row.append(image);
         return image;
       });
+      await Promise.all(loads);
       await Promise.all(images.map((image) => image.decode()));
       const messages = [1, 2, 3].map((id) => ({
         id,

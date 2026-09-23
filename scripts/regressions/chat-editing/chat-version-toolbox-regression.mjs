@@ -141,7 +141,9 @@ for (const engine of [firefox, chromium, webkit]) {
           if (engine !== firefox)
             assert.equal(button.tapHighlight, "rgba(0, 0, 0, 0)");
         }
-        assert.ok(Math.abs(state.bottom) < 1, JSON.stringify(state));
+        // The toolbar keeps 12px of breathing room above the message's
+        // bottom edge (the shared footer, chat-footer-regression).
+        assert.ok(Math.abs(state.bottom + 12) < 1, JSON.stringify(state));
         assert.ok(state.gap >= -1, JSON.stringify(state));
         const disabled = row.getByRole("button", {
           name: text === "First version" ? "Previous version" : "Next version",

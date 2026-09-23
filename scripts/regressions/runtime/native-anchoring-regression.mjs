@@ -1,13 +1,12 @@
-// virtual-list-next F5: an older page lands mid-gesture, away from the edge,
+// Native anchoring (F5): an older page lands mid-gesture, away from the edge,
 // and the engine's own scroll anchoring keeps the row under the reader
-// still. Run against a next server (vite.next.config.ts) with
-// BROWSER_MATRIX_URL. Synthetic input holds the gesture: motionless wheel
+// still. Synthetic input holds the gesture: motionless wheel
 // events keep the settle sensor's phase open while the page commits.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
-import { openTranscript } from "./transcript.mjs";
+import { openTranscript } from "../shared/transcript.mjs";
 
-const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4273";
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
   const browser = await engine.launch();

@@ -1,4 +1,4 @@
-// Detached premeasurement — measures the runtime's elements before commit.
+// Detached premeasurement for the newspaper demo: measures its elements before they mount.
 //
 // Items are built and measured OFF-scroller: a hidden, fixed-position
 // measurement root appended to document.body, width-synced to the viewport

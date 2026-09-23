@@ -294,7 +294,6 @@ async function reset(): Promise<void> {
           viewport.clientWidth,
         ),
       boot: "start",
-      scrollingUpdates: "freeze",
       overscanPx: 900,
       onMount: mountPost,
       onUnmount: unmountPost,
