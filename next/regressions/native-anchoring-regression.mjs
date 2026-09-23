@@ -5,29 +5,9 @@
 // events keep the settle sensor's phase open while the page commits.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openTranscript } from "./transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4273";
-
-function datedTranscript(turns) {
-  const start = new Date(2026, 8, 2, 9, 0, 0).getTime();
-  const lines = [
-    "# streaming-chat transcript",
-    "",
-    "<!-- day -->",
-    "## Day",
-    "",
-  ];
-  for (let i = 1; i <= turns; i++) {
-    lines.push(
-      `**${i % 2 ? "User" : "Assistant"}**`,
-      `<!-- turn {"sentAt":${start + i * 120_000}} -->`,
-      "",
-      `Message ${i} ${"lorem ipsum dolor sit amet ".repeat(8 + (i % 5) * 6)}`,
-      "",
-    );
-  }
-  return lines.join("\n");
-}
 
 for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
   const browser = await engine.launch();
@@ -35,33 +15,7 @@ for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 820 },
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
-    await page.evaluate((markdown) => {
-      const wrap = document.querySelector(".viewport-wrap");
-      const data = new DataTransfer();
-      data.items.add(
-        new File([markdown], "chat.md", { type: "text/markdown" }),
-      );
-      for (const type of ["dragenter", "dragover", "drop"])
-        wrap.dispatchEvent(
-          new DragEvent(type, {
-            bubbles: true,
-            cancelable: true,
-            dataTransfer: data,
-          }),
-        );
-    }, datedTranscript(34));
-    await page.waitForFunction(() =>
-      /loaded 13-34\/34/.test(
-        document.getElementById("window-status")?.textContent ?? "",
-      ),
-    );
+    const errors = await openTranscript(page, base, 34, /loaded 13-34\/34/);
     const result = await page.evaluate(async () => {
       const frame = () => new Promise((done) => requestAnimationFrame(done));
       const viewport = document.getElementById("viewport");

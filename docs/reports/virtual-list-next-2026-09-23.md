@@ -22,8 +22,8 @@ On this evidence, `next` behaves like the current runtime:
 - The feature regression suite finds no `next`-only failure (see
   [Regression suite](#regression-suite)).
 
-The orchestration layer shrinks from 3,910 to 3,010 lines (−23%), or from
-2,840 to 2,593 code lines (−9%). The first commit, before native anchoring
+The orchestration layer shrinks from 3,910 to 2,946 lines (−25%), or from
+2,840 to 2,528 code lines (−11%). The first commit, before native anchoring
 and the streaming paging fix, was 2,650 lines and 2,333 code lines (−32% and
 −18%). Runtime CPU cost is within ±10% of
 `main` in headless engines. Beyond the removed modes, two behaviors change
@@ -63,7 +63,7 @@ same live-default suite ran against `src/` as a control.
 | Old modes' held semantics | 15 | They fail on `src/` too once the harness is live. |
 | Removed mode or option | 5 | They request `freeze`, `same-height`, or `prepareDuringScroll: false`. |
 | Measurement root and wrapper release | 5 | They assert the detached root or wrapper recreation that `next` replaces. |
-| Staging through in-place updates | 1 | It pins that an in-place item update stops a staged page at once. `next` keeps staging, still cancels the commit, and lets the host's retry adopt the rows. |
+| Staging through in-place updates | 1 | It pins that an in-place item update cancels a staged page. `next` keeps staging and asks the updater again at the commit, adopting the staged rows. |
 
 `next/tests/foundation.test.ts` adds ten tests for `next`-specific behavior:
 
@@ -139,8 +139,9 @@ that found it were rerun:
   companion's contract requires. The companion retried, but every retry
   staged the page from scratch, and the next token cancelled it again, so
   pages loaded only once the stream stopped. A staged job now keeps staging
-  through in-place updates, its commit is still cancelled, and the retry
-  adopts the rows it staged. The new page lands within a few tokens.
+  through in-place updates, and at its commit asks the updater again for
+  current data, adopting the rows it staged by item identity. The new page
+  lands within a few tokens. A key-order change still cancels the job.
   [`next/regressions/stream-paging-regression.mjs`](../../next/regressions/stream-paging-regression.mjs)
   streams a token every 50 ms while an older page loads, and passes in all
   three engines. Without the fix, it times out with the page still loading,
@@ -185,11 +186,11 @@ shared and unchanged: 1,843 code lines.
 | --- | ---: | ---: |
 | `main`: `virtual-list.ts`, `snapshot.ts`, `render-state.ts`, `premeasure.ts` | 3,910 | 2,840 |
 | `next`, first commit | 2,650 | 2,333 |
-| `next` now: `virtual-list.ts`, `types.ts`, `index.ts` | 3,010 | 2,593 |
-| Change from `main` | −23% | −9% |
+| `next` now: `virtual-list.ts`, `types.ts`, `index.ts` | 2,946 | 2,528 |
+| Change from `main` | −25% | −11% |
 
-F5 adds 292 lines (209 code lines), and keeping staged rows for a paging
-retry adds 68 (51 code lines). The runtime path stays as the fallback,
+Native anchoring (F5) is most of the growth since the first commit. A
+cleanup pass after it removed 64 lines. The runtime path stays as the fallback,
 so native anchoring doesn't yet remove code. Removing that path for engines
 that anchor natively is the largest remaining reduction; see the
 [README roadmap](../../next/README.md#5-roadmap).

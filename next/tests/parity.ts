@@ -43,10 +43,10 @@ const measuredInPlace = [
 ];
 
 /**
- * Pin that an in-place item update stops a staged window job at once. next
- * keeps staging (the rows stay valid), still cancels at the commit, and lets
- * the host's retry adopt them, so a page lands while a reply streams
- * (next/tests/foundation.test.ts, "lands a page mid-stream").
+ * Pin that an in-place item update cancels a staged window job. next keeps
+ * staging (the rows stay valid) and asks the updater again at the commit,
+ * adopting the staged rows by item identity, so a page lands while a reply
+ * streams (next/tests/foundation.test.ts, "lands a page mid-stream").
  */
 const stagingThroughUpdates = [
   "should invalidate a cached staged source after an in-place item update",

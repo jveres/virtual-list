@@ -1,101 +1,30 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   createVirtualList,
-  type VirtualList,
   type VirtualListOptions,
 } from "../src/virtual-list";
+import {
+  flowHeight,
+  type Msg,
+  mount as mountList,
+  ROW_H,
+  range,
+  useHarness,
+} from "./harness";
 
 // F5: native CSS scroll anchoring. jsdom lays nothing out and never anchors,
 // so these tests pin the structure (rows in flow between spacers whose
 // heights reproduce committed geometry) and the commit rule (no scroll write
 // mid-gesture away from the edges). Browsers verify the anchoring itself.
 
-interface Msg {
-  id: number;
-}
+useHarness();
 
-const VIEWPORT_H = 600;
-const ROW_H = 100;
-const range = (from: number, to: number): Msg[] =>
-  Array.from({ length: to - from }, (_, i) => ({ id: from + i }));
-
-class ControlledResizeObserver {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
-
-interface Harness {
-  list: VirtualList<Msg>;
-  viewport: HTMLElement;
-  canvas: HTMLElement;
-  writes: number[];
-  userScroll: (top: number) => void;
-  settle: () => void;
-}
-
-/** The flow height: spacers plus in-flow slots (hidden slots have none). */
-function flowHeight(canvas: HTMLElement): number {
-  let total = 0;
-  for (const child of canvas.children)
-    total += Number.parseFloat((child as HTMLElement).style.height) || 0;
-  return total;
-}
-
-function mount(
-  items: Msg[],
-  options: Partial<VirtualListOptions<Msg>> = {},
-): Harness {
-  const viewport = document.createElement("div");
-  let scrollTop = 0;
-  const writes: number[] = [];
-  const canvas = (): HTMLElement => viewport.firstElementChild as HTMLElement;
-  const max = (): number =>
-    Math.max(0, (canvas() ? flowHeight(canvas()) : 0) - VIEWPORT_H);
-  Object.defineProperties(viewport, {
-    clientHeight: { get: () => VIEWPORT_H },
-    clientWidth: { get: () => 300 },
-    scrollHeight: { get: () => Math.max(VIEWPORT_H, max() + VIEWPORT_H) },
-    scrollTop: {
-      get: () => scrollTop,
-      set: (next: number) => {
-        writes.push(next);
-        scrollTop = Math.max(0, Math.min(max(), next));
-      },
-    },
-  });
-  document.body.appendChild(viewport);
-  const list = createVirtualList<Msg>(viewport, {
-    items,
-    key: (m) => `m${m.id}`,
-    settleStrategy: "default",
-    anchoring: "native",
-    render: (m, existing) => {
-      const element = existing ?? document.createElement("div");
-      element.textContent = `row ${m.id}`;
-      element.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
-      return element;
-    },
-    ...options,
-  });
-  return {
-    list,
-    viewport,
-    canvas: canvas(),
-    writes,
-    userScroll: (top) => {
-      scrollTop = top;
-      viewport.dispatchEvent(new Event("scroll"));
-    },
-    settle: () => {
-      viewport.dispatchEvent(new Event("scrollend"));
-      vi.advanceTimersByTime(200);
-    },
-  };
-}
+/** A list in native anchoring. */
+const mount = (items: Msg[], options: Partial<VirtualListOptions<Msg>> = {}) =>
+  mountList(items, { anchoring: "native", ...options });
 
 /** Mounted rows in DOM order, by id. */
 function flowIds(canvas: HTMLElement): number[] {
@@ -103,17 +32,6 @@ function flowIds(canvas: HTMLElement): number[] {
     .filter((child) => (child as HTMLElement).style.position === "relative")
     .map((slot) => Number(slot.firstElementChild?.textContent?.slice(4)));
 }
-
-beforeEach(() => {
-  (globalThis as { ResizeObserver: unknown }).ResizeObserver =
-    ControlledResizeObserver;
-  vi.useFakeTimers();
-});
-
-afterEach(() => {
-  document.body.replaceChildren();
-  vi.useRealTimers();
-});
 
 describe("native anchoring surface", () => {
   it("lays rows out in flow between spacers that reproduce committed geometry", () => {

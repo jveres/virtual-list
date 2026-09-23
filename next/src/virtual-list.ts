@@ -136,21 +136,6 @@ function throwAll(failures: readonly unknown[], message: string): void {
   if (failures.length > 1) throw new AggregateError([...failures], message);
 }
 
-/**
- * The anchoring mode a list asks for. `VITE_VL_ANCHORING` ("native" or
- * "runtime") overrides "auto" for side-by-side comparison in development.
- */
-function requestedAnchoring(
-  option: "auto" | "native" | "runtime" | undefined,
-): "auto" | "native" | "runtime" {
-  if (option) return option;
-  const env =
-    typeof import.meta.env === "object"
-      ? import.meta.env.VITE_VL_ANCHORING
-      : undefined;
-  return env === "native" || env === "runtime" ? env : "auto";
-}
-
 /** The host disposed the list from inside a render: abandon the update. */
 class Abort extends Error {}
 
@@ -173,7 +158,7 @@ interface Row<T> {
   /** Its size may differ from `height`; re-read at the next commit. */
   dirty: boolean;
   dead: boolean;
-  edge?: Edge;
+  /** An edge slot's host spec; rows of items have none. */
   spec?: EdgeSlot;
 }
 
@@ -290,6 +275,8 @@ export function createVirtualList<T>(
   let indexByKey = new Map<string, number>();
   let indexedKeys: readonly string[] = [];
   let revision = 0;
+  /** Advances when the host's key order changes; window jobs stage against it. */
+  let structure = 0;
   const edgeSlots: Record<Edge, EdgeSlot | null> = {
     start: ownSlot(options.edgeSlots?.start),
     end: ownSlot(options.edgeSlots?.end),
@@ -301,7 +288,7 @@ export function createVirtualList<T>(
   // content above it changes. Positioned layouts, engines without CSS
   // scroll anchoring, and scrollers the host turned it off for use the
   // runtime instead; only an explicit "native" overrides the host.
-  const requested = requestedAnchoring(options.anchoring);
+  const requested = options.anchoring ?? "auto";
   const native =
     !place &&
     requested !== "runtime" &&
@@ -332,7 +319,10 @@ export function createVirtualList<T>(
   const topSpacer = native ? spacer() : null;
   const bottomSpacer = native ? spacer() : null;
   viewport.appendChild(canvas);
-  let clip: "clip" | "hidden" | null = null;
+  // `overflow: clip` where supported: a clip that is no scroll container.
+  const clipProbe = document.createElement("div").style;
+  clipProbe.overflow = "clip";
+  const clip = clipProbe.overflow === "clip" ? "clip" : "hidden";
   let viewportWidth = viewport.clientWidth;
   let viewportHeight = viewport.clientHeight;
   /** Where the viewport stood before a resize the engine may have clamped. */
@@ -404,19 +394,17 @@ export function createVirtualList<T>(
         throw new AggregateError([error, ...collected], "update failed");
       }
       const collected = failures.splice(mark);
-      if (outer !== null) {
-        // Its queued work drains once the enclosing pass has finished.
-        outer.push(...own);
-        throwAll(collected, "committed with failures in host callbacks");
-        return;
-      }
-      scope = null;
-      while (!disposed && own.length > 0) {
-        const task = own.shift() as Task;
-        try {
-          task.run();
-        } catch (error) {
-          collected.push(...flatten(error));
+      // Nested, its queued work drains once the enclosing pass has finished.
+      if (outer !== null) outer.push(...own);
+      else {
+        scope = null;
+        while (!disposed && own.length > 0) {
+          const task = own.shift() as Task;
+          try {
+            task.run();
+          } catch (error) {
+            collected.push(...flatten(error));
+          }
         }
       }
       throwAll(collected, "committed with failures in host callbacks");
@@ -445,21 +433,11 @@ export function createVirtualList<T>(
   // --- Rows -----------------------------------------------------------------
   const rowOf = new WeakMap<Element, Row<T>>();
 
-  function newSlot(): HTMLElement {
-    const slot = document.createElement("div");
-    if (clip === null) {
-      slot.style.overflow = "clip";
-      clip = slot.style.overflow === "clip" ? "clip" : "hidden";
-    }
-    return slot;
-  }
-
   function createRow(
     key: string,
     item: T,
     element: HTMLElement,
     height: number,
-    edge?: Edge,
     spec?: EdgeSlot,
   ): Row<T> {
     const style = element.style;
@@ -468,7 +446,7 @@ export function createVirtualList<T>(
       // Positioned cards are their own slot; the host owns width and left.
       style.position = "absolute";
       style.top = "0";
-      if (edge) {
+      if (spec) {
         style.left = "0";
         style.right = "0";
       }
@@ -491,7 +469,7 @@ export function createVirtualList<T>(
       // Native anchoring picks the slot, never a node inside the row: a
       // re-render replaces those, and the engine would lose its anchor.
       if (native) style.overflowAnchor = "none";
-      slot = newSlot();
+      slot = document.createElement("div");
       slot.appendChild(element);
     }
     const row: Row<T> = {
@@ -506,7 +484,6 @@ export function createVirtualList<T>(
       place: "detached",
       dirty: false,
       dead: false,
-      edge,
       spec,
     };
     if (slot === element) style.height = `${row.height}px`;
@@ -520,25 +497,44 @@ export function createVirtualList<T>(
    * before the nearest connected successor, else at the end.
    */
   function insertionPoint(
+    order: readonly string[],
     index: number,
-    rowAt: (index: number) => Row<T> | undefined,
-    count: number,
+    staged?: ReadonlyMap<string, Row<T>>,
   ): Node | null {
-    const previous = rowAt(index - 1);
-    if (previous && previous.place !== "detached")
-      return previous.slot.nextSibling;
-    const limit = Math.min(count, index + 1 + INSERTION_SCAN);
-    for (let next = index + 1; next < limit; next++) {
-      const row = rowAt(next);
-      if (row && row.place !== "detached") return row.slot;
-    }
-    return bottomSpacer;
+    const previous = rowIn(order, index - 1, staged);
+    if (previous && connected(previous)) return previous.slot.nextSibling;
+    return successor(order, index, connected, staged)?.slot ?? bottomSpacer;
   }
 
-  const committedRowAt = (index: number): Row<T> | undefined =>
-    rows.get(geometry.keyAt(index) ?? "");
+  /** The row of `order[at]`: a staged one first, else the committed one. */
+  function rowIn(
+    order: readonly string[],
+    at: number,
+    staged?: ReadonlyMap<string, Row<T>>,
+  ): Row<T> | undefined {
+    const key = order[at];
+    return key === undefined ? undefined : (staged?.get(key) ?? rows.get(key));
+  }
+
+  /** The nearest row after `index` that `joined` accepts, within the scan. */
+  function successor(
+    order: readonly string[],
+    index: number,
+    joined: (row: Row<T>) => boolean,
+    staged?: ReadonlyMap<string, Row<T>>,
+  ): Row<T> | undefined {
+    const limit = Math.min(order.length, index + 1 + INSERTION_SCAN);
+    for (let at = index + 1; at < limit; at++) {
+      const row = rowIn(order, at, staged);
+      if (row && joined(row)) return row;
+    }
+    return undefined;
+  }
+
+  const connected = (row: Row<T>): boolean => row.place !== "detached";
+  const mounted = (row: Row<T>): boolean => row.place === "mounted";
   const committedPoint = (key: string): Node | null =>
-    insertionPoint(geometry.indexOf(key), committedRowAt, geometry.count);
+    insertionPoint(committedKeys, geometry.indexOf(key));
 
   /**
    * Connect a measured row to the canvas: laid out, never painted, hit,
@@ -563,15 +559,20 @@ export function createVirtualList<T>(
     hiddenRows.add(row);
   }
 
-  function detachRow(row: Row<T>): void {
-    if (row.place !== "hidden") return;
-    row.slot.remove();
+  /** Leave the hidden state: interactive again, the row unparked. */
+  function unhide(row: Row<T>): void {
     row.slot.inert = false;
     row.slot.removeAttribute("aria-hidden");
     if (native) row.element.style.translate = "";
-    row.place = "detached";
     hiddenRows.delete(row);
     if (resident === row) resident = null;
+  }
+
+  function detachRow(row: Row<T>): void {
+    if (row.place !== "hidden") return;
+    row.slot.remove();
+    unhide(row);
+    row.place = "detached";
   }
 
   /** Move a slot to its committed offset (a no-op when unchanged). */
@@ -591,27 +592,21 @@ export function createVirtualList<T>(
         ? `position:relative;overflow:${clip};height:${row.height}px${anchors(row) ? "" : ";overflow-anchor:none"}`
         : `${SLOT_BASE}overflow:${clip};will-change:transform;height:${row.height}px`;
       row.offset = Number.NaN;
-      if (hidden) {
-        row.slot.inert = false;
-        row.slot.removeAttribute("aria-hidden");
-        if (native) row.element.style.translate = "";
-      }
     }
+    if (hidden) unhide(row);
     // Placed before it connects: a mount hook never sees a provisional zero.
     placeRow(row);
     if (native) flowInsert(row);
     else if (!hidden) canvas.insertBefore(row.slot, committedPoint(row.key));
-    hiddenRows.delete(row);
-    if (resident === row) resident = null;
     row.place = "mounted";
     mountedRows.add(row);
     observeRow(row);
-    if (!row.edge) hook(() => options.onMount?.(row.element, row.item));
+    if (!row.spec) hook(() => options.onMount?.(row.element, row.item));
   }
 
   /** Whether the engine may anchor on this row (never loaders or separators). */
   function anchors(row: Row<T>): boolean {
-    return !row.edge && (anchorable === undefined || anchorable(row.item));
+    return !row.spec && (anchorable === undefined || anchorable(row.item));
   }
 
   /**
@@ -621,18 +616,11 @@ export function createVirtualList<T>(
    */
   function flowInsert(row: Row<T>): void {
     const index = geometry.indexOf(row.key);
-    const previous = committedRowAt(index - 1);
+    const previous = rowIn(committedKeys, index - 1);
     const after =
-      previous?.place === "mounted" ? previous.slot : (topSpacer as Node);
-    let before: Node = bottomSpacer as Node;
-    const limit = Math.min(geometry.count, index + 1 + INSERTION_SCAN);
-    for (let next = index + 1; next < limit; next++) {
-      const candidate = committedRowAt(next);
-      if (candidate?.place === "mounted") {
-        before = candidate.slot;
-        break;
-      }
-    }
+      previous && mounted(previous) ? previous.slot : (topSpacer as Node);
+    const before =
+      successor(committedKeys, index, mounted)?.slot ?? (bottomSpacer as Node);
     const placed =
       row.slot.isConnected &&
       after.compareDocumentPosition(row.slot) &
@@ -648,13 +636,7 @@ export function createVirtualList<T>(
    */
   function layoutFlow(): void {
     if (!topSpacer || !bottomSpacer) return;
-    let first = Number.POSITIVE_INFINITY;
-    let last = -1;
-    for (const row of mountedRows) {
-      const index = geometry.indexOf(row.key);
-      if (index < first) first = index;
-      if (index > last) last = index;
-    }
+    const [first, last] = mountedSpan();
     let top = 0;
     let bottom = geometry.totalSize;
     if (last >= 0) {
@@ -673,6 +655,19 @@ export function createVirtualList<T>(
       bottomSpacer.style.height = bottomHeight;
   }
 
+  /** The first and last list index of the mounted rows (last -1: none). */
+  function mountedSpan(): [number, number] {
+    let first = Number.POSITIVE_INFINITY;
+    let last = -1;
+    for (const row of mountedRows) {
+      const index = geometry.indexOf(row.key);
+      if (index < 0) continue;
+      if (index < first) first = index;
+      if (index > last) last = index;
+    }
+    return [first, last];
+  }
+
   /**
    * Host hooks raised while the native flow is being rebuilt wait until it
    * is consistent again, so a hook reading layout never sees a half-moved
@@ -683,12 +678,23 @@ export function createVirtualList<T>(
     if (hookQueue) hookQueue.push(callback);
     else host(callback);
   }
+  function holdHooks<R>(work: () => R): R {
+    if (!native || hookQueue !== null) return work();
+    const queued: (() => void)[] = [];
+    hookQueue = queued;
+    try {
+      return work();
+    } finally {
+      hookQueue = null;
+      for (const callback of queued) host(callback);
+    }
+  }
 
   function unmountRow(row: Row<T>): void {
     row.place = "detached";
     mountedRows.delete(row);
     rowObserver.unobserve(row.element);
-    if (!row.edge) hook(() => options.onUnmount?.(row.element, row.item));
+    if (!row.spec) hook(() => options.onUnmount?.(row.element, row.item));
     row.slot.remove();
     row.offset = Number.NaN;
   }
@@ -702,20 +708,23 @@ export function createVirtualList<T>(
     dirtyRows.delete(row);
     row.slot.remove();
     row.element.remove();
-    if (!row.edge) hook(() => options.onDestroy?.(row.element, row.item));
+    if (!row.spec) hook(() => options.onDestroy?.(row.element, row.item));
   }
 
   function markDirty(row: Row<T>): void {
-    if (row.edge) return;
+    if (row.spec) return;
     row.dirty = true;
     if (rows.get(row.key) === row) dirtyRows.add(row);
   }
 
+  /** Render into the row; a replacement element leaves `shown` as it was. */
   function renderInto(row: Row<T>, item: T): HTMLElement {
+    const shown = row.shown;
     row.shown = item;
     try {
       const element = render(item, row.element);
       row.broken = false;
+      if (element !== row.element) row.shown = shown;
       return element;
     } catch (error) {
       row.broken = true;
@@ -794,7 +803,7 @@ export function createVirtualList<T>(
   let observeFrame = 0;
 
   function observeRow(row: Row<T>): void {
-    if (row.edge || declared) return;
+    if (row.spec || declared) return;
     if (!inDelivery) {
       rowObserver.observe(row.element);
       return;
@@ -849,11 +858,10 @@ export function createVirtualList<T>(
     const heightChanged = Math.abs(height - viewportHeight) > EPSILON_PX;
     if (!widthChanged && !heightChanged) return;
     pass(() => {
-      if (widthChanged && !declared)
-        for (const row of rows.values()) markDirty(row);
       // The layout a gesture was scrolling no longer exists: a width change
       // ends the phase, and held work commits at the new width.
       if (widthChanged) {
+        if (!declared) for (const row of rows.values()) markDirty(row);
         settleParked(false);
         glide?.cancel();
         interruptNativeScroll("resize");
@@ -1003,10 +1011,14 @@ export function createVirtualList<T>(
     const touched: Row<T>[] = [];
     const inPlace: [Row<T>, T][] = [];
     const adopted = new Set<string>();
+    /** `nativeFree()`, read once: it reads layout, and renders write it. */
+    let freeOnce: boolean | undefined;
+    const free = (): boolean => {
+      if (freeOnce === undefined) freeOnce = nativeFree();
+      return freeOnce;
+    };
     /** The staged key's index in the desired order. */
     let at = -1;
-    const near = (key: string | undefined): Row<T> | undefined =>
-      key === undefined ? undefined : (p.staged.get(key) ?? rows.get(key));
 
     const create = (key: string, item: T, element: HTMLElement): Row<T> => {
       if (disposed) {
@@ -1019,10 +1031,7 @@ export function createVirtualList<T>(
       const row = createRow(key, item, element, height);
       built.push(row);
       if (!declared) {
-        hideRow(
-          row,
-          insertionPoint(at, (index) => near(p.keys[index]), p.keys.length),
-        );
+        hideRow(row, insertionPoint(p.keys, at, p.staged));
         fresh.push(row);
       }
       return row;
@@ -1030,13 +1039,11 @@ export function createVirtualList<T>(
     /** Null: updated in place; otherwise its replacement. */
     const rerender = (row: Row<T>, item: T): Row<T> | null => {
       touched.push(row);
-      const shown = row.shown;
       const element = renderInto(row, item);
       if (element === row.element) {
         inPlace.push([row, item]);
         return null;
       }
-      row.shown = shown;
       return create(row.key, item, element);
     };
     const stageSlot = (key: string): void => {
@@ -1056,7 +1063,6 @@ export function createVirtualList<T>(
         undefined as T,
         spec.render(),
         spec.height,
-        edge,
         spec,
       );
       built.push(row);
@@ -1102,8 +1108,7 @@ export function createVirtualList<T>(
               declared &&
               !idle() &&
               (place !== undefined ||
-                (p.declared?.get(key)?.height !== committed.height &&
-                  !nativeFree()))
+                (p.declared?.get(key)?.height !== committed.height && !free()))
             ) {
               p.deferred.set(key, item);
             } else {
@@ -1278,7 +1283,7 @@ export function createVirtualList<T>(
         updatedKey === undefined
           ? p.staged.values()
           : [p.staged.get(updatedKey)];
-      for (const row of waiting) if (row && !row.edge) row.dirty = true;
+      for (const row of waiting) if (row && !row.spec) row.dirty = true;
       pending = p;
     }
     if (!liveCommit()) publish();
@@ -1303,7 +1308,6 @@ export function createVirtualList<T>(
     for (const [key, item] of p.deferred) {
       const row = rows.get(key);
       if (!row || row.dead) continue;
-      const shown = row.shown;
       const height = p.declared?.get(key)?.height ?? declaredHeight(item);
       let element: HTMLElement;
       try {
@@ -1326,10 +1330,7 @@ export function createVirtualList<T>(
       if (element === row.element) {
         row.item = item;
         commitHeight(row, height);
-      } else {
-        row.shown = shown;
-        p.staged.set(key, createRow(key, item, element, height));
-      }
+      } else p.staged.set(key, createRow(key, item, element, height));
     }
   }
 
@@ -1371,11 +1372,9 @@ export function createVirtualList<T>(
     for (const row of dirtyRows) if (!gone.has(row)) toMeasure.add(row);
     const measured = [...toMeasure];
     const heights = readHeights(measured);
-    // Native flow: host hooks wait until the window is whole again (F5).
-    const owner = native && hookQueue === null;
-    if (owner) hookQueue = [];
     let glideFollow = false;
-    try {
+    // Native flow: host hooks wait until the window is whole again (F5).
+    holdHooks(() => {
       for (const row of doomed) destroyRow(row);
       if (disposed) return;
       if (p) {
@@ -1434,7 +1433,7 @@ export function createVirtualList<T>(
         follow.resolveCommit(policy, target);
       // Native flow: the rows on screen stay mounted in the new geometry, so
       // the engine can measure how far its anchor node moved and follow it.
-      if (native) holdWindow();
+      if (native) holdWindow(keysChanged || (p?.staged.size ?? 0) > 0);
       else repositionMounted();
       if (!glideFollow && moves) {
         if (o.write !== false) writeScrollTop(target);
@@ -1442,13 +1441,7 @@ export function createVirtualList<T>(
         // sensor never reads the adjustment as user input.
         else if (native) controller.recordProgrammaticScrollTop(target);
       }
-    } finally {
-      if (owner) {
-        const queued = hookQueue ?? [];
-        hookQueue = null;
-        for (const callback of queued) host(callback);
-      }
-    }
+    });
     if (disposed) return;
     reconcileAndPublish();
     if (disposed) return;
@@ -1558,38 +1551,29 @@ export function createVirtualList<T>(
     lastRange = range;
     heldRetirements = false;
     // Native flow: rebuild the window and its spacers before any hook runs.
-    const owner = native && hookQueue === null;
-    if (owner) hookQueue = [];
-    try {
-      return mountWindow(vp, range, delta, kept);
-    } finally {
-      if (native) layoutFlow();
-      if (owner) {
-        const queued = hookQueue ?? [];
-        hookQueue = null;
-        for (const callback of queued) host(callback);
+    return holdHooks(() => {
+      try {
+        return mountWindow(vp, range, delta, kept);
+      } finally {
+        layoutFlow();
       }
-    }
+    });
   }
 
   /**
    * Native flow, inside a commit: keep the mounted rows mounted at their new
-   * offsets and fill the rows inserted between them, so the flow stays
-   * contiguous and the engine's anchor node survives the layout.
+   * offsets, so the engine's anchor node survives the layout. `fill` mounts
+   * the rows inserted or replaced between them (only a key change or a
+   * staged row opens a gap), keeping the flow contiguous.
    */
-  function holdWindow(): void {
-    let first = Number.POSITIVE_INFINITY;
-    let last = -1;
-    for (const row of mountedRows) {
-      const index = geometry.indexOf(row.key);
-      if (index < 0) continue;
-      if (index < first) first = index;
-      if (index > last) last = index;
-    }
-    for (let index = first; index <= last; index++) {
-      const row = materialize(index);
-      if (row && row.place !== "mounted") mountRow(row);
-      if (disposed) return;
+  function holdWindow(fill: boolean): void {
+    if (fill) {
+      const [first, last] = mountedSpan();
+      for (let index = first; index <= last; index++) {
+        const row = materialize(index);
+        if (row && row.place !== "mounted") mountRow(row);
+        if (disposed) return;
+      }
     }
     layoutFlow();
   }
@@ -1630,7 +1614,7 @@ export function createVirtualList<T>(
         heldRetirements = true;
         return;
       }
-      if (declared && !row.edge) {
+      if (declared && !row.spec) {
         rows.delete(row.key);
         destroyRow(row);
       } else unmountRow(row);
@@ -1804,41 +1788,8 @@ export function createVirtualList<T>(
   } | null = null;
   /** A command or resize is settling the phase it interrupts. */
   let takingOver: "command" | "resize" | null = null;
-  const windowJobs = new Set<(prepare?: boolean) => void>();
+  const windowJobs = new Set<() => void>();
   const cancelJobs = new Set<() => void>();
-  /**
-   * Rows a cancelled window job staged, kept for its retry. A paging
-   * companion re-submits the same page once its source changed (a streamed
-   * token); the retry adopts these instead of rendering the page again, so
-   * it lands before the next change. Unclaimed at the end of the task, or
-   * after a width change, they are destroyed.
-   */
-  let spares: { rows: Map<string, Row<T>>; width: number } | null = null;
-  let sparesTimer = 0;
-  function dropSpares(): void {
-    if (sparesTimer !== 0) window.clearTimeout(sparesTimer);
-    sparesTimer = 0;
-    const dropped = spares;
-    spares = null;
-    for (const row of dropped?.rows.values() ?? []) destroyRow(row);
-  }
-  function keepSpares(kept: Map<string, Row<T>>): void {
-    dropSpares();
-    if (kept.size === 0) return;
-    spares = { rows: kept, width: viewportWidth };
-    sparesTimer = window.setTimeout(dropSpares, 0);
-  }
-  function claimSpares(): Map<string, Row<T>> {
-    if (spares?.width !== viewportWidth) {
-      dropSpares();
-      return new Map();
-    }
-    const claimed = spares.rows;
-    spares = null;
-    window.clearTimeout(sparesTimer);
-    sparesTimer = 0;
-    return claimed;
-  }
 
   const idle = (): boolean => !controller.isScrollPhaseActive();
 
@@ -2005,10 +1956,17 @@ export function createVirtualList<T>(
       keys.length !== indexedKeys.length ||
       keys.some((key, index) => key !== indexedKeys[index])
     ) {
+      const previous = indexByKey;
       indexByKey = new Map();
       let index = 0;
       for (const key of keys) if (!isSlotKey(key)) indexByKey.set(key, index++);
       indexedKeys = keys;
+      // An edge slot coming or going leaves the host's order as it was.
+      if (
+        indexByKey.size !== previous.size ||
+        [...indexByKey].some(([key, at]) => previous.get(key) !== at)
+      )
+        structure += 1;
     }
     lastItems = snapshot;
   }
@@ -2148,10 +2106,11 @@ export function createVirtualList<T>(
         snapshot: T[];
         slots: Record<Edge, EdgeSlot | null> | null;
         source: readonly T[];
+        /** The list's key order the job was staged against. */
+        structure: number;
         width: number;
         input: number;
         protectedKeys: Set<string>;
-        keys: Set<string>;
         /** The snapshot's key order, to place staged rows in list order. */
         order: readonly string[];
         index: Map<string, number>;
@@ -2167,8 +2126,6 @@ export function createVirtualList<T>(
       let frame = 0;
       let idleHandle = 0;
       const canIdle = !interrupt && typeof requestIdleCallback === "function";
-      /** Rows a cancelled predecessor staged, adopted when the item is the same. */
-      const reuse = claimSpares();
 
       const cleanup = (): void => {
         windowJobs.delete(run);
@@ -2187,13 +2144,7 @@ export function createVirtualList<T>(
         const errors = error === undefined ? [] : flatten(error);
         const abandoned = job;
         job = null;
-        const leftovers = new Map([...reuse, ...(abandoned?.rows ?? [])]);
-        reuse.clear();
-        // Cancelled over an in-place change, the staged rows wait for the
-        // host's retry; otherwise they die with the job.
-        if (retry && !applied && error === undefined && !disposed)
-          keepSpares(leftovers);
-        else for (const row of leftovers.values()) destroyRow(row);
+        for (const row of abandoned?.rows.values() ?? []) destroyRow(row);
         errors.push(...failures.splice(mark));
         try {
           if (!disposed && !defer(() => pass(publish))) pass(publish);
@@ -2227,18 +2178,10 @@ export function createVirtualList<T>(
         checkedRevision = revision;
         return true;
       };
-      /** Only items replaced in place (a streamed token): same keys, same order. */
-      const sameStructure = (j: Job): boolean =>
-        j.source.length === lastItems.length &&
-        j.source.every(
-          (item, index) =>
-            item === lastItems[index] ||
-            keyOf(item) === keyOf(lastItems[index] as T),
-        );
       /**
-       * Staging goes on while items are replaced in place: rows staged for
-       * new keys stay valid, and the retry that follows the cancelled commit
-       * adopts them. Only the commit needs the exact source (`current`).
+       * Staging goes on while items are replaced in place (a streamed
+       * token): rows staged for new keys stay valid. A key-order change ends
+       * the job; an in-place change is resolved at the commit (`run`).
        */
       const alive = (): boolean =>
         !finished &&
@@ -2246,12 +2189,15 @@ export function createVirtualList<T>(
         !disposed &&
         !signal?.aborted &&
         (!job ||
-          (job.width === viewportWidth &&
-            (!interrupt || job.input === inputEpoch) &&
-            (sourceCurrent(job) || sameStructure(job))));
-      const current = (): boolean => alive() && (!job || sourceCurrent(job));
-      /** Cancelled at commit over an in-place change: its rows wait for a retry. */
-      let retry = false;
+          (job.structure === structure &&
+            job.width === viewportWidth &&
+            (!interrupt || job.input === inputEpoch)));
+      /** Stop when the job no longer lives; true when it did. */
+      const ended = (): boolean => {
+        if (alive()) return false;
+        cancel();
+        return true;
+      };
 
       /** Render one bounded slice, hidden in the canvas; one warm read. */
       const slice = (j: Job, deadline?: IdleDeadline): void => {
@@ -2268,15 +2214,9 @@ export function createVirtualList<T>(
               cancel();
               return;
             }
-            const near = (index: number): Row<T> | undefined => {
-              const other = j.order[index];
-              return other === undefined
-                ? undefined
-                : (j.rows.get(other) ?? rows.get(other));
-            };
             hideRow(
               row,
-              insertionPoint(j.index.get(key) as number, near, j.order.length),
+              insertionPoint(j.order, j.index.get(key) as number, j.rows),
             );
             j.rows.set(key, row);
             j.cursor += 1;
@@ -2285,10 +2225,7 @@ export function createVirtualList<T>(
             if (!deadline && performance.now() - started >= 3) break;
           }
           last?.element.getBoundingClientRect();
-          if (!alive()) {
-            cancel();
-            return;
-          }
+          if (ended()) return;
           j.ready = j.cursor === j.fresh.length;
         });
       };
@@ -2304,10 +2241,7 @@ export function createVirtualList<T>(
       };
       const stageFrame = (): void => {
         frame = 0;
-        if (!alive()) {
-          cancel();
-          return;
-        }
+        if (ended()) return;
         // The settle resumes this job, unless native anchoring lands it now.
         if ((!idle() && !nativeFree()) || !job) return;
         const j = job;
@@ -2319,10 +2253,7 @@ export function createVirtualList<T>(
       };
       const stageIdle = (deadline: IdleDeadline): void => {
         idleHandle = 0;
-        if (!alive()) {
-          cancel();
-          return;
-        }
+        if (ended()) return;
         if (idle() || !job) return; // The settle owns it now.
         const j = job;
         if (!j.ready) {
@@ -2339,12 +2270,7 @@ export function createVirtualList<T>(
         run();
       };
       function run(prepareOnly = false): void {
-        if (working || finished) return;
-        if (!current()) {
-          retry = alive();
-          cancel();
-          return;
-        }
+        if (working || finished || ended()) return;
         if (!idle() && !prepareOnly && !nativeFree()) return;
         const staging = (): void => {
           if (prepareOnly || (!idle() && canIdle)) {
@@ -2364,12 +2290,27 @@ export function createVirtualList<T>(
             // Nothing lands mid-phase: a ready job waits for the settle.
             if (prepareOnly && j) return;
             const context = protectedContext(protectPin);
-            const next = j?.next ?? update(context);
-            if (!next || !current()) return;
-            const snapshot = j?.snapshot ?? [...next.items];
+            // Items replaced in place since staging (a streamed token): ask
+            // the updater again. Its rows stay adoptable by item identity.
+            const stale = j !== null && !sourceCurrent(j);
+            const next = j && !stale ? j.next : update(context);
+            if (!next) {
+              if (j) cancel();
+              return;
+            }
+            if (ended()) return;
+            const snapshot = j && !stale ? j.snapshot : [...next.items];
+            if (
+              stale &&
+              (snapshot.length !== j.order.length ||
+                snapshot.some((item, index) => keyOf(item) !== j.order[index]))
+            ) {
+              cancel();
+              return;
+            }
             if (!protectPin) {
               // Opt-in trimming releases only the pin's extra protection.
-              const keys = j?.keys ?? new Set(snapshot.map(keyOf));
+              const keys = j?.index ?? new Set(snapshot.map(keyOf));
               const target =
                 typeof next.anchor === "object" ? next.anchor : null;
               if (
@@ -2386,19 +2327,20 @@ export function createVirtualList<T>(
                   end: ownSlot(next.edgeSlots.end),
                 }
               : null;
+            if (stale) {
+              j.next = {
+                ...next,
+                anchor: ownAnchor(next.anchor ?? "viewport"),
+              };
+              j.snapshot = snapshot;
+              j.slots = slots;
+              j.source = context.items;
+            }
             if (!j && !declared && pending === null) {
               const { keys, byKey } = indexItems(snapshot, false);
-              const reused = new Map<string, Row<T>>();
-              const fresh = [...byKey].filter(([key, item]) => {
-                if (rows.has(key)) return false;
-                const row = reuse.get(key);
-                if (row?.item !== item) return true;
-                reused.set(key, row);
-                return false;
-              });
-              if (!current()) return;
+              const fresh = [...byKey].filter(([key]) => !rows.has(key));
+              if (ended()) return;
               if (fresh.length > JOB_MIN_ROWS) {
-                for (const key of reused.keys()) reuse.delete(key);
                 job = {
                   next: {
                     ...next,
@@ -2407,18 +2349,17 @@ export function createVirtualList<T>(
                   snapshot,
                   slots,
                   source: context.items,
+                  structure,
                   width: viewportWidth,
                   input: inputEpoch,
                   protectedKeys: new Set(context.protectedItems.map(keyOf)),
-                  keys: new Set(keys),
                   order: keys,
                   index: new Map(keys.map((key, index) => [key, index])),
                   fresh,
                   cursor: 0,
-                  rows: reused,
+                  rows: new Map(),
                   ready: false,
                 };
-                windowJobs.add(run);
                 staging();
                 publish();
                 return;
@@ -2430,17 +2371,13 @@ export function createVirtualList<T>(
               j &&
               context.protectedItems.some((item) => {
                 const key = keyOf(item);
-                return !j.protectedKeys.has(key) && !j.keys.has(key);
+                return !j.protectedKeys.has(key) && !j.index.has(key);
               })
             ) {
               cancel();
               return;
             }
-            if (!current()) {
-              retry = alive();
-              cancel();
-              return;
-            }
+            if (ended()) return;
             // Mid-phase (native anchoring), only a snapshot that needs no
             // scroll write lands; a named or end anchor waits for the settle.
             const anchor = next.anchor ?? "viewport";
@@ -2457,7 +2394,7 @@ export function createVirtualList<T>(
               ownAnchor(next.anchor ?? "viewport"),
               false,
               j ? j.slots : slots,
-              j?.rows ?? reuse,
+              j?.rows,
             );
             if (disposed) return;
             host(() => next.onCommit?.());
@@ -2708,7 +2645,7 @@ export function createVirtualList<T>(
       let policy: AnchorPolicy | null = null;
       for (const [key, anchor] of remeasureRequests) {
         const row = rows.get(key);
-        if (row?.place !== "mounted" || row.edge) continue;
+        if (row?.place !== "mounted" || row.spec) continue;
         markDirty(row);
         policy = anchor;
       }
@@ -2734,7 +2671,7 @@ export function createVirtualList<T>(
     if (defer(() => remeasure(key, { anchor }))) return;
     pass(() => {
       const row = rows.get(key);
-      if (row?.place !== "mounted" || row.edge) return;
+      if (row?.place !== "mounted" || row.spec) return;
       remeasureRequests.delete(key);
       remeasureRequests.set(key, anchor);
       remeasurePolicy = anchor;
@@ -2770,7 +2707,6 @@ export function createVirtualList<T>(
     const mark = failures.length;
     cancelRepaint?.();
     for (const cancel of [...cancelJobs]) cancel();
-    dropSpares();
     for (const tasks of openScopes) discard(tasks);
     glide?.cancel();
     settleParked(false);

@@ -3,9 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "dev:next": "vite --config vite.next.config.ts --port 5174",
-    "dev:next:runtime": "VITE_VL_ANCHORING=runtime vite --config vite.next.config.ts --port 5175",
+    "dev": "vite --config vite.next.config.ts",
     "build": "pnpm run check && vite build",
     "preview": "vite preview",
     "lint": "biome lint .",

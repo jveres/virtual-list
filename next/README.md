@@ -102,10 +102,10 @@ snapshot merge, promotion, or `partial` flag. Window jobs (`updateWindow`,
 which the paging companion uses) keep their `main` semantics: they prepare
 during a gesture and commit only when the list is idle. Native anchoring
 (F5) relaxes both rules away from the scroll edges. A job whose source
-items change in place (a streamed token) keeps staging, and its commit is
-still cancelled, so the companion retries against current data. The retry
-adopts the rows the cancelled job staged, so a page lands while a reply
-streams instead of restarting on every token.
+items change in place (a streamed token) keeps staging, and at its commit
+asks the updater again for current data, adopting the rows it staged by
+item identity. A page lands while a reply streams instead of restarting on
+every token. A change to the key order still cancels the job.
 
 ### F2. Rows are measured where they mount
 
@@ -251,8 +251,9 @@ and dependency cache, so both run beside your `pnpm run dev` server on
 | `pnpm run dev:next` | Native where supported (`auto`) | `http://localhost:5174/demos/streaming/` |
 | `pnpm run dev:next:runtime` | Runtime (F1), as on `main` | `http://localhost:5175/demos/streaming/` |
 
-The servers set the default mode through `VITE_VL_ANCHORING`. An explicit
-`anchoring` option still wins.
+The servers read `VITE_VL_ANCHORING`, and the module swap in
+`vite.next.config.ts` gives `createVirtualList` that default. An explicit
+`anchoring` option still wins. The runtime itself reads no environment.
 
 To run the browser checks on `next`, point them at a `next` server:
 
@@ -283,8 +284,8 @@ default is switched from `same-height` to `live`, the rule `next` keeps.
 - 5 request a removed mode or option.
 - 5 assert the detached measurement root or wrapper release that F2
   replaces.
-- 1 pins that an in-place item update stops a staged page at once. `next`
-  keeps staging and lets the retry adopt the rows.
+- 1 pins that an in-place item update cancels a staged page. `next` keeps
+  staging and asks the updater again at the commit.
 
 `next/tests/foundation.test.ts` covers what `next` adds: hidden in-canvas
 staging, reveal without re-parenting, the offscreen resident, the post-commit
@@ -330,13 +331,11 @@ lists them.
 
 ### Measurements
 
-The orchestration layer shrinks from 3,910 to 3,010 lines (−23%), or from
-2,840 to 2,593 code lines (−9%). The physics modules are shared. Native
-anchoring (F5) accounts for 292 of those lines (209 code lines). It adds to
-the runtime path rather than replacing it, because the runtime remains the
-fallback. Keeping staged rows for a paging retry adds 68 (51 code lines).
-The first commit, without either, was 2,650 lines and 2,333 code lines
-(−32% and −18%).
+The orchestration layer shrinks from 3,910 to 2,946 lines (−25%), or from
+2,840 to 2,528 code lines (−11%). The physics modules are shared. The first
+commit was 2,650 lines and 2,333 code lines (−32% and −18%); native
+anchoring (F5) is most of the difference. It adds to the runtime path
+rather than replacing it, because the runtime remains the fallback.
 
 The headless CPU benchmarks in [`bench/`](bench/) put `next` within ±10%
 of `main`:

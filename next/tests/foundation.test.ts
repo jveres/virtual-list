@@ -1,124 +1,19 @@
 /**
  * @vitest-environment jsdom
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createPagedWindow, type Page } from "../../src/paging";
-import {
-  createVirtualList,
-  type VirtualList,
-  type VirtualListOptions,
-  type VirtualListState,
-} from "../src/virtual-list";
+import type { VirtualList } from "../src/virtual-list";
+import { type Msg, message, mount, ROW_H, range, useHarness } from "./harness";
 
 // What virtual-list-next adds on top of the shared contract suite: rows are
 // measured where they mount, the desired state lands under one commit rule,
-// and host calls made from callbacks queue behind the pass. jsdom has no
-// layout: heights come from a per-row getBoundingClientRect stub.
+// and host calls made from callbacks queue behind the pass.
 
-interface Msg {
-  id: number;
-  body: string;
-}
-
-const VIEWPORT_H = 600;
-const ROW_H = 100;
-
-const message = (id: number, body = `msg ${id}`): Msg => ({ id, body });
-const range = (from: number, to: number): Msg[] =>
-  Array.from({ length: to - from }, (_, i) => message(from + i));
-
-class ControlledResizeObserver {
-  observe(): void {}
-  unobserve(): void {}
-  disconnect(): void {}
-}
-
-interface Harness {
-  list: VirtualList<Msg>;
-  viewport: HTMLElement;
-  canvas: HTMLElement;
-  heights: Map<number, number>;
-  states: VirtualListState[];
-  element: (id: number) => HTMLElement | undefined;
-  userScroll: (top: number) => void;
-  settle: () => void;
-}
-
-function mount(
-  items: Msg[],
-  options: Partial<VirtualListOptions<Msg>> = {},
-): Harness {
-  const viewport = document.createElement("div");
-  let scrollTop = 0;
-  const canvasHeight = (): number =>
-    Number.parseFloat(
-      (viewport.firstElementChild as HTMLElement | null)?.style.height ?? "",
-    ) || 0;
-  Object.defineProperties(viewport, {
-    clientHeight: { get: () => VIEWPORT_H },
-    clientWidth: { get: () => 300 },
-    scrollHeight: { get: () => Math.max(VIEWPORT_H, canvasHeight()) },
-    scrollTop: {
-      get: () => scrollTop,
-      set: (next: number) => {
-        scrollTop = Math.max(
-          0,
-          Math.min(Math.max(0, canvasHeight() - VIEWPORT_H), next),
-        );
-      },
-    },
-  });
-  document.body.appendChild(viewport);
-  const heights = new Map<number, number>();
-  const states: VirtualListState[] = [];
-  const elements = new Map<number, HTMLElement>();
-  const list = createVirtualList<Msg>(viewport, {
-    items,
-    key: (m) => `m${m.id}`,
-    settleStrategy: "default",
-    anchoring: "runtime",
-    render: (m, existing) => {
-      const element = existing ?? document.createElement("div");
-      element.textContent = m.body;
-      element.getBoundingClientRect = () =>
-        ({ height: heights.get(m.id) ?? ROW_H }) as DOMRect;
-      elements.set(m.id, element);
-      return element;
-    },
-    onState: (state) => states.push(state),
-    ...options,
-  });
-  return {
-    list,
-    viewport,
-    canvas: viewport.firstElementChild as HTMLElement,
-    heights,
-    states,
-    element: (id) => elements.get(id),
-    userScroll: (top) => {
-      viewport.scrollTop = top;
-      viewport.dispatchEvent(new Event("scroll"));
-    },
-    settle: () => {
-      viewport.dispatchEvent(new Event("scrollend"));
-      vi.advanceTimersByTime(200);
-    },
-  };
-}
-
-beforeEach(() => {
-  (globalThis as { ResizeObserver: unknown }).ResizeObserver =
-    ControlledResizeObserver;
-  vi.useFakeTimers();
-});
-
-afterEach(() => {
-  document.body.replaceChildren();
-  vi.useRealTimers();
-});
+useHarness();
 
 describe("window jobs", () => {
-  it("lands a page mid-stream: each retry adopts the rows already staged", async () => {
+  it("lands a page mid-stream, adopting the rows it staged", async () => {
     const page = (start: number): Page<Msg, number> => ({
       items: range(start, start + 20),
       start:
@@ -134,7 +29,7 @@ describe("window jobs", () => {
       render: (m, existing) => {
         renders.set(m.id, (renders.get(m.id) ?? 0) + 1);
         const element = existing ?? document.createElement("div");
-        element.textContent = m.body;
+        element.textContent = m.body ?? null;
         element.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
         return element;
       },
@@ -165,7 +60,7 @@ describe("window jobs", () => {
     expect(landed).toBe(true); // Mid-stream, not after it.
     await expect(load).resolves.toBe(true);
     expect(h.list.state.count).toBe(40);
-    // The cancelled attempts' rows were adopted, never rendered again.
+    // Asked again at the commit, the updater's rows were adopted, never re-rendered.
     for (let id = 20; id < 40; id++) expect(renders.get(id)).toBe(1);
     paging.dispose();
     h.list.dispose();
