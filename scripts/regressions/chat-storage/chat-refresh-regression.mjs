@@ -1,6 +1,12 @@
 // Offline regeneration checks; no API requests leave the browser.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  pendingOpenAIMock,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
@@ -9,10 +15,7 @@ try {
   const simulated = await browser.newPage({
     viewport: { width: 1420, height: 950 },
   });
-  await simulated.goto(`${base}/demos/streaming/`);
-  await simulated.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  await openStreamingDemo(simulated, base);
   const inset = await simulated
     .locator(".section-header")
     .first()
@@ -47,45 +50,18 @@ try {
   );
   await simulated.close();
   const page = await browser.newPage();
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  page.on("dialog", (dialog) => dialog.accept());
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "virtual-list:ai-settings",
-      JSON.stringify({
-        provider: "openai",
-        apiKey: "offline-test",
-        model: "gpt-5-mini",
-      }),
-    );
-    const original = window.fetch;
-    window.fetch = (input, init) => {
-      if (!String(input).startsWith("https://api.openai.com/"))
-        return original(input, init);
-      window.requests = (window.requests ?? 0) + 1;
-      window.requestBody = JSON.parse(init.body);
-      return new Promise((_resolve, reject) => {
-        init.signal.addEventListener(
-          "abort",
-          () => reject(new DOMException("Cancelled", "AbortError")),
-          { once: true },
-        );
-      });
-    };
+  await page.addInitScript(seedAISettings, OFFLINE_AI_SETTINGS);
+  await page.addInitScript(pendingOpenAIMock, {
+    counter: "requests",
+    body: "requestBody",
   });
-  await page.goto(`${base}/demos/streaming/`);
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
   assert.equal(await page.locator(".message-refresh-btn").count(), 0);
-  await page.locator("#import-file").setInputFiles({
-    name: "refresh.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from(
-      "**User**\n\nFirst question\n\n**Assistant**\n\nFirst answer\n\n**User**\n\nLast question\n\n**Assistant**\n\nOriginal answer\n",
-    ),
-  });
+  await importTranscript(
+    page,
+    "**User**\n\nFirst question\n\n**Assistant**\n\nFirst answer\n\n**User**\n\nLast question\n\n**Assistant**\n\nOriginal answer\n",
+    { name: "refresh.md" },
+  );
   await page.getByText("Original answer", { exact: true }).waitFor();
   const refresh = page.locator(
     ".message-actions[data-latest] .message-refresh-btn",

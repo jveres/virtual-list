@@ -172,6 +172,10 @@ The review identified real work but overstated several conclusions:
 
 Keep the source unchanged and prepare fresh copies before starting Vite:
 
+> **Note:** These static-review scripts measured the original runtime and
+> were removed when `virtual-list-next` replaced it (commit `aeeb778`
+> onward). Check out an earlier revision to rerun them.
+
 ```sh
 node scripts/firefox-profile/prepare-static-review.mjs
 pnpm exec vite --host 127.0.0.1 --port 4193 --strictPort

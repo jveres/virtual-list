@@ -1,6 +1,7 @@
 // Offline anchoring matrix. Uses real controls; never calls an AI service.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
@@ -19,15 +20,11 @@ try {
         const page = await browser.newPage({
           viewport: { width: layout.width, height: layout.height },
         });
-        const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        page.on("dialog", (dialog) => dialog.accept());
         await page.route("https://api.openai.com/**", (route) => route.abort());
         try {
-          await page.goto(`${base}/demos/streaming/`);
-          await page.waitForFunction(
-            () => !document.documentElement.classList.contains("booting"),
-          );
+          const errors = await openStreamingDemo(page, base, {
+            acceptDialogs: true,
+          });
           await page.locator("#sticky-toggle").evaluate((el, checked) => {
             if (el.checked !== checked) el.click();
           }, layout.sticky);
@@ -100,11 +97,7 @@ try {
               },
             );
           }, role);
-          await page.locator("#import-file").setInputFiles({
-            name: "anchor-matrix.md",
-            mimeType: "text/markdown",
-            buffer: Buffer.from(fixture),
-          });
+          await importTranscript(page, fixture, { name: "anchor-matrix.md" });
           const key = role === "user" ? 21 : 22;
           const row = page.locator(`.message[data-key="${key}"]`);
           await row.waitFor();

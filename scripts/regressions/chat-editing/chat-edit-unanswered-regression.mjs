@@ -1,23 +1,16 @@
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
 try {
   const page = await browser.newPage();
-  page.on("dialog", (dialog) => dialog.accept());
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(
-    `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/`,
-  );
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
-  await page.locator("#import-file").setInputFiles({
+  const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
+  await importTranscript(page, "**User**\n\nUnanswered question\n", {
     name: "unanswered.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from("**User**\n\nUnanswered question\n"),
   });
   await page.getByText("Unanswered question", { exact: true }).waitFor();
   const original = page.locator("#viewport .message.user");

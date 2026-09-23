@@ -59,8 +59,11 @@ through `setItems`; a token replaces one message through `updateItem`. The
 runtime calls `render(item, existing)` and measures the changed row. Your
 renderer updates the existing element or returns a replacement.
 
-Configure `pinning.match` to identify the prompt, `followBehavior: "smooth"`,
-and `scrollingUpdates: "live"`. On send, submit the prompt and empty reply,
+Configure `pinning.match` to identify the prompt and
+`followBehavior: "smooth"`. Streaming tokens need no update-mode option: a
+token that changes nothing above the reader lands at once, even during a
+gesture, and other changes wait for the scroll to settle unless native scroll
+anchoring keeps the reader still. On send, submit the prompt and empty reply,
 then await `scrollTo(promptKey, { align: "start", behavior: "smooth" })`.
 A result of `false` means the command did not land, including interruption;
 it need not cancel the response. Never write the viewport's scroll position
@@ -106,11 +109,13 @@ Its promise resolves after submission, not after a geometry commit. Unknown
 keys, unchanged references, and disposed pagers resolve `false`. Source and
 projected row keys must stay stable. Updaters and adapters must be pure.
 
-Every retained page sharing that item receives the replacement. A live update
-that invalidates detached page preparation causes the fetched page to be
-retried against current data. It does not re-fetch that page. `onChange`
-continues to describe committed window changes; it is not a per-token event.
-Read `paging.items` for the latest submitted source state.
+Every retained page sharing that item receives the replacement. A page that
+is still preparing when a live update arrives keeps its staged rows, and its
+commit evaluates the page again against current data. If other source
+changes cancel that preparation, the pager retries the fetched page against
+current data. It doesn't re-fetch that page. `onChange` continues to describe
+committed window changes; it is not a per-token event. Read `paging.items`
+for the latest submitted source state.
 
 If runtime submission throws, the pager cancels outstanding page work and
 stops accepting updates. The latest source remains readable in `paging.items`
@@ -248,8 +253,8 @@ supply your own UI adapter without duplicating list scroll control:
   that can clamp WebKit's scroll position. Bounds are positive border-box
   heights; use `box-sizing: border-box` on the textarea.
 - `prepareUserMessageCollapse` prepares the demo-compatible chat markup at
-  the supplied viewport width. Its optional measurement ancestor must match
-  the runtime's measurement container and inherited typography. Call it before
+  the supplied viewport width. Pass the list viewport, or an element with its
+  typography, as the optional measurement ancestor. Call it before
   returning a new row, then wire its mount/unmount helpers to the runtime.
   It expects `.message-content > .markdown-viewer > .markdown`, and the chat
   collapse styles. General-purpose renderer hooks are not added to the core.

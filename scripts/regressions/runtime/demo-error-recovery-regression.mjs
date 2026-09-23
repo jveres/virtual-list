@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, chromium, webkit]) {
@@ -46,16 +47,13 @@ for (const engine of [firefox, chromium, webkit]) {
     }
 
     const page = await browser.newPage();
-    const errors = [];
     const reports = [];
-    page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
       if (message.type() === "error") reports.push(message.text());
     });
-    await page.goto(`${base}/demos/streaming/?instant`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/?instant",
+    });
     await page.evaluate(() => {
       const original = Object.getOwnPropertyDescriptor(
         Element.prototype,

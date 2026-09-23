@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
@@ -10,14 +11,12 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1200, height: 900 },
   });
-  const errors = [];
   const alerts = [];
-  page.on("pageerror", (error) => errors.push(error.message));
   page.on("dialog", async (dialog) => {
     if (dialog.type() === "alert") alerts.push(dialog.message());
     await dialog.accept();
   });
-  await page.goto(`${base}/demos/streaming/`);
+  const errors = await openStreamingDemo(page, base);
   await page.waitForSelector(".message");
   const fixture = await page.evaluate(async () => {
     const { branchingTranscriptMarkdown } = await import(
@@ -81,11 +80,7 @@ try {
     );
   });
   const importFile = (text) =>
-    page.locator("#import-file").setInputFiles({
-      name: "versions.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(text),
-    });
+    importTranscript(page, text, { name: "versions.md" });
   const row = (text) =>
     page
       .locator(".message")

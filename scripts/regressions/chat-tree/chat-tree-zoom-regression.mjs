@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 await mkdir("browser-artifacts/conversation-tree", { recursive: true });
@@ -11,13 +12,7 @@ for (const engine of [firefox, webkit, chromium]) {
       viewport: { width: 1440, height: 900 },
       reducedMotion: "reduce",
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
     const toggle = page.getByRole("button", {
       name: "Conversation tree",
       exact: true,
@@ -489,13 +484,11 @@ for (const engine of [firefox, webkit, chromium]) {
       view.scrollLeft = view.scrollWidth;
     });
     await page.keyboard.press("Escape");
-    await page.locator("#import-file").setInputFiles({
-      name: "short-selection.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(
-        `**User**\n\nEarlier prompt\n\n**Assistant**\n\n${"Earlier text. ".repeat(400)}\n\n**User**\n\nFinal prompt\n\n**Assistant**\n\nShort final reply\n`,
-      ),
-    });
+    await importTranscript(
+      page,
+      `**User**\n\nEarlier prompt\n\n**Assistant**\n\n${"Earlier text. ".repeat(400)}\n\n**User**\n\nFinal prompt\n\n**Assistant**\n\nShort final reply\n`,
+      { name: "short-selection.md" },
+    );
     await page.locator('#viewport [data-key="4"]').waitFor();
     await toggle.click();
     async function checkReplacementView() {
@@ -569,13 +562,11 @@ for (const engine of [firefox, webkit, chromium]) {
     await page
       .getByRole("button", { name: "Zoom in tree", exact: true })
       .click();
-    await page.locator("#import-file").setInputFiles({
-      name: "visible-replacement.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(
-        "**User**\n\nReplacement prompt\n\n**Assistant**\n\nReplacement reply\n",
-      ),
-    });
+    await importTranscript(
+      page,
+      "**User**\n\nReplacement prompt\n\n**Assistant**\n\nReplacement reply\n",
+      { name: "visible-replacement.md" },
+    );
     await page.waitForFunction(
       () =>
         document.querySelector(".conversation-tree-label")?.textContent ===

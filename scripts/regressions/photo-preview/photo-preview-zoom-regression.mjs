@@ -1,6 +1,7 @@
 // Deterministic VisualViewport geometry checks, not native iPad gesture emulation.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
@@ -10,12 +11,9 @@ for (const engine of [firefox, webkit, chromium]) {
       viewport: { width: 820, height: 1180 },
       hasTouch: true,
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+    });
     await page.evaluate(async () => {
       const { createPhotoPreview } = await import(
         "/demos/shared/photo-preview.ts"

@@ -1,6 +1,11 @@
 // One version/reload contract for every provider. All remote responses are fixtures.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  fulfillOpenAI,
+  seedMissingAISettings,
+} from "../shared/openai-stream.mjs";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
@@ -12,26 +17,17 @@ for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
       const context = await browser.newContext();
       try {
         const page = await context.newPage();
-        const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        await page.addInitScript((provider) => {
-          if (!localStorage.getItem("virtual-list:ai-settings")) {
-            localStorage.setItem(
-              "virtual-list:ai-settings",
-              JSON.stringify({
-                provider,
-                apiKey: "fixture-key",
-                model: "fixture-model",
-                chatgptModel: "fixture-model",
-                tools: {
-                  webSearch: false,
-                  imageGeneration: false,
-                  codeInterpreter: false,
-                },
-              }),
-            );
-          }
-        }, provider);
+        await page.addInitScript(seedMissingAISettings, {
+          provider,
+          apiKey: "fixture-key",
+          model: "fixture-model",
+          chatgptModel: "fixture-model",
+          tools: {
+            webSearch: false,
+            imageGeneration: false,
+            codeInterpreter: false,
+          },
+        });
         let requests = 0;
         async function fixture(route) {
           const path = new URL(route.request().url()).pathname;
@@ -66,16 +62,13 @@ for (const [name, engine] of Object.entries({ chromium, firefox, webkit })) {
               },
             },
           ];
-          return route.fulfill({
-            contentType: "text/event-stream",
-            body: events
-              .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-              .join(""),
-          });
+          return fulfillOpenAI(route, events);
         }
         await page.route("https://api.openai.com/**", fixture);
         await page.route("**/__chatgpt/**", fixture);
-        await page.goto(`${base}/demos/streaming/index.html`);
+        const errors = await openStreamingDemo(page, base, {
+          path: "/demos/streaming/index.html",
+        });
         const answer = () => page.locator(".message.assistant").last();
         async function settled() {
           await page.waitForFunction(

@@ -1,6 +1,7 @@
 // Offline layout regression for the streaming demo's real message adapter.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
@@ -9,12 +10,7 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1280, height: 900 },
   });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(`${base}/demos/streaming/`);
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  const errors = await openStreamingDemo(page, base);
   for (const cursor of ["bar", "none"]) {
     const result = await page.evaluate(async (cursor) => {
       const { createMessageContent } = await import(

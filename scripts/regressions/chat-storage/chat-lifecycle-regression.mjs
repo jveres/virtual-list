@@ -1,6 +1,16 @@
 // Offline lifecycle and storage fault injection; no API requests leave the browser.
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  pendingOpenAIMock,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import {
+  importTranscript,
+  openStreamingDemo,
+  waitForBoot,
+} from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
@@ -48,46 +58,23 @@ try {
   }
 
   const page = await browser.newPage();
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "virtual-list:ai-settings",
-      JSON.stringify({
-        provider: "openai",
-        apiKey: "offline-test",
-        model: "gpt-5-mini",
-      }),
-    );
-    const originalFetch = window.fetch;
-    window.fetch = (input, init) => {
-      if (String(input).startsWith("https://api.openai.com/")) {
-        window.requestStarted = true;
-        return new Promise((_resolve, reject) => {
-          const finish = () =>
-            reject(new DOMException("Cancelled", "AbortError"));
-          if (!window.finishOldRequest) window.finishOldRequest = finish;
-          else window.finishNewRequest = finish;
-        });
-      }
-      return originalFetch(input, init);
-    };
+  await page.addInitScript(seedAISettings, OFFLINE_AI_SETTINGS);
+  await page.addInitScript(pendingOpenAIMock, {
+    started: "requestStarted",
+    finishers: true,
   });
-  await page.goto(`${base}/demos/streaming/index.html`);
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  const errors = await openStreamingDemo(page, base, {
+    path: "/demos/streaming/index.html",
+  });
   await page.locator("#prompt").fill("Old request");
   await page.locator("#send-btn").click();
   await page.waitForFunction(() => window.requestStarted);
   page.on("dialog", (dialog) => dialog.accept());
-  await page.locator("#import-file").setInputFiles({
-    name: "replacement.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from(
-      "**User**\n\nNew question\n\n**Assistant**\n\nNew answer\n",
-    ),
-  });
+  await importTranscript(
+    page,
+    "**User**\n\nNew question\n\n**Assistant**\n\nNew answer\n",
+    { name: "replacement.md" },
+  );
   await page.getByText("New answer", { exact: true }).waitFor();
   await page.locator("#prompt").fill("New request");
   await page.locator("#send-btn").click();
@@ -115,10 +102,9 @@ try {
   await page.close();
 
   const switching = await browser.newPage();
-  await switching.goto(`${base}/demos/streaming/index.html`);
-  await switching.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  await openStreamingDemo(switching, base, {
+    path: "/demos/streaming/index.html",
+  });
   await switching.evaluate(async () => {
     const api = await import("/demos/streaming/openai.ts");
     api.saveOpenAIHistory([
@@ -129,9 +115,7 @@ try {
   // Saving also populates the session cache. Reload before fault injection so
   // switching providers genuinely reads IndexedDB instead of returning it.
   await switching.reload();
-  await switching.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  await waitForBoot(switching);
   await switching.evaluate(() => {
     const originalGet = IDBObjectStore.prototype.get;
     IDBObjectStore.prototype.get = function (...args) {

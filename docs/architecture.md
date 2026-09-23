@@ -23,7 +23,7 @@ That requirement is hard because the browsers disagree on one thing: what
 happens when a page writes `scrollTop` while the user is scrolling. Safari
 stops momentum. Firefox's async scrolling keeps a stale scroll limit for the
 rest of the gesture. Chrome sends `scrollend` early at edges. The current
-solution rests on three cornerstones, and all three stay in `next`:
+solution rests on three cornerstones, and `next` keeps all three:
 
 1. **No structural change during a scroll.** Any change that needs a scroll
    write waits for the scroll to settle. A per-engine settle sensor decides
@@ -34,7 +34,7 @@ solution rests on three cornerstones, and all three stay in `next`:
    commands and end-following. A trailing reserve lets the latest prompt sit
    at the top of the viewport.
 
-## 2. Review of the current architecture
+## 2. Review of the original architecture
 
 The runtime has two layers:
 
@@ -124,8 +124,9 @@ syncing, and the resident special case. Row wrappers now stay with their row
 for its whole life instead of being recreated on every remount.
 
 Slots join the canvas next to their nearest connected list neighbor, so DOM
-order always equals list order. `src/` appends slots in mount order, which
-reverses reading and Tab order for rows entering from above.
+order always equals list order. The original runtime appended slots in
+mount order, which reversed reading and Tab order for rows entering from
+above.
 
 ### F3. One pass
 
@@ -139,8 +140,7 @@ replaces the transaction stack with about 50 lines.
 ### F4. Keep the physics
 
 The settle sensor, the geometry kernel (anchoring, the pin reserve, I0–I5),
-the glide, follow intent, and reach hysteresis are imported from `src/`
-unchanged. They encode engine behavior verified on real hardware, including
+the glide, follow intent, and reach hysteresis are kept unchanged. They encode engine behavior verified on real hardware, including
 the Firefox, Chrome, and Safari edge battery. Replacing them needs that
 battery again, not a rewrite on a desk (see [Roadmap](#5-roadmap)).
 
@@ -223,7 +223,7 @@ row.
 
 | Change | Option | Reason |
 | --- | --- | --- |
-| Removed | `scrollingUpdates` | One commit rule (F1). The option is accepted and ignored. |
+| Removed | `scrollingUpdates` | One commit rule (F1). JavaScript callers that still pass it are ignored. |
 | Removed | `measurementContainer` | Rows are measured in the viewport itself (F2). |
 | Removed | `prepareDuringScroll` | Idle-time page preparation is always on. |
 | Added | `anchoring` | Native or runtime anchoring (F5). |
@@ -242,7 +242,7 @@ Run the static checks, the unit suite, and the browser checks against a
 pnpm run check
 pnpm test
 pnpm run test:browser -- --suite=chat
-pnpm run test:browser -- --suite=lab --mode=live
+pnpm run test:browser -- --suite=lab
 pnpm run test:regression
 ```
 
@@ -266,7 +266,7 @@ post-commit sweep, DOM order, the one commit rule, the pass, and a page
 landing while a reply streams. `tests/unit/virtual-list-native.test.ts`
 covers the native surface: spacers that reproduce committed geometry, a
 mid-gesture prepend without a scroll write, the settle rule at an edge and
-during a glide, and the host's opt-out. Both share
+during a glide, and the host's opt-out. All three suites share
 `tests/helpers/list-harness.ts`.
 
 jsdom reports `overflow-anchor` as supported but lays nothing out, so the
@@ -377,6 +377,6 @@ can't produce on a desk.
 | `src/types.ts` | Public types. |
 | `src/index.ts` | Entry point. |
 | `tests/unit/virtual-list*.test.ts` | Contract suite, foundation tests, and native-surface tests. |
-| `tests/helpers/list-harness.ts` | The jsdom harness of the foundation and native-surface tests. |
+| `tests/helpers/list-harness.ts` | The jsdom harness of the contract, foundation, and native-surface tests. |
 | `scripts/regressions/runtime/` | Browser regressions, including hidden-row, native-anchoring, native-glide, and stream-paging. |
 | `scripts/anchoring-probe.mjs`, `scripts/anchoring-structure-probe.mjs` | Native anchoring probes. |

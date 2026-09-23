@@ -2,6 +2,12 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  fulfillOpenAI,
+  OFFLINE_AI_SETTINGS,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
@@ -49,16 +55,9 @@ try {
       errors.push(`Unexpected dialog: ${dialog.message()}`);
       await dialog.dismiss();
     });
+    await page.addInitScript(seedAISettings, OFFLINE_AI_SETTINGS);
     await page.addInitScript(
       ({ mode, part, item }) => {
-        localStorage.setItem(
-          "virtual-list:ai-settings",
-          JSON.stringify({
-            provider: "openai",
-            apiKey: "offline-test",
-            model: "gpt-5-mini",
-          }),
-        );
         if (
           mode === "old-history" &&
           !localStorage.getItem("artifact-fixture-seeded")
@@ -104,12 +103,7 @@ try {
             : []),
           ...(mode === "interrupted" ? [] : [complete]),
         ];
-        await route.fulfill({
-          contentType: "text/event-stream",
-          body: events
-            .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-            .join(""),
-        });
+        await fulfillOpenAI(route, events);
       } else if (
         request
           .url()
@@ -125,10 +119,7 @@ try {
         await route.abort();
       }
     });
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base);
     if (mode !== "old-history") {
       assert.equal(await page.locator(".message").count(), 0);
       await page.locator("#prompt").fill("Generate a report");

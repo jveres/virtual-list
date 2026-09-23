@@ -142,8 +142,7 @@
         align-items: center;
       }
 
-      .controls button,
-      .controls select {
+      .controls button {
         font: inherit;
         font-size: 12px;
         padding: 4px 9px;
@@ -204,11 +203,11 @@
           <div class="cell" title="Elements the lab rendered / destroyed exactly once by the runtime / still alive"><b>nodes c/d/live</b><span class="val" id="s-nodes">0/0/0</span></div>
           <div
             class="cell"
-            title="Mounted rows whose painted content height differs from the committed slot height — must be 0 when quiet; live: a dirty row above the anchor may wait until settle"
+            title="Mounted rows whose painted content height differs from the committed slot height — must be 0 when quiet; a dirty row above the anchor may wait until settle"
           ><b>clipped</b><span class="val" id="s-clipped">0</span></div>
           <div
             class="cell"
-            title="ResizeObserver deliveries (post-runtime, pre-paint) in which a mounted row disagreed with its slot — a frame that paints clipped or gapped; must stay 0 in every mode (live: off-screen rows above the anchor excepted)"
+            title="ResizeObserver deliveries (post-runtime, pre-paint) in which a mounted row disagreed with its slot — a frame that paints clipped or gapped; must stay 0 (off-screen rows above the anchor excepted)"
           ><b>clipped paints</b><span class="val" id="s-paints">0</span></div>
           <div class="cell"><b>streams</b><span class="val" id="s-streams">0</span></div>
           <div class="cell" title="Late images: waiting for their src / loaded"><b>images</b><span class="val" id="s-images">0/0</span></div>

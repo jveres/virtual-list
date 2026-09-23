@@ -1,6 +1,12 @@
 // Offline deletion regression; API requests never leave the browser.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  pendingOpenAIMock,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
@@ -12,20 +18,12 @@ const fixture = (count) =>
   ).join("\n");
 
 async function open(page) {
-  page.on("dialog", (dialog) => dialog.accept());
   await page.route("https://api.openai.com/**", (route) => route.abort());
-  await page.goto(`${base}/demos/streaming/`);
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  return openStreamingDemo(page, base, { acceptDialogs: true });
 }
 
 async function importTurns(page, count) {
-  await page.locator("#import-file").setInputFiles({
-    name: "delete-fixture.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from(fixture(count)),
-  });
+  await importTranscript(page, fixture(count), { name: "delete-fixture.md" });
   await page.getByText(`Turn ${count - 1}`, { exact: true }).waitFor();
 }
 
@@ -50,9 +48,7 @@ async function confirmDelete(page, text) {
 
 try {
   const page = await browser.newPage();
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  await open(page);
+  const errors = await open(page);
   await page.locator("#viewport").evaluate((el) => {
     el.scrollTop -= 120;
   });
@@ -158,27 +154,8 @@ try {
   await page.close();
 
   const streaming = await browser.newPage();
-  await streaming.addInitScript(() => {
-    localStorage.setItem(
-      "virtual-list:ai-settings",
-      JSON.stringify({
-        provider: "openai",
-        apiKey: "offline-test",
-        model: "gpt-5-mini",
-      }),
-    );
-    const originalFetch = window.fetch;
-    window.fetch = (input, init) => {
-      if (!String(input).startsWith("https://api.openai.com/"))
-        return originalFetch(input, init);
-      return new Promise((_resolve, reject) => {
-        const finish = () =>
-          reject(new DOMException("Cancelled", "AbortError"));
-        if (!window.finishOldRequest) window.finishOldRequest = finish;
-        else window.finishNewRequest = finish;
-      });
-    };
-  });
+  await streaming.addInitScript(seedAISettings, OFFLINE_AI_SETTINGS);
+  await streaming.addInitScript(pendingOpenAIMock, { finishers: true });
   await open(streaming);
   await importTurns(streaming, 6);
   await streaming.locator("#prompt").fill("Old request");

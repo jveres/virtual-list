@@ -1,6 +1,11 @@
 // Offline subscription-provider regression. No OpenAI credentials or live requests.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  fulfillOpenAI,
+  seedMissingAISettings,
+} from "../shared/openai-stream.mjs";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 const engines = { chromium, firefox, webkit };
@@ -12,30 +17,22 @@ for (const [name, engine] of Object.entries(engines)) {
     const page = await browser.newPage({
       viewport: { width: 900, height: 900 },
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
     let signedIn = false;
     let pending = false;
     const requests = [];
     const forbidden = [];
-    await page.addInitScript(() => {
-      if (localStorage.getItem("virtual-list:ai-settings")) return;
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "chatgpt",
-          apiKey: "do-not-use",
-          model: "api-model",
-          chatgptModel: "fixture-model",
-          contextTurns: 0,
-          tools: {
-            webSearch: false,
-            imageGeneration: false,
-            codeInterpreter: false,
-          },
-          reasoningSummary: true,
-        }),
-      );
+    await page.addInitScript(seedMissingAISettings, {
+      provider: "chatgpt",
+      apiKey: "do-not-use",
+      model: "api-model",
+      chatgptModel: "fixture-model",
+      contextTurns: 0,
+      tools: {
+        webSearch: false,
+        imageGeneration: false,
+        codeInterpreter: false,
+      },
+      reasoningSummary: true,
     });
     await page.route("https://api.openai.com/**", async (route) => {
       forbidden.push(route.request().url());
@@ -98,12 +95,7 @@ for (const [name, engine] of Object.entries(engines)) {
             response: { id: `resp_${index}`, model: "fixture-model", output },
           },
         ];
-        await route.fulfill({
-          contentType: "text/event-stream",
-          body: events
-            .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-            .join(""),
-        });
+        await fulfillOpenAI(route, events);
         return;
       } else throw new Error(`Unexpected route ${path}`);
       await route.fulfill({
@@ -112,7 +104,9 @@ for (const [name, engine] of Object.entries(engines)) {
       });
     });
 
-    await page.goto(`${base}/demos/streaming/index.html`);
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+    });
     await page.click("#ai-settings-btn");
     assert.equal(
       await page.locator('#ai-provider option[value="openai"]').textContent(),

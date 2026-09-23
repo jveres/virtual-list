@@ -24,7 +24,6 @@ interface ChatMessage {
   role: ChatRole;
   markdown: string;
   status?: AssistantStatus;
-  toolCalls?: ChatToolCall[];
 }
 
 function assistantStatus(message: ChatMessage): AssistantStatus {
@@ -119,37 +118,8 @@ export function buildToolCall(toolCall: ChatToolCall): HTMLDetailsElement {
   return details;
 }
 
-function buildToolCalls(message: ChatMessage): HTMLElement | null {
-  if (message.role !== "assistant" || !message.toolCalls?.length) return null;
-
-  const tools = document.createElement("div");
-  tools.className = "tool-calls";
-  for (const toolCall of message.toolCalls) {
-    tools.appendChild(buildToolCall(toolCall));
-  }
-  return tools;
-}
-
-// Refreshes a row's tool-call panel in place (a call started, finished, or
-// failed mid-stream), keeping the row — and the live viewer, with its cursor —
-// intact.
-export function syncToolCalls(row: HTMLElement, message: ChatMessage): void {
-  const content = row.querySelector<HTMLElement>(".message-content") ?? row;
-  const previous = content.querySelector<HTMLElement>(":scope > .tool-calls");
-  const next = buildToolCalls(message);
-  if (previous) {
-    if (next) previous.replaceWith(next);
-    else previous.remove();
-    return;
-  }
-  if (!next) return;
-  const label = content.querySelector<HTMLElement>(":scope > .role-label");
-  if (label) label.after(next);
-  else content.prepend(next);
-}
-
 // Builds the row chrome shared by static and live rows — `article.message` →
-// `.message-content` → role label + tool calls — and returns the content host
+// `.message-content` → role label — and returns the content host
 // the caller fills with markdown (a static `.markdown-viewer` for finished rows,
 // or a live `createMarkdownViewer` mount for a streaming row).
 export function buildChatRow(message: ChatMessage): {
@@ -166,9 +136,6 @@ export function buildChatRow(message: ChatMessage): {
   label.className = "role-label";
   setRoleLabel(label, message);
   content.appendChild(label);
-
-  const tools = buildToolCalls(message);
-  if (tools) content.appendChild(tools);
 
   row.appendChild(content);
   return { row, content };

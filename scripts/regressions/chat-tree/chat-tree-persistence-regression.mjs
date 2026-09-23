@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  waitForBoot,
+} from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
@@ -9,15 +14,7 @@ for (const engine of [firefox, webkit, chromium]) {
     const page = await browser.newPage({
       viewport: { width: 1440, height: 900 },
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/`);
-    const ready = () =>
-      page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
-    await ready();
+    const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
     const fixture = await page.evaluate(async () => {
       const { branchingTranscriptMarkdown } = await import(
         "/demos/streaming/branching-transcript.ts"
@@ -81,11 +78,7 @@ for (const engine of [firefox, webkit, chromium]) {
       };
     });
     const importFile = async (markdown) => {
-      await page.locator("#import-file").setInputFiles({
-        name: "selection-fixture.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(markdown),
-      });
+      await importTranscript(page, markdown, { name: "selection-fixture.md" });
       await page.waitForFunction(
         () => document.querySelector("#import-file").value === "",
       );
@@ -170,7 +163,7 @@ for (const engine of [firefox, webkit, chromium]) {
     );
 
     await page.reload();
-    await ready();
+    await waitForBoot(page);
     await openTree();
     assert.equal(
       await page
@@ -243,7 +236,7 @@ for (const engine of [firefox, webkit, chromium]) {
       });
     }, oldSelection);
     await page.reload();
-    await ready();
+    await waitForBoot(page);
     await openTree();
     assert.equal(
       await page

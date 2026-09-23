@@ -5,13 +5,20 @@ native scrolling viewport, rows of unknown and changing height, streaming
 content, and scrollback loading. The runtime rests on two cornerstones:
 
 - **Settle detection** (`src/scroll-settle.ts`): per-engine heuristics that
-  identify when a user gesture has likely finished, so structural changes to
-  the scroller can land while nothing is moving.
-- **Premeasurement** (`src/premeasure.ts`): rows are rendered and measured
-  off the scroller before they ever enter it, so committed geometry is
-  rounded to a stable pixel grid, never estimated and corrected later.
-  Stacked rows use whole CSS pixels at integer display scales, including 2x.
-  Hosts can supply declared heights instead of measuring rows.
+  identify when a user gesture has likely finished, so changes that need a
+  scroll write can land while nothing is moving.
+- **Measurement before reveal** (`src/virtual-list.ts`): a new or replacing
+  row is rendered into its own hidden, zero-height slot inside the scroll
+  canvas and measured there with the page's real styles. The runtime then
+  reveals the same slot in place. Committed geometry is rounded to a stable
+  pixel grid, never estimated and corrected later. Stacked rows use whole
+  CSS pixels at integer display scales, including 2x. Hosts can supply
+  declared heights instead of measuring rows.
+
+Where the browser supports CSS scroll anchoring, the runtime lets the browser
+keep the reader still when content above the viewport changes (the
+`anchoring` option). The [architecture](docs/architecture.md) explains this
+design and why it replaced the earlier runtime.
 
 The contract, its invariants (I0–I6), and the design decisions live in
 [`docs/core-contract.md`](docs/core-contract.md). This file covers running, using,
@@ -101,29 +108,29 @@ for device login, trusted-network requirements, and limitations.
 To inspect an unpublished renderer change, build the sibling
 `../markdown-viewer` checkout first. Then run
 `MARKDOWN_VIEWER_LOCAL=1 pnpm exec vite --port 4194`. This preview uses a separate
-dependency cache and leaves the GitHub tag pin unchanged. The geometry page
-labels whether it uses the local build or the pinned release.
+dependency cache and leaves the GitHub tag pin unchanged.
 The dynamic-height lab can POST its trace to the dev server
 (`/__lab/report`), which appends it to `browser-artifacts/device-*.log`, one
 file per user agent.
 
 ## Runtime
 
-Everything under `src/`:
+The runtime lives under `src/`:
 
+- `index.ts` — the public entry point: `createVirtualList` and the public
+  types.
+- `types.ts` — the public option, state, and command types.
 - `virtual-list.ts` — the runtime. Owns the viewport's canvas and row slots,
-  prepares snapshots off the scroller, commits them atomically when the
-  scroller is idle (or, under `"live"`, at once when no scroll write is
-  needed), reconciles the mounted window on every scroll, and runs commands.
+  renders and measures new rows in hidden slots inside the canvas, and lands
+  each change by one commit rule: at once when the list is idle or when
+  nothing above the viewport's anchor row changes, and otherwise at the
+  settle (or mid-gesture under native scroll anchoring, away from the scroll
+  edges). It reconciles the mounted window on every scroll and runs
+  commands.
 - `geometry.ts` + `fenwick.ts` — the pure keyed geometry kernel: capture →
   mutate → resolve transactions, anchor policies, the pin-to-top reserve.
-- `premeasure.ts` — the detached measurer, width-synced to the viewport.
-- `snapshot.ts` — DOM-independent key validation, anchor inheritance,
-  superseded-row selection, and merging targeted patches into held snapshots.
-  The runtime coordinates DOM effects, measurement, and commit scheduling.
-- `render-state.ts` — provisional render state and the preparation rollback
-  journal. The runtime owns fresh elements, measurement, and final adoption;
-  the journal accepts successful in-place updates or restores touched rows.
+- `positioned-geometry.ts` — geometry for host-positioned (masonry) layouts
+  with declared placement.
 - `follow.ts` — chat follow intent, reply-start limits, and catch-up policy
   after visibility changes. It reads geometry through a small host interface;
   the runtime owns glides and scroll writes.
@@ -143,6 +150,12 @@ Everything under `src/`:
   derived approach, so a one-viewport hop and a jump across the list arrive
   identically; exact landing, at least a pixel per frame, live target,
   endpoint rebase.
+- `viewport-repaint.ts` — one-shot WebKit scrolling-layer recovery after a
+  disposed list is replaced on the same viewport.
+- `companions/` — optional helpers built on the public API: sticky headers
+  (`sticky-headers.ts`), reading anchors (`reading-anchor.ts`), their default
+  styles (`styles.css`), and an entry point (`index.ts`) that also exports
+  the paging companion.
 
 ## Public API
 
@@ -160,7 +173,7 @@ const list = createVirtualList(viewport, {
   render: (item, existing) => element,
   overscanPx: 600,
   pinning: true, // false: clamp commands to content without trailing pin space
-  scrollingUpdates: "live", // | "same-height" | "freeze"
+  anchoring: "auto", // | "native" | "runtime"
   followBehavior: "smooth", // | "instant"
   followMode: "end", // | "keep-start": stop when the last row's top reaches the viewport top
   followInset: 0, // px kept clear above that row under "keep-start"
@@ -188,20 +201,34 @@ list.state; // { count, start, end, atStart, atEnd, following, totalSize, held }
 list.dispose();
 ```
 
-- `setItems` hands over a whole snapshot; new and replaced rows are rendered
-  and premeasured off the scroller, and the commit is one atomic write.
-  During a scroll the snapshot waits for the settle, except, under
-  `"live"`, what needs no scroll write: same-key updates, and structural
-  changes confined below the anchor (an appended message, a version switch).
+- `setItems` hands over a whole snapshot. New and replaced rows are rendered
+  and measured in hidden slots inside the canvas, and the commit is one
+  atomic write. There are no update modes. The snapshot lands at once when
+  the list is idle, or when every change sits at or below the viewport's
+  anchor row (an appended message, a version switch, a streamed token),
+  because it then needs no scroll write. Otherwise it waits for the settle.
+  Under native anchoring, away from the scroll edges and outside a glide, a
+  change above the reader also lands mid-gesture, and the browser keeps the
+  reader still. An `"end"` or explicit `{ key, offset }` anchor always waits
+  for the settle during a scroll.
+- `anchoring` chooses who keeps the reader still when content above it
+  changes. `"auto"`, the default, uses the browser's CSS scroll anchoring
+  where `CSS.supports("overflow-anchor", "auto")` holds and the scroller
+  doesn't compute to `overflow-anchor: none`; otherwise it uses the runtime.
+  `"native"` forces the browser, and `"runtime"` forces settle-gated runtime
+  scroll writes. Positioned (masonry) layouts always use the runtime. The
+  canvas records the chosen mode in its `data-anchoring` attribute.
 - `updateItem(key, item, { anchor? })` replaces one item's data. The key must
   stay the same; unknown keys are ignored. It prepares only that item,
   including when a snapshot is held. After successful preparation, it patches
   the held snapshot without copying its items or rebuilding its key order.
   Untouched pending rows and the anchor policy are preserved; an explicit
   anchor overrides the pending policy.
-- `updateWindow(update, signal?, options?)` evaluates an update at idle
-  against the current protected window, then commits additions and trimming
-  together.
+- `updateWindow(update, signal?, options?)` evaluates an update against the
+  current protected window, then commits additions and trimming together.
+  During a gesture it prepares the new rows in idle time and commits when the
+  list is idle. Under native anchoring, away from the scroll edges, it also
+  commits mid-gesture, unless the update names an `"end"` or explicit anchor.
   `options.protectPin` defaults to `true`; `false` permits offscreen-pin
   eviction while protecting visible/overscan rows and explicit targets.
   `options.interrupt` defaults to `false`; use `true` for explicit takeover,
@@ -212,17 +239,17 @@ list.dispose();
   window. Leaving that window calls `onUnmount` and `onDestroy`; re-entry
   calls `render` without an existing element, then `onMount`. Keep state
   that must survive scrolling in item data. Unknown-height rows retain
-  their measured elements as before.
+  their measured elements and slots while they're unmounted.
 - Use `onMount` and `onUnmount` to manage resources for mounted rows.
-  Do not use `element.isConnected` as a mount signal. The runtime can retain
-  one measured row in a hidden, inert root between offscreen updates.
-  Mounting moves the same element into the scroll surface. Removal and
+  Don't use `element.isConnected` as a mount signal. Hidden rows that wait
+  in the canvas are connected but not mounted: their slots are zero-height,
+  `inert`, and `aria-hidden`. The runtime also keeps one lone offscreen row,
+  such as a streaming reply you scrolled away from, laid out in its hidden
+  slot between updates. Mounting reveals that slot in place. Removal and
   disposal release it through the existing lifecycle hooks.
-- For viewport-scoped row styles, pass `measurementContainer`: an element
-  outside the scroll surface with the same typography, CSS variables, and
-  ancestor classes. The hidden measurement root inherits from that element.
-  The default is `document.body`; width matching alone does not reproduce
-  styles scoped to a viewport ancestor.
+- Rows are measured inside the viewport's own canvas, so styles scoped to a
+  viewport ancestor apply during measurement. You don't need a separate
+  measurement container.
 - `pinning` defaults to `true`. Set `pinning: false` for a history or feed
   view: keyed alignment clamps to the content's scroll range, end commands
   land at the content bottom, and end-command `pin` requests are ignored.

@@ -1,27 +1,21 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo, waitForBoot } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage({ colorScheme: "light" });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    const ready = () =>
-      page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
     const scheme = () => page.locator("html").getAttribute("data-theme");
-    await page.goto(`${base}/demos/streaming/`);
-    await ready();
+    const errors = await openStreamingDemo(page, base);
     for (const choice of ["dark", "light", "system"]) {
       await page.emulateMedia({
         colorScheme: choice === "light" ? "dark" : "light",
       });
       await page.locator(`[data-theme-choice="${choice}"]`).click();
       await page.reload();
-      await ready();
+      await waitForBoot(page);
       assert.equal(await scheme(), choice === "system" ? "light" : choice);
       assert.equal(
         await page
@@ -63,7 +57,7 @@ for (const engine of [firefox, webkit, chromium]) {
       localStorage.setItem("virtual-list-theme", "invalid"),
     );
     await page.goto(`${base}/demos/streaming/`);
-    await ready();
+    await waitForBoot(page);
     assert.equal(await scheme(), "light");
     assert.equal(
       await page.locator(".theme-btn.active").getAttribute("data-theme-choice"),
@@ -77,7 +71,7 @@ for (const engine of [firefox, webkit, chromium]) {
       });
     });
     await page.reload();
-    await ready();
+    await waitForBoot(page);
     await page.locator('[data-theme-choice="dark"]').click();
     assert.equal(await scheme(), "dark");
     assert.deepEqual(errors, []);

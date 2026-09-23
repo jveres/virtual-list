@@ -3,6 +3,7 @@
 // prepared in idle time, during the glide too, since idle preparation.)
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
@@ -16,11 +17,10 @@ for (const engine of [firefox, webkit, chromium]) {
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+      acceptDialogs: true,
+    });
     const image = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
       canvas.width = 600;
@@ -34,11 +34,7 @@ for (const engine of [firefox, webkit, chromium]) {
         return `**${role}**\n<!-- turn {"sentAt":1788772464423} -->\n\n${name} turn ${index + 1}. ${"Text for the scrolling fixture. ".repeat(12)}\n\n${index % 2 ? `![Fixture image](${image})\n\n` : ""}`;
       }).join("\n");
     const importChat = async (name) => {
-      await page.locator("#import-file").setInputFiles({
-        name: `${name}.md`,
-        mimeType: "text/markdown",
-        buffer: Buffer.from(transcript(name)),
-      });
+      await importTranscript(page, transcript(name), { name: `${name}.md` });
       await page
         .locator("#viewport article.message")
         .filter({ hasText: `${name} turn 48.` })
@@ -54,7 +50,7 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.ok(first > 1, "fixture has unloaded scrollback");
     await page.evaluate((first) => {
       const viewport = document.querySelector("#viewport");
-      const probe = { first, landed: false, measurements: [], writes: [] };
+      const probe = { first, measurements: [], writes: [] };
       window.scrollbackProbe = probe;
       const rect = Element.prototype.getBoundingClientRect;
       Element.prototype.getBoundingClientRect = function (...args) {
@@ -62,10 +58,7 @@ for (const engine of [firefox, webkit, chromium]) {
           this.matches("article.message[data-key]") &&
           Number(this.dataset.key) < probe.first
         ) {
-          probe.measurements.push({
-            key: this.dataset.key,
-            landed: probe.landed,
-          });
+          probe.measurements.push(this.dataset.key);
         }
         return rect.apply(this, args);
       };
@@ -77,7 +70,6 @@ for (const engine of [firefox, webkit, chromium]) {
         ...top,
         set(value) {
           probe.writes.push(value);
-          if (value === 0) probe.landed = true;
           top.set.call(this, value);
         },
       });

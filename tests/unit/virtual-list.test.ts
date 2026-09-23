@@ -4,287 +4,36 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Geometry } from "../../src/geometry";
 import { createPagedWindow, type Page } from "../../src/paging";
-import type { VirtualListScrollSettleStrategy } from "../../src/scroll-settle";
 import {
   createVirtualList,
   type EdgeSlot,
   type VirtualList,
-  type VirtualListOptions,
   type VirtualListState,
 } from "../../src/virtual-list";
+import {
+  advanceFramesUntil,
+  ControlledResizeObserver,
+  fireResize,
+  fireResizes,
+  type Harness,
+  type Msg,
+  message,
+  mount,
+  ROW_H,
+  range,
+  roInstances,
+  useHarness,
+  VIEWPORT_H,
+} from "../helpers/list-harness";
 
-// Runtime contract tests under jsdom. jsdom has no layout engine, so every
-// measured height comes from a per-element getBoundingClientRect mock the
-// test controls, and ResizeObserver deliveries are fired by hand through a
-// controllable stub. Gestures are driven through the real settle controller
-// ("default" strategy: an unmatched scroll starts a gesture, scrollend plus
-// the 140ms cooldown settles it). Real engines, real measurement, and paint
-// timing are validated in the browser labs — these tests pin the contract:
-// geometry immutable during a scroll phase, off-scroller preparation,
-// one atomic settle-time commit, immediate idle commits, and exactly-once
-// destruction of retained nodes.
+// Runtime contract tests under jsdom (see the harness for how layout,
+// ResizeObserver deliveries, and gestures are simulated). Real engines, real
+// measurement, and paint timing are validated in the browser labs — these
+// tests pin the contract: geometry immutable during a scroll phase, rows
+// measured in hidden slots inside the canvas, one atomic settle-time commit,
+// immediate idle commits, and exactly-once destruction of retained nodes.
 
-interface Msg {
-  id: number;
-  body: string;
-}
-
-const VIEWPORT_H = 600;
-const ROW_H = 100;
-
-function message(id: number, body = `msg ${id}`): Msg {
-  return { id, body };
-}
-
-function range(from: number, to: number): Msg[] {
-  return Array.from({ length: to - from }, (_, i) => message(from + i));
-}
-
-// --- Controllable ResizeObserver ---------------------------------------------
-type ROCallback = (
-  entries: ResizeObserverEntry[],
-  observer: ResizeObserver,
-) => void;
-const roInstances: { callback: ROCallback; observed: Set<Element> }[] = [];
-
-class ControlledResizeObserver {
-  private readonly record: { callback: ROCallback; observed: Set<Element> };
-  constructor(callback: ROCallback) {
-    this.record = { callback, observed: new Set() };
-    roInstances.push(this.record);
-  }
-  observe(element: Element): void {
-    this.record.observed.add(element);
-  }
-  unobserve(element: Element): void {
-    this.record.observed.delete(element);
-  }
-  disconnect(): void {
-    this.record.observed.clear();
-  }
-}
-
-/** Advance 16ms frames until `done()` holds, or the frame budget runs out. */
-function advanceFramesUntil(done: () => boolean, maxFrames = 200): void {
-  for (let frame = 0; frame < maxFrames && !done(); frame += 1) {
-    vi.advanceTimersByTime(16);
-  }
-}
-
-/** Instance 0 observes rows, instance 1 the viewport (construction order). */
-function fireResize(instance: number, target: Element, height: number): void {
-  fireResizes(instance, [[target, height]]);
-}
-
-/** One delivery carrying several entries, as an engine batches them. */
-function fireResizes(
-  instance: number,
-  sizes: readonly (readonly [Element, number])[],
-): void {
-  const entries = sizes.map(
-    ([target, height]) =>
-      ({
-        target,
-        borderBoxSize: [{ blockSize: height, inlineSize: 0 }],
-      }) as unknown as ResizeObserverEntry,
-  );
-  roInstances[instance]?.callback(entries, null as never);
-}
-
-// --- Harness ---------------------------------------------------------------
-interface Harness {
-  list: VirtualList<Msg>;
-  viewport: HTMLElement;
-  canvas: () => HTMLElement;
-  heights: Map<number, number>;
-  destroyed: number[];
-  destroyedElements: HTMLElement[];
-  states: VirtualListState[];
-  reaches: { edge: "start" | "end"; signal: AbortSignal }[];
-  rowElement: (body: string) => HTMLElement;
-  slotOf: (element: HTMLElement) => HTMLElement;
-  userScroll: (top: number) => void;
-  settle: () => void;
-}
-
-function mount(
-  items: Msg[],
-  hooks: {
-    replaceOnRerender?: boolean;
-    onState?: VirtualListOptions<Msg>["onState"];
-    onViewport?: VirtualListOptions<Msg>["onViewport"];
-    onDestroy?: (element: HTMLElement) => void;
-    followBehavior?: VirtualListOptions<Msg>["followBehavior"];
-    settleStrategy?: VirtualListScrollSettleStrategy;
-    edgeSlots?: VirtualListOptions<Msg>["edgeSlots"];
-    anchorable?: (m: Msg) => boolean;
-    followMode?: VirtualListOptions<Msg>["followMode"];
-    followInset?: number;
-    overscanPx?: number;
-    itemHeight?: (m: Msg) => number;
-    position?: VirtualListOptions<Msg>["position"];
-    boot?: "start" | "end";
-    pinning?: VirtualListOptions<Msg>["pinning"];
-    onMount?: (element: HTMLElement, m: Msg) => void;
-    onUnmount?: (element: HTMLElement, m: Msg) => void;
-    /** Runs at the start of every render (probe hook). */
-    onRender?: (m: Msg, existing?: HTMLElement) => void;
-    onKey?: (m: Msg) => void;
-    /** Reports how many fresh peers share the detached root at each read. */
-    onMeasure?: (m: Msg, batchSize: number) => void;
-    reach?: boolean | "start-only";
-    width?: () => number;
-    height?: () => number;
-    /** Observes every scrollTop write — where an engine forces layout. */
-    onScrollWrite?: (top: number) => void;
-    /** Lets the position leave the range, as an iOS rubber-band bounce does. */
-    overscroll?: boolean;
-    /** render() throws for items with this body. */
-    throwOn?: string;
-    /** getBoundingClientRect throws for items with this body (post-build). */
-    measureFailOn?: string;
-  } = {},
-): Harness {
-  const viewport = document.createElement("div");
-  let scrollTop = 0;
-  const canvasHeight = (): number => {
-    const canvas = viewport.firstElementChild as HTMLElement | null;
-    return canvas ? Number.parseFloat(canvas.style.height) || 0 : 0;
-  };
-  const maxScrollTop = (): number =>
-    Math.max(0, canvasHeight() - (hooks.height?.() ?? VIEWPORT_H));
-  Object.defineProperties(viewport, {
-    clientHeight: { get: () => hooks.height?.() ?? VIEWPORT_H },
-    clientWidth: { get: () => hooks.width?.() ?? 300 },
-    offsetWidth: { get: () => 315 },
-    scrollHeight: { get: () => Math.max(VIEWPORT_H, canvasHeight()) },
-    // A shrinking range clamps the position for good, as layout does in an
-    // engine: growing the range back later does not restore it.
-    scrollTop: {
-      get: () => {
-        if (hooks.overscroll) return scrollTop;
-        scrollTop = Math.max(0, Math.min(maxScrollTop(), scrollTop));
-        return scrollTop;
-      },
-      set: (next: number) => {
-        hooks.onScrollWrite?.(next);
-        if (hooks.overscroll) {
-          scrollTop = next;
-          return;
-        }
-        scrollTop = Math.max(0, Math.min(maxScrollTop(), next));
-      },
-    },
-  });
-  document.body.appendChild(viewport);
-
-  const heights = new Map<number, number>();
-  const destroyed: number[] = [];
-  const destroyedElements: HTMLElement[] = [];
-  const states: VirtualListState[] = [];
-  const reaches: { edge: "start" | "end"; signal: AbortSignal }[] = [];
-
-  const stamp = (element: HTMLElement, m: Msg): HTMLElement => {
-    element.dataset.id = String(m.id);
-    element.getBoundingClientRect = () => {
-      hooks.onMeasure?.(m, element.parentElement?.childElementCount ?? 0);
-      if (hooks.measureFailOn !== undefined && m.body === hooks.measureFailOn) {
-        throw new Error(`measure failed: ${m.body}`);
-      }
-      return { height: heights.get(m.id) ?? ROW_H } as DOMRect;
-    };
-    return element;
-  };
-
-  const list = createVirtualList<Msg>(viewport, {
-    items,
-    key: (m) => {
-      hooks.onKey?.(m);
-      return `m${m.id}`;
-    },
-    settleStrategy: hooks.settleStrategy ?? "default",
-    // The suite describes runtime anchoring; jsdom claims native support.
-    anchoring: "runtime",
-    followBehavior: hooks.followBehavior,
-    edgeSlots: hooks.edgeSlots,
-    anchorable: hooks.anchorable,
-    followMode: hooks.followMode,
-    followInset: hooks.followInset,
-    overscanPx: hooks.overscanPx,
-    height: hooks.itemHeight,
-    position: hooks.position,
-    boot: hooks.boot,
-    pinning: hooks.pinning,
-    onMount: hooks.onMount,
-    onUnmount: hooks.onUnmount,
-    render: (m, existing) => {
-      hooks.onRender?.(m, existing);
-      if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {
-        throw new Error(`render failed: ${m.body}`);
-      }
-      if (existing && !hooks.replaceOnRerender) {
-        existing.textContent = m.body;
-        return existing;
-      }
-      const element = document.createElement("div");
-      element.textContent = m.body;
-      return stamp(element, m);
-    },
-    onState: (state, viewport) => {
-      states.push(state);
-      hooks.onState?.(state, viewport);
-    },
-    onViewport: hooks.onViewport,
-    onDestroy: (element) => {
-      destroyed.push(Number(element.dataset.id));
-      destroyedElements.push(element);
-      hooks.onDestroy?.(element);
-    },
-    onReachStart: hooks.reach
-      ? ({ signal }) => reaches.push({ edge: "start", signal })
-      : undefined,
-    onReachEnd:
-      hooks.reach === true
-        ? ({ signal }) => reaches.push({ edge: "end", signal })
-        : undefined,
-  });
-
-  return {
-    list,
-    viewport,
-    canvas: () => viewport.firstElementChild as HTMLElement,
-    heights,
-    destroyed,
-    destroyedElements,
-    states,
-    reaches,
-    rowElement: (body) => {
-      const canvas = viewport.firstElementChild as HTMLElement;
-      const found = [...canvas.querySelectorAll("div")].find(
-        (el) => el.textContent === body && el.dataset.id !== undefined,
-      );
-      expect(found, `row "${body}" should be mounted`).toBeDefined();
-      return found as HTMLElement;
-    },
-    slotOf: (element) => element.parentElement as HTMLElement,
-    // An unmatched scroll event is a user gesture (≥2px off any write).
-    userScroll: (top) => {
-      viewport.scrollTop = top;
-      viewport.dispatchEvent(new Event("scroll"));
-    },
-    settle: () => {
-      viewport.dispatchEvent(new Event("scrollend"));
-      vi.advanceTimersByTime(200);
-    },
-  };
-}
-
-beforeEach(() => {
-  roInstances.length = 0;
-  (globalThis as { ResizeObserver: unknown }).ResizeObserver =
-    ControlledResizeObserver;
-  vi.useFakeTimers();
-});
+useHarness();
 
 describe("canvas compositing", () => {
   it.each([
@@ -773,7 +522,6 @@ describe("settle-time window updates", () => {
     });
 
     it("should prepare a held page mid-phase", async () => {
-      const renderedBeforeSettle = 40;
       let rendered = 0;
       const h = mount(range(40, 80), {
         boot: "start",
@@ -786,14 +534,14 @@ describe("settle-time window updates", () => {
         items: [...range(0, 40), ...items],
       }));
       vi.advanceTimersByTime(200);
-      expect(rendered).toBe(renderedBeforeSettle);
+      expect(rendered).toBe(40);
       // Preparation never commits under an active phase.
       expect(h.list.state.count).toBe(40);
       expect(h.list.state.held).toBe(true);
       h.settle();
       advanceFramesUntil(() => h.list.state.count === 80);
       await expect(applied).resolves.toBe(true);
-      expect(rendered).toBe(40);
+      expect(rendered).toBe(40); // The settle adopted the prepared rows.
       expect(h.list.positionOf("m40")?.top).toBe(40 * ROW_H);
       h.list.dispose();
     });
@@ -1022,7 +770,6 @@ describe("incremental window preparation", () => {
       vi.advanceTimersByTime(100);
 
       await expect(applied).resolves.toBe(false);
-      expect(document.body.childElementCount).toBe(1);
       expect(h.destroyed).toEqual(range(0, 20).map((item) => item.id));
     },
   );
@@ -1214,12 +961,11 @@ describe("incremental window preparation", () => {
     },
   );
 
-  it("should cancel width-stale work and leave no hidden measurement root", async () => {
+  it("should cancel width-stale work without committing", async () => {
     let width = 300;
     const h = mount(range(0, 20), {
       width: () => width,
     });
-    const bodyChildren = document.body.childElementCount;
     const applied = h.list.updateWindow(({ items }) => ({
       items: [...items, ...range(20, 44)],
     }));
@@ -1232,7 +978,6 @@ describe("incremental window preparation", () => {
     await expect(applied).resolves.toBe(false);
     expect(h.list.state.count).toBe(20);
     expect(h.list.state.held).toBe(false);
-    expect(document.body.childElementCount).toBe(bodyChildren);
     h.list.dispose();
   });
 
@@ -2618,12 +2363,6 @@ describe("bounded paging on the runtime", () => {
   });
 });
 
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-  document.body.replaceChildren();
-});
-
 describe("runtime — replacement paint lifecycle", () => {
   function replacement(viewport: HTMLElement): VirtualList<Msg> {
     return createVirtualList(viewport, {
@@ -2798,7 +2537,7 @@ describe("runtime — commits and slots", () => {
     vi.advanceTimersByTime(330);
     expect(h.viewport.scrollTop).toBe(4400);
     // Fast streaming: the tail grows between the glide's landing and its
-    // settle ("live" commits it at once — it is below the anchor), so the
+    // settle (it commits at once — it is below the anchor), so the
     // viewport is no longer at the end when following is decided.
     h.heights.set(49, 300);
     fireResize(0, h.rowElement("msg 49"), 300);
@@ -2836,19 +2575,19 @@ describe("runtime — commits and slots", () => {
     h.list.setItems(streamed);
     expect(h.list.state.following).toBe(true);
     // The follow glide lands on the new end; its phase awaits the settle,
-    // so the viewport now reads "at the end" inside a live phase.
+    // so the viewport now reads "at the end" inside an unsettled phase.
     advanceFramesUntil(() => h.viewport.scrollTop === 4600);
     expect(h.list.state.atEnd).toBe(true);
 
     // Scroll-to-top takes over: the settle it forces must not read "was at
-    // the end" as follow intent. Were following re-armed, the first live
-    // commit after the command lands — before its own settle — would start
+    // the end" as follow intent. Were following re-armed, the first
+    // mid-phase commit after the command lands — before its own settle — would start
     // a follow glide back to the end.
     void h.list.scrollTo("start", { behavior: "smooth" });
     expect(h.list.state.following).toBe(false);
     advanceFramesUntil(() => h.viewport.scrollTop === 0);
     expect(h.viewport.scrollTop).toBe(0);
-    // Live growth below the anchor, inside the landed command's settle
+    // Growth below the anchor, inside the landed command's settle
     // cooldown (140ms; no frame has passed since the landing).
     h.heights.set(5, 200);
     fireResize(0, h.rowElement("msg 5"), 200);
@@ -3674,7 +3413,7 @@ describe("runtime — commits and slots", () => {
     height = 700;
     fireResize(1, h.viewport, 700); // On the pin: a "pin" stance.
     // The pinned row is deleted mid-phase: below-the-anchor, so it commits
-    // live, and the pin goes with it. m41 now heads the viewport.
+    // at once, and the pin goes with it. m41 now heads the viewport.
     h.list.setItems(initial.filter((m) => m.id !== 40));
     expect(h.list.positionOf("m41")?.top).toBe(4000);
     // A row above grows and waits for the settle: the anchor (m41) keeps
@@ -4127,8 +3866,8 @@ describe("runtime — commits and slots", () => {
     vi.advanceTimersByTime(16);
     fireResize(0, tail, 300);
 
-    // Even live mode cannot consume the explicit intent mid-gesture — not
-    // at the observer delivery, nor at the next scroll event's live commit.
+    // The commit rule cannot consume the explicit intent mid-gesture — not
+    // at the observer delivery, nor at the next scroll event's commit.
     h.userScroll(4390);
     expect(h.list.state.totalSize).toBe(50 * ROW_H);
     expect(h.slotOf(tail).style.height).toBe(`${ROW_H}px`);
@@ -4215,7 +3954,7 @@ describe("runtime — commits and slots", () => {
     expect(h.destroyed).toEqual([]);
   });
 
-  it('"live" reconciles at the browser-clamped position after a canvas shrink', () => {
+  it("reconciles at the browser-clamped position after a canvas shrink", () => {
     const initial = range(0, 50);
     const h = mount(initial);
     h.heights.set(49, 1000);
@@ -4236,7 +3975,7 @@ describe("runtime — commits and slots", () => {
     expect(h.rowElement("msg 44")).toBeDefined();
   });
 
-  it("should commit a dirty row exposed by a live shrink without writing scrollTop", () => {
+  it("should commit a dirty row exposed by a mid-gesture shrink without writing scrollTop", () => {
     const writes: number[] = [];
     const h = mount(range(0, 50), {
       onScrollWrite: (top) => writes.push(top),
@@ -4270,7 +4009,7 @@ describe("runtime — commits and slots", () => {
     }
   });
 
-  it("should finish successive live clamps that expose more dirty rows without writing scrollTop", () => {
+  it("should finish successive mid-gesture clamps that expose more dirty rows without writing scrollTop", () => {
     const writes: number[] = [];
     const h = mount(range(0, 50), {
       onScrollWrite: (top) => writes.push(top),
@@ -4316,7 +4055,7 @@ describe("runtime — commits and slots", () => {
   });
 
   it.each(["measurement", "anchor"] as const)(
-    "should publish committed geometry and recover after a later live-clamp %s failure",
+    "should publish committed geometry and recover after a later mid-gesture clamp %s failure",
     (failure) => {
       let fail = false;
       const writes: number[] = [];
@@ -4375,7 +4114,7 @@ describe("runtime — commits and slots", () => {
     },
   );
 
-  it('"live" keeps a dirty row above the anchor for settle, or for the scroll that reaches it', () => {
+  it("keeps a dirty row above the anchor for settle, or for the scroll that reaches it", () => {
     const initial = range(0, 50);
     const h = mount(initial);
     h.userScroll(3005); // Anchor: m30; m28 is mounted (overscan), above it.
@@ -4400,47 +4139,9 @@ describe("runtime — commits and slots", () => {
     expect(h.list.state.held).toBe(false);
   });
 
-  it('the runtime defaults to "live"', () => {
-    const viewport = document.createElement("div");
-    Object.defineProperties(viewport, {
-      clientHeight: { get: () => VIEWPORT_H },
-      clientWidth: { get: () => 300 },
-      scrollHeight: { get: () => 50 * ROW_H },
-    });
-    document.body.appendChild(viewport);
-    const seen: (HTMLElement | undefined)[] = [];
-    const initial = range(0, 50);
-    const list = createVirtualList<Msg>(viewport, {
-      items: initial,
-      key: (m) => `m${m.id}`,
-      settleStrategy: "default",
-      render: (m, existing) => {
-        if (m.id === 30) seen.push(existing);
-        if (existing) {
-          existing.textContent = m.body;
-          return existing;
-        }
-        const element = document.createElement("div");
-        element.textContent = m.body;
-        element.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
-        return element;
-      },
-    });
-    seen.length = 0;
-    viewport.scrollTop = 3005;
-    viewport.dispatchEvent(new Event("scroll")); // A gesture is active.
-    const next = [...initial];
-    next[30] = message(30, "live by default");
-    list.setItems(next);
-    // "live": the mounted element itself was offered and updated in place.
-    expect(seen).toHaveLength(1);
-    expect(seen[0]?.textContent).toBe("live by default");
-    list.dispose();
-  });
-
   it("a glide's phase ends only when the glide completes, not at a mid-glide scrollend (Safari)", () => {
-    // Safari emits a scrollend after every programmatic write. In "live"
-    // mode at the end, streaming growth commits under the glide and moves
+    // Safari emits a scrollend after every programmatic write. At the end,
+    // streaming growth commits under the glide (it is below the anchor) and moves
     // its target, so the glide keeps chasing; a proximity-judged "reached"
     // at such a scrollend started the settle cooldown mid-chase and let a
     // structural commit land under a still-moving glide.
@@ -4459,7 +4160,7 @@ describe("runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBeLessThan(4400); // Still gliding, within 2px.
     h.viewport.dispatchEvent(new Event("scrollend")); // Safari: after a write.
 
-    // The end moves under the glide: the last row grows, live.
+    // The end moves under the glide: the last row grows, committed at once.
     const last = h.rowElement("msg 49");
     h.heights.set(49, 300);
     fireResize(0, last, 300);
@@ -4614,7 +4315,7 @@ describe("runtime — commits and slots", () => {
     h.list.dispose();
   });
 
-  it("live: a replaced anchor whose successor moved down waits for the settle, which lands on the successor", () => {
+  it("a replaced anchor whose successor moved down waits for the settle, which lands on the successor", () => {
     // A day header keyed by the message it heads: a scrollback load of the
     // same day replaces the header at the top and inserts the older
     // messages under it, above the first loaded message.
@@ -4633,12 +4334,12 @@ describe("runtime — commits and slots", () => {
     h.list.dispose();
   });
 
-  it('"live" commits an append at once and settle-gates a change above the anchor', () => {
+  it("commits an append at once and settle-gates a change above the anchor", () => {
     const initial = range(0, 50);
     const h = mount(initial);
     h.userScroll(3005);
     const before = h.viewport.scrollTop;
-    // Below the anchor: no scroll write can be needed — live.
+    // Below the anchor: no scroll write can be needed — committed at once.
     const appended = [...initial, ...range(50, 62)];
     h.list.setItems(appended);
     expect(h.list.state.count).toBe(62);
@@ -4653,7 +4354,7 @@ describe("runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(before + 5 * ROW_H);
   });
 
-  it('"live" settle-gates a structural change whose policy is the end', () => {
+  it("settle-gates a structural change whose policy is the end", () => {
     const initial = range(0, 50);
     const h = mount(initial);
     h.userScroll(3005);
@@ -4770,7 +4471,7 @@ describe("runtime — commits and slots", () => {
 });
 
 describe("runtime — retained nodes", () => {
-  it("premeasures a replacement off-scroller and destroys the old element exactly once", () => {
+  it("measures a replacement in its hidden slot and destroys the old element exactly once", () => {
     const initial = range(0, 20);
     const h = mount(initial, { replaceOnRerender: true });
     void h.list.scrollTo("m5");
@@ -5194,11 +4895,11 @@ describe("runtime — retained nodes", () => {
     expect(h.viewport.children.length).toBe(0);
   });
 
-  it("re-measures pending retained nodes immediately before commit — latest height, one commit", () => {
+  it("re-measures staged rows immediately before commit — latest height, one commit", () => {
     const h = mount(range(0, 50));
     h.userScroll(3005);
-    h.list.setItems([...range(0, 50), message(60, "late")]); // Held; premeasured 100.
-    h.heights.set(60, 400); // An image decoded while detached: no RO event.
+    h.list.setItems([...range(0, 50), message(60, "late")]); // Held; measured 100.
+    h.heights.set(60, 400); // An image decoded while staged in its hidden slot: no RO event.
 
     h.settle();
     // The commit carries the fresh height, not the stale premeasure.
@@ -5517,10 +5218,10 @@ describe("runtime — commands", () => {
     ]);
   });
 
-  it("live: a structural change confined below the anchor commits mid-gesture", () => {
+  it("a structural change confined below the anchor commits mid-gesture", () => {
     const initial = range(0, 50);
     const h = mount(initial);
-    h.userScroll(2000); // Anchor: m20 at its top; the gesture stays live.
+    h.userScroll(2000); // Anchor: m20 at its top; the gesture stays active.
     const before = h.viewport.scrollTop;
 
     // The tail is replaced (a version switch): everything above m20 keeps
@@ -5534,7 +5235,7 @@ describe("runtime — commands", () => {
     expect(h.list.state.totalSize).toBe(45 * ROW_H);
 
     // The anchor row itself replaced while the viewport sits on its top:
-    // its successor inherits the coordinate — still live.
+    // its successor inherits the coordinate — still committed at once.
     const anchorSwapped = [...initial.slice(0, 20), ...range(200, 230)];
     h.list.setItems(anchorSwapped);
     expect(h.list.state.held).toBe(false);
@@ -5550,7 +5251,7 @@ describe("runtime — commands", () => {
     h.list.dispose();
   });
 
-  it("live: a structural commit during a rubber-band bounce never writes scrollTop", () => {
+  it("a structural commit during a rubber-band bounce never writes scrollTop", () => {
     const initial = range(0, 50);
     const writes: number[] = [];
     const h = mount(initial, {
@@ -5558,7 +5259,7 @@ describe("runtime — commands", () => {
       onScrollWrite: () => writes.push(1),
     });
     h.userScroll(4000);
-    h.userScroll(4440); // Bounced 40px past the end; the gesture is live.
+    h.userScroll(4440); // Bounced 40px past the end; the gesture is active.
     writes.length = 0;
     // A version switch of the tail (below the anchor) commits at once —
     // the total stays 5000, so the bounce position is outside the range...
@@ -5576,7 +5277,7 @@ describe("runtime — commands", () => {
     h.list.dispose();
   });
 
-  it("live: a prepend arriving with the viewport exactly at the top waits for the settle", () => {
+  it("a prepend arriving with the viewport exactly at the top waits for the settle", () => {
     const initial = range(0, 50);
     const h = mount(initial);
     h.userScroll(500);
@@ -5589,7 +5290,7 @@ describe("runtime — commands", () => {
     h.list.dispose();
   });
 
-  it("live: replacing the anchor row the viewport is scrolled into commits in place, without a write", () => {
+  it("replacing the anchor row the viewport is scrolled into commits in place, without a write", () => {
     const initial = range(0, 50);
     const writes: number[] = [];
     const h = mount(initial, {
@@ -6260,7 +5961,7 @@ describe("runtime — commands", () => {
     expect(h.viewport.scrollTop).toBe(10 * ROW_H);
   });
 
-  it('a glide frame commits a newly reached "live" row before its scroll event', async () => {
+  it("a glide frame commits a newly reached dirty row before its scroll event", async () => {
     const initial = range(0, 100);
     const h = mount(initial);
     const command = h.list.scrollTo("start", { behavior: "smooth" });
@@ -6701,7 +6402,7 @@ describe("mount hooks", () => {
     expect(() => mount(range(0, 3), { throwOn: "msg 1" })).toThrow(
       "render failed",
     );
-    // Only the caller-owned viewport remains; the canvas and measurer are gone.
+    // Only the caller-owned viewport remains; the canvas is gone.
     expect(document.body.childElementCount).toBe(before + 1);
     expect(document.body.lastElementChild?.childElementCount).toBe(0);
     expect(disconnect).toHaveBeenCalledTimes(2);

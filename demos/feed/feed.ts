@@ -5,7 +5,11 @@ import {
   type VirtualList,
 } from "../../src/virtual-list";
 import { initMarkdown } from "../shared/markdown";
-import { setAttributeIfChanged, setTextIfChanged } from "../shared/utils";
+import {
+  mustGet,
+  setAttributeIfChanged,
+  setTextIfChanged,
+} from "../shared/utils";
 import { mountPost, renderPost, unmountPost } from "./render";
 import {
   type FeedCursor,
@@ -14,18 +18,10 @@ import {
   fetchFeedPage,
 } from "./source";
 
-function required<T extends HTMLElement>(
-  selector: string,
-  type: { new (): T },
-): T {
-  const element = document.querySelector(selector);
-  if (!(element instanceof type)) throw new Error(`Missing ${selector}`);
-  return element;
-}
-const viewport = required("#viewport", HTMLElement);
-const select = required("#source", HTMLSelectElement);
-const refresh = required("#refresh", HTMLButtonElement);
-const status = required("#status", HTMLElement);
+const viewport = mustGet("viewport");
+const select = mustGet("source", HTMLSelectElement);
+const refresh = mustGet("refresh", HTMLButtonElement);
+const status = mustGet("status");
 const params = new URLSearchParams(location.search);
 function positive(name: string, fallback: number, cap: number): number {
   const n = Number(params.get(name));

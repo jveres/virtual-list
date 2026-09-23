@@ -148,12 +148,14 @@ interface ScrollSettleHost {
   onGestureSettled(): void;
   /** Gesture state was reset (settle or cancel). */
   onGestureReset(): void;
-  /** A scroll event landed: reconcile the window (and, under "live", commit what needs no scroll write). */
+  /** A scroll event landed: reconcile the window; work that needs no scroll write may land. */
   onScrollEventObserved(): void;
 }
 
 export interface ScrollSettleController {
   isScrollPhaseActive(): boolean;
+  /** At a scroll edge (within the edge tolerance), or past it in a bounce. */
+  isNearScrollEdge(): boolean;
   /** Pre-record a programmatic scrollTop write so its event isn't misread as a user scroll. */
   recordProgrammaticScrollTop(target: number): void;
   /** Enter the gesture state machine for a library-driven scroll (no smooth-scroll cancel). */
@@ -973,6 +975,7 @@ export function createScrollSettleController(
 
   return {
     isScrollPhaseActive: () => scrollPhaseActive,
+    isNearScrollEdge,
     recordProgrammaticScrollTop,
     beginProgrammaticGesture: () => handleScrollPhaseStart(true),
     markSettlePending: () => {

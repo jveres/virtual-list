@@ -1,6 +1,11 @@
 // Offline geometry check: cursor and actions occupy one shared footer space.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  openAIStreamMock,
+} from "../shared/openai-stream.mjs";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit, chromium }[engine].launch();
@@ -14,58 +19,13 @@ try {
         : { width: 1280, height: 900 },
       deviceScaleFactor: hasTouch ? 3 : 2,
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    await page.addInitScript(() => {
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "openai",
-          apiKey: "offline-test",
-          model: "gpt-5-mini",
-        }),
-      );
-      const original = window.fetch;
-      window.fetch = (input, init) => {
-        if (!String(input).startsWith("https://api.openai.com/"))
-          return original(input, init);
-        return Promise.resolve(
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                window.sendFooterText = (delta) =>
-                  controller.enqueue(
-                    new TextEncoder().encode(
-                      `data: ${JSON.stringify({ type: "response.output_text.delta", delta })}\n\n`,
-                    ),
-                  );
-                window.finishFooterStream = () => {
-                  controller.enqueue(
-                    new TextEncoder().encode(
-                      `data: ${JSON.stringify({ type: "response.completed", response: { id: "resp_footer", status: "completed", output: [] } })}\n\n`,
-                    ),
-                  );
-                  controller.close();
-                };
-                init.signal.addEventListener(
-                  "abort",
-                  () =>
-                    controller.error(
-                      new DOMException("Cancelled", "AbortError"),
-                    ),
-                  { once: true },
-                );
-              },
-            }),
-            { headers: { "Content-Type": "text/event-stream" } },
-          ),
-        );
-      };
+    await page.addInitScript(openAIStreamMock, {
+      settings: OFFLINE_AI_SETTINGS,
+      emitText: "sendFooterText",
+      finish: "finishFooterStream",
+      responseId: "resp_footer",
     });
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base);
     const composerPadding = await page.locator(".composer").evaluate((el) => {
       const style = getComputedStyle(el);
       return [style.paddingTop, style.paddingBottom];

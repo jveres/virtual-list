@@ -7,7 +7,9 @@ of 480 photos and restores discarded pages when you scroll back.
 ## Runtime boundary
 
 `list.updateWindow(update, signal)` evaluates your synchronous update when
-scrolling settles, or immediately while idle. Its context contains the latest
+scrolling settles, or immediately while idle. Where the browser anchors
+natively, it can also commit mid-gesture, away from the scroll edges, unless
+the update names an `"end"` or explicit anchor. Its context contains the latest
 submitted `items` and the committed `protectedItems`: visible items, overscan,
 and pinned or explicitly requested anchors. Edge slots are excluded.
 
@@ -28,7 +30,7 @@ the runtime completes geometry, publication, and ownership bookkeeping before
 reporting the error. That row's space remains reserved and rendering retries
 on the next window reconciliation; other visible rows still render.
 Aborting the signal cancels work that hasn't started, including fetched data
-waiting for a gesture to settle. This API waits even in `live` mode.
+waiting for a gesture to settle.
 
 For explicit layout controls, pass `{ interrupt: true }` as the third argument
 to `updateWindow`. It stops scrolling and commits waiting work before invoking

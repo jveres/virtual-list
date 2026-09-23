@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, chromium, webkit]) {
@@ -15,11 +16,7 @@ for (const engine of [firefox, chromium, webkit]) {
         hasTouch,
         viewport: { width: device.width, height: device.height },
       });
-      page.on("dialog", (dialog) => dialog.accept());
-      await page.goto(`${base}/demos/streaming/`);
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
+      await openStreamingDemo(page, base, { acceptDialogs: true });
       const fixture = await page.evaluate(async () => {
         const { branchingTranscriptMarkdown } = await import(
           "/demos/streaming/branching-transcript.ts"
@@ -48,11 +45,7 @@ for (const engine of [firefox, chromium, webkit]) {
           { dayOf: () => 0, dayLabel: () => "Today" },
         );
       });
-      await page.locator("#import-file").setInputFiles({
-        name: "toolbox-versions.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(fixture),
-      });
+      await importTranscript(page, fixture, { name: "toolbox-versions.md" });
       for (const text of ["First version", "Second version"]) {
         const row = page
           .locator(".message.assistant")

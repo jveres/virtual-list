@@ -1,6 +1,7 @@
 // Real renderer geometry, synthetic embedded image; no API requests.
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 for (const [name, engine] of Object.entries({ firefox, webkit })) {
@@ -11,7 +12,9 @@ for (const [name, engine] of Object.entries({ firefox, webkit })) {
     const page = await browser.newPage();
     await page.route("https://api.openai.com/**", (route) => route.abort());
     await page.route("**/__chatgpt/**", (route) => route.abort());
-    await page.goto(`${base}/demos/streaming/index.html`);
+    await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+    });
     const measurements = await page.evaluate(async () => {
       const { initMarkdown, createMarkdownViewer } = await import(
         "/demos/shared/markdown.ts"

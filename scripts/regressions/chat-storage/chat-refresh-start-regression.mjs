@@ -2,6 +2,9 @@
 // response clamps the viewport onto the smooth-scroll command's destination.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
@@ -9,15 +12,10 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1420, height: 950 },
   });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
   await page.route("https://api.openai.com/**", (route) => route.abort());
-  await page.goto(
-    `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/?instant`,
-  );
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  const errors = await openStreamingDemo(page, base, {
+    path: "/demos/streaming/?instant",
+  });
   const arrowSizes = await page
     .locator("#scroll-top-btn svg, #scroll-bottom-btn svg")
     .evaluateAll((elements) =>
@@ -76,12 +74,7 @@ try {
     );
   }
   // Real incremental streaming, not just the instant completion path.
-  await page.goto(
-    `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/`,
-  );
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  await openStreamingDemo(page, base);
   await page.locator("#prompt").fill("fast");
   await page.locator("#send-btn").click();
   await page.waitForFunction(

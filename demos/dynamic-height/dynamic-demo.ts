@@ -21,25 +21,26 @@ import {
 // The dynamic-height lab: adversarial, size-changing content on the
 // runtime, with telemetry that observes the runtime STRICTLY FROM OUTSIDE.
 // The lab generates content and reports violations; every dynamic-height
-// behavior — holding, clipping, premeasuring, committing at settle — lives
-// in the runtime (docs/core-contract.md, verification vehicles).
+// behavior (holding, clipping, measuring, committing at the settle) lives
+// in the runtime (docs/architecture.md). The page sets overflow-anchor: none,
+// so the runtime anchors: changes at or below the anchor row land at once,
+// and changes above it wait for the settle.
 //
 // Content (all generated here, all volatile):
 // - streaming rows grow word by word (several at once, near and far from
 //   the viewport, so some grow while unmounted or held);
 // - toggle rows expand/collapse on a timer and on click;
 // - image rows carry a real <img> whose src arrives LATE — zero height at
-//   premeasure, taller once decoded, mounted or not;
+//   first measure, taller once decoded, mounted or not;
 // - code rows wrap differently at every width ("narrow/wide", width jitter);
 // - reach-driven chunk loads at both edges (aborted through the reach
 //   signal), superseding setItems bursts, deletion of random rows and of the
 //   very row under the viewport top.
 // Every change reaches the runtime through setItems (a new item object for
-// the key): rendered in place while idle or under "live", rendered fresh
-// off-scroller during a scroll phase under "same-height"/"freeze", or a
-// replacing re-render with the "replace" box. Late images learn their size
-// at load and re-enter through setItems the same way — the lab never
-// mutates a mounted row's size directly.
+// the key): the row is rendered in place, or, with the "replace" box, a
+// replacing render is staged in a hidden slot inside the canvas. Late images
+// learn their size at load and re-enter through setItems the same way — the
+// lab never mutates a mounted row's size directly.
 //
 // Telemetry, purely observational:
 // - an instance-level scrollTop accessor on the viewport records every
@@ -52,8 +53,8 @@ import {
 // Violations reported:
 //   G  geometry (slot height/offset, canvas height) changed while native
 //      scrolling — or while a glide was still moving — other than a
-//      "live" commit that wrote no scrollTop and touched only rows at or
-//      below the anchor;
+//      commit that wrote no scrollTop and touched only rows at or below
+//      the anchor;
 //   W  scrollTop written by the runtime while native scrolling;
 //   O  mounted slots overlap, or a slot does not clip;
 //   A  the row under the viewport top moved across a commit (unless the
@@ -63,7 +64,7 @@ import {
 //      width/resource change was not honored);
 //   L  a mounted row's content disagreed with its slot at the post-runtime
 //      ResizeObserver delivery — a frame that paints clipped or gapped
-//      (held or not: frozen elements never change under a live phase);
+//      (held or not; a dirty row entirely above the viewport top is exempt);
 //   T  a slot height was committed again with no content or width change
 //      in between (heights must commit once, latest);
 //   D  an element destroyed twice, never rendered by the lab, still in the
@@ -170,7 +171,6 @@ async function sendReport(why: string): Promise<void> {
     why,
     userAgent: navigator.userAgent,
     strategy: stat.strategy.textContent,
-    mode: scrollingMode(),
     violations,
     viewport: { width: innerWidth, height: innerHeight },
     trace: trace.ring.slice(-REPORT_TAIL_LINES),
@@ -325,8 +325,8 @@ function element(tag: string, className: string, text?: string): HTMLElement {
 // A late image is a resource whose size is unknown until it loads. The host
 // never lets the browser grow a mounted row on its own: the <img> box is
 // reserved at zero height until the item says "loaded", and the load event
-// re-enters through setItems like any other content change (in place when
-// idle, a fresh off-scroller render during a phase).
+// re-enters through setItems like any other content change (rendered in
+// place; a replacing render is staged hidden in the canvas).
 function scheduleImage(row: HTMLElement, img: HTMLImageElement, item: Item) {
   if (item.imageLoaded) {
     img.src = imageSource(item); // Re-render of a loaded item.
@@ -669,7 +669,7 @@ let list: VirtualList<Item>;
 let canvas: HTMLElement | null = null;
 let booted = false;
 let commits = 0;
-let liveCommits = 0;
+let midPhaseCommits = 0;
 /** writeSerial when the previous geometry batch was classified. */
 let writeSerialAtLastBatch = 0;
 let lastState: VirtualListState | null = null;
@@ -767,7 +767,7 @@ function onState(state: VirtualListState): void {
   } else if (previous.held !== state.held) {
     if (!state.held) {
       heldCleared = true;
-      // A "live" drain of the dirty set also clears `held` — under activity.
+      // A mid-phase drain of the dirty set also clears `held` — under activity.
       // Only a quiet clearing is the settle commit.
       heldClearedUnderActivity = nativeActive() || glideMoving();
     }
@@ -785,11 +785,6 @@ function onState(state: VirtualListState): void {
     log(`state count=${state.count} total=${Math.round(state.totalSize)}`);
   }
   scheduleStatus();
-}
-
-/** The runtime has one commit rule; the lab checks its live contract. */
-function scrollingMode(): "live" {
-  return "live";
 }
 
 let viewportWidthObserver: ResizeObserver | null = null;
@@ -865,19 +860,16 @@ function createPaintObserver(): void {
         continue;
       }
       clippedKeys.add(key);
-      // Frozen elements never change under a live phase, so this holds
-      // held or not. The one thing the runtime cannot freeze is a width
-      // change landing mid-phase (the browser reflows mounted rows live).
+      // A width change landing mid-phase is exempt: the browser reflows
+      // mounted rows before the runtime can commit their new heights.
       if (widthChangedInPhase) continue;
-      // "live": a dirty row strictly above the anchor waits off-screen —
-      // its bottom is above the viewport top, so nothing of it paints.
-      // Any row with pixels on screen must agree with its slot, held or
-      // not: this is the browser-facing regression for a wrapped line
-      // being visible before settlement.
+      // A dirty row entirely above the viewport top waits for the settle;
+      // nothing of it paints. Any row with pixels on screen must match its
+      // slot, held or not: this is the browser-facing regression for a
+      // wrapped line being visible before settlement.
       if (
-        scrollingMode() === "live" &&
         slot.getBoundingClientRect().bottom <=
-          viewport.getBoundingClientRect().top + 0.5
+        viewport.getBoundingClientRect().top + 0.5
       ) {
         continue;
       }
@@ -903,10 +895,7 @@ let watchFrame = 0;
 
 function watchRow(slot: Element): void {
   const row = slot.firstElementChild;
-  if (row) watchElement(row);
-}
-
-function watchElement(row: Element): void {
+  if (!row) return;
   pendingWatches.push(row);
   if (watchFrame !== 0) return;
   watchFrame = requestAnimationFrame(() => {
@@ -1007,20 +996,7 @@ function classifyBatch(records: MutationRecord[]): void {
   const firstOldStyle = new Map<Element, string | null>();
   for (const record of records) {
     if (record.type === "childList") {
-      if (record.target !== canvas) {
-        // An element swapped inside a slot — a promoted equal-height
-        // update, or a detached remeasure moving it out and back: the
-        // paint observer follows the element now in the slot.
-        if ((record.target as Element).parentElement === canvas) {
-          for (const node of record.removedNodes) {
-            if (node instanceof Element) paintObserver?.unobserve(node);
-          }
-          for (const node of record.addedNodes) {
-            if (node instanceof Element) watchElement(node);
-          }
-        }
-        continue;
-      }
+      if (record.target !== canvas) continue;
       for (const node of record.addedNodes) {
         if (node instanceof Element) {
           added.add(node);
@@ -1043,7 +1019,7 @@ function classifyBatch(records: MutationRecord[]): void {
   const heightChanges: { key: string; from: number; to: number }[] = [];
   let offsetChanges = 0;
   // Pre-commit placement of every slot that changed, straight from the
-  // mutation records — the ground truth for the "live" rule below.
+  // mutation records — the ground truth for the mid-phase rule below.
   const changedSlots: {
     key: string;
     offsetFrom: number | null;
@@ -1091,7 +1067,7 @@ function classifyBatch(records: MutationRecord[]): void {
   const heldJustCleared = heldCleared;
   heldCleared = false;
   // The settle commit is the one that cleared a held phase while quiet (a
-  // "live" drain under activity clears `held` too and is not one). It is
+  // mid-phase drain under activity clears `held` too and is not one). It is
   // the one permitted commit at the end of a programmatic phase: a landed
   // glide's promise resolves only after it, so smoothPending is still up.
   const settleCommit = heldJustCleared && !heldClearedUnderActivity;
@@ -1103,20 +1079,19 @@ function classifyBatch(records: MutationRecord[]): void {
   // unless verbose.
   if (verbose() || settleCommit) {
     log(
-      `COMMIT canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} · ${heightChanges.length} heights · ${offsetChanges} offsets · slots +${added.size}/−${removed}${takeover ? " · takeover" : ""}${settleCommit ? " · settle" : ""} · mode=${scrollingMode()} smooth=${smoothPending} write=${wroteScrollTop}`,
+      `COMMIT canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} · ${heightChanges.length} heights · ${offsetChanges} offsets · slots +${added.size}/−${removed}${takeover ? " · takeover" : ""}${settleCommit ? " · settle" : ""} · smooth=${smoothPending} write=${wroteScrollTop}`,
       "good",
     );
   }
 
-  // "live" commits only rows at or below the anchor row (the row under the
+  // A mid-phase commit touches only rows at or below the anchor row (the row under the
   // viewport top): a MOVED row must have started at or below the viewport
   // top (only rows after the anchor shift; the anchor keeps its offset), and
   // a RESIZED row must not have been entirely above it (the anchor row may
   // resize; rows above it would need an anchor write). Judged on the
   // pre-commit placement from the records and the commit's scroll position.
-  /** Null when the batch is a legitimate live commit; else why not. */
-  const liveCommitRejection = (): string | null => {
-    if (scrollingMode() !== "live") return `mode=${scrollingMode()}`;
+  /** Null when the batch is a legitimate mid-phase commit; else why not. */
+  const whyNotMidPhase = (): string | null => {
     // A glide writes every frame by design; under native input any write
     // disqualifies the commit.
     if (wroteScrollTop && smoothPending === 0) return "wrote scrollTop";
@@ -1137,26 +1112,27 @@ function classifyBatch(records: MutationRecord[]): void {
     }
     return null;
   };
-  const liveRejection = liveCommitRejection();
+  const midPhaseRejection = whyNotMidPhase();
 
-  // G: geometry is immutable under a live scroll phase.
+  // G: during a scroll phase, geometry changes only through a commit at or
+  // below the anchor.
   if (takeover) {
     if (verbose()) log("takeover commit (command ended the phase)");
   } else if (
     (nativeActive(now) || glideMoving(now)) &&
-    liveRejection === null
+    midPhaseRejection === null
   ) {
-    liveCommits += 1;
+    midPhaseCommits += 1;
   } else {
     if (nativeActive(now)) {
       violation(
         "G",
-        `geometry changed during native scroll (${heightChanges.length} heights, ${offsetChanges} offsets, canvas ${canvasChange ? "changed" : "same"}; not a live commit: ${liveRejection ?? "?"}; smooth=${smoothPending} write=${wroteScrollTop}) — ${evidence(now)}`,
+        `geometry changed during native scroll (${heightChanges.length} heights, ${offsetChanges} offsets, canvas ${canvasChange ? "changed" : "same"}; not a mid-phase commit: ${midPhaseRejection ?? "?"}; smooth=${smoothPending} write=${wroteScrollTop}) — ${evidence(now)}`,
       );
     } else if (!settleCommit && glideMoving(now)) {
       violation(
         "G",
-        `geometry changed while a glide was still moving (not a live commit: ${liveRejection ?? "?"}; ${heightChanges.length} heights, ${offsetChanges} offsets) — ${evidence(now)}`,
+        `geometry changed while a glide was still moving (not a mid-phase commit: ${midPhaseRejection ?? "?"}; ${heightChanges.length} heights, ${offsetChanges} offsets) — ${evidence(now)}`,
       );
     }
   }
@@ -1282,7 +1258,7 @@ function checkAnchor(
   const record = anchorRecord;
   if (!record) return;
   const context = () =>
-    `mode=${scrollingMode()} held=${stateHeld} write=${wroteScrollTop} scrollTop ${Math.round(record.scrollTop)}→${Math.round(viewport.scrollTop)} canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} heights [${heightChanges.map((c) => `#${c.key} ${c.from}→${c.to}`).join(", ")}]`;
+    `held=${stateHeld} write=${wroteScrollTop} scrollTop ${Math.round(record.scrollTop)}→${Math.round(viewport.scrollTop)} canvas ${canvasChange ? `${Math.round(canvasChange.from ?? 0)}→${Math.round(canvasChange.to ?? 0)}` : "same"} heights [${heightChanges.map((c) => `#${c.key} ${c.from}→${c.to}`).join(", ")}]`;
   // The viewport moved with no runtime write since the record — a native
   // scroll whose event has not fired yet: the baseline is stale, and the
   // batch is judged by G, not A.
@@ -1428,7 +1404,9 @@ function scheduleStatus(): void {
     );
     setTextIfChanged(
       stat.commits,
-      liveCommits > 0 ? `${commits} (${liveCommits} live)` : String(commits),
+      midPhaseCommits > 0
+        ? `${commits} (${midPhaseCommits} mid-phase)`
+        : String(commits),
     );
     setTextIfChanged(stat.violations, String(violations));
     setAttributeIfChanged(
@@ -1811,7 +1789,7 @@ function issue<T>(work: () => T): T {
     queueMicrotask(() => {
       takeoverPending = false;
       // A command can write without producing a canvas mutation. Do not
-      // attribute that write to an unrelated later live commit. Preserve
+      // attribute that write to an unrelated later mid-phase commit. Preserve
       // any writes made after this command returned.
       writeSerialAtLastBatch = Math.max(
         writeSerialAtLastBatch,
@@ -1914,7 +1892,7 @@ function reset(): void {
   clippedPaints = 0;
   disposeCurrent();
   commits = 0;
-  liveCommits = 0;
+  midPhaseCommits = 0;
   created = 0;
   destroyed = 0;
   imagesLoaded = 0;

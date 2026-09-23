@@ -32,10 +32,6 @@
     var(--bg);
 }
 
-.np-canvas {
-  width: 100%;
-}
-
 @media (max-width: 620px) {
   .np-body .header {
     flex-wrap: wrap;

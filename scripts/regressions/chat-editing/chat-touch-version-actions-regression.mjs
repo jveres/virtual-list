@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { chromium, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 const engine = process.env.BROWSER_ENGINE ?? "webkit";
 const browser = await { chromium, webkit }[engine].launch();
@@ -14,12 +17,7 @@ try {
   });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.stack ?? error.message));
-  await page.goto(
-    `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/`,
-  );
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  await openStreamingDemo(page, base);
   // A touch-primary device can still hover with a Pencil or attached pointer.
   // Mouse movement exercises real CSS :hover in WebKit, but is not a physical
   // Pencil test. Chromium additionally supports pen input through CDP below.

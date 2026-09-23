@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [chromium, firefox, webkit]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base);
     const result = await page.evaluate(async () => {
       const { createChatImagePreview } = await import(
         "/demos/streaming/image-preview.ts"

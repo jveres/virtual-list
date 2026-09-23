@@ -111,6 +111,10 @@ baseline with the preparation script before applying the production patch,
 as described in the [earlier report](runtime-candidate-measurements-2026-09-14.md#reproduction-and-artifacts).
 Start Vite on port 4193, then substitute that experiment directory name:
 
+> **Note:** These static-review scripts measured the original runtime and
+> were removed when `virtual-list-next` replaced it (commit `aeeb778`
+> onward). Check out an earlier revision to rerun them.
+
 ```sh
 node scripts/firefox-profile/run-static-review.mjs static-review-EXAMPLE current
 ```

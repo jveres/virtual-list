@@ -5,6 +5,10 @@
 //
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  openAIStreamMock,
+} from "../shared/openai-stream.mjs";
 import { openTranscript } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
@@ -15,56 +19,11 @@ for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 820 },
     });
-    await page.addInitScript(() => {
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "openai",
-          apiKey: "offline-test",
-          model: "gpt-5-mini",
-        }),
-      );
-      const original = window.fetch;
-      window.fetch = (input, init) => {
-        if (!String(input).startsWith("https://api.openai.com/"))
-          return original(input, init);
-        const encode = (event) =>
-          new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`);
-        return Promise.resolve(
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                window.sendToken = (delta) =>
-                  controller.enqueue(
-                    encode({ type: "response.output_text.delta", delta }),
-                  );
-                window.finishStream = () => {
-                  controller.enqueue(
-                    encode({
-                      type: "response.completed",
-                      response: {
-                        id: "resp_paging",
-                        status: "completed",
-                        output: [],
-                      },
-                    }),
-                  );
-                  controller.close();
-                };
-                init.signal.addEventListener(
-                  "abort",
-                  () =>
-                    controller.error(
-                      new DOMException("Cancelled", "AbortError"),
-                    ),
-                  { once: true },
-                );
-              },
-            }),
-            { headers: { "Content-Type": "text/event-stream" } },
-          ),
-        );
-      };
+    await page.addInitScript(openAIStreamMock, {
+      settings: OFFLINE_AI_SETTINGS,
+      emitText: "sendToken",
+      finish: "finishStream",
+      responseId: "resp_paging",
     });
     const errors = await openTranscript(page, base, 200, /loaded \d+-200\/200/);
     await page.locator("#prompt").fill("Stream while I read history");

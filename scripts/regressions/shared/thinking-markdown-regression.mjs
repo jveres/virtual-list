@@ -11,9 +11,7 @@ for (const engine of [firefox, chromium, webkit]) {
     await page.goto(`${base}/demos/chat-history/`);
     await page.waitForFunction(() => window.chatHistory);
     const result = await page.evaluate(async () => {
-      const { buildToolCall, buildChatItem } = await import(
-        "/demos/shared/chat-ui.ts"
-      );
+      const { buildToolCall } = await import("/demos/shared/chat-ui.ts");
       const { appendStaticMessageContent, createMessageContent } = await import(
         "/demos/streaming/message-content.ts"
       );
@@ -62,11 +60,10 @@ for (const engine of [firefox, chromium, webkit]) {
         };
       };
       const message = { role: "assistant", markdown: "", toolCalls: [call] };
-      const legacy = buildChatItem(message, "");
       const ordered = document.createElement("div");
       appendStaticMessageContent(ordered, message);
       const live = document.createElement("div");
-      probe.append(legacy, ordered, live);
+      probe.append(ordered, live);
       const handle = createMessageContent(live, "none");
       try {
         handle.update(
@@ -92,7 +89,7 @@ for (const engine of [firefox, chromium, webkit]) {
         });
         probe.append(plain, unsafe);
         return {
-          rendered: [inspect(legacy), inspect(ordered), running, inspect(live)],
+          rendered: [inspect(ordered), running, inspect(live)],
           closedAfterUpdate,
           unchangedSlotMutations,
           plain: plain.querySelector(".tool-call-body > p")?.textContent,

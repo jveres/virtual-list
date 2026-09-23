@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 const failures = [];
@@ -7,10 +8,9 @@ for (const engine of [firefox, webkit, chromium]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+    });
     const results = await page.evaluate(async () => {
       const { createPhotoPreview } = await import(
         "/demos/shared/photo-preview.ts"

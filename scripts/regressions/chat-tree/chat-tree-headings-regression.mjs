@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 await mkdir("browser-artifacts/conversation-tree", { recursive: true });
@@ -10,13 +11,7 @@ for (const engine of [firefox, webkit, chromium]) {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 820 },
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
     const markdown = await page.evaluate(async () => {
       const { branchingTranscriptMarkdown } = await import(
         "/demos/streaming/branching-transcript.ts"
@@ -57,11 +52,7 @@ for (const engine of [firefox, webkit, chromium]) {
         { dayOf: () => 0, dayLabel: () => "Today" },
       );
     });
-    await page.locator("#import-file").setInputFiles({
-      name: "tree-headings.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(markdown),
-    });
+    await importTranscript(page, markdown, { name: "tree-headings.md" });
     await page.locator('#viewport [data-key="120"]').waitFor();
     await page
       .getByRole("button", { name: "Conversation tree", exact: true })

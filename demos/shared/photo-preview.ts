@@ -45,7 +45,6 @@ export interface PhotoPreviewOptions<T extends PhotoPreviewItem> {
   previewUrl: (photo: T, width: number) => string;
   detailsText?: (photo: T) => string;
   getAdjacentPhoto?: (photo: T, direction: -1 | 1) => T | null;
-  maxPreviewSourceWidth?: number;
   /** Native Save/Copy menus; "preview-on-ios" disables the source's iOS callout. */
   nativeImageMenu?: boolean | "preview-on-ios";
   /** Set false to keep square image corners, including the hero animation. */
@@ -53,7 +52,6 @@ export interface PhotoPreviewOptions<T extends PhotoPreviewItem> {
 }
 
 export interface PhotoPreviewController<T extends PhotoPreviewItem> {
-  readonly active: boolean;
   bind(card: HTMLElement, photo: T): void;
   close(animate?: boolean): Promise<void>;
   unbind(card: HTMLElement): void;
@@ -246,7 +244,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
       clamp(
         photoViewViewportWidth() * pixelRatio,
         720,
-        options.maxPreviewSourceWidth ?? PHOTO_VIEW_MAX_SOURCE_WIDTH,
+        PHOTO_VIEW_MAX_SOURCE_WIDTH,
       ),
     );
   }
@@ -1680,9 +1678,6 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
   }
 
   return {
-    get active() {
-      return activePhotoView !== null;
-    },
     bind,
     close: closePhotoView,
     unbind,

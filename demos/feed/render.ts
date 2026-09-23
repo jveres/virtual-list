@@ -1,3 +1,10 @@
+import {
+  mountMeasuredText,
+  prepareMeasuredText,
+  syncMeasuredText,
+  type TextBounds,
+  unmountMeasuredText,
+} from "../../integrations/measured-text";
 import { renderMarkdown } from "../shared/markdown";
 import { setHiddenIfChanged } from "../shared/utils";
 import { type FeedPost, safeUrl } from "./source";
@@ -55,14 +62,6 @@ function link(url: string): HTMLAnchorElement {
   return element;
 }
 
-type TextLayout = {
-  update: () => void;
-  content: HTMLElement;
-  observer?: ResizeObserver;
-  frame?: number;
-};
-const textLayouts = new WeakMap<HTMLElement, TextLayout>();
-
 export function renderPost(
   post: FeedPost,
   toggle: (key: string) => void,
@@ -95,34 +94,16 @@ export function renderPost(
   button.setAttribute("aria-expanded", String(post.expanded));
   button.addEventListener("click", () => toggle(post.key));
   article.append(body, button);
-  const update = (): void => {
-    if (!content.isConnected) return;
+  const apply = (bounds: TextBounds): void => {
     const limit = Number.parseFloat(getComputedStyle(body).fontSize) * 18;
-    const overflows = content.getBoundingClientRect().height > limit + 1;
+    const overflows = bounds.height > limit + 1;
     setHiddenIfChanged(button, !overflows);
     body.classList.toggle("collapsed", overflows && !post.expanded);
   };
   // Decide from laid-out text, not character count. This is off-scroller and
-  // happens before the runtime's row premeasurement, so hidden controls never
-  // reserve a spurious button or a faded band in the measured snapshot.
-  const probe = document.createElement("div");
-  Object.assign(probe.style, {
-    position: "fixed",
-    top: "0",
-    left: "0",
-    width: `${width}px`,
-    visibility: "hidden",
-    pointerEvents: "none",
-  });
-  probe.append(article);
-  document.body.append(probe);
-  try {
-    update();
-  } finally {
-    article.remove();
-    probe.remove();
-  }
-  textLayouts.set(article, { update, content });
+  // happens before the runtime measures the row, so hidden controls never
+  // reserve a spurious button or a faded band in the measured height.
+  prepareMeasuredText(article, content, apply, width);
   const mediaItems = post.media.slice(0, 4);
   const grid = document.createElement("div");
   grid.className = `post-media count-${mediaItems.length}`;
@@ -147,21 +128,8 @@ export function renderPost(
 }
 
 export function mountPost(element: HTMLElement): void {
-  const layout = textLayouts.get(element);
-  if (layout) {
-    layout.update();
-    layout.observer?.disconnect();
-    // ResizeObserver delivery must not mutate an observed ancestor's size in
-    // the same delivery (WebKit reports an undelivered-notifications loop).
-    layout.observer = new ResizeObserver(() => {
-      if (layout.frame !== undefined) return;
-      layout.frame = requestAnimationFrame(() => {
-        layout.frame = undefined;
-        layout.update();
-      });
-    });
-    layout.observer.observe(layout.content);
-  }
+  syncMeasuredText(element);
+  mountMeasuredText(element);
   for (const image of element.querySelectorAll<HTMLImageElement>(
     "img[data-src]",
   )) {
@@ -170,13 +138,7 @@ export function mountPost(element: HTMLElement): void {
 }
 
 export function unmountPost(element: HTMLElement): void {
-  const layout = textLayouts.get(element);
-  layout?.observer?.disconnect();
-  if (layout) {
-    layout.observer = undefined;
-    if (layout.frame !== undefined) cancelAnimationFrame(layout.frame);
-    layout.frame = undefined;
-  }
+  unmountMeasuredText(element);
   for (const image of element.querySelectorAll("img"))
     image.removeAttribute("src");
 }

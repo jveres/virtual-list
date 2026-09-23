@@ -2,6 +2,12 @@
 // BROWSER_MATRIX_URL=http://127.0.0.1:5173 node scripts/regressions/chat-content/openai-context-regression.mjs
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import {
+  fulfillOpenAI,
+  OFFLINE_AI_SETTINGS,
+  seedMissingAISettings,
+} from "../shared/openai-stream.mjs";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const baseUrl = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
@@ -11,23 +17,15 @@ try {
   const requests = [];
   let missing = false;
   let responseNumber = 0;
-  await page.addInitScript(() => {
-    if (!localStorage.getItem("virtual-list:ai-settings")) {
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "openai",
-          apiKey: "offline-test-key",
-          model: "gpt-5-mini",
-          contextTurns: 0,
-          tools: {
-            imageGeneration: true,
-            webSearch: false,
-            codeInterpreter: false,
-          },
-        }),
-      );
-    }
+  await page.addInitScript(seedMissingAISettings, {
+    ...OFFLINE_AI_SETTINGS,
+    apiKey: "offline-test-key",
+    contextTurns: 0,
+    tools: {
+      imageGeneration: true,
+      webSearch: false,
+      codeInterpreter: false,
+    },
   });
   await page.route("https://api.openai.com/**", async (route) => {
     assert.equal(route.request().url(), "https://api.openai.com/v1/responses");
@@ -90,14 +88,11 @@ try {
         response: { id: `resp_${responseNumber}`, status: "completed", output },
       },
     ];
-    await route.fulfill({
-      contentType: "text/event-stream",
-      body: events
-        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-        .join(""),
-    });
+    await fulfillOpenAI(route, events);
   });
-  await page.goto(`${baseUrl}/demos/streaming/index.html`);
+  await openStreamingDemo(page, baseUrl, {
+    path: "/demos/streaming/index.html",
+  });
   async function send(text) {
     await page.fill("#prompt", text);
     await page.click("#send-btn");

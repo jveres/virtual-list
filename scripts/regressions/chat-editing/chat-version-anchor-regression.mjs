@@ -1,6 +1,9 @@
 // Regression for a pinned prompt changing dates after edit/stop/version-back.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
@@ -8,14 +11,7 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1420, height: 950 },
   });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  await page.goto(
-    `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/`,
-  );
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  const errors = await openStreamingDemo(page, base);
   const prompt = page.locator("#viewport .message.user").last();
   const originalKey = await prompt.getAttribute("data-key");
   const offset = (key) =>

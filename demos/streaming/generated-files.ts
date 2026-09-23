@@ -1,3 +1,5 @@
+import { downloadBlob } from "../shared/utils.js";
+
 /** Remote artifacts or inert UTF-8 files, never executable URLs. */
 export interface GeneratedFile {
   fileId: string;
@@ -298,14 +300,7 @@ export function syncGeneratedFiles(
             file.content === undefined ? getApiKey() : "",
             AbortSignal.timeout(60_000),
           );
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = file.filename;
-          document.body.append(link);
-          link.click();
-          link.remove();
-          window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+          downloadBlob(blob, file.filename, 60_000);
           status.textContent = "Download started.";
         } catch (error) {
           status.textContent =

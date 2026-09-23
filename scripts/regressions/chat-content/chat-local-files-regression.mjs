@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { firefox, webkit } from "playwright";
+import {
+  fulfillOpenAI,
+  seedMissingAISettings,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 const artwork = Buffer.from(
@@ -26,21 +31,15 @@ for (const engine of [firefox, webkit]) {
     const page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.addInitScript(() => {
-      if (!localStorage.getItem("virtual-list:ai-settings"))
-        localStorage.setItem(
-          "virtual-list:ai-settings",
-          JSON.stringify({
-            provider: "chatgpt",
-            chatgptModel: "test-model",
-            tools: {
-              webSearch: false,
-              imageGeneration: false,
-              codeInterpreter: false,
-              fileDownload: true,
-            },
-          }),
-        );
+    await page.addInitScript(seedMissingAISettings, {
+      provider: "chatgpt",
+      chatgptModel: "test-model",
+      tools: {
+        webSearch: false,
+        imageGeneration: false,
+        codeInterpreter: false,
+        fileDownload: true,
+      },
     });
     await page.route("https://api.openai.com/**", (route) => {
       errors.push("Unexpected API-token request");
@@ -117,17 +116,9 @@ for (const engine of [firefox, webkit]) {
           },
         },
       ];
-      await route.fulfill({
-        contentType: "text/event-stream",
-        body: events
-          .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-          .join(""),
-      });
+      await fulfillOpenAI(route, events);
     });
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base);
     await page.locator("#prompt").fill("Create an HTML file");
     await page.locator("#attachment-files").setInputFiles({
       name: "artwork.png",
@@ -225,11 +216,7 @@ for (const engine of [firefox, webkit]) {
           "export must contain generated file payloads",
         );
         page.once("dialog", (dialog) => dialog.accept());
-        await page.locator("#import-file").setInputFiles({
-          name: "roundtrip.md",
-          mimeType: "text/markdown",
-          buffer: Buffer.from(transcript),
-        });
+        await importTranscript(page, transcript, { name: "roundtrip.md" });
         await page.waitForFunction(
           () => document.querySelector("#import-file").value === "",
         );

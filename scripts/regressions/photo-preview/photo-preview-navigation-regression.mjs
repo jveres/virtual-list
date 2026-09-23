@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
@@ -9,13 +10,10 @@ for (const engine of [firefox, webkit, chromium]) {
       viewport: { width: 1200, height: 820 },
       hasTouch: true,
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+      acceptDialogs: true,
+    });
     const urls = await page.evaluate(() =>
       ["#6389a1", "#b87665"].map((color, index) => {
         const canvas = document.createElement("canvas");
@@ -36,11 +34,7 @@ for (const engine of [firefox, webkit, chromium]) {
           `**${i % 2 ? "Assistant" : "User"}**\n\nMessage ${i}: ${"text ".repeat(80)}\n\n`,
       ).join("") +
       `**Assistant**\n\n![Second](${urls[1]})\n\n![Third](${urls[0]})\n`;
-    await page.locator("#import-file").setInputFiles({
-      name: "navigation.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(markdown),
-    });
+    await importTranscript(page, markdown, { name: "navigation.md" });
     const third = page.locator('#viewport img[alt="Third"].photo-preview-card');
     await third.waitFor();
     assert.equal(await page.locator('#viewport img[alt="First"]').count(), 0);

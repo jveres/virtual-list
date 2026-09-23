@@ -2,16 +2,14 @@
 // This is a correctness regression, not native Safari or Firefox profiling.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [chromium, firefox, webkit]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base);
     for (const behavior of ["auto", "smooth"]) {
       const result = await page.evaluate(async (behavior) => {
         const { createVirtualList } = await import("/src/virtual-list.ts");

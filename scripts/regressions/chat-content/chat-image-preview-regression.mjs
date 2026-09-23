@@ -1,8 +1,23 @@
 // Reuses the gallery viewer in real chat DOM; no live API requests.
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  pendingOpenAIMock,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
+// The viewer displays data URLs through object URLs; compare the bytes shown.
+const displayedBytes = (image) =>
+  image.evaluate(async (element) =>
+    btoa(
+      String.fromCharCode(
+        ...new Uint8Array(await (await fetch(element.src)).arrayBuffer()),
+      ),
+    ),
+  );
 for (const engine of [firefox, webkit]) {
   const browser = await engine.launch();
   try {
@@ -10,7 +25,6 @@ for (const engine of [firefox, webkit]) {
       viewport: { width: 1200, height: 820 },
       hasTouch: true,
     });
-    const errors = [];
     const assertSquareCorners = async (selector) => {
       const corners = await page.locator(selector).evaluate((element) => ({
         radius: getComputedStyle(element).borderRadius,
@@ -29,38 +43,15 @@ for (const engine of [firefox, webkit]) {
       assert.match(corners.clip, /^inset\(0px(?: round 0px)?\)$/);
       for (const radius of corners.animatedRadii) assert.equal(radius, "0px");
     };
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.addInitScript(() => {
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "openai",
-          apiKey: "offline-test",
-          model: "gpt-5-mini",
-        }),
-      );
-      const originalFetch = window.fetch;
-      window.fetch = (input, init) => {
-        if (!String(input).startsWith("https://api.openai.com/"))
-          return originalFetch(input, init);
-        window.previewRequestStarted = true;
-        return new Promise((_resolve, reject) => {
-          init.signal.addEventListener(
-            "abort",
-            () => {
-              window.previewRequestAborted = true;
-              reject(new DOMException("Cancelled", "AbortError"));
-            },
-            { once: true },
-          );
-        });
-      };
+    await page.addInitScript(seedAISettings, OFFLINE_AI_SETTINGS);
+    await page.addInitScript(pendingOpenAIMock, {
+      started: "previewRequestStarted",
+      aborted: "previewRequestAborted",
     });
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+      acceptDialogs: true,
+    });
     const url = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
       canvas.width = 640;
@@ -71,11 +62,7 @@ for (const engine of [firefox, webkit]) {
       return canvas.toDataURL("image/png");
     });
     const markdown = `**User**\n\nShow a picture\n\n**Assistant**\n\n[![Landscape](${url})](https://example.test/should-not-navigate)\n`;
-    await page.locator("#import-file").setInputFiles({
-      name: "photo.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(markdown),
-    });
+    await importTranscript(page, markdown, { name: "photo.md" });
     const photo = page.locator("#viewport img.photo-preview-card").first();
     await photo.waitFor();
     assert.equal(
@@ -258,11 +245,7 @@ for (const engine of [firefox, webkit]) {
       size: Buffer.from(url.split(",")[1], "base64").length,
     };
     const attachmentMarkdown = `**User**\n<!-- turn ${JSON.stringify({ attachments: [attachment] })} -->\n\nAttached picture\n`;
-    await page.locator("#import-file").setInputFiles({
-      name: "attachment.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(attachmentMarkdown),
-    });
+    await importTranscript(page, attachmentMarkdown, { name: "attachment.md" });
     const attached = page.getByRole("button", {
       name: "Preview attached.png",
       exact: true,
@@ -271,8 +254,8 @@ for (const engine of [firefox, webkit]) {
     await attached.click();
     await page.locator(".photo-viewer:not(.is-preparing)").waitFor();
     assert.equal(
-      await page.locator(".photo-viewer-image").first().getAttribute("src"),
-      url,
+      await displayedBytes(page.locator(".photo-viewer-image").first()),
+      url.split(",")[1],
     );
     assert.equal(
       await page.locator(".photo-viewer-details").textContent(),
@@ -315,16 +298,11 @@ for (const engine of [firefox, webkit]) {
           Object.defineProperty(navigator, "platform", { get: () => platform });
           Object.defineProperty(navigator, "maxTouchPoints", { get: () => 5 });
         }, platform);
-        mobile.on("dialog", (dialog) => dialog.accept());
-        await mobile.goto(`${base}/demos/streaming/index.html`);
-        await mobile.waitForFunction(
-          () => !document.documentElement.classList.contains("booting"),
-        );
-        await mobile.locator("#import-file").setInputFiles({
-          name: "mobile-photo.md",
-          mimeType: "text/markdown",
-          buffer: Buffer.from(markdown),
+        await openStreamingDemo(mobile, base, {
+          path: "/demos/streaming/index.html",
+          acceptDialogs: true,
         });
+        await importTranscript(mobile, markdown, { name: "mobile-photo.md" });
         const source = mobile
           .locator("#viewport img.photo-preview-card")
           .first();
@@ -418,7 +396,7 @@ for (const engine of [firefox, webkit]) {
           true,
           "iOS preview allows native callout",
         );
-        assert.equal(await fullImage.getAttribute("src"), url);
+        assert.equal(await displayedBytes(fullImage), url.split(",")[1]);
         await mobile.keyboard.press("Escape");
         await mobile.locator(".photo-viewer").waitFor({ state: "detached" });
         await mobile.close();

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  transcriptMarkdown,
+} from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 await mkdir("browser-artifacts/date-pill", { recursive: true });
@@ -12,35 +17,23 @@ for (const engine of [firefox, webkit, chromium]) {
         viewport: { width, height: 844 },
         deviceScaleFactor: 2,
       });
-      const errors = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      page.on("dialog", (dialog) => dialog.accept());
-      await page.goto(`${base}/demos/streaming/`);
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
+      const errors = await openStreamingDemo(page, base, {
+        acceptDialogs: true,
+      });
       const today = Date.now();
-      const transcript = [
-        "# streaming-chat transcript",
-        "",
-        ...[
+      const transcript = transcriptMarkdown(
+        [
           "Yesterday prompt",
           "Earlier reply. ".repeat(200),
           "Today prompt",
           "Today reply.",
-        ].flatMap((text, index) => [
-          index % 2 ? "**Assistant**" : "**User**",
-          `<!-- turn ${JSON.stringify({ sentAt: today - (index < 2 ? 86400000 : 0) })} -->`,
-          "",
+        ].map((text, index) => ({
+          role: index % 2 ? "assistant" : "user",
+          sentAt: today - (index < 2 ? 86400000 : 0),
           text,
-          "",
-        ]),
-      ].join("\n");
-      await page.locator("#import-file").setInputFiles({
-        name: "date-pill.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(transcript),
-      });
+        })),
+      );
+      await importTranscript(page, transcript, { name: "date-pill.md" });
       await page.getByText("Today reply.", { exact: true }).waitFor();
       await page.waitForTimeout(200);
       const offset = await page.evaluate(() => {

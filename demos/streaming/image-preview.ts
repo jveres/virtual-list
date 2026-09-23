@@ -3,7 +3,14 @@ import {
   createPhotoPreview,
   type PhotoPreviewItem,
 } from "../shared/photo-preview.js";
-import { attachmentImageSource, type ChatAttachment } from "./attachments.js";
+import {
+  attachmentImageSource,
+  type ChatAttachment,
+  imageObjectUrl,
+} from "./attachments.js";
+
+/** Object URLs kept for recently viewed data-URL images. */
+const DISPLAY_URL_LIMIT = 8;
 
 interface ImageMessage {
   id: number;
@@ -25,10 +32,31 @@ export function createChatImagePreview(
 ): {
   dispose(): void;
 } {
+  // The viewer shows data-URL images through object URLs: WebKit decodes a
+  // data-URL image again in every frame of a dismiss drag (a 2 MB PNG costs
+  // ~40 ms per frame). The data URL stays the photo's identity.
+  const displayUrls = new Map<string, string>();
+  const displayUrl = (url: string): string => {
+    const cached = displayUrls.get(url);
+    if (cached) {
+      displayUrls.delete(url);
+      displayUrls.set(url, cached);
+      return cached;
+    }
+    const objectUrl = url.startsWith("data:") ? imageObjectUrl(url) : null;
+    if (!objectUrl) return url;
+    displayUrls.set(url, objectUrl);
+    for (const [key, old] of displayUrls) {
+      if (displayUrls.size <= DISPLAY_URL_LIMIT) break;
+      URL.revokeObjectURL(old);
+      displayUrls.delete(key);
+    }
+    return objectUrl;
+  };
   const preview = createPhotoPreview<ChatImage>({
     viewport,
-    thumbnailUrl: (photo) => photo.url,
-    previewUrl: (photo) => photo.url,
+    thumbnailUrl: (photo) => displayUrl(photo.url),
+    previewUrl: (photo) => displayUrl(photo.url),
     detailsText: (photo) => photo.label,
     nativeImageMenu: "preview-on-ios",
     roundedCorners: false,
@@ -301,6 +329,8 @@ export function createChatImagePreview(
       for (const image of bound) preview.unbind(image);
       bound.clear();
       preview.dispose();
+      for (const url of displayUrls.values()) URL.revokeObjectURL(url);
+      displayUrls.clear();
     },
   };
 }

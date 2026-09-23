@@ -1,51 +1,18 @@
-// Detached premeasurement for the newspaper demo: measures its elements before they mount.
+// Newspaper demo helper: measures built article elements before they mount.
 //
-// Items are built and measured OFF-scroller: a hidden, fixed-position
-// measurement root appended to document.body, width-synced to the viewport
-// so wrapping matches the real canvas. The scroll surface is never touched;
-// heights are real before anything mounts (core contract, cornerstone 2).
+// The elements go into a hidden, fixed-position root on document.body whose
+// width follows the viewport, so text wraps as it will in the list. One
+// layout serves every read in a batch, and every element is detached again
+// before the heights are returned. The caller keeps ownership of the
+// elements.
 //
-// Measurement limit: a detached measure cannot see
-// what only materializes later — undecoded images, late syntax
-// highlighting, pending font loads. Premeasure is the commit-time truth for
-// everything layout can compute synchronously; late growers must be
-// dimensionally stabilized by the host (fixed-extent boxes) or re-enter
-// through the settle-gated update pipeline.
-
-interface ItemMeasurerConfig {
-  viewport: HTMLElement;
-  /** Host-provided ancestor with the same inherited and scoped row styles. */
-  container?: HTMLElement;
-  /** Class names applied to the measurement root so item CSS that keys off
-   * the canvas (e.g. `.chat-canvas .message`) matches during measurement.
-   * (Tests only; the runtime does not forward one.) */
-  canvasClassName?: string;
-  /**
-   * The width to measure at. Supplied by a host that already tracks the
-   * viewport width (a ResizeObserver) so a measurement never forces a
-   * layout just to read `clientWidth`; defaults to reading the viewport.
-   */
-  viewportWidth?: () => number;
-}
+// Limit: a detached measure cannot see content that settles later, such as
+// undecoded images or pending fonts. The demo keeps its article geometry
+// fixed so that the measured height stays correct.
 
 export interface ItemMeasurer {
-  /**
-   * Measure already-built, retained elements together: all are appended
-   * to the root (each is absolutely positioned at its top, so they overlay
-   * independently), one layout serves every read. A successful single-row
-   * measurement may stay connected off-scroller until the next nonempty
-   * batch, mounting, destruction, or disposal. Larger batches and failures
-   * detach every element. The caller keeps ownership; nothing is destroyed.
-   */
+  /** Measure elements together and hand them back detached. */
   measureMany(elements: readonly HTMLElement[]): number[];
-  dispose(): void;
-}
-
-export interface ItemMeasurementStage {
-  /** Append a bounded group and warm its layout without detaching earlier groups. */
-  append(elements: readonly HTMLElement[]): void;
-  /** Read every staged height together immediately before the atomic commit. */
-  measure(): number[];
   dispose(): void;
 }
 
@@ -53,22 +20,7 @@ function positiveSize(value: number): number {
   return Number.isFinite(value) && value > 0 ? value : 1;
 }
 
-function addClassNames(
-  element: HTMLElement,
-  classNames: string | undefined,
-): void {
-  if (!classNames) return;
-  for (const className of classNames.split(/\s+/)) {
-    if (className) element.classList.add(className);
-  }
-}
-
-/**
- * The row-element positioning convention: absolute, pinned to its slot's
- * edges, no transform. Applied to every measured element, and by the
- * runtime to the elements it never measures (edge slots).
- */
-export function positionRowElement(element: HTMLElement): HTMLElement {
+function positionElement(element: HTMLElement): HTMLElement {
   element.style.position = "absolute";
   element.style.transform = "none";
   element.style.top = "0";
@@ -77,28 +29,19 @@ export function positionRowElement(element: HTMLElement): HTMLElement {
   return element;
 }
 
-function syncMeasurementRootWidth(
-  measureRoot: HTMLDivElement,
-  viewport: HTMLElement,
-  viewportWidth: (() => number) | undefined,
-): void {
-  const width =
-    viewportWidth?.() ||
-    viewport.clientWidth ||
-    viewport.getBoundingClientRect().width;
+function syncRootWidth(root: HTMLDivElement, viewport: HTMLElement): void {
+  const width = viewport.clientWidth || viewport.getBoundingClientRect().width;
   const next = width > 0 ? `${width}px` : "100%";
-  if (measureRoot.style.width !== next) measureRoot.style.width = next;
+  if (root.style.width !== next) root.style.width = next;
 }
 
-function createMeasurementRoot(
-  viewport: HTMLElement,
-  canvasClassName: string | undefined,
-  viewportWidth: (() => number) | undefined,
-  container: HTMLElement,
-): HTMLDivElement {
-  const measureRoot = document.createElement("div");
-  addClassNames(measureRoot, canvasClassName);
-  Object.assign(measureRoot.style, {
+export function createItemMeasurer({
+  viewport,
+}: {
+  viewport: HTMLElement;
+}): ItemMeasurer {
+  const root = document.createElement("div");
+  Object.assign(root.style, {
     position: "fixed",
     inset: "0 auto auto 0",
     minHeight: "0",
@@ -108,75 +51,12 @@ function createMeasurementRoot(
     opacity: "0",
     pointerEvents: "none",
   });
-  // Descendants can override visibility. Suppress paint and interaction
-  // without changing layout; hide the subtree from accessibility as well.
-  measureRoot.inert = true;
-  measureRoot.setAttribute("aria-hidden", "true");
-  syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
-  container.appendChild(measureRoot);
-  return measureRoot;
-}
-
-/**
- * A private root for an incremental window preparation. Keeping the rows
- * connected between batches preserves the browser's layout work. The final
- * read is still authoritative: an image, font, or host style that changed
- * between frames is reflected before any row reaches the scroller.
- */
-export function createItemMeasurementStage(
-  config: ItemMeasurerConfig,
-): ItemMeasurementStage {
-  const root = createMeasurementRoot(
-    config.viewport,
-    config.canvasClassName,
-    config.viewportWidth,
-    config.container ?? document.body,
-  );
-  const staged: HTMLElement[] = [];
-  let disposed = false;
-  const assertActive = (): void => {
-    if (disposed) throw new Error("cannot use a disposed measurement stage");
-  };
-  return {
-    append(elements) {
-      assertActive();
-      if (elements.length === 0) return;
-      root.append(...elements.map(positionRowElement));
-      staged.push(...elements);
-      // One read warms the entire new group. Do not read every retained
-      // row after each append; their authoritative pass is measure().
-      elements[elements.length - 1]?.getBoundingClientRect();
-    },
-    measure() {
-      assertActive();
-      syncMeasurementRootWidth(root, config.viewport, config.viewportWidth);
-      return staged.map((element) =>
-        positiveSize(element.getBoundingClientRect().height),
-      );
-    },
-    dispose() {
-      if (disposed) return;
-      disposed = true;
-      root.remove();
-      root.replaceChildren();
-      staged.length = 0;
-    },
-  };
-}
-
-export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
-  const {
-    viewport,
-    canvasClassName,
-    viewportWidth,
-    container = document.body,
-  } = config;
-  const measureRoot = createMeasurementRoot(
-    viewport,
-    canvasClassName,
-    viewportWidth,
-    container,
-  );
+  // Descendants can override visibility, so also block interaction and
+  // hide the subtree from accessibility.
+  root.inert = true;
+  root.setAttribute("aria-hidden", "true");
+  syncRootWidth(root, viewport);
+  document.body.appendChild(root);
 
   let disposed = false;
 
@@ -186,37 +66,21 @@ export function createItemMeasurer(config: ItemMeasurerConfig): ItemMeasurer {
         throw new Error("cannot measure with a disposed item measurer");
       }
       if (elements.length === 0) return [];
-      let retain = false;
       try {
-        syncMeasurementRootWidth(measureRoot, viewport, viewportWidth);
-        const single = elements.length === 1 ? elements[0] : undefined;
-        if (
-          single &&
-          measureRoot.childNodes.length === 1 &&
-          measureRoot.firstChild === single
-        ) {
-          // Preserve this row's layout tree between live updates. Still
-          // restore runtime-owned positioning if the renderer changed it.
-          positionRowElement(single);
-        } else {
-          measureRoot.replaceChildren(...elements.map(positionRowElement));
-        }
-        const heights = elements.map((element) =>
+        syncRootWidth(root, viewport);
+        root.replaceChildren(...elements.map(positionElement));
+        return elements.map((element) =>
           positiveSize(element.getBoundingClientRect().height),
         );
-        retain = single !== undefined && !disposed;
-        return heights;
       } finally {
-        // Bounded to one element, with no parallel cache to keep removed or
-        // mounted rows alive. Failure must never leave a partial resident.
-        if (!retain) measureRoot.replaceChildren();
+        root.replaceChildren();
       }
     },
     dispose() {
       if (disposed) return;
       disposed = true;
-      measureRoot.remove();
-      measureRoot.replaceChildren();
+      root.remove();
+      root.replaceChildren();
     },
   };
 }

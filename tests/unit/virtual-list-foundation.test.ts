@@ -8,14 +8,13 @@ import {
   type Msg,
   message,
   mount,
-  ROW_H,
   range,
   useHarness,
 } from "../helpers/list-harness";
 
-// What virtual-list-next adds on top of the shared contract suite: rows are
-// measured where they mount, the desired state lands under one commit rule,
-// and host calls made from callbacks queue behind the pass.
+// Beyond the contract suite: rows are measured where they mount, the
+// desired state lands under one commit rule, and host calls made from
+// callbacks queue behind the pass.
 
 useHarness();
 
@@ -33,13 +32,7 @@ describe("window jobs", () => {
     const initial = page(0);
     const h = mount([...initial.items], {
       boot: "start",
-      render: (m, existing) => {
-        renders.set(m.id, (renders.get(m.id) ?? 0) + 1);
-        const element = existing ?? document.createElement("div");
-        element.textContent = m.body ?? null;
-        element.getBoundingClientRect = () => ({ height: ROW_H }) as DOMRect;
-        return element;
-      },
+      onRender: (m) => renders.set(m.id, (renders.get(m.id) ?? 0) + 1),
     });
     const paging = createPagedWindow({
       list: h.list,
@@ -90,9 +83,9 @@ describe("rows measured where they mount", () => {
     h.list.setItems([message(-1), ...items], { anchor: "viewport" });
     expect(h.list.state.held).toBe(true);
 
-    const row = h.element(-1) as HTMLElement;
-    const slot = row.parentElement as HTMLElement;
-    expect(slot.parentElement).toBe(h.canvas);
+    const row = h.rowElement("msg -1");
+    const slot = h.slotOf(row);
+    expect(slot.parentElement).toBe(h.canvas());
     expect(slot.inert).toBe(true);
     expect(slot.getAttribute("aria-hidden")).toBe("true");
     expect(slot.style.visibility).toBe("hidden");
@@ -119,27 +112,29 @@ describe("rows measured where they mount", () => {
     const h = mount(range(0, 50), { boot: "start" });
     expect(h.list.elementOf("m45")).toBeNull(); // Offscreen: boot at the start.
     h.list.updateItem("m45", message(45, "offscreen token 1"));
-    const row = h.element(45) as HTMLElement;
-    const slot = row.parentElement as HTMLElement;
-    expect(slot.parentElement).toBe(h.canvas);
+    const row = h.rowElement("offscreen token 1");
+    const slot = h.slotOf(row);
+    expect(slot.parentElement).toBe(h.canvas());
     h.list.updateItem("m45", message(45, "offscreen token 2"));
     expect(row.parentElement).toBe(slot);
-    expect(slot.parentElement).toBe(h.canvas);
+    expect(slot.parentElement).toBe(h.canvas());
 
     h.list.updateItem("m30", message(30, "another offscreen row"));
     expect(slot.parentElement).toBeNull();
-    expect(h.element(30)?.parentElement?.parentElement).toBe(h.canvas);
+    expect(h.slotOf(h.rowElement("another offscreen row")).parentElement).toBe(
+      h.canvas(),
+    );
     h.list.dispose();
   });
 
   it("detaches staged rows the committed window does not reveal", () => {
     const h = mount(range(0, 10), { boot: "start" });
     h.list.setItems(range(0, 60), { anchor: "viewport" });
-    const hidden = [...h.canvas.children].filter(
+    const hidden = [...h.canvas().children].filter(
       (slot) => (slot as HTMLElement).style.visibility === "hidden",
     );
     expect(hidden).toHaveLength(0);
-    expect(h.canvas.childElementCount).toBe(h.list.state.end);
+    expect(h.canvas().childElementCount).toBe(h.list.state.end);
     h.list.dispose();
   });
 });
@@ -148,7 +143,7 @@ describe("DOM order", () => {
   it("keeps mounted slots in list order in both scroll directions", () => {
     const h = mount(range(0, 60), { boot: "start" });
     const order = (): number[] =>
-      [...h.canvas.children].map((slot) =>
+      [...h.canvas().children].map((slot) =>
         Number((slot.firstElementChild as HTMLElement).textContent?.slice(4)),
       );
     for (const top of [2000, 1200, 400, 3000, 0]) {
@@ -156,27 +151,6 @@ describe("DOM order", () => {
       const ids = order();
       expect(ids).toEqual([...ids].sort((a, b) => a - b));
     }
-    h.list.dispose();
-  });
-});
-
-describe("one commit rule", () => {
-  it("lands an append below the anchor mid-gesture and holds a prepend", () => {
-    const items = range(0, 50);
-    const h = mount(items, { boot: "start" });
-    h.userScroll(1000);
-    const appended = [...items, message(50)];
-    h.list.setItems(appended, { anchor: "viewport" });
-    expect(h.list.state.held).toBe(false);
-    expect(h.list.state.count).toBe(51);
-    expect(h.viewport.scrollTop).toBe(1000);
-
-    h.list.setItems([message(-1), ...appended], { anchor: "viewport" });
-    expect(h.list.state.held).toBe(true);
-    expect(h.list.state.count).toBe(51);
-    h.settle();
-    expect(h.list.state.count).toBe(52);
-    expect(h.viewport.scrollTop).toBe(1100);
     h.list.dispose();
   });
 });

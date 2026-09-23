@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { firefox } from "playwright";
+import { openStreamingDemo, waitForBoot } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 const browser = await firefox.launch();
@@ -22,11 +23,7 @@ try {
   assert.equal(control.height, 640000);
   assert.match(control.status, /^10000 items;/);
 
-  await page.goto(`${base}/demos/streaming/`);
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
-  page.on("dialog", (dialog) => dialog.accept());
+  await openStreamingDemo(page, base, { acceptDialogs: true });
   const rich = await readFile(
     new URL("../../firefox-profile/fixtures/rich-chat.js", import.meta.url),
     "utf8",
@@ -45,9 +42,7 @@ try {
   const streamPage = await browser.newPage();
   streamPage.on("pageerror", (error) => errors.push(error.message));
   await streamPage.goto(`${base}/demos/streaming/?fast-long`);
-  await streamPage.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
-  );
+  await waitForBoot(streamPage);
   const streaming = await readFile(
     new URL(
       "../../firefox-profile/fixtures/streaming-chat.js",

@@ -2,6 +2,7 @@
 // Inspect the loaded cascade, including the pinned Markdown renderer's CSS.
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import { waitForBoot } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 for (const engine of [firefox, webkit]) {
@@ -16,9 +17,7 @@ for (const engine of [firefox, webkit]) {
       const page = await browser.newPage();
       try {
         await page.goto(`${base}/demos/${demo}/`);
-        await page.waitForFunction(
-          () => !document.documentElement.classList.contains("booting"),
-        );
+        await waitForBoot(page);
         if (demo === "streaming")
           await page
             .locator(".message.assistant .markdown-viewer")

@@ -1,22 +1,20 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
-    const errors = [];
     const dialogs = [];
-    page.on("pageerror", (error) => errors.push(error.message));
     page.on("dialog", async (dialog) => {
       dialogs.push(dialog.message());
       await dialog.accept();
     });
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+    });
     const results = await page.evaluate(async () => {
       const wrap = document.querySelector(".viewport-wrap");
       const source = document.createElement("img");

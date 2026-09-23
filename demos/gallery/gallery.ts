@@ -13,7 +13,7 @@ import {
   createPhotoPreview,
   type PhotoPreviewItem,
 } from "../shared/photo-preview.js";
-import { mustGet } from "../shared/utils.js";
+import { mustGet, setTextIfChanged } from "../shared/utils.js";
 import { createImageLoader, type LoaderMetrics } from "./image-loader.js";
 import {
   type Card,
@@ -36,8 +36,10 @@ import { layoutDensity } from "./layout-manager.js";
 //   The runtime queries visible cards by lane and mounts each photo once.
 // - Every item declares its height (`height`), so the runtime never
 //   measures: a row's height follows from its photos' aspect ratios, a
-//   card's from its column width. Geometry and content changes during a
-//   gesture commit together at the settle.
+//   card's from its column width. During a gesture, a page below the
+//   anchor lands at once; a change above the anchor, or any change to the
+//   positioned masonry cards, waits for the settle. The scroller sets
+//   overflow-anchor: none, so native anchoring never lands them sooner.
 // - A re-flow (width, size, or layout) names its anchor: the photo under
 //   the viewport top and a fraction of it are found in the current items,
 //   and the new item holding that point is named with the offset that
@@ -167,7 +169,6 @@ let imageViewport: Readonly<{ scrollTop: number; height: number }> = {
   scrollTop: 0,
   height: 0,
 };
-let lastMetricsText = "";
 
 function imageDistance(img: HTMLImageElement): number {
   const placement = imagePlacements.get(img);
@@ -221,10 +222,10 @@ function scheduleImageFlush(): void {
 }
 
 function showMetrics(m: Readonly<LoaderMetrics>): void {
-  const text = `queue ${m.queued} (peak ${m.peakQueued}) · loading ${m.inFlight}/${m.concurrency} · loaded ${m.loaded} · reused ${m.reused} · cancelled ${m.cancelled} · failed ${m.failed}`;
-  if (text === lastMetricsText) return;
-  lastMetricsText = text;
-  loaderMetrics.textContent = text;
+  setTextIfChanged(
+    loaderMetrics,
+    `queue ${m.queued} (peak ${m.peakQueued}) · loading ${m.inFlight}/${m.concurrency} · loaded ${m.loaded} · reused ${m.reused} · cancelled ${m.cancelled} · failed ${m.failed}`,
+  );
 }
 
 function sourceOf(p: Photo): string {
@@ -655,8 +656,6 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     // A gallery starts at its first photo, not at the end.
     boot: "start",
     overscanPx: 600,
-    // A page that lands mid-gesture waits for the settle, whole: no photos
-    // appear under a moving finger or an overscroll bounce.
     edgeSlots: { end: loaderSlot },
     onReachStart: (context) => loadMore("start", context),
     onReachEnd: (context) => loadMore("end", context),

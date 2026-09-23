@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 const userText = `A **long prompt** with the full source preserved.\n\n${Array.from({ length: 20 }, (_, index) => `Requirement ${index + 1}: preserve this text when copying.`).join("\n\n")}`;
@@ -13,9 +14,6 @@ for (const engine of [chromium, firefox, webkit]) {
       const page = await browser.newPage({
         viewport: { width: 1200, height: 900 },
       });
-      const errors = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      page.on("dialog", (dialog) => dialog.accept());
       await page.addInitScript((mode) => {
         window.copiedMessages = [];
         Object.defineProperty(navigator, "clipboard", {
@@ -37,17 +35,14 @@ for (const engine of [chromium, firefox, webkit]) {
           return true;
         };
       }, mode);
-      await page.goto(`${base}/demos/streaming/`);
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
-      await page.locator("#import-file").setInputFiles({
-        name: "copy-messages.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(
-          `**User**\n\n${userText}\n\n**Assistant**\n\n${assistantText}\n`,
-        ),
+      const errors = await openStreamingDemo(page, base, {
+        acceptDialogs: true,
       });
+      await importTranscript(
+        page,
+        `**User**\n\n${userText}\n\n**Assistant**\n\n${assistantText}\n`,
+        { name: "copy-messages.md" },
+      );
       await page.getByText("Answer", { exact: true }).waitFor();
       const user = page.locator(".message.user").last();
       const assistant = page.locator(".message.assistant").last();

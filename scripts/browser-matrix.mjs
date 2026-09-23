@@ -7,7 +7,7 @@
 //   pnpm run test:browser -- --suite=chat --engine=webkit
 //   pnpm run test:browser -- --suite=refresh-anchors --engine=firefox
 //   pnpm run test:browser -- --suite=generated-files --engine=firefox
-//   pnpm run test:browser -- --quick --engine=webkit --mode=live
+//   pnpm run test:browser -- --quick --engine=webkit
 //   pnpm run test:browser -- --chaos=300 --engine=webkit   (seconds of chaos)
 //   --seed=<n> makes the chaos wheel input reproducible; --headed shows the browser
 //
@@ -19,14 +19,13 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";
 import { chromium, firefox, webkit } from "playwright";
-import { runChatCase } from "./chat-invariants.mjs";
+import { mulberry32, runChatCase } from "./chat-invariants.mjs";
 
 const HOST = "127.0.0.1";
 const PORT = 4173;
 const DEFAULT_URL = `http://${HOST}:${PORT}`;
 const LAB_PATH = "/demos/dynamic-height/index.html";
 const ALL_ENGINES = ["chromium", "firefox", "webkit"];
-const ALL_MODES = ["live"];
 const KNOWN_WARNINGS = ["scroll-linked positioning effect"];
 const EXPECTED_STRATEGY = {
   chromium: "chromium-wheel",
@@ -55,7 +54,6 @@ const suites =
   option("suite") === undefined || option("suite") === "all"
     ? ALL_SUITES
     : selected(option("suite"), ALL_SUITES, "suite");
-const modes = selected(option("mode"), ALL_MODES, "mode");
 const quick = process.argv.includes("--quick");
 const chaosSeconds = Number(option("chaos") ?? 0);
 const seed = Number(option("seed") ?? Date.now() % 1_000_000);
@@ -232,22 +230,12 @@ async function runFullScenario(page) {
   await page.waitForTimeout(2_500);
 }
 
-function mulberry32(seedValue) {
-  let state = seedValue >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 /**
  * Chaos: the lab's in-page adversary runs (bursts, throwing renders,
- * inserts, reorders, deletions, commands, mode switches) while this loop
- * feeds random wheel input — flicks, slow drags, reversals, pauses — and
- * stops at the first violation its periodic check sees (within a few
- * seconds) so the trace around it stays short.
+ * inserts, reorders, deletions, commands, width and replace toggles, list
+ * recreation) while this loop feeds random wheel input — flicks, slow
+ * drags, reversals, pauses — and stops at the first violation its periodic
+ * check sees (within a few seconds) so the trace around it stays short.
  */
 async function runChaosScenario(page, seconds) {
   const random = mulberry32(seed);
@@ -316,7 +304,7 @@ async function readResult(page) {
   });
 }
 
-async function runCase(engine, mode) {
+async function runLab(engine) {
   const launchOptions = { headless: !headed };
   if (engine === "chromium" && process.env.BROWSER_MATRIX_CHROMIUM_CHANNEL) {
     launchOptions.channel = process.env.BROWSER_MATRIX_CHROMIUM_CHANNEL;
@@ -375,12 +363,12 @@ async function runCase(engine, mode) {
         .evaluate(() => window.labTrace?.join("\n") ?? "")
         .catch(() => "trace unavailable");
       await writeFile(
-        resolve(artifactRoot, `${engine}-${mode}.log`),
+        resolve(artifactRoot, `${engine}-lab.log`),
         `${errors.join("\n")}\n${trace}`,
       );
       await page
         .screenshot({
-          path: resolve(artifactRoot, `${engine}-${mode}.png`),
+          path: resolve(artifactRoot, `${engine}-lab.png`),
           fullPage: true,
         })
         .catch(() => {});
@@ -396,7 +384,7 @@ async function runCase(engine, mode) {
     errors.length > 0;
   const summary = {
     engine,
-    mode,
+    suite: "lab",
     strategy: result.strategy,
     violations: result.violations,
     resetViolations: afterReset.violations,
@@ -411,10 +399,10 @@ async function runCase(engine, mode) {
   if (failed) {
     await mkdir(artifactRoot, { recursive: true });
     await writeFile(
-      resolve(artifactRoot, `${engine}-${mode}.log`),
+      resolve(artifactRoot, `${engine}-lab.log`),
       `${errors.join("\n")}\n${afterReset.log}`,
     );
-    throw new Error(`${engine}/${mode} failed; see ${artifactRoot}`);
+    throw new Error(`${engine}/lab failed; see ${artifactRoot}`);
   }
 }
 
@@ -472,9 +460,7 @@ let server;
 try {
   server = await startServer();
   for (const engine of engines) {
-    if (suites.includes("lab")) {
-      for (const mode of modes) await runCase(engine, mode);
-    }
+    if (suites.includes("lab")) await runLab(engine);
     if (suites.includes("chat")) await runChat(engine);
     for (const suite of ["refresh-anchors", "generated-files"]) {
       if (suites.includes(suite)) await runChatRegression(engine, suite);

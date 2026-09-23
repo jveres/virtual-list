@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
@@ -8,12 +11,7 @@ try {
     const page = await browser.newPage({
       viewport: { width: 1420, height: 1200 },
     });
-    await page.goto(
-      `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/`,
-    );
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base);
     const pinnedInset = await page
       .locator(".section-header")
       .first()

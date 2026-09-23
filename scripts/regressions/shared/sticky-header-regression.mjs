@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { mkdir, readFile } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  transcriptMarkdown,
+} from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 const artifacts = "browser-artifacts/sticky-headers";
@@ -12,18 +17,15 @@ for (const engine of [firefox, chromium, webkit]) {
       viewport: { width: 1200, height: 820 },
       deviceScaleFactor: 2,
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
     await page.addInitScript(() => {
       localStorage.setItem(
         "virtual-list:chat-options",
         JSON.stringify({ sticky: true, landing: "end" }),
       );
     });
-    await page.goto(`${base}/demos/streaming/?instant`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/?instant",
+    });
     // The built-in sample itself must end yesterday, not just display a
     // hard-coded label. Verify its exported per-turn timestamps as well.
     const sampleDownload = page.waitForEvent("download");
@@ -56,28 +58,16 @@ for (const engine of [firefox, chromium, webkit]) {
     const yesterday = new Date();
     yesterday.setDate(yesterday.getDate() - 1);
     yesterday.setHours(12, 0, 0, 0);
-    const transcript = [
-      "# streaming-chat transcript",
-      "",
-      "<!-- day -->",
-      "## Yesterday",
-      "",
-    ];
-    for (let i = 0; i < 8; i++) {
-      transcript.push(
-        `**${i % 2 ? "Assistant" : "User"}**`,
-        `<!-- turn {"sentAt":${yesterday.getTime() + i * 60000}} -->`,
-        "",
-        `Earlier message ${i}. ${"A previous day of conversation. ".repeat(20)}`,
-        "",
-      );
-    }
+    const transcript = transcriptMarkdown(
+      Array.from({ length: 8 }, (_, i) => ({
+        role: i % 2 ? "assistant" : "user",
+        sentAt: yesterday.getTime() + i * 60000,
+        text: `Earlier message ${i}. ${"A previous day of conversation. ".repeat(20)}`,
+      })),
+      { day: "Yesterday" },
+    );
     page.once("dialog", (dialog) => dialog.accept());
-    await page.locator("#import-file").setInputFiles({
-      name: "yesterday.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(transcript.join("\n")),
-    });
+    await importTranscript(page, transcript, { name: "yesterday.md" });
     await page.waitForFunction(() =>
       document
         .querySelector("#viewport")

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 for (const engine of [firefox, chromium, webkit]) {
@@ -8,7 +9,7 @@ for (const engine of [firefox, chromium, webkit]) {
     const page = await browser.newPage({
       viewport: { width: 1000, height: 700 },
     });
-    await page.goto(`${base}/demos/streaming/`);
+    await openStreamingDemo(page, base);
     await page.waitForSelector("#viewport .message.assistant");
     const key = await page
       .locator("#viewport .message.assistant")

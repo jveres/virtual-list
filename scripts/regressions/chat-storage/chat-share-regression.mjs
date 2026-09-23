@@ -1,6 +1,9 @@
 // Web Share is stubbed: validates the integration without transferring user data.
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 for (const engine of ["firefox", "webkit"]) {
   const browser = await { firefox, webkit }[engine].launch();
@@ -8,10 +11,8 @@ for (const engine of ["firefox", "webkit"]) {
     const page = await browser.newPage({
       viewport: { width: 390, height: 844 },
     });
-    const errors = [];
     const alerts = [];
     let downloads = 0;
-    page.on("pageerror", (error) => errors.push(error.message));
     page.on("download", () => downloads++);
     page.on("dialog", async (dialog) => {
       if (dialog.type() === "alert") alerts.push(dialog.message());
@@ -45,12 +46,9 @@ for (const engine of ["firefox", "webkit"]) {
         },
       });
     });
-    await page.goto(
-      `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/index.html`,
-    );
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+    });
     const attachment = {
       name: "notes.txt",
       mimeType: "text/plain",

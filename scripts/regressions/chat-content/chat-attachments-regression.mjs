@@ -2,17 +2,22 @@
 // BROWSER_MATRIX_URL=http://localhost:5173 node scripts/regressions/chat-content/chat-attachments-regression.mjs
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import {
+  fulfillOpenAI,
+  OFFLINE_AI_SETTINGS,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
 try {
   const page = await browser.newPage({
     viewport: { width: 1200, height: 820 },
   });
-  const errors = [];
   const requests = [];
   let missingParent = false;
-  page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
     // Track the real browser URL lifecycle, not a replacement implementation.
     const create = URL.createObjectURL.bind(URL);
@@ -27,20 +32,16 @@ try {
       window.attachmentDisplayUrls.delete(url);
       revoke(url);
     };
-    localStorage.setItem(
-      "virtual-list:ai-settings",
-      JSON.stringify({
-        provider: "openai",
-        apiKey: "offline-test-key",
-        model: "gpt-5-mini",
-        contextTurns: 0,
-        tools: {
-          imageGeneration: false,
-          webSearch: false,
-          codeInterpreter: false,
-        },
-      }),
-    );
+  });
+  await page.addInitScript(seedAISettings, {
+    ...OFFLINE_AI_SETTINGS,
+    apiKey: "offline-test-key",
+    contextTurns: 0,
+    tools: {
+      imageGeneration: false,
+      webSearch: false,
+      codeInterpreter: false,
+    },
   });
   await page.route("https://api.openai.com/**", async (route) => {
     assert.equal(route.request().url(), "https://api.openai.com/v1/responses");
@@ -81,21 +82,14 @@ try {
         },
       },
     ];
-    await route.fulfill({
-      contentType: "text/event-stream",
-      body: events
-        .map((event) => `data: ${JSON.stringify(event)}\n\n`)
-        .join(""),
-    });
+    await fulfillOpenAI(route, events);
   });
-  await page.goto(
-    `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/index.html`,
-  );
+  const errors = await openStreamingDemo(page, base, {
+    path: "/demos/streaming/index.html",
+    acceptDialogs: true,
+  });
   await page.waitForFunction(() =>
     document.getElementById("attachment-files")?.accept.includes(".pdf"),
-  );
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
   );
   assert.equal(
     await page
@@ -294,17 +288,12 @@ try {
   );
   // A short pinned reply must not bounce when its composer grows/shrinks.
   await page.setViewportSize({ width: 1200, height: 820 });
-  page.on("dialog", (dialog) => dialog.accept());
   const transcript = Array.from(
     { length: 4 },
     (_, i) =>
       `${i % 2 ? "**Assistant**" : "**User**"}\n<!-- turn {"sentAt":1788508800000} -->\n\nTurn ${i}. ${"Short content. ".repeat(5)}\n`,
   ).join("\n");
-  await page.locator("#import-file").setInputFiles({
-    name: "short.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from(transcript),
-  });
+  await importTranscript(page, transcript, { name: "short.md" });
   await page.waitForFunction(() =>
     document.getElementById("window-status")?.textContent.includes("/4"),
   );
@@ -359,11 +348,7 @@ try {
     (_, i) =>
       `${i % 2 ? "**Assistant**" : "**User**"}\n<!-- turn {"sentAt":1788508800000} -->\n\nLong turn ${i}. ${"Content fills the row with readable words. ".repeat(i % 2 ? 80 : 5)}\n`,
   ).join("\n");
-  await page.locator("#import-file").setInputFiles({
-    name: "long.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from(longTranscript),
-  });
+  await importTranscript(page, longTranscript, { name: "long.md" });
   await page.waitForFunction(() =>
     document.getElementById("viewport")?.textContent.includes("Long turn 3"),
   );

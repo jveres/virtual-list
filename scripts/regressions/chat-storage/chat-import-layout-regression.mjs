@@ -1,6 +1,11 @@
 // BROWSER_MATRIX_URL=http://localhost:5173 node scripts/regressions/chat-storage/chat-import-layout-regression.mjs
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  transcriptMarkdown,
+} from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
@@ -8,30 +13,22 @@ try {
   const page = await browser.newPage({
     viewport: { width: 1200, height: 820 },
   });
-  const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
-  page.on("dialog", (dialog) => dialog.accept());
-  await page.goto(
-    `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/index.html`,
+  const errors = await openStreamingDemo(
+    page,
+    process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173",
+    { path: "/demos/streaming/index.html", acceptDialogs: true },
   );
   await page.waitForSelector(".message");
 
   async function importTurns(count, dates = [1788508800000]) {
-    const lines = ["# streaming-chat transcript", ""];
-    for (let i = 0; i < count; i++) {
-      lines.push(
-        i % 2 ? "**Assistant**" : "**User**",
-        `<!-- turn ${JSON.stringify({ sentAt: dates[Math.floor(i / 2) % dates.length] })} -->`,
-        "",
-        `Imported turn ${i}. ${"Text content. ".repeat(20)}`,
-        "",
-      );
-    }
-    await page.locator("#import-file").setInputFiles({
-      name: "layout.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(lines.join("\n")),
-    });
+    const transcript = transcriptMarkdown(
+      Array.from({ length: count }, (_, i) => ({
+        role: i % 2 ? "assistant" : "user",
+        sentAt: dates[Math.floor(i / 2) % dates.length],
+        text: `Imported turn ${i}. ${"Text content. ".repeat(20)}`,
+      })),
+    );
+    await importTranscript(page, transcript, { name: "layout.md" });
     await page.waitForFunction(
       (total) =>
         document

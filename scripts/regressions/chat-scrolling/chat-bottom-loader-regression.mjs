@@ -1,6 +1,11 @@
 // Synthetic input checks loader lifecycle, not native momentum presentation.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  pagingTranscript,
+} from "../shared/transcript.mjs";
 
 const engines = { firefox, webkit, chromium };
 const selected = process.env.BROWSER_ENGINE;
@@ -14,26 +19,15 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
       const page = await browser.newPage({
         viewport: { width: 1200, height: 850 },
       });
-      const errors = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      page.on("dialog", (dialog) => dialog.accept());
-      await page.goto(`${base}/demos/streaming/`);
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
+      const errors = await openStreamingDemo(page, base, {
+        acceptDialogs: true,
+      });
       await page.locator("#edge-loader-mode").evaluate((select, mode) => {
         select.value = mode;
         select.dispatchEvent(new Event("change", { bubbles: true }));
       }, mode);
-      const transcript = Array.from(
-        { length: 124 },
-        (_, i) =>
-          `**${i % 2 ? "Assistant" : "User"}**\n\nHistory turn ${i + 1}. ${"Synthetic paging content. ".repeat(i < 96 ? 100 : 20)}\n`,
-      ).join("\n");
-      await page.locator("#import-file").setInputFiles({
+      await importTranscript(page, pagingTranscript(), {
         name: "bottom-loader.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(transcript),
       });
       await page.locator('#viewport [data-key="124"]').waitFor();
       const range = () =>
@@ -163,13 +157,11 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
       await page
         .locator(`${selector}[data-state="loading"]`)
         .waitFor({ state: "visible" });
-      await page.locator("#import-file").setInputFiles({
-        name: "replacement.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(
-          "**User**\n\nReplacement prompt.\n\n**Assistant**\n\nReplacement reply.\n",
-        ),
-      });
+      await importTranscript(
+        page,
+        "**User**\n\nReplacement prompt.\n\n**Assistant**\n\nReplacement reply.\n",
+        { name: "replacement.md" },
+      );
       await page
         .locator("#viewport .message")
         .filter({ hasText: "Replacement reply." })

@@ -9,30 +9,11 @@
 // a fixed viewport point keeps its screen position (within a pixel) and
 // the viewport does not stay at the top of grown content.
 
+import { datedTranscript } from "./regressions/shared/transcript.mjs";
+
 const VIEWPORT = { width: 1200, height: 820 };
 const PROBE_Y = 120;
 const LOADS_MAX = 6;
-
-function datedTranscript(turns) {
-  const base = new Date(2026, 8, 2, 9, 0, 0).getTime();
-  const lines = [
-    "# streaming-chat transcript",
-    "",
-    "<!-- day -->",
-    "## Day",
-    "",
-  ];
-  for (let i = 1; i <= turns; i++) {
-    lines.push(
-      `**${i % 2 ? "User" : "Assistant"}**`,
-      `<!-- turn {"sentAt":${base + i * 120_000}} -->`,
-      "",
-      `Message ${i} ${"lorem ipsum dolor sit amet ".repeat(8 + (i % 5) * 6)}`,
-      "",
-    );
-  }
-  return lines.join("\n");
-}
 
 async function importTranscript(page, markdown) {
   page.once("dialog", (dialog) => dialog.accept());
@@ -146,7 +127,8 @@ async function checkScrollback(page, label) {
   return violations;
 }
 
-function mulberry32(seedValue) {
+/** A small seeded PRNG: returns a function yielding floats in [0, 1). */
+export function mulberry32(seedValue) {
   let state = seedValue >>> 0;
   return () => {
     state = (state + 0x6d2b79f5) >>> 0;
@@ -584,7 +566,7 @@ async function checkKeepStart(page, label) {
 }
 
 /** The scrollback invariant under the page's other loader and header modes. */
-async function checkModes(page, baseUrl) {
+async function checkChatOptions(page, baseUrl) {
   const violations = [];
   for (const [options, label] of [
     [{ edge: "pill" }, "pill-loader"],
@@ -653,7 +635,7 @@ export async function runChatCase(engine, browser, baseUrl, options = {}) {
         ...(await chaos(page, "dated-120", seed, options.chaosSeconds)),
       );
     }
-    violations.push(...(await checkModes(page, baseUrl)));
+    violations.push(...(await checkChatOptions(page, baseUrl)));
   } finally {
     await page.close();
   }

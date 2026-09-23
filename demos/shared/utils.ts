@@ -14,20 +14,24 @@ export function setTextIfChanged(element: HTMLElement, text: string): void {
   if (element.textContent !== text) element.textContent = text;
 }
 
-/** Reflected attributes can emit mutations even when assigned the same value. */
-export function setAttributeIfChanged(
-  element: HTMLElement,
-  name: string,
-  value: string,
-): void {
-  if (element.getAttribute(name) !== value) element.setAttribute(name, value);
-}
+export {
+  setAttributeIfChanged,
+  setHiddenIfChanged,
+} from "../../integrations/dom";
 
-export function setHiddenIfChanged(
-  element: HTMLElement,
-  hidden: boolean,
-): void {
-  if (element.hidden !== hidden) element.hidden = hidden;
+/**
+ * Save `blob` as `name` through a temporary link. The object URL outlives the
+ * click by `revokeMs`: Safari still needs it while handling that click.
+ */
+export function downloadBlob(blob: Blob, name: string, revokeMs: number): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = name;
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), revokeMs);
 }
 
 /**

@@ -1,6 +1,7 @@
 // Clipboard choices stay offline; FileReader and attachment validation are real.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 const draft = "Before SELECT after";
@@ -10,8 +11,6 @@ for (const engine of [firefox, chromium, webkit]) {
   try {
     for (const width of [1200, 390]) {
       const page = await browser.newPage({ viewport: { width, height: 900 } });
-      const errors = [];
-      page.on("pageerror", (error) => errors.push(error.message));
       await page.route("https://api.openai.com/**", (route) => route.abort());
       await page.addInitScript(() => {
         const read = FileReader.prototype.readAsDataURL;
@@ -20,10 +19,7 @@ for (const engine of [firefox, chromium, webkit]) {
           return read.call(this, blob);
         };
       });
-      await page.goto(`${base}/demos/streaming/`);
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
+      const errors = await openStreamingDemo(page, base);
       const input = page.locator("#prompt");
       const dialog = page.getByRole("dialog", {
         name: "Attach this text instead?",

@@ -1,5 +1,5 @@
 // An offscreen streaming row stays laid out between updates, inside the
-// canvas in a hidden, zero-height, inert slot (no measurement root in <body>).
+// canvas in a hidden, zero-height, inert slot (never moved out to <body>).
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 
@@ -76,10 +76,10 @@ for (const engine of [firefox, chromium, webkit]) {
       };
       list.updateItem("99", { id: "99", text: "Streaming ".repeat(100) });
       const row = rows.get("99");
-      const root = row.parentElement;
+      const slot = row.parentElement;
       const observer = new MutationObserver(() => {});
       observer.observe(viewport.firstElementChild, { childList: true });
-      observer.observe(root, { childList: true });
+      observer.observe(slot, { childList: true });
       list.updateItem("99", { id: "99", text: "Streaming ".repeat(150) });
       window.probe.reconnections = observer.takeRecords().length;
       observer.disconnect();
@@ -89,13 +89,13 @@ for (const engine of [firefox, chromium, webkit]) {
       row.append(button);
       document.querySelector("#outside").focus();
       button.focus();
-      Object.assign(window.probe, { row, root, button });
+      Object.assign(window.probe, { row, slot, button });
     });
     const hidden = await page.evaluate(() => {
       const {
         list,
         row,
-        root,
+        slot,
         mounted,
         reconnections,
         viewport,
@@ -103,13 +103,13 @@ for (const engine of [firefox, chromium, webkit]) {
       } = window.probe;
       return {
         connected: row.isConnected,
-        inCanvas: root.parentElement === viewport.firstElementChild,
+        inCanvas: slot.parentElement === viewport.firstElementChild,
         mounted: list.elementOf("99") !== null || mounted.includes("99"),
-        count: root.childElementCount,
-        visibility: getComputedStyle(root).visibility,
-        height: root.getBoundingClientRect().height,
-        inert: root.inert,
-        ariaHidden: root.getAttribute("aria-hidden"),
+        count: slot.childElementCount,
+        visibility: getComputedStyle(slot).visibility,
+        height: slot.getBoundingClientRect().height,
+        inert: slot.inert,
+        ariaHidden: slot.getAttribute("aria-hidden"),
         focus: document.activeElement.id,
         reconnections,
         observed: subscriptions.some((targets) => targets.has(row)),
@@ -194,11 +194,11 @@ for (const engine of [firefox, chromium, webkit]) {
     });
     assert.deepEqual(
       await page.evaluate(() => {
-        const { row, root, button, mounted, viewport } = window.probe;
+        const { row, slot, button, mounted, viewport } = window.probe;
         button.focus();
         return {
           visible: viewport.contains(row),
-          revealedInPlace: row.parentElement === root,
+          revealedInPlace: row.parentElement === slot,
           interactive: document.activeElement === button,
           mountCount: mounted.filter((key) => key === "99").length,
           opacity: getComputedStyle(row).opacity,
@@ -220,24 +220,26 @@ for (const engine of [firefox, chromium, webkit]) {
     );
     assert.deepEqual(
       await page.evaluate(() => {
-        const { list, rows, root, items, destroyed, subscriptions } =
+        const { list, rows, slot, items, destroyed, subscriptions } =
           window.probe;
         list.updateItem("0", { id: "0", text: "Offscreen update" });
         const resident = rows.get("0");
-        const slot = resident.parentElement;
+        const residentSlot = resident.parentElement;
         const retained =
-          slot.inert && slot.parentElement === root.parentElement;
+          residentSlot.inert &&
+          residentSlot.parentElement === slot.parentElement;
         list.setItems(items.slice(1));
-        const removed = resident.parentElement === null && !slot.isConnected;
+        const removed =
+          resident.parentElement === null && !residentSlot.isConnected;
         list.dispose();
         return {
           retained,
           removed,
           destroyedOnce: destroyed.filter((key) => key === "0").length === 1,
-          rootRemoved: !root.isConnected,
+          slotRemoved: !slot.isConnected,
           connectedRows: [...rows.values()].filter((row) => row.isConnected)
             .length,
-          hiddenRoots: document.querySelectorAll('[inert][aria-hidden="true"]')
+          hiddenSlots: document.querySelectorAll('[inert][aria-hidden="true"]')
             .length,
           subscriptions: subscriptions.reduce(
             (sum, targets) => sum + targets.size,
@@ -249,9 +251,9 @@ for (const engine of [firefox, chromium, webkit]) {
         retained: true,
         removed: true,
         destroyedOnce: true,
-        rootRemoved: true,
+        slotRemoved: true,
         connectedRows: 0,
-        hiddenRoots: 0,
+        hiddenSlots: 0,
         subscriptions: 0,
       },
     );

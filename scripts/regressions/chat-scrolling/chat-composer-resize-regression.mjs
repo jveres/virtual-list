@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [webkit, firefox, chromium]) {
@@ -8,21 +9,16 @@ for (const engine of [webkit, firefox, chromium]) {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 820 },
     });
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+      acceptDialogs: true,
+    });
     const markdown = Array.from(
       { length: 6 },
       (_, index) =>
         `**${index % 2 ? "Assistant" : "User"}**\n\nTurn ${index}. ${"Scrollable conversation content. ".repeat(90)}\n\n`,
     ).join("");
-    await page.locator("#import-file").setInputFiles({
-      name: "composer.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(markdown),
-    });
+    await importTranscript(page, markdown, { name: "composer.md" });
     await page.getByText("Turn 5.", { exact: false }).waitFor();
     const prompt = page.locator("#prompt");
     await prompt.fill("First line\n");

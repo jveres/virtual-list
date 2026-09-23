@@ -1,3 +1,4 @@
+/** Reflected attributes can emit mutations even when assigned the same value. */
 export function setAttributeIfChanged(
   element: HTMLElement,
   name: string,

@@ -1,6 +1,11 @@
 // The first painted import frame must use the replacement list's geometry.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  transcriptMarkdown,
+} from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
@@ -16,13 +21,7 @@ for (const engine of [firefox, webkit, chromium]) {
     });
     // Freeze calendar time only; real animation frames still expose a flash.
     await page.clock.setFixedTime(new Date("2026-09-16T12:00:00Z"));
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
     const dates = await page.evaluate(() => {
       const today = new Date();
       today.setHours(12, 0, 0, 0);
@@ -31,28 +30,20 @@ for (const engine of [firefox, webkit, chromium]) {
       return [yesterday.getTime(), today.getTime()];
     });
     const transcript = (earlierWords, latestWords, marker) =>
-      [
-        "# streaming-chat transcript",
-        "",
-        ...[
+      transcriptMarkdown(
+        [
           "Yesterday prompt",
           "Earlier text. ".repeat(earlierWords),
           "Today prompt",
           `${marker} ${"Latest text. ".repeat(latestWords)}`,
-        ].flatMap((text, index) => [
-          index % 2 ? "**Assistant**" : "**User**",
-          `<!-- turn ${JSON.stringify({ sentAt: dates[index < 2 ? 0 : 1] })} -->`,
-          "",
+        ].map((text, index) => ({
+          role: index % 2 ? "assistant" : "user",
+          sentAt: dates[index < 2 ? 0 : 1],
           text,
-          "",
-        ]),
-      ].join("\n");
+        })),
+      );
     const importChat = (source) =>
-      page.locator("#import-file").setInputFiles({
-        name: "date-pill.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(source),
-      });
+      importTranscript(page, source, { name: "date-pill.md" });
 
     for (const [earlierWords, latestWords] of [
       [1200, 100],

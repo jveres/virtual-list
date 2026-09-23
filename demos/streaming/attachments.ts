@@ -7,8 +7,8 @@ export interface ChatAttachment {
 }
 
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
-export const MAX_MESSAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-export const MAX_ATTACHMENTS = 10;
+const MAX_MESSAGE_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+const MAX_ATTACHMENTS = 10;
 
 const FILE_TYPES: Record<string, string> = {
   png: "image/png",
@@ -180,35 +180,50 @@ const imageSources = new WeakMap<
   { objectUrl: string; dataUrl: string }
 >();
 
+/**
+ * A short object URL for a base64 PNG, JPEG, or WebP data URL, or null where
+ * the native decoder is unavailable. The caller owns and revokes it. WebKit
+ * handles multi-megabyte data URLs expensively: assigning one, and repainting
+ * one under a changing transform, which decodes it again.
+ */
+export function imageObjectUrl(dataUrl: string): string | null {
+  const decoder = Uint8Array as typeof Uint8Array & {
+    fromBase64?: (text: string) => Uint8Array<ArrayBuffer>;
+  };
+  const header = /^data:(image\/(?:png|jpeg|webp));base64,/.exec(dataUrl);
+  if (
+    !header ||
+    !decoder.fromBase64 ||
+    typeof URL.createObjectURL !== "function"
+  )
+    return null;
+  try {
+    const bytes = decoder.fromBase64(dataUrl.slice(header[0].length));
+    return URL.createObjectURL(new Blob([bytes], { type: header[1] }));
+  } catch {
+    // A display optimization must not prevent an image from rendering.
+    return null;
+  }
+}
+
 function setAttachmentImageSource(
   image: HTMLImageElement,
   attachment: ChatAttachment,
 ): void {
-  // A multi-megabyte data URL is expensive to assign in WebKit. Keep it in the
-  // model, but give the thumbnail a short, row-owned display URL when the native
-  // decoder is available. Older browsers keep the existing data-URL path.
-  const decoder = Uint8Array as typeof Uint8Array & {
-    fromBase64?: (text: string) => Uint8Array<ArrayBuffer>;
-  };
-  const prefix = `data:${attachment.mimeType};base64,`;
-  if (
-    decoder.fromBase64 &&
-    typeof URL.createObjectURL === "function" &&
-    /^(?:image\/png|image\/jpeg|image\/webp)$/.test(attachment.mimeType) &&
-    attachment.dataUrl.startsWith(prefix)
-  ) {
-    let objectUrl: string | undefined;
+  // Keep the data URL in the model, but give the thumbnail a row-owned object
+  // URL where the native decoder is available and the data URL's type matches.
+  const objectUrl = attachment.dataUrl.startsWith(
+    `data:${attachment.mimeType};base64,`,
+  )
+    ? imageObjectUrl(attachment.dataUrl)
+    : null;
+  if (objectUrl) {
     try {
-      const bytes = decoder.fromBase64(attachment.dataUrl.slice(prefix.length));
-      objectUrl = URL.createObjectURL(
-        new Blob([bytes], { type: attachment.mimeType }),
-      );
       image.src = objectUrl;
       imageSources.set(image, { objectUrl, dataUrl: attachment.dataUrl });
       return;
     } catch {
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
-      // A display optimization must not prevent an attachment from rendering.
+      URL.revokeObjectURL(objectUrl);
     }
   }
   image.src = attachment.dataUrl;

@@ -45,6 +45,7 @@ import { applyDocumentTheme, watchSystemTheme } from "../shared/theme.js";
 import {
   at,
   bindThemeButtons,
+  downloadBlob,
   mustGet,
   refreshTheme,
   setHiddenIfChanged,
@@ -106,12 +107,13 @@ import "../shared/styles.css";
 // The demo is the runtime's API pressure test: the full streaming chat —
 // send flow with pin-to-top, end-follow through streams, scrollback loading,
 // version branches, live tool panels — hosted on the runtime's public
-// surface (setItems / updateItem / scrollTo / remeasure / setEdgeSlot / positionOf /
-// elementOf / state) with no escape hatch into its internals.
+// surface (setItems / scrollTo / remeasure / setEdgeSlot / positionOf /
+// elementOf / state, plus the paged window's updateItemLive) with no escape
+// hatch into its internals.
 //
 // The message data is immutable-by-replacement: every change clones the
-// message object and sends it through updateItem. Structural changes use
-// setItems. The one
+// message object and sends it through the paged window's updateItemLive.
+// Structural changes use setItems. The one
 // in-place exception is a tool panel's open state, which the runtime never
 // needs to know about (it is excluded from the panel signature). The runtime's
 // keyed renderer re-renders exactly the changed rows (render(item, existing)),
@@ -126,14 +128,14 @@ import "../shared/styles.css";
 // flowing under a scroll. Scrollback loads are
 // wired to the reach signal: reaching the other edge aborts them.
 //
-// Two presentation options, both configurable:
+// Two presentation options, both in the settings dialog:
 // - the scrollback loader is a runtime EDGE SLOT in the flow (default;
-//   `?edge=pill` restores the floating pill). In the flow, the slot's strip
+//   "Scrollback loader: Floating pill" restores the pill). In the flow, the slot's strip
 //   turns into the loaded messages while the reading position holds — the
 //   visible "more to scroll" feedback — and it never competes with the
 //   sticky header for the top strip;
 // - day separators are rows, and a STICKY companion pins the current day at
-//   the top (`?sticky=off`, or the header toggle, turns it off). It reads
+//   the top ("Sticky day headers" in settings turns it off). It reads
 //   the runtime's committed positions, which move only at commits — each
 //   of which refreshes it — never under a native scroll write.
 
@@ -226,6 +228,17 @@ const OPTIONS_KEY = "virtual-list:chat-options";
 const DRAFT_KEY = "virtual-list:chat-draft";
 /** Where a loaded conversation lands: its last prompt pinned to the top, or its end. */
 type LandingMode = "prompt" | "end";
+// One parse per chat option: stored settings and the settings dialog share it.
+const parseEdge = (value: unknown): "slot" | "pill" =>
+  value === "pill" ? "pill" : "slot";
+const parseFollow = (value: unknown): FollowMode =>
+  value === "keep-start" ? "keep-start" : "end";
+const parseLanding = (value: unknown): LandingMode =>
+  value === "end" ? "end" : "prompt";
+const parseCursor = (value: unknown): CursorMode =>
+  value === "none" || value === "idle" ? value : "bar";
+const parseTrail = (value: unknown): TrailMode =>
+  value === "short" || value === "long" ? value : "off";
 interface ChatOptions {
   edge: "slot" | "pill";
   sticky: boolean;
@@ -251,15 +264,12 @@ function loadChatOptions(): ChatOptions {
   })();
   const trail = demoParams.get("trail") ?? stored.trail;
   return {
-    edge: stored.edge === "pill" ? "pill" : "slot",
+    edge: parseEdge(stored.edge),
     sticky: stored.sticky !== false,
-    follow: stored.follow === "keep-start" ? "keep-start" : "end",
-    landing: stored.landing === "end" ? "end" : "prompt",
-    cursor:
-      stored.cursor === "none" || stored.cursor === "idle"
-        ? stored.cursor
-        : "bar",
-    trail: trail === "short" || trail === "long" ? trail : "off",
+    follow: parseFollow(stored.follow),
+    landing: parseLanding(stored.landing),
+    cursor: parseCursor(stored.cursor),
+    trail: parseTrail(trail),
   };
 }
 function saveChatOptions(): void {
@@ -282,6 +292,8 @@ function saveChatOptions(): void {
 const chatOptions = loadChatOptions();
 let edgeLoaderMode: "slot" | "pill" = chatOptions.edge;
 let stickyEnabled = chatOptions.sticky;
+/** The follow and scroll inset under the sticky day header, when shown. */
+const stickyInset = (): number => (stickyEnabled ? DAY_HEADER_HEIGHT : 0);
 let followMode: FollowMode = chatOptions.follow;
 let landingMode: LandingMode = chatOptions.landing;
 let cursorMode: CursorMode = chatOptions.cursor;
@@ -663,6 +675,30 @@ function selectedChildId(node: TreeNode): number | undefined {
   return node.childrenIds[node.selectedChildIndex];
 }
 
+/** The whole version tree with its selections; `toMessage` maps each message
+ * and drops a node when it returns undefined. */
+function treeSnapshot<M extends StoredTurn>(
+  toMessage: (message: Message) => M | undefined,
+): TranscriptTree<M> {
+  return {
+    selectedRootId:
+      selectedChildId(tree.get(TREE_ROOT_ID) ?? rootNode()) ?? null,
+    nodes: [...tree.entries()].flatMap(([id, node]) => {
+      const message = node.message && toMessage(node.message);
+      return message
+        ? [
+            {
+              id,
+              parentId: node.parentId,
+              selectedChildId: selectedChildId(node) ?? null,
+              message,
+            },
+          ]
+        : [];
+    }),
+  };
+}
+
 function activeLeafId(): number {
   let id = TREE_ROOT_ID;
   let node = tree.get(TREE_ROOT_ID);
@@ -720,7 +756,7 @@ function appendToActiveBranch(nextMessages: readonly Message[]): void {
 }
 
 function currentTreeMessage(): number | null {
-  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const inset = stickyInset();
   const top = viewport.scrollTop + inset;
   // Committed runtime positions, read only when the panel opens or scrolling
   // ends. No row layout reads and no new work in the scroll-frame path.
@@ -731,18 +767,21 @@ function currentTreeMessage(): number | null {
   return null;
 }
 
+/** The row's visible response headings, in the order the tree lists them. */
+function renderedHeadings(row: HTMLElement): HTMLElement[] {
+  return Array.from(
+    row.querySelectorAll<HTMLElement>(".message-content .markdown :is(h1, h2)"),
+  ).filter((heading) => !heading.closest(".tool-calls, [hidden]"));
+}
+
 function currentTreeHeading(messageId: number): number | undefined {
   const row = virtualList?.elementOf(String(messageId));
   if (!row) return undefined;
-  const headings = Array.from(
-    row.querySelectorAll<HTMLElement>(".message-content .markdown :is(h1, h2)"),
-  ).filter((heading) => !heading.closest(".tool-calls, [hidden]"));
+  const headings = renderedHeadings(row);
   if (!headings.length) return undefined;
   // Read only on tree interaction or scroll end, never in the scroll frame.
   // The active section begins at the last heading above the reading edge.
-  const top =
-    viewport.getBoundingClientRect().top +
-    (stickyEnabled ? DAY_HEADER_HEIGHT : 0);
+  const top = viewport.getBoundingClientRect().top + stickyInset();
   let current: number | undefined;
   for (const [index, heading] of headings.entries()) {
     if (heading.getBoundingClientRect().top > top + 1) break;
@@ -758,18 +797,13 @@ async function scrollToTreeTarget(
   headingIndex?: number,
 ): Promise<boolean> {
   const key = String(messageId);
-  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const inset = stickyInset();
   const epoch = conversationEpoch;
   const reached = await list.scrollTo(key, { behavior: "auto", offset: inset });
   if (!reached || headingIndex === undefined) return reached;
   if (epoch !== conversationEpoch || streamAbort) return false;
   const row = list.elementOf(key);
-  const headings = Array.from(
-    row?.querySelectorAll<HTMLElement>(
-      ".message-content .markdown :is(h1, h2)",
-    ) ?? [],
-  ).filter((heading) => !heading.closest(".tool-calls, [hidden]"));
-  const heading = headings[headingIndex];
+  const heading = row && renderedHeadings(row)[headingIndex];
   if (!row || !heading) return false;
   // One click-time measurement within the mounted row. The runtime owns
   // the scroll destination, clamping, and reserve; this requests no pin.
@@ -835,10 +869,10 @@ async function navigateTreeMessage(
   const branchChanged =
     path.length !== transcript.length ||
     path.some((key, index) => transcript[index]?.id !== key);
-  const index = ancestors.length - 1;
-  const start = Math.max(0, index - pageSize());
-  const nextStart = start - (start % MESSAGES_PER_DAY);
-  const nextEnd = Math.min(nextTranscript.length, nextStart + pageSize() * 3);
+  const { start: nextStart, end: nextEnd } = windowAround(
+    ancestors.length - 1,
+    nextTranscript.length,
+  );
   const previousPin = latestPromptId;
   latestPromptId = lastPromptId(nextTranscript);
   const needsScrollbackSlot = edgeLoaderMode === "slot" && nextStart > 0;
@@ -912,7 +946,8 @@ async function navigateTreeMessage(
 // --- The loaded window and the virtualizer bridge ---------------------------
 
 // Nominal average row height for sizing scrollback chunks (data windowing
-// only; the runtime never estimates — every row is premeasured).
+// only; the runtime never estimates — it measures every row before it
+// commits).
 const NOMINAL_ROW_HEIGHT = 200;
 
 function loadChunkCount(): number {
@@ -941,10 +976,22 @@ function lastPromptId(items: readonly Message[]): number | undefined {
 }
 
 // Source-window selection for explicit navigation, not viewport correction.
+/** The loaded window around `index`: a day-aligned page before, three pages long. */
+function windowAround(
+  index: number,
+  length: number,
+): { start: number; end: number } {
+  const page = pageSize();
+  const before = Math.max(0, index - page);
+  const start = before - (before % MESSAGES_PER_DAY);
+  return { start, end: Math.min(length, start + page * 3) };
+}
+
 function selectWindowAround(index: number): void {
-  loadedStart = Math.max(0, index - pageSize());
-  loadedStart -= loadedStart % MESSAGES_PER_DAY;
-  loadedEnd = Math.min(transcript.length, loadedStart + pageSize() * 3);
+  ({ start: loadedStart, end: loadedEnd } = windowAround(
+    index,
+    transcript.length,
+  ));
 }
 
 function sourcePage(
@@ -1087,22 +1134,14 @@ function refreshLoadedWindow(): void {
   loadedEnd = Math.max(loadedStart, Math.min(loadedEnd, transcript.length));
   messages = transcript.slice(loadedStart, loadedEnd);
   latestPromptId = lastPromptId(transcript);
-  transcriptHasDates = transcript.some(
-    (message) => message.sentAt !== undefined,
-  );
+  transcriptHasDates = hasDates(transcript);
   transcriptIndexById.clear();
-  dayRunStartById.clear();
-  let currentDay: number | undefined;
-  let runStart = 0;
-  transcript.forEach((message, index) => {
+  for (const [index, message] of transcript.entries())
     transcriptIndexById.set(message.id, index);
-    const day = dayOf(message);
-    if (day !== currentDay) {
-      currentDay = day;
-      runStart = message.id;
-    }
-    dayRunStartById.set(message.id, runStart);
-  });
+  dayRunStartById.clear();
+  const runs = dayRuns(transcript, dayOf);
+  for (const [index, message] of transcript.entries())
+    dayRunStartById.set(message.id, at(runs, index).runStart);
   conversationTree?.refreshLoaded();
 }
 
@@ -1141,25 +1180,60 @@ function isDatedDay(day: number): boolean {
   return day >= DAY_MS;
 }
 
-function conversationIsDated(): boolean {
-  return getAISettings().provider !== "simulated" || transcriptHasDates;
+function hasDates(path: readonly Message[]): boolean {
+  return path.some((message) => message.sentAt !== undefined);
+}
+
+/** Real providers date their messages; so does any conversation with a date. */
+function isDatedConversation(pathHasDates: boolean): boolean {
+  return getAISettings().provider !== "simulated" || pathHasDates;
+}
+
+/**
+ * The day of `message` at `index` in its path. Keep an exchange together
+ * when an old prompt gets a fresh reply: a prompt takes its selected reply's
+ * day without rewriting its own timestamp, so returning to an older version
+ * restores its original day.
+ */
+function messageDay(
+  message: Message,
+  reply: Message | null | undefined,
+  index: number,
+  dated: boolean,
+): number {
+  const replySentAt =
+    message.role === "user" && reply?.role === "assistant"
+      ? reply.sentAt
+      : undefined;
+  const sentAt = replySentAt ?? message.sentAt;
+  if (sentAt !== undefined) return localMidnight(sentAt);
+  return dated ? UNDATED_DAY : Math.floor(index / MESSAGES_PER_DAY);
+}
+
+/** Each message's day, and the id of the first message of its day run. */
+function dayRuns(
+  path: readonly Message[],
+  dayAt: (message: Message, index: number) => number,
+): { day: number; runStart: number }[] {
+  let previousDay: number | undefined;
+  let runStart = 0;
+  return path.map((message, index) => {
+    const day = dayAt(message, index);
+    if (day !== previousDay) runStart = message.id;
+    previousDay = day;
+    return { day, runStart };
+  });
 }
 
 function dayOf(message: Message): number {
-  // Keep an exchange together when an old prompt gets a fresh reply. Derive
-  // its display day from the selected reply without rewriting the prompt's
-  // timestamp, so returning to an older version restores its original day.
-  if (message.role === "user") {
-    const node = tree.get(message.id);
-    const replyId = node && selectedChildId(node);
-    const reply =
-      replyId === undefined ? undefined : tree.get(replyId)?.message;
-    if (reply?.role === "assistant" && reply.sentAt !== undefined)
-      return localMidnight(reply.sentAt);
-  }
-  if (message.sentAt !== undefined) return localMidnight(message.sentAt);
-  if (conversationIsDated()) return UNDATED_DAY;
-  return Math.floor(transcriptIndexOf(message) / MESSAGES_PER_DAY);
+  const node = message.role === "user" ? tree.get(message.id) : undefined;
+  const replyId = node && selectedChildId(node);
+  return messageDay(
+    message,
+    replyId === undefined ? undefined : tree.get(replyId)?.message,
+    transcriptIndexOf(message),
+    isDatedConversation(transcriptHasDates),
+  );
 }
 
 function lastDay(): number {
@@ -1234,41 +1308,21 @@ function rowsForTreeNavigation(
   end = path.length,
 ): ChatRow[] {
   const rows: ChatRow[] = [];
-  const dated =
-    getAISettings().provider !== "simulated" ||
-    path.some((message) => message.sentAt !== undefined);
+  const dated = isDatedConversation(hasDates(path));
   const finalDay = Math.max(
     0,
     Math.floor((path.length - 1) / MESSAGES_PER_DAY),
   );
-  let previousDay: number | undefined;
-  let runStart = 0;
-  path.forEach((message, index) => {
-    const reply = message.role === "user" ? path[index + 1] : undefined;
-    const sentAt =
-      reply?.role === "assistant"
-        ? (reply.sentAt ?? message.sentAt)
-        : message.sentAt;
-    const day =
-      sentAt !== undefined
-        ? localMidnight(sentAt)
-        : dated
-          ? UNDATED_DAY
-          : Math.floor(index / MESSAGES_PER_DAY);
-    const newDay = day !== previousDay;
-    if (newDay) runStart = message.id;
-    if (index >= start && index < end) {
-      if (newDay || index === start)
-        rows.push({
-          kind: "day",
-          day,
-          runStart,
-          label: dayLabel(day, finalDay),
-        });
-      rows.push(message);
-    }
-    previousDay = day;
-  });
+  const runs = dayRuns(path, (message, index) =>
+    messageDay(message, path[index + 1], index, dated),
+  );
+  for (let index = start; index < Math.min(end, path.length); index++) {
+    const message = at(path, index);
+    const { day, runStart } = at(runs, index);
+    if (runStart === message.id || index === start)
+      rows.push({ kind: "day", day, runStart, label: dayLabel(day, finalDay) });
+    rows.push(message);
+  }
   return rows;
 }
 
@@ -1829,14 +1883,10 @@ function persistSimulatedConversation(): void {
 
 function persistSimulatedBranchSelection(): void {
   if (getAISettings().provider !== "simulated") return;
+  const { selectedRootId, nodes } = treeSnapshot((message) => message);
   const selection: TranscriptSelection = {
-    selectedRootId:
-      selectedChildId(tree.get(TREE_ROOT_ID) ?? rootNode()) ?? null,
-    nodes: [...tree.entries()].flatMap(([id, node]) =>
-      node.message
-        ? [{ id, selectedChildId: selectedChildId(node) ?? null }]
-        : [],
-    ),
+    selectedRootId,
+    nodes: nodes.map(({ id, selectedChildId }) => ({ id, selectedChildId })),
   };
   const selected = importedConversation?.tree
     ? selectTranscriptBranches(importedConversation.tree, selection)
@@ -1981,7 +2031,7 @@ function replacementAnchor(
   if (replacementId === undefined) return undefined;
   const list = virtualList;
   if (!list) return undefined;
-  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const inset = stickyInset();
   const replacements = [{ from: String(messageId), to: String(replacementId) }];
   const previous = tree.get(messageId);
   const replacement = tree.get(replacementId);
@@ -2026,9 +2076,6 @@ function switchMessageVersion(messageId: number, offset: number): void {
   const anchor = replacementAnchor(messageId, replacementId);
   parent.selectedChildIndex = nextSelected;
   rebuildActiveTranscript();
-  // Keep the branch row inside the loaded window even if the new path is
-  // shorter than the old loadedStart.
-  if (branchIndex >= 0) loadedStart = Math.min(loadedStart, branchIndex);
   if (branchIndex >= 0) selectWindowAround(branchIndex);
   pushItems(anchor, true);
   syncMetrics();
@@ -2081,11 +2128,11 @@ function deleteMessagesFrom(messageId: number, epoch: number): void {
     htmlCache.delete(String(id));
   }
   rebuildActiveTranscript();
-  loadedStart = isVersion
-    ? Math.min(loadedStart, index)
-    : Math.max(0, transcript.length - loadChunkCount());
   if (isVersion) selectWindowAround(index);
-  else loadedEnd = transcript.length;
+  else {
+    loadedStart = Math.max(0, transcript.length - loadChunkCount());
+    loadedEnd = transcript.length;
+  }
   refreshLoadedWindow();
   const turns = storedConversation();
   if (getAISettings().provider !== "simulated") {
@@ -2188,12 +2235,12 @@ function streamingDisplayText(message: Message): string {
 // A finished row: the static markdown render plus, when the message has
 // sibling versions, the navigator that switches between them.
 function buildStaticRow(message: Message): HTMLElement {
-  // Use the streaming segment layout even for legacy/simulated calls without
-  // offsets. A grouped tool grid has different spacing and shifts on first text.
+  // Tool calls use the streaming segment layout, including legacy/simulated
+  // calls without offsets, so a finished row matches its streamed layout.
   const ordered =
     message.role === "assistant" && Boolean(message.toolCalls?.length);
   const row = ordered
-    ? buildChatRow({ ...message, toolCalls: undefined }).row
+    ? buildChatRow(message).row
     : buildChatItem(message, htmlForMessage(message));
   if (ordered) {
     const content = row.querySelector<HTMLElement>(".message-content");
@@ -2212,7 +2259,7 @@ function buildStaticRow(message: Message): HTMLElement {
 }
 
 function buildStreamingRow(message: Message): HTMLElement {
-  const { row, content } = buildChatRow({ ...message, toolCalls: undefined });
+  const { row, content } = buildChatRow(message);
   const handle = createMessageContent(content, cursorMode, trailMode);
   handle.update(message, streamingDisplayText(message), true);
   streamingViewers.set(row, handle);
@@ -2615,20 +2662,7 @@ function tokenize(text: string): string[] {
 }
 
 function wait(ms: number, abort: StreamAbort): Promise<void> {
-  if (ms <= 0 || abort.cancelled) return Promise.resolve();
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = () => {
-      if (done) return;
-      done = true;
-      window.clearTimeout(timer);
-      abort.onCancel.delete(finish);
-      resolve();
-    };
-    const timer = window.setTimeout(finish, ms);
-    abort.onCancel.add(finish);
-    if (abort.cancelled) finish();
-  });
+  return waitUntil(performance.now() + ms, abort);
 }
 
 async function streamResponse(
@@ -2753,24 +2787,9 @@ function storedConversation(
 }
 
 function persistOpenAIConversation(): void {
-  const snapshot: TranscriptTree = {
-    selectedRootId:
-      selectedChildId(tree.get(TREE_ROOT_ID) ?? rootNode()) ?? null,
-    nodes: [...tree.entries()].flatMap(([id, node]) => {
-      const message =
-        node.message && storedConversation([node.message], true)[0];
-      return message
-        ? [
-            {
-              id,
-              parentId: node.parentId,
-              selectedChildId: selectedChildId(node) ?? null,
-              message,
-            },
-          ]
-        : [];
-    }),
-  };
+  const snapshot = treeSnapshot(
+    (message) => storedConversation([message], true)[0],
+  );
   openAIHistory = storedConversation();
   openAIHistoryTree = snapshot;
   saveOpenAIHistory(openAIHistory, undefined, snapshot);
@@ -3153,7 +3172,7 @@ async function sendMessage(action?: SendAction): Promise<void> {
   cancelUserEdit();
   markConversationChanged();
 
-  const promptInset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const promptInset = stickyInset();
   const regenerating = action?.kind === "regenerate";
   const placement =
     originalPrompt && !regenerating && virtualList
@@ -3405,7 +3424,7 @@ initAISettingsPanel({
  */
 function neighbourPrompt(direction: "previous" | "next"): string | null {
   const scrollTop = viewport.scrollTop;
-  const inset = stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+  const inset = stickyInset();
   let best: { key: string; top: number } | null = null;
   for (const message of transcript) {
     if (message.role !== "user") continue;
@@ -3433,7 +3452,7 @@ function jumpToPrompt(direction: "previous" | "next"): boolean {
   void virtualList?.scrollTo(key, {
     align: "start",
     behavior: "smooth",
-    offset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+    offset: stickyInset(),
   });
   return true;
 }
@@ -3626,7 +3645,7 @@ viewport.addEventListener("click", (event) => {
   mustGet("delete-message-title", HTMLElement).textContent = isVersion
     ? "Delete this version?"
     : "Delete from here?";
-  mustGet("delete-message-dialog", HTMLDialogElement)
+  deleteDialog
     .querySelector<HTMLButtonElement>(".delete-message-confirm")
     ?.replaceChildren(isVersion ? "Delete version" : "Delete messages");
   mustGet("delete-message-description", HTMLElement).textContent = isVersion
@@ -3726,7 +3745,7 @@ function mountConversation(): void {
         ? {
             match: (row) => !isDayHeader(row) && row.id === latestPromptId,
             get offset() {
-              return stickyEnabled ? DAY_HEADER_HEIGHT : 0;
+              return stickyInset();
             },
           }
         : false,
@@ -3753,12 +3772,9 @@ function mountConversation(): void {
       start: edgeSlotRequested ? edgeSlotSpec : null,
       end: bottomEdgeSlotRequested ? bottomEdgeSlotSpec : null,
     },
-    // The product choice for a chat: the streaming reply keeps rendering under
-    // a scroll (see the header). Structural changes above the anchor stay
-    // settle-gated; one below it (a version switch) applies at once.
     followBehavior: "smooth",
     followMode,
-    followInset: stickyEnabled ? DAY_HEADER_HEIGHT : 0,
+    followInset: stickyInset(),
     onState: (state, snapshot) => {
       syncScrollButtons(state);
       syncMetrics(state);
@@ -3814,22 +3830,7 @@ stickyHeaders = createStickyHeaders({
 // --- Export ------------------------------------------------------------------
 // The readable active branch plus all other versions in hidden tree metadata.
 function transcriptMarkdown(): string {
-  const snapshot: TranscriptTree<Message> = {
-    selectedRootId:
-      selectedChildId(tree.get(TREE_ROOT_ID) ?? rootNode()) ?? null,
-    nodes: [...tree.entries()].flatMap(([id, node]) =>
-      node.message
-        ? [
-            {
-              id,
-              parentId: node.parentId,
-              selectedChildId: selectedChildId(node) ?? null,
-              message: node.message,
-            },
-          ]
-        : [],
-    ),
-  };
+  const snapshot = treeSnapshot((message) => message);
   // A file is read later: a dated day gets its full date, not "Today".
   return branchingTranscriptMarkdown(snapshot, {
     dayOf,
@@ -3846,15 +3847,7 @@ function transcriptMarkdown(): string {
 
 function downloadTranscript(): void {
   const file = createTranscriptFile(transcriptMarkdown());
-  const url = URL.createObjectURL(file);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = file.name;
-  document.body.append(link);
-  link.click();
-  link.remove();
-  // Safari needs the object URL alive past the click it is still handling.
-  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  downloadBlob(file, file.name, 1000);
 }
 
 mustGet("download-btn", HTMLButtonElement).addEventListener(
@@ -4024,7 +4017,7 @@ function syncSticky(): void {
   viewportWrap.classList.toggle("sticky-on", stickyEnabled);
   // The sticky header covers the top of the viewport: keep it clear of
   // the reply's start under "keep-start".
-  virtualList?.setFollowMode(followMode, stickyEnabled ? DAY_HEADER_HEIGHT : 0);
+  virtualList?.setFollowMode(followMode, stickyInset());
 }
 stickyToggle.addEventListener("change", () => {
   stickyEnabled = stickyToggle.checked;
@@ -4036,7 +4029,7 @@ stickyToggle.addEventListener("change", () => {
 syncSticky();
 
 edgeLoaderSelect.addEventListener("change", () => {
-  edgeLoaderMode = edgeLoaderSelect.value === "pill" ? "pill" : "slot";
+  edgeLoaderMode = parseEdge(edgeLoaderSelect.value);
   syncEdgeLoaderMode();
   saveChatOptions();
 });
@@ -4045,18 +4038,12 @@ syncEdgeLoaderMode();
 cursorSelect.value = cursorMode;
 trailSelect.value = trailMode;
 trailSelect.addEventListener("change", () => {
-  trailMode =
-    trailSelect.value === "short" || trailSelect.value === "long"
-      ? trailSelect.value
-      : "off";
+  trailMode = parseTrail(trailSelect.value);
   saveChatOptions();
   syncStreamingViewerOptions();
 });
 cursorSelect.addEventListener("change", () => {
-  cursorMode =
-    cursorSelect.value === "none" || cursorSelect.value === "idle"
-      ? cursorSelect.value
-      : "bar";
+  cursorMode = parseCursor(cursorSelect.value);
   saveChatOptions();
   syncStreamingViewerOptions();
 });
@@ -4069,13 +4056,13 @@ function syncStreamingViewerOptions(): void {
 }
 landingSelect.value = landingMode;
 landingSelect.addEventListener("change", () => {
-  landingMode = landingSelect.value === "end" ? "end" : "prompt";
+  landingMode = parseLanding(landingSelect.value);
   saveChatOptions();
 });
 autoscrollSelect.value = followMode;
 autoscrollSelect.addEventListener("change", () => {
-  followMode = autoscrollSelect.value === "keep-start" ? "keep-start" : "end";
-  virtualList?.setFollowMode(followMode, stickyEnabled ? DAY_HEADER_HEIGHT : 0);
+  followMode = parseFollow(autoscrollSelect.value);
+  virtualList?.setFollowMode(followMode, stickyInset());
   saveChatOptions();
 });
 

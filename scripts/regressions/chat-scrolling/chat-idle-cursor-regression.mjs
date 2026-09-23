@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo, waitForBoot } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 for (const engine of [firefox, chromium, webkit]) {
@@ -11,14 +12,7 @@ for (const engine of [firefox, chromium, webkit]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    const boot = () =>
-      page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
-    await page.goto(`${base}/demos/streaming/`);
-    await boot();
+    const errors = await openStreamingDemo(page, base);
     assert.equal(await page.locator("#cursor-mode").inputValue(), "bar");
     const select = (mode) =>
       page.locator("#cursor-mode").evaluate((select, mode) => {
@@ -27,7 +21,7 @@ for (const engine of [firefox, chromium, webkit]) {
       }, mode);
     await select("idle");
     await page.reload();
-    await boot();
+    await waitForBoot(page);
     assert.equal(await page.locator("#cursor-mode").inputValue(), "idle");
     await page.locator("#prompt").fill("slow");
     await page.locator("#send-btn").click();

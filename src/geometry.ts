@@ -76,7 +76,7 @@ interface Capture {
 }
 
 const EPSILON = 0.5;
-/** "At the end" tolerance; matches the runtime's AT_EDGE_EPSILON_PX. */
+/** "At the end" tolerance; matches the runtime's AT_EDGE_PX. */
 const AT_END_EPSILON = 1;
 
 export class Geometry {

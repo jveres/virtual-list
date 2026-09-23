@@ -1,49 +1,29 @@
 // Offline inline-editing checks; no API requests leave the browser.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  pendingOpenAIMock,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 try {
   const page = await browser.newPage();
-  page.on("dialog", (dialog) => dialog.accept());
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "virtual-list:ai-settings",
-      JSON.stringify({
-        provider: "openai",
-        apiKey: "offline-test",
-        model: "gpt-5-mini",
-      }),
-    );
-    const original = window.fetch;
-    window.requests = 0;
-    window.fetch = (input, init) => {
-      if (!String(input).startsWith("https://api.openai.com/"))
-        return original(input, init);
-      window.requests++;
-      window.requestBody = JSON.parse(init.body);
-      return new Promise((_resolve, reject) =>
-        init.signal.addEventListener(
-          "abort",
-          () => reject(new DOMException("Cancelled", "AbortError")),
-          { once: true },
-        ),
-      );
-    };
+  await page.addInitScript(seedAISettings, OFFLINE_AI_SETTINGS);
+  await page.addInitScript(pendingOpenAIMock, {
+    counter: "requests",
+    body: "requestBody",
   });
-  await page.goto(`${base}/demos/streaming/`);
-  await page.waitForFunction(
-    () => !document.documentElement.classList.contains("booting"),
+  await openStreamingDemo(page, base, { acceptDialogs: true });
+  await importTranscript(
+    page,
+    "**User**\n\nOriginal question\n\n**Assistant**\n\nOriginal answer\n\n**User**\n\nLater question\n\n**Assistant**\n\nLater answer\n",
+    { name: "edit.md" },
   );
-  await page.locator("#import-file").setInputFiles({
-    name: "edit.md",
-    mimeType: "text/markdown",
-    buffer: Buffer.from(
-      "**User**\n\nOriginal question\n\n**Assistant**\n\nOriginal answer\n\n**User**\n\nLater question\n\n**Assistant**\n\nLater answer\n",
-    ),
-  });
   await page.getByText("Later answer", { exact: true }).waitFor();
   await page.locator("#prompt").fill("Keep my composer draft");
   const originalRow = page

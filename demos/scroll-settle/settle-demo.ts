@@ -153,7 +153,7 @@ function abortBoundary(boundary: Boundary, reason: string): void {
     aborted = true;
   }
   if (queuedChunks[boundary]) {
-    // Withdraw the premeasured-but-uncommitted chunk; it returns to the
+    // Withdraw the queued, uncommitted chunk; it returns to the
     // source and a re-approach refetches it.
     queuedChunks[boundary] = null;
     chunksRemaining[boundary] += 1;

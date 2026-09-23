@@ -194,7 +194,7 @@ const GENERATED_IMAGE_RE = new RegExp(GENERATED_IMAGE_PATTERN, "g");
 
 // Generated images are stripped from the request context: megabytes of
 // base64 would go back to the API as text tokens.
-export function stripGeneratedImages(markdown: string): string {
+function stripGeneratedImages(markdown: string): string {
   return markdown.replace(GENERATED_IMAGE_RE, "*[generated image]*");
 }
 

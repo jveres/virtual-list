@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  waitForBoot,
+} from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
@@ -9,13 +14,6 @@ for (const engine of [firefox, webkit, chromium]) {
     const page = await browser.newPage({
       viewport: { width: 1440, height: 900 },
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    const ready = () =>
-      page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
     const openTree = async () => {
       if (!(await page.locator(".conversation-tree-panel").isVisible()))
         await page
@@ -80,8 +78,7 @@ for (const engine of [firefox, webkit, chromium]) {
           );
       }
     };
-    await page.goto(`${base}/demos/streaming/`);
-    await ready();
+    const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
     await page.locator("#prompt").fill("A new simulated message");
     await page.locator("#send-btn").click();
     await page.waitForTimeout(2000);
@@ -124,7 +121,7 @@ for (const engine of [firefox, webkit, chromium]) {
         }),
     );
     await page.reload();
-    await ready();
+    await waitForBoot(page);
     await page.locator(".message-stopped").waitFor();
     const reloaded = await geometry(107, 108);
     matches(returned, reloaded, "stopped return vs reload");
@@ -193,13 +190,11 @@ for (const engine of [firefox, webkit, chromium]) {
       const ending = long
         ? `${label}\n\n${"A long response paragraph. ".repeat(800)}`
         : label;
-      await page.locator("#import-file").setInputFiles({
-        name: "bottom.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(
-          `**User**\n\nEarlier prompt\n\n**Assistant**\n\n${"Earlier reply. ".repeat(200)}\n\n**User**\n\nFinal prompt\n\n**Assistant**\n\n${ending}\n`,
-        ),
-      });
+      await importTranscript(
+        page,
+        `**User**\n\nEarlier prompt\n\n**Assistant**\n\n${"Earlier reply. ".repeat(200)}\n\n**User**\n\nFinal prompt\n\n**Assistant**\n\n${ending}\n`,
+        { name: "bottom.md" },
+      );
       await page
         .locator("#viewport")
         .getByText(label, { exact: true })
@@ -224,7 +219,7 @@ for (const engine of [firefox, webkit, chromium]) {
         );
       else assert.ok(Math.abs(imported.prompt.top - 40) <= 2);
       await page.reload();
-      await ready();
+      await waitForBoot(page);
       matches(await geometry(3, 4), imported, `${label} reload vs load`);
       console.log(engine.name(), label, "PASS");
     }

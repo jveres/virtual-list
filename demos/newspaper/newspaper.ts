@@ -4,12 +4,14 @@ import {
   type VirtualListState,
 } from "../../src/virtual-list.js";
 import { createImageLoader } from "../gallery/image-loader.js";
+import { mulberry32 } from "../shared/lab.js";
 import { watchSystemTheme } from "../shared/theme.js";
 import {
   at,
   bindThemeButtons,
   mustGet,
   refreshTheme,
+  setTextIfChanged,
 } from "../shared/utils.js";
 import { createItemMeasurer } from "./premeasure.js";
 
@@ -260,30 +262,12 @@ let contentWidth = 0;
 let measuredViewportWidth = viewport.clientWidth;
 type Row = { key: string; index: number; height: number };
 let virtualList: VirtualList<Row>;
-let renderedRangeText = "";
-let renderedMountedText = "";
-let renderedLayoutText = "";
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function setTextIfChanged(element: HTMLElement, text: string): string {
-  element.textContent = text;
-  return text;
-}
-
 // --- Deterministic content generation ---------------------------------------
-
-function mulberry32(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) | 0;
-    let t = Math.imul(state ^ (state >>> 15), 1 | state);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
 
 function pick<T>(items: readonly T[], rnd: number): T {
   return items[Math.floor(rnd * items.length)] ?? items[0]!;
@@ -1085,20 +1069,15 @@ function rows(): Row[] {
 // --- Status bar / controls ---------------------------------------------------
 
 function updateInfo(state: VirtualListState = virtualList.state): void {
-  const rangeText = `${state.start + 1}-${state.end} / ${blocks.length} blocks`;
-  if (rangeText !== renderedRangeText) {
-    renderedRangeText = setTextIfChanged(rangeLabel, rangeText);
-  }
-
-  const mountedText = `${state.end - state.start} mounted`;
-  if (mountedText !== renderedMountedText) {
-    renderedMountedText = setTextIfChanged(mountedLabel, mountedText);
-  }
-
-  const layoutText = `${Math.round(columnWidth())}px column · ${articles.length} articles`;
-  if (layoutText !== renderedLayoutText) {
-    renderedLayoutText = setTextIfChanged(layoutLabel, layoutText);
-  }
+  setTextIfChanged(
+    rangeLabel,
+    `${state.start + 1}-${state.end} / ${blocks.length} blocks`,
+  );
+  setTextIfChanged(mountedLabel, `${state.end - state.start} mounted`);
+  setTextIfChanged(
+    layoutLabel,
+    `${Math.round(columnWidth())}px column · ${articles.length} articles`,
+  );
 }
 
 async function ensureFonts(fonts: readonly string[]): Promise<void> {

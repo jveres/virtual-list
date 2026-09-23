@@ -2,7 +2,9 @@
 
 This document defines the runtime's geometry and scrolling contract, its
 browser-specific trade-offs, and the labs used to verify them. For the public
-API and demo setup, see the [README](../README.md).
+API and demo setup, see the [README](../README.md). For the design of the
+orchestration layer (the one commit rule, in-canvas measurement, the pass,
+and native scroll anchoring), see the [architecture](architecture.md).
 
 ## The two cornerstones
 
@@ -19,82 +21,120 @@ The runtime combines browser-aware settling with known item geometry:
    fingers-down state (the accepted trade-off below). The controller lives in
    `src/scroll-settle.ts`; its Firefox candidate-release policy is documented
    below and tested against renewed input and decaying momentum tails.
-2. **Chunk premeasurement** — items are built and measured OFF-scroller
-   (a detached, width-synced measurement root) before they ever enter the
-   scroll surface. Heights are measured, not estimated, at commit time.
-   Hosts can instead supply declared heights. Mounting and unmounting known
-   rows continues during scrolling without changing their committed geometry.
+2. **Measurement before reveal** — a new or replacing row is rendered into
+   its own clip slot inside the canvas, where it waits hidden: zero-height,
+   clipped, `inert`, and `aria-hidden`. It's laid out there once, with the
+   page's real styles, and neither paints nor changes the scroll range. When
+   it commits inside the window, the runtime reveals the same slot in place,
+   with no second layout and no re-parenting. Heights are measured, not
+   estimated, before the row shows. Hosts can instead supply declared
+   heights. Mounting and unmounting known rows continues during scrolling
+   without changing their committed geometry.
 
 ## The core contract (normative)
 
 The following rules govern preparation, scrolling, and commits:
 
 1. During an active scroll phase (a native gesture or a programmatic
-   glide), the scroll surface's **geometry is immutable**: key order,
-   measured extents, offsets, canvas size, and the scroll range do not
-   change, except for the explicit `"live"` policy below. Window
-   reconciliation — mounting and
-   unmounting already-known, premeasured rows at their fixed positions —
-   continues freely throughout the scroll; without it a long momentum
-   scroll would run into blank gaps. Positioning within fixed geometry is
-   not a structural change.
-2. New chunks may be fetched, rendered, and measured **off-scroller**.
+   glide), the scroll surface's **geometry above the reader is immutable**:
+   key order, measured extents, and offsets above the viewport's anchor row
+   do not change, and the runtime makes no anchor-preserving scroll write
+   (a glide's own frames are its only writes). Two exceptions exist, and
+   neither writes the scroll position:
+   - **At or below the anchor.** A change that sits entirely at or below
+     the viewport's anchor row lands at once, unless it names an `"end"` or
+     explicit anchor (rule 4). It needs no scroll write, so
+     nothing on screen moves (I1 holds by construction). The canvas size
+     and the scroll range can change with it.
+   - **Native anchoring.** Under native CSS scroll anchoring (the
+     `anchoring` option), away from the scroll edges (within 2 px of an
+     edge counts as at it) and outside a glide, a change above the reader
+     also lands mid-gesture. The browser adjusts the scroll position inside
+     its own scroll machinery and keeps the reader still. The runtime
+     records the position it expects, so the settle sensor doesn't read the
+     browser's adjustment as input.
+
+   Window reconciliation (mounting and unmounting already-known, measured
+   rows at their fixed positions) continues freely throughout the scroll;
+   without it a long momentum scroll would run into blank gaps. Positioning
+   within fixed geometry isn't a structural change.
+2. New rows may be fetched, rendered, and measured during a scroll, in
+   hidden slots inside the canvas that neither paint nor change the scroll
+   range. Window jobs (`updateWindow`) stage their rows in idle callbacks
+   during a gesture; engines without `requestIdleCallback` prepare them at
+   the commit instead.
 3. After the cross-browser settle signal, the runtime may
    **atomically commit**, in one frame:
    - keys,
-   - pre-measured heights,
+   - measured heights,
    - canvas geometry,
-   - the mounted window,
-   - one anchor-preserving scroll position.
-4. Same-key, size-changing updates — streaming text, disclosure toggles,
-   image decode, font swaps — are geometry changes, and what happens to
-   one that arrives during a scroll phase is the `scrollingUpdates`
-   policy. The default, `"live"`, renders it in place on the committed
-   element at once and commits its height at once whenever no
-   anchor-preserving scroll write is needed for it — the row is at or
-   below the viewport's anchor row, so only it and what lies below it
-   change; the complete updated content is always visible. Under
-   `"same-height"` the committed elements are **frozen along with
-   geometry**: the update is rendered fresh (`render(item)` without
-   `existing`) and premeasured off-scroller; if its device-pixel-rounded height
-   equals the committed height (and the committed row has no measurement
-   of its own waiting for the settle) it is **promoted** — swapped into the
-   committed slot immediately, same height, same offset, no geometry
-   change — and otherwise retained until the settle commit swaps content,
-   height, offsets, canvas, and anchor together, so nothing mounted ever
-   shows content that disagrees with its slot (a fixed-height clipped box
-   would clip growth and gap shrinkage, which is visibly wrong); later
-   updates in a held phase advance that off-scroller replacement in
-   place. `"freeze"` holds every such update until settle.
-   In `"live"`, rows strictly above the anchor are off-screen and commit at
-   settle or the moment the viewport reaches them; the trade-off is a
-   scroll range that changes under a live scroll, and a shrink near the end
-   can make the browser clamp `scrollTop` to the new maximum, which the
-   runtime reconciles in the same frame. Structural changes are
-   settle-gated in every mode, with one `"live"` exception: a snapshot that
-   changes nothing above the anchor — the keys up to it an unchanged,
-   unreplaced prefix, every dirty row at or below it, the anchor row itself
-   changed only in place (re-rendered, replaced at its index, or removed;
-   never moved to another index) — needs no scroll write and commits at
-   once, mid-gesture,
-   without one (an iOS rubber-band bounce holds the viewport outside the
-   range, and the clamp would fight it): a message version switch, an
-   appended message. A prepend, a reorder, or
-   an `"end"`-anchored snapshot still waits for the settle. The streaming
-   chat uses `"live"`.
-   While the surface is idle, the update renders in place and commits
+   - the mounted window, revealing staged rows in place,
+   - one anchor-preserving scroll position (under native anchoring, the
+     browser's own adjustment).
+4. One commit rule governs every change, with no update modes. Everything
+   the host submits becomes the desired state: the latest key order, new
+   rows already rendered and measured, and an anchor intent. It lands:
+   - **at once**, when the list is idle, or when every change sits at or
+     below the viewport's anchor row (rule 1);
+   - **at once under native anchoring**, away from the scroll edges and
+     outside a glide (rule 1);
+   - **at the settle** otherwise: a prepend, a trim or height change above
+     the anchor, or a reorder.
+
+   Same-key, size-changing updates (streaming text, disclosure toggles,
+   image decode, font swaps) are geometry changes. The runtime renders
+   them in place on the committed element at once, through
+   `render(item, existing)`, so the complete updated content is always
+   visible. The new height commits under the rule above: at once for a row
+   at or below the anchor, or for any row under native anchoring away from
+   the edges and outside a glide. Otherwise a row strictly above the anchor
+   (off-screen) commits its height at the settle, or the moment the
+   viewport reaches it. The trade-off is a
+   scroll range that changes under a live scroll: a shrink near the end can
+   make the browser clamp `scrollTop` to the new maximum, which the runtime
+   reconciles in the same frame.
+
+   A structural snapshot lands mid-gesture under runtime anchoring only when
+   it changes nothing above the anchor: the keys up to it are an unchanged,
+   unreplaced prefix, every dirty row sits at or below it, and the anchor
+   row itself changes only in place (re-rendered, replaced at its index, or
+   removed; never moved to another index). A message version switch and an
+   appended message qualify. Such a commit writes no scroll position; an
+   iOS rubber-band bounce holds the viewport outside the range, and a
+   clamp would fight it. A snapshot with an `"end"` anchor or an explicit
+   `{ key, offset }` anchor, including a window job's, always waits for the
+   settle during a scroll: the browser only keeps the viewport's own content
+   still. The native-anchoring exception also doesn't apply in two places,
+   where only the at-or-below-the-anchor exception remains:
+   - within 2 px of a scroll edge, where a rubber-band bounce, Firefox's
+     stale scroll limit, and an early `scrollend` live;
+   - during a glide, which heads for a target in the committed geometry, so
+     held work waits for its landing.
+
+   Positioned (masonry) layouts always use runtime anchoring and can't
+   prove by index that a change stays below the anchor, so their structural
+   changes always wait for the settle. Mid-phase, a positioned card, or a
+   declared-height row whose height changes, re-renders inside the settle
+   commit, so it never shows new content in its old box. Under native
+   anchoring away from the edges and outside a glide, a stacked
+   declared-height row re-renders at once instead. Window jobs
+   (`updateWindow`) prepare during a gesture and commit when the list is
+   idle, or mid-gesture under native anchoring away from the edges.
+   While the surface is idle, an update renders in place and commits
    immediately (same pipeline). Changes made outside `setItems` — direct
    DOM mutation of a mounted row, a late resource growing an element — are
    outside this guarantee: the fixed slot keeps geometry immutable as a
-   safety net (the ResizeObserver marks the row dirty; its height commits
-   at settle, or in the same delivery when idle), but such content clips
+   safety net (the ResizeObserver marks the row dirty, and its height
+   commits under the rule above: in the same delivery when idle or when no
+   scroll write is needed, otherwise at the settle), but such content clips
    or gaps until then. Hosts route size changes through `setItems` and
    reserve dimensions for late resources.
 
-The runtime does not compensate for geometry changes with gesture-time
+The runtime doesn't compensate for geometry changes with gesture-time
 anchor writes or canvas translations. Heights are measured or declared before
-mount, and geometry changes wait for settle except for `"live"`'s documented
-no-write commits at or below the anchor.
+a row is revealed. Geometry changes above the reader wait for the settle,
+except where native scroll anchoring lets the browser keep the reader still.
+Changes at or below the anchor land at once without a scroll write.
 
 Settles during active input or motion are defects, always. The
 Firefox edge policy is a
@@ -179,7 +219,9 @@ The definition of correct, referenced by number throughout the code:
   end back onto it.
 - **I6** — an idle size change commits in the same painted frame as its
   observation (after layout, before paint); a phase-time change commits at
-  the settle, or, under `"live"`, at once when no scroll write is needed.
+  once when no scroll write is needed (at or below the anchor, or under
+  native anchoring away from the edges and outside a glide), and otherwise
+  at the settle.
   Within a commit, every mounted slot moves to its committed offset before
   any layout-forcing access: WebKit computes a scroller's range at layout
   and does not recompute it for a transform-only move, so a scroll write
@@ -222,26 +264,30 @@ interaction; the [README](../README.md) lists the public options.
   scroll phase prevents it from interrupting scrolling. Inline overflow
   declarations, including their priority, are restored after the layout
   flush. Recovery does not write the scroll position.
-- Snapshot bookkeeping: `snapshot.ts` validates and indexes item keys,
-  resolves inherited anchor intent, identifies superseded rows, and merges
-  successful targeted patches. It does not render, measure, destroy, or
-  schedule anything. The runtime owns those effects and transfers snapshot
-  ownership only after rendering and measurement succeed. `render-state.ts`
-  owns provisional render state and the rollback journal: touched rows are
-  registered before host rendering, successful changes are accepted only
-  after preparation succeeds, and failed restoration marks the render unknown.
-  Fresh-row ownership, measurement, promotion, and commit scheduling remain
-  in the runtime. Deferred declared-height rendering has its own commit phase.
-- The public API (`src/virtual-list.ts`):
-  `createVirtualList(viewport, { items, key, render, height?, boot?, pinning?,
-  overscanPx?, onState?, onReachStart/End?, onMount?, onUnmount?, onDestroy?,
-  settleStrategy?, scrollingUpdates?, followBehavior?, prepareDuringScroll? })`,
+- Orchestration (`src/virtual-list.ts`): the desired state, the one commit
+  rule, in-canvas staging and reveal, and the native-anchoring flow surface.
+  Every entry point (an API call, a scroll event, an observer delivery, a
+  settle, a glide frame, or a window job) runs inside one function, `pass`.
+  Nested calls join the open pass; API calls from host callbacks queue
+  behind it, and host callback failures are thrown once the runtime has
+  reached a consistent state. `src/positioned-geometry.ts` holds the
+  geometry of host-positioned (masonry) layouts.
+- The public API (`src/virtual-list.ts`, types in `src/types.ts`):
+  `createVirtualList(viewport, { items, key, render, height?, position?,
+  boot?, pinning?, overscanPx?, anchorable?, onState?, onViewport?,
+  onReachStart/End?, onMount?, onUnmount?, onDestroy?, settleStrategy?,
+  anchoring?, followBehavior?, followMode?, followInset? })`,
   `boot` chooses where the list opens: `"end"` (the default, following
   armed) or `"start"` (the initial position, never follow intent).
-  `prepareDuringScroll` (default true) renders and measures a staged
-  `updateWindow` proposal in idle callbacks during an active scroll phase;
-  the commit still waits for the settle. `false`, and engines without
-  `requestIdleCallback` (Safari), keep settle-time preparation.
+  `anchoring` chooses who keeps the reader still when content above it
+  changes: `"auto"` (the default) uses native CSS scroll anchoring where
+  `CSS.supports("overflow-anchor", "auto")` holds and the scroller doesn't
+  compute to `overflow-anchor: none`, and the runtime otherwise; `"native"`
+  forces native anchoring; `"runtime"` forces settle-gated runtime writes.
+  Positioned layouts always use the runtime. The canvas records the mode in
+  `data-anchoring`. A staged `updateWindow` proposal is rendered and
+  measured in idle callbacks during an active scroll phase; engines without
+  `requestIdleCallback` prepare it at the commit.
   `setItems(items, { anchor? })` — a policy, or a host-named anchor
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a
@@ -255,7 +301,7 @@ interaction; the [README](../README.md) lists the public options.
   — the kernel's anchor exclusion makes the anchor its content neighbor,
   so when content replaces it the row the user was reading keeps its place
   and the slot's strip shows the new rows. The two read queries serve a
-  sticky-header companion (`demos/shared/sticky-headers.ts`), which floats
+  sticky-header companion (`src/companions/sticky-headers.ts`), which floats
   the current day header over the viewport top and only ever reads
   committed positions. `offset` lands a keyed target below such a header;
   an `align: "start"` pin includes that inset in its reserve, so the landing
@@ -280,7 +326,7 @@ interaction; the [README](../README.md) lists the public options.
   The predicate runs during preparation, including targeted updates; failure
   leaves committed geometry intact. The offset is also read during preparation;
   a getter can supply a live inset. Submit a snapshot after changing that inset.
-  Held snapshots carry their selected key and offset until commit.
+  Held work carries its selected key and offset until commit.
   Commands navigate within this geometry without replacing its
   pin (`align: "start"` and end-command `pin` don't select another pin).
   The offset defaults to zero; non-finite values use zero. The streaming demo
@@ -305,7 +351,7 @@ interaction; the [README](../README.md) lists the public options.
   follow intent and disengages it (a bottom page load, a collapsed tool
   panel even when the shrink leaves the viewport at the end — though a
   gesture that then ends at the end re-engages it like any gesture), while
-  a resize or a mid-phase live commit leaves the intent as it found it and
+  a resize or a mid-phase no-write commit leaves the intent as it found it and
   catches up if the end moved. A viewport height change during a phase
   gets its commit at the settle with the stance the pre-resize position
   decided — in flight, the glide's destination decides, and a pin stance
@@ -331,53 +377,52 @@ interaction; the [README](../README.md) lists the public options.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
   waiting for settle). Heights are measured or declared, never estimated.
   Hosts window their data; the chat demo hands the runtime a modest loaded
-  window. Measured rows retain their rendered elements when leaving the DOM,
-  but release their clip wrappers. Re-entry creates a new wrapper around the
-  same element; element-local state survives. Same-height promotions preserve
-  the mounted wrapper and its offset. Measured-row lifecycle:
-  `onDestroy(element, item)` ends an element's life (key removed, replacement
-  committed, pending snapshot superseded, or dispose), exactly once.
-  `onMount`/`onUnmount`
-  report an element joining or leaving the scroller's DOM (unmount
-  precedes destroy). Use these hooks, not `element.isConnected`, to control
-  mounted resources. A successful single-row measurement can retain one
-  element in the hidden, inert measurement root between updates. It is not
-  mounted or observed there. The next nonempty measurement replaces that
-  resident, unless it reuses the same element. Mounting or destroying the
-  resident releases it. Larger batches, failures, and disposal clear the root.
+  window. Measured rows keep their rendered element and their clip slot for
+  their whole life, including while unmounted; element-local state
+  survives re-entry. DOM order always follows list order: a slot joins the
+  canvas next to its nearest connected list neighbor. Measured-row
+  lifecycle: `onDestroy(element, item)` ends an element's life (key
+  removed, replacement committed, staged replacement superseded, or
+  dispose), exactly once. `onMount`/`onUnmount` report an element joining
+  or leaving the mounted window (unmount precedes destroy). Use these hooks,
+  not `element.isConnected`, to control mounted resources: a staged row is
+  connected in its hidden slot but not mounted. After a measurement of one
+  detached row (a lone offscreen update, such as a streaming reply the user
+  scrolled away from), the runtime keeps that row laid out in its hidden
+  slot between updates. It isn't mounted or observed there. Other hidden
+  rows that the window doesn't reveal are detached after the commit.
   Late resources still need stable dimensions or a host update. The runtime
   observes the row again when it mounts and commits detected size changes
-  through the existing update policy.
-  During an explicit measured-row glide's final landing
-  leg, departing rows stay mounted until settle to avoid a Safari paint hitch
-  from removing slots just before arrival. This retains only landing
-  departures, not the whole trip; interruption or a rebased approach releases
-  the hold. Automatic follow and declared-height windows don't use this hold.
-  `render(item, existing)` may mutate `existing` in
-  place or return a replacement, which is premeasured off-scroller and
-  swapped in at commit; `existing` is offered when mutating it is safe
-  (idle, an off-scroller pending replacement, or in `"live"` mode) —
-  under `"same-height"` and `"freeze"` a committed row's phase-time
-  update is rendered fresh and promoted or swapped at settle, unless
-  heights are declared (below), when it is rendered in place at the
-  settle with the mounted element. Declared heights: with `height(item)`
-  given, an item's geometry is its declared height on the device grid,
-  never premeasured, never observed, and unchanged by a viewport width
+  under the one commit rule.
+  Under runtime anchoring, during an explicit measured-row glide's final
+  landing leg, departing rows stay mounted until settle to avoid a Safari
+  paint hitch from removing slots just before arrival. This retains only
+  landing departures, not the whole trip; interruption or a rebased
+  approach releases the hold. Automatic follow, native anchoring, and
+  declared-height windows don't use this hold.
+  `render(item, existing)` may mutate `existing` in place or return a
+  replacement. The runtime offers the committed element as `existing` for
+  every update, idle or mid-phase. A replacement is staged in its own
+  hidden slot, measured there, and swapped in at commit. A declared-height
+  row whose height changes mid-phase, and a positioned card, are rendered
+  in place inside the settle commit instead (or at once under native
+  anchoring away from the edges, for a stacked declared row). Declared
+  heights: with `height(item)` given, an item's geometry is its declared
+  height on the device grid, never measured, never observed, and unchanged
+  by a viewport width
   change (the host re-flows); `remeasure` is inert. Declared heights must
   be finite and positive. Declared rows keep data and geometry independently
   of DOM: only the overscan window renders, and leaving it destroys the
   element after its unmount hook. Re-entry renders a fresh element. Store
   persistent row state in item data.
   `updateItem` prepares one unchanged key without rebuilding the key order;
-  when a snapshot is already pending, successful preparation patches only
-  the touched key, preserving untouched rows, order, and the inherited anchor.
-  It does not copy the full item array or rebuild the key index. Unknown keys
-  are ignored. Live-commit eligibility checks and the eventual structural
-  commit can still inspect multiple rows; the targeted preparation is not a
-  constant-time guarantee for the entire update call.
-  `measurementContainer` supplies an ancestor outside the scroll surface
-  with equivalent row styles for detached measurement; it defaults to
-  `document.body`.
+  when work is already held, successful preparation patches only the
+  touched key in the desired state, preserving untouched rows, order, and
+  the inherited anchor. It does not copy the full item array or rebuild the
+  key index. Unknown keys are ignored. The commit-rule checks and the
+  eventual structural commit can still inspect multiple rows; the targeted
+  preparation is not a constant-time guarantee for the entire update call.
+  In a positioned layout, `updateItem` re-places every item.
   Preparation preserves internal ownership and cleans up fresh elements on
   failure. Rollback of in-place host rendering is best effort, because the
   runtime cannot reverse arbitrary DOM mutations or external side effects.
@@ -385,7 +430,7 @@ interaction; the [README](../README.md) lists the public options.
   an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
   runtime aborts only on conditions it knows objectively: the user reached
   the OPPOSITE edge (their intent moved on; every started operation for
-  this edge — the fetch, the premeasure, the queued uncommitted chunk —
+  this edge — the fetch, the staged rows, the queued uncommitted chunk —
   dies with it), or `dispose()`. Hosts wire real fetches to it
   (`fetch(url, { signal })`); a host that wants a scrollback fetch to
   outlive the scroll-away simply ignores the signal. A re-approach refires
@@ -394,9 +439,10 @@ interaction; the [README](../README.md) lists the public options.
   neither edge cancels the other. Opposite-edge cancellation waits until
   the viewport leaves the original proximity zone.
 - Invariants I0–I6 define correct behavior. An idle ResizeObserver observation
-  commits in its own delivery, which is I6, and a phase-time one waits for
-  the settle — or, under `"live"`, commits at once when no scroll write is
-  needed.
+  commits in its own delivery, which is I6. A phase-time one commits at once
+  when no scroll write is needed (at or below the anchor, or under native
+  anchoring away from the edges and outside a glide) and otherwise waits for
+  the settle.
 
 ## Verification vehicles
 
@@ -413,14 +459,16 @@ Use these demos to isolate controller behavior and exercise runtime contracts:
   adversarial content (streaming rows, toggles, late-loading images,
   width-sensitive code, edge loads with abort, superseding bursts,
   deletions, width jitter), every change entering through setItems (in
-  place when idle or under `"live"`, a fresh off-scroller render during a
-  phase under `"same-height"`/`"freeze"`, or a replacing render); late
-  images reserve a zero box and re-enter through
-  setItems at load. Its telemetry observes the runtime
+  place, or a replacing render); late images reserve a zero box and
+  re-enter through setItems at load. The lab's page sets
+  `overflow-anchor: none`, so it checks runtime anchoring: changes at or
+  below the anchor land at once, and changes above it wait for the settle.
+  Its telemetry observes the runtime
   strictly from outside — a scrollTop write hook, a MutationObserver on
   the canvas, the lab's own native-scroll evidence — and reports each
   contract violation by code: G geometry changed under a live scroll phase
-  outside a valid `"live"` no-write commit, W `scrollTop` written under
+  outside a valid no-write commit at or below the anchor, W `scrollTop`
+  written under
   native scroll, O slot overlap or a non-clipping slot, A anchor moved
   across a commit, S stale slot height while quiet, L a mounted row
   disagreeing with its slot at the post-runtime ResizeObserver delivery (a
@@ -428,15 +476,16 @@ Use these demos to isolate controller behavior and exercise runtime contracts:
   change, D destroy-once or leak failures, and X a runtime throw that is
   not the lab's own chaos render failure (or an uncaught exception).
 - **demos/streaming** — the chat acceptance target, hosted on the
-  runtime under `scrollingUpdates: "live"`: pin-to-top on send (I5 reserve
+  runtime with native anchoring where the browser supports it: pin-to-top
+  on send (I5 reserve
   plus a smooth `scrollTo`), end-follow through streams, scrollback loads
   wired to the reach signal, version branches, live tool panels.
 
 ## Browser matrix
 
 The repository includes an opt-in Playwright runner for the dynamic-height
-lab. It starts a private Vite server, exercises every scrolling policy in
-Chromium, Firefox, and WebKit with automated wheel input, and fails on a lab
+lab. It starts a private Vite server, exercises the lab in Chromium,
+Firefox, and WebKit with automated wheel input, and fails on a lab
 violation, clipped paint, teardown leak, page error, console error or
 unexpected console warning, or wrong settle strategy.
 
@@ -450,7 +499,7 @@ pnpm run test:browser
 Use a focused run while developing a browser-specific fix:
 
 ```sh
-pnpm run test:browser -- --quick --engine=webkit --mode=live
+pnpm run test:browser -- --quick --engine=webkit
 ```
 
 Chaos mode drives the lab's randomized adversary under random wheel input
@@ -485,8 +534,11 @@ physical presentation. Preserve captures locally under ignored
 
 Earlier implementations and browser testing established these constraints:
 
-- jsdom has no layout engine: engine lifecycles and premeasurement are
-  validated in real browsers (the lab), never asserted from jsdom.
+- jsdom has no layout engine: engine lifecycles, in-canvas measurement, and
+  native scroll anchoring are validated in real browsers (the lab and the
+  runtime regressions), never asserted from jsdom. jsdom reports
+  `overflow-anchor` as supported, so the unit suites run with
+  `anchoring: "runtime"` except the native-surface tests.
 - WebKit floors scrollTop writes; Safari kills momentum on writes; Firefox
   keeps a pre-apply scroll-limit snapshot for the rest of a gesture
   (ghost end) — reasons to preserve the controller's engine-specific contracts.

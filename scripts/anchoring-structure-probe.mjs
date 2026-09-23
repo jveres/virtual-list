@@ -1,6 +1,6 @@
 // Which structural changes does each engine's CSS scroll anchoring
-// compensate? A canvas shaped like next's native surface (spacer, clip
-// slots, spacer) is scrolled into its slots, then one change adds 300 px
+// compensate? A canvas shaped like the runtime's native surface (spacer,
+// clip slots, spacer) is scrolled into its slots, then one change adds 300 px
 // above the reader. "moved" is how far the engine moved scrollTop on its
 // own; 300 means it anchored, 0 means the change suppressed anchoring.
 //   node scripts/anchoring-structure-probe.mjs

@@ -1,6 +1,11 @@
 // Correctness only: synthetic scrolling here is not native performance evidence.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  importTranscript,
+  openStreamingDemo,
+  pagingTranscript,
+} from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
@@ -70,20 +75,9 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
-    const transcript = Array.from(
-      { length: 124 },
-      (_, index) =>
-        `**${index % 2 ? "Assistant" : "User"}**\n\nHistory turn ${index + 1}. ${"Synthetic paging content. ".repeat(index < 96 ? 100 : 20)}\n`,
-    ).join("\n");
-    await page.locator("#import-file").setInputFiles({
+    await openStreamingDemo(page, base, { acceptDialogs: true });
+    await importTranscript(page, pagingTranscript(), {
       name: "paged-history.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(transcript),
     });
     await page.locator('#viewport [data-key="124"]').waitFor();
     const readRange = () =>

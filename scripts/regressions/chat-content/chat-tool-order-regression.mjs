@@ -1,6 +1,11 @@
 // Offline, controlled stream: no credentials or billable requests.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  openAIStreamMock,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, webkit, chromium]) {
@@ -11,10 +16,9 @@ for (const engine of [firefox, webkit, chromium]) {
     const simulated = await browser.newPage({
       viewport: { width: 1200, height: 1000 },
     });
-    await simulated.goto(`${base}/demos/streaming/index.html`);
-    await simulated.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(simulated, base, {
+      path: "/demos/streaming/index.html",
+    });
     await simulated.locator("#prompt").fill("Check tool spacing");
     await simulated.locator("#send-btn").click();
     const simulatedRow = simulated.locator("article.message.assistant").last();
@@ -57,51 +61,15 @@ for (const engine of [firefox, webkit, chromium]) {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 1000 },
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.addInitScript(() => {
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "openai",
-          apiKey: "offline-test",
-          model: "gpt-5-mini",
-        }),
-      );
-      const originalFetch = window.fetch;
-      window.fetch = (input, init) => {
-        if (!String(input).startsWith("https://api.openai.com/"))
-          return originalFetch(input, init);
-        const encoder = new TextEncoder();
-        return Promise.resolve(
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                window.sendToolEvent = (event) =>
-                  controller.enqueue(
-                    encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
-                  );
-                window.finishToolStream = () => controller.close();
-                init.signal.addEventListener(
-                  "abort",
-                  () =>
-                    controller.error(
-                      new DOMException("Cancelled", "AbortError"),
-                    ),
-                  { once: true },
-                );
-              },
-            }),
-            { headers: { "Content-Type": "text/event-stream" } },
-          ),
-        );
-      };
+    await page.addInitScript(openAIStreamMock, {
+      settings: OFFLINE_AI_SETTINGS,
+      emitEvent: "sendToolEvent",
+      finish: "finishToolStream",
     });
-    await page.goto(`${base}/demos/streaming/index.html`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+      acceptDialogs: true,
+    });
     await page.locator("#prompt").fill("Check tool chronology");
     await page.locator("#send-btn").click();
     await page.waitForFunction(
@@ -256,11 +224,7 @@ for (const engine of [firefox, webkit, chromium]) {
     await row.evaluate((element) => {
       element.dataset.beforeImport = "yes";
     });
-    await page.locator("#import-file").setInputFiles({
-      name: "chronology.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(exported),
-    });
+    await importTranscript(page, exported, { name: "chronology.md" });
     await page.waitForFunction(
       () => !document.querySelector('[data-before-import="yes"]'),
     );

@@ -173,8 +173,8 @@ Status: technically complete. Dependency: SI-01's documented
 import boundary.
 
 The supported implementation lives in `src/companions/sticky-headers.ts`.
-The [old demo helper](../demos/shared/sticky-headers.ts) preserves the legacy
-native-listener default; migrated demos use runtime snapshots instead.
+Pass `observeScroll: true` for the legacy native-listener behavior; the demos
+use runtime snapshots instead.
 
 - [x] Promote a generic optional companion with documented exports, CSS
   ownership, callback wiring, enable/disable behavior, and disposal.

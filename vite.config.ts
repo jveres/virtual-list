@@ -41,7 +41,6 @@ function labReportSink(): Plugin {
               why: string;
               userAgent: string;
               strategy: string;
-              mode: string;
               violations: number;
               viewport: { width: number; height: number };
               trace: string[];
@@ -53,7 +52,7 @@ function labReportSink(): Plugin {
             mkdirSync("browser-artifacts", { recursive: true });
             appendFileSync(
               `browser-artifacts/device-${slug}.log`,
-              `\n===== ${new Date().toISOString()} ${report.why} · ${report.userAgent} · ${report.strategy} · ${report.mode} · ${report.viewport.width}×${report.viewport.height} · violations=${report.violations}\n${report.trace.join("\n")}\n`,
+              `\n===== ${new Date().toISOString()} ${report.why} · ${report.userAgent} · ${report.strategy} · ${report.viewport.width}×${report.viewport.height} · violations=${report.violations}\n${report.trace.join("\n")}\n`,
             );
             response.statusCode = 204;
           } catch {
@@ -68,11 +67,6 @@ function labReportSink(): Plugin {
 
 export default defineConfig({
   plugins: [labReportSink(), chatGPTPlugin()],
-  define: {
-    "import.meta.env.VITE_RENDERER_LOCAL": JSON.stringify(
-      process.env.MARKDOWN_VIEWER_LOCAL === "1",
-    ),
-  },
   cacheDir:
     process.env.MARKDOWN_VIEWER_LOCAL === "1"
       ? "browser-artifacts/renderer-preview-cache"
@@ -138,8 +132,8 @@ export default defineConfig({
   },
   server: {
     fs: {
-      // Both rendering packages are link: dependencies outside this project's
-      // default fs.allow root. The nested comrak link serves the Wasm binary.
+      // The opt-in local renderer checkouts (MARKDOWN_VIEWER_LOCAL=1) live
+      // beside this project: ../markdown-viewer and ../comrak-wasm (Wasm).
       allow: [".", "../markdown-viewer", "../comrak-wasm"],
     },
   },

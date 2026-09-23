@@ -1,57 +1,23 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  openAIStreamMock,
+} from "../shared/openai-stream.mjs";
+import { openStreamingDemo, waitForBoot } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { chromium, firefox, webkit }[engine].launch();
 try {
   for (const partial of [false, true]) {
     const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    await page.addInitScript(() => {
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "openai",
-          apiKey: "offline-test",
-          model: "gpt-5-mini",
-        }),
-      );
-      const original = window.fetch;
-      window.fetch = (input, init) => {
-        if (!String(input).startsWith("https://api.openai.com/"))
-          return original(input, init);
-        return Promise.resolve(
-          new Response(
-            new ReadableStream({
-              start(controller) {
-                window.emitText = (delta) =>
-                  controller.enqueue(
-                    new TextEncoder().encode(
-                      `data: ${JSON.stringify({ type: "response.output_text.delta", delta })}\n\n`,
-                    ),
-                  );
-                init.signal.addEventListener(
-                  "abort",
-                  () =>
-                    controller.error(
-                      new DOMException("Cancelled", "AbortError"),
-                    ),
-                  { once: true },
-                );
-              },
-            }),
-            { headers: { "Content-Type": "text/event-stream" } },
-          ),
-        );
-      };
+    await page.addInitScript(openAIStreamMock, {
+      settings: OFFLINE_AI_SETTINGS,
+      emitText: "emitText",
     });
-    await page.goto(
-      `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/`,
-    );
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base);
     await page.locator("#prompt").fill("Persist stopped response");
     await page.locator("#send-btn").click();
     await page.waitForFunction(() => typeof window.emitText === "function");
@@ -86,9 +52,7 @@ try {
     });
     for (let reload = 0; reload < 2; reload++) {
       await page.reload();
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
+      await waitForBoot(page);
       const reply = page.locator("#viewport .message.assistant").last();
       await reply.locator(".message-stopped").waitFor();
       assert.equal(

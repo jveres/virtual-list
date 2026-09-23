@@ -62,7 +62,6 @@ export async function checkScopedTypography() {
     list = createVirtualList(viewport, {
       items,
       key: (item) => item.id,
-      measurementContainer: measurement,
       overscanPx: 0,
       pinning: false,
       render: (item, existing) => {
@@ -198,7 +197,8 @@ export async function checkScopedTypography() {
       narrow.width < open.width && narrow.measured > open.measured,
       "resize remeasures scoped wrapping",
     );
-    // Changed typography is host intent: update both ancestors and remeasure.
+    // Changed typography is host intent: update the list and the collapse
+    // measurement container, then remeasure.
     for (const root of [host, measurement]) {
       root.style.setProperty("--row-font", "19px");
       root.style.setProperty("--row-line", "29px");
@@ -233,7 +233,7 @@ export async function checkScopedTypography() {
     list = undefined;
     check(
       measurement.childElementCount === 0,
-      "measurement root removed on disposal",
+      "collapse preparation leaves its measurement container empty",
     );
     check(destroys === items.length, "every retained element destroyed once");
     return {

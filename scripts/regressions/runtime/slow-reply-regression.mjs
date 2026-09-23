@@ -1,14 +1,13 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
 for (const engine of [firefox, chromium, webkit]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(`${base}/demos/streaming/`);
+    const errors = await openStreamingDemo(page, base);
     await page.locator("#prompt").fill("  SLOW  ");
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => {

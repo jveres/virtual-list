@@ -1,6 +1,15 @@
 // Offline streaming cursor lifecycle: idle while virtualized away, then remount.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  openAIStreamMock,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
+
+const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
+
+const CURSOR_DELTA = "Waiting for the image. ";
 
 for (const engine of [firefox, webkit, chromium]) {
   const browser = await engine.launch();
@@ -8,54 +17,15 @@ for (const engine of [firefox, webkit, chromium]) {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 820 },
     });
-    await page.addInitScript(() => {
-      localStorage.setItem(
-        "virtual-list:ai-settings",
-        JSON.stringify({
-          provider: "openai",
-          apiKey: "offline-test",
-          model: "gpt-5-mini",
-        }),
-      );
-      const originalFetch = window.fetch;
-      window.fetch = (input, init) => {
-        if (!String(input).startsWith("https://api.openai.com/"))
-          return originalFetch(input, init);
-        const encoder = new TextEncoder();
-        const body = new ReadableStream({
-          start(controller) {
-            window.sendCursorDelta = () =>
-              controller.enqueue(
-                encoder.encode(
-                  `data: ${JSON.stringify({
-                    type: "response.output_text.delta",
-                    delta: "Waiting for the image. ",
-                  })}\n\n`,
-                ),
-              );
-            window.sendCursorDelta();
-            init.signal.addEventListener(
-              "abort",
-              () =>
-                controller.error(new DOMException("Cancelled", "AbortError")),
-              { once: true },
-            );
-          },
-        });
-        return Promise.resolve(
-          new Response(body, {
-            headers: { "Content-Type": "text/event-stream" },
-          }),
-        );
-      };
+    await page.addInitScript(openAIStreamMock, {
+      settings: OFFLINE_AI_SETTINGS,
+      emitText: "sendCursorDelta",
+      initialText: CURSOR_DELTA,
     });
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(
-      `${process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173"}/demos/streaming/index.html`,
-    );
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base, {
+      path: "/demos/streaming/index.html",
+      acceptDialogs: true,
+    });
     const image = await page.evaluate(() => {
       const canvas = document.createElement("canvas");
       canvas.width = 640;
@@ -67,11 +37,7 @@ for (const engine of [firefox, webkit, chromium]) {
       (_, index) =>
         `${index % 2 ? "**Assistant**" : "**User**"}\n\n${index === 1 ? `![Earlier image](${image})\n\n` : ""}Turn ${index}. ${"Readable history content. ".repeat(index % 2 ? 60 : 5)}\n`,
     ).join("\n");
-    await page.locator("#import-file").setInputFiles({
-      name: "cursor.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(transcript),
-    });
+    await importTranscript(page, transcript, { name: "cursor.md" });
     await page.getByText("Turn 23.", { exact: false }).waitFor();
     await page.locator("#prompt").fill("Generate an image");
     await page.locator("#send-btn").click();
@@ -80,16 +46,16 @@ for (const engine of [firefox, webkit, chromium]) {
       () => typeof window.sendCursorDelta === "function",
     );
     await cursor.waitFor({ state: "attached" });
-    await page.evaluate(() => {
+    await page.evaluate((delta) => {
       window.cursorBeforeDetach = document.querySelector(
         "#viewport [data-cursor]",
       );
-      window.sendCursorDelta();
-    });
+      window.sendCursorDelta(delta);
+    }, CURSOR_DELTA);
     await page.waitForFunction(() =>
       window.cursorBeforeDetach.classList.contains("cursor-active"),
     );
-    const redundantClassWrites = await page.evaluate(async () => {
+    const redundantClassWrites = await page.evaluate(async (delta) => {
       const mutations = [];
       const observer = new MutationObserver((records) =>
         mutations.push(...records),
@@ -98,12 +64,12 @@ for (const engine of [firefox, webkit, chromium]) {
         attributes: true,
         attributeFilter: ["class"],
       });
-      window.sendCursorDelta();
+      window.sendCursorDelta(delta);
       await new Promise((resolve) => setTimeout(resolve, 200));
       mutations.push(...observer.takeRecords());
       observer.disconnect();
       return mutations.length;
-    });
+    }, CURSOR_DELTA);
     assert.equal(
       redundantClassWrites,
       0,
@@ -146,7 +112,7 @@ for (const engine of [firefox, webkit, chromium]) {
       false,
       "an idle remounted cursor must blink",
     );
-    await page.evaluate(() => window.sendCursorDelta());
+    await page.evaluate((delta) => window.sendCursorDelta(delta), CURSOR_DELTA);
     await page.waitForFunction(() =>
       document
         .querySelector("#viewport [data-cursor]")

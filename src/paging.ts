@@ -115,8 +115,9 @@ export function createPagedWindow<T, C, Row>(
     trim = true,
   ): Promise<boolean> {
     const shouldTrim = trim && options.trim !== false;
-    // Any source edit can invalidate detached page preparation. Keep the fetched page
-    // and retry against current source data, rather than losing it or its edits.
+    // Any source edit can invalidate staged page preparation. Keep the fetched
+    // page and retry against current source data, rather than losing it or its
+    // edits.
     let revision: number;
     let applied: boolean;
     do {
@@ -210,6 +211,28 @@ export function createPagedWindow<T, C, Row>(
     return applied;
   }
 
+  /** `key`'s item replaced by `update`, in `items` and every page holding it; null when absent or unchanged. */
+  function replaced(
+    key: string,
+    update: (item: T) => T,
+  ): { index: number; previous: T; next: T; pages: Page<T, C>[] } | null {
+    const index = items.findIndex((item) => options.key(item) === key);
+    if (index < 0) return null;
+    const previous = items[index] as T;
+    const next = update(previous);
+    if (options.key(next) !== key)
+      throw new Error("updated item must keep its key");
+    if (next === previous) return null;
+    const nextPages = pages.map((page) => {
+      const at = page.items.findIndex((item) => options.key(item) === key);
+      if (at < 0) return page;
+      const pageItems = [...page.items];
+      pageItems[at] = next;
+      return { ...page, items: pageItems };
+    });
+    return { index, previous, next, pages: nextPages };
+  }
+
   async function updateItemLive(
     key: string,
     update: (item: T) => T,
@@ -224,28 +247,16 @@ export function createPagedWindow<T, C, Row>(
       throw new Error(
         "live updates require a live adapter and list.updateItem",
       );
-    const index = items.findIndex((item) => options.key(item) === key);
-    if (index < 0) return false;
-    const previous = items[index] as T;
-    const next = update(previous);
-    if (disposed) return false;
-    if (options.key(next) !== key)
-      throw new Error("updated item must keep its key");
-    if (next === previous) return false;
+    const change = replaced(key, update);
+    if (disposed || !change) return false;
+    const { index, previous, next } = change;
     const row = adapter.project(next);
     const rowKey = adapter.key(row);
     if (rowKey !== adapter.key(adapter.project(previous)))
       throw new Error("live row must keep its key");
     // Source data is authoritative at submission, just like a host's immutable
     // store. Every overlapping page owner receives the same replacement.
-    const nextPages = pages.map((page) => ({
-      ...page,
-      items: page.items.map((item) =>
-        options.key(item) === key ? next : item,
-      ),
-    }));
-    if (disposed) return false;
-    pages = nextPages;
+    pages = change.pages;
     items = items.map((item, itemIndex) => (itemIndex === index ? next : item));
     sourceRevision++;
     try {
@@ -437,25 +448,7 @@ export function createPagedWindow<T, C, Row>(
       ),
     updateItem: (key, update) =>
       apply(
-        () => {
-          const index = items.findIndex((item) => options.key(item) === key);
-          if (index < 0) return null;
-          const previous = items[index] as T;
-          const next = update(previous);
-          if (options.key(next) !== key)
-            throw new Error("updated item must keep its key");
-          if (next === previous) return null;
-          const candidate = pages.map((page) => {
-            const index = page.items.findIndex(
-              (item) => options.key(item) === key,
-            );
-            if (index < 0) return page;
-            const nextItems = [...page.items];
-            nextItems[index] = next;
-            return { ...page, items: nextItems };
-          });
-          return candidate;
-        },
+        () => replaced(key, update)?.pages ?? null,
         trimEdge,
         lifetime.signal,
         false,

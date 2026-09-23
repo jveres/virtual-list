@@ -33,8 +33,8 @@ import { scheduleReplacementRepaint } from "./viewport-repaint";
 
 export type * from "./types";
 
-// virtual-list-next: the core contract of docs/core-contract.md (I0–I6) on
-// a smaller engine. Three ideas carry it (next/README.md):
+// The core contract of docs/core-contract.md (I0–I6). Three ideas carry the
+// engine (docs/architecture.md):
 //
 // 1. One commit rule. Everything the host submits becomes the DESIRED state:
 //    the latest key order, rows already rendered and measured, and an anchor
@@ -50,8 +50,10 @@ export type * from "./types";
 //    from host callbacks queue behind it; host callback failures surface
 //    after the runtime has reached a consistent state.
 //
-// The physics stays where it was proven: the geometry kernel, the settle
-// sensor, the glide, follow intent, and reach hysteresis come from src/.
+// Where the engine anchors natively (F5), rows sit in flow between spacers
+// and the engine keeps the reader still. The physics lives in its own
+// modules: the geometry kernel, the settle sensor, the glide, follow
+// intent, and reach hysteresis.
 
 const HEIGHT_NOISE = 1e-6;
 /** Measurement and scroll-write noise. */
@@ -68,8 +70,6 @@ const SLOT_BASE = "position:absolute;top:0;left:0;right:0;";
 const PARKED_TOP = "-100000px";
 /** Native flow parks the row instead: its slot must never change position. */
 const PARKED_TRANSLATE = "0 -100000px";
-/** Within this of a scroll edge, a mid-gesture anchoring change waits (F5). */
-const EDGE_GUARD_PX = 2;
 /** How far a mounting slot looks ahead for a connected successor. */
 const INSERTION_SCAN = 64;
 
@@ -334,7 +334,7 @@ export function createVirtualList<T>(
    * mid-gesture must not: any size change on an ancestor of the engine's
    * anchor node suppresses anchoring for that layout.
    */
-  function syncCanvasHeight(totalSize: number, floor = true): void {
+  function syncCanvasHeight(totalSize: number, floor: boolean): void {
     // A native canvas takes its height from its flow, for the same reason.
     if (!native) canvas.style.height = `${totalSize}px`;
     if (!floor) return;
@@ -1790,20 +1790,14 @@ export function createVirtualList<T>(
 
   const idle = (): boolean => !controller.isScrollPhaseActive();
 
-  /** At a scroll edge, or past it (a rubber-band bounce). */
-  function atEdge(): boolean {
-    const top = viewport.scrollTop;
-    const max = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-    return top <= EDGE_GUARD_PX || top >= max - EDGE_GUARD_PX;
-  }
-
   /**
    * F5: under native anchoring, a change above the reading position lands
    * mid-gesture. Edges keep the settle: a bounce, Firefox's scroll limit,
    * and an early scrollend all live there. So does a glide: it heads for a
    * target in the committed snapshot, and held work waits for its landing.
    */
-  const nativeFree = (): boolean => native && glide === null && !atEdge();
+  const nativeFree = (): boolean =>
+    native && glide === null && !controller.isNearScrollEdge();
 
   const follow = new FollowController(
     {

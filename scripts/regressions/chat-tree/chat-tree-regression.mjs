@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 await mkdir("browser-artifacts/conversation-tree", { recursive: true });
@@ -11,13 +12,7 @@ for (const engine of [firefox, webkit, chromium]) {
       viewport: { width: 1200, height: 820 },
       hasTouch: true,
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
     // The default chat starts with the last prompt pinned. Selecting its
     // alternate short reply must not add another reserve for the reply.
     const initialHeight = await page
@@ -144,11 +139,7 @@ for (const engine of [firefox, webkit, chromium]) {
         { dayOf: () => 0, dayLabel: () => "Today" },
       );
     });
-    await page.locator("#import-file").setInputFiles({
-      name: "tree.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(markdown),
-    });
+    await importTranscript(page, markdown, { name: "tree.md" });
     await page.waitForFunction(() =>
       document.querySelector('#viewport [data-key="119"]'),
     );
@@ -687,13 +678,11 @@ for (const engine of [firefox, webkit, chromium]) {
       const ending = long
         ? `${label}\n\n${"A long response paragraph. ".repeat(800)}`
         : label;
-      await page.locator("#import-file").setInputFiles({
-        name: "last-message.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(
-          `**User**\n\nEarlier prompt\n\n**Assistant**\n\n${"Earlier reply. ".repeat(200)}\n\n**User**\n\nFinal prompt\n\n**Assistant**\n\n${ending}\n`,
-        ),
-      });
+      await importTranscript(
+        page,
+        `**User**\n\nEarlier prompt\n\n**Assistant**\n\n${"Earlier reply. ".repeat(200)}\n\n**User**\n\nFinal prompt\n\n**Assistant**\n\n${ending}\n`,
+        { name: "last-message.md" },
+      );
       await page
         .locator("#viewport")
         .getByText(label, { exact: true })
@@ -815,11 +804,7 @@ for (const engine of [firefox, webkit, chromium]) {
         { dayOf: () => 0, dayLabel: () => "Today" },
       );
     });
-    await page.locator("#import-file").setInputFiles({
-      name: "dated-branch.md",
-      mimeType: "text/markdown",
-      buffer: Buffer.from(datedBranch),
-    });
+    await importTranscript(page, datedBranch, { name: "dated-branch.md" });
     await page.locator('#viewport [data-key="4"]').waitFor();
     await toggle.click();
     assert.equal(

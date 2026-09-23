@@ -31,7 +31,7 @@ export interface TreeEntry {
 }
 
 /** Short, plain-text labels only; message markup never enters the panel DOM. */
-export function messageSummary(markdown: string): string {
+function messageSummary(markdown: string): string {
   const text =
     markdown
       .slice(0, 2000)

@@ -1,16 +1,14 @@
 // Count avoidable adapter work, separately from native Firefox timing captures.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [firefox, chromium, webkit]) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base);
     const result = await page.evaluate(async () => {
       const { createChatImagePreview } = await import(
         "/demos/streaming/image-preview.ts"
@@ -19,12 +17,10 @@ for (const engine of [firefox, chromium, webkit]) {
         prepareUserMessageCollapse,
         mountUserMessageCollapse,
         unmountUserMessageCollapse,
-      } = await import("/demos/streaming/user-message-collapse.ts");
+      } = await import("/integrations/index.ts");
       const { buildChatItem } = await import("/demos/shared/chat-ui.ts");
       const { renderMarkdown } = await import("/demos/shared/markdown.ts");
-      const { createStickyHeaders } = await import(
-        "/demos/shared/sticky-headers.ts"
-      );
+      const { createStickyHeaders } = await import("/src/companions/index.ts");
       const settle = () => new Promise((resolve) => setTimeout(resolve, 100));
       const until = async (predicate) => {
         for (let attempt = 0; attempt < 30; attempt++) {
@@ -224,6 +220,7 @@ for (const engine of [firefox, chromium, webkit]) {
         let top = 0;
         let inlineReads = 0;
         const sticky = createStickyHeaders({
+          observeScroll: true,
           container: host,
           viewport,
           headerKeys: () => ["day"],

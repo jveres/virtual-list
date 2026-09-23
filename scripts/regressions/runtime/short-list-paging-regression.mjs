@@ -41,7 +41,6 @@ for (const engine of [firefox, chromium, webkit]) {
           items: initialItems,
           boot: "start",
           key: String,
-          itemHeight: () => 80,
           render: (item) => {
             const row = document.createElement("div");
             row.style.height = "80px";

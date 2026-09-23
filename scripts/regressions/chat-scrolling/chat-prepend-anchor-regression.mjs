@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, waitForBoot } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 // Optional local, linear exported transcript. Never copy user data into this test.
@@ -25,9 +26,7 @@ for (const engine of [firefox, chromium, webkit]) {
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("dialog", (dialog) => dialog.accept());
       await page.goto(`${base}/demos/${demo}/`);
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
+      await waitForBoot(page);
       if (demo === "streaming") {
         const transcript =
           imported ??
@@ -36,11 +35,7 @@ for (const engine of [firefox, chromium, webkit]) {
             (_, i) =>
               `**${i % 2 ? "Assistant" : "User"}**\n\nTurn ${i + 1}. ${"Paging anchor content. ".repeat(30)}\n`,
           ).join("\n");
-        await page.locator("#import-file").setInputFiles({
-          name: "prepend-anchor.md",
-          mimeType: "text/markdown",
-          buffer: Buffer.from(transcript),
-        });
+        await importTranscript(page, transcript, { name: "prepend-anchor.md" });
         await page.locator(`#viewport [data-key="${turns}"]`).waitFor();
       }
       const shifts = [];

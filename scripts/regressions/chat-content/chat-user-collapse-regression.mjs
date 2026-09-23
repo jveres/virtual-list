@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const engine of [chromium, firefox, webkit]) {
@@ -14,14 +15,10 @@ for (const engine of [chromium, firefox, webkit]) {
         viewport: { width: device.width, height: device.height },
         hasTouch: device.hasTouch,
       });
-      const errors = [];
-      page.on("pageerror", (error) => errors.push(error.message));
-      page.on("dialog", (dialog) => dialog.accept());
       await page.route("https://api.openai.com/**", (route) => route.abort());
-      await page.goto(`${base}/demos/streaming/`);
-      await page.waitForFunction(
-        () => !document.documentElement.classList.contains("booting"),
-      );
+      const errors = await openStreamingDemo(page, base, {
+        acceptDialogs: true,
+      });
       const row = page.locator(".message.user").last();
       const key = await row.getAttribute("data-key");
       const snapshot = () =>
@@ -254,13 +251,11 @@ for (const engine of [chromium, firefox, webkit]) {
       // The control is absent for short and exactly-five-line text; only text
       // beyond the fifth line is faded. Version controls are independent.
       for (const lines of [1, 5, 6]) {
-        await page.locator("#import-file").setInputFiles({
-          name: "line-limit.md",
-          mimeType: "text/markdown",
-          buffer: Buffer.from(
-            `**User**\n\n${Array.from({ length: lines }, (_, index) => `Line ${index + 1}`).join("  \n")}\n\n**Assistant**\n\nShort reply\n`,
-          ),
-        });
+        await importTranscript(
+          page,
+          `**User**\n\n${Array.from({ length: lines }, (_, index) => `Line ${index + 1}`).join("  \n")}\n\n**Assistant**\n\nShort reply\n`,
+          { name: "line-limit.md" },
+        );
         await page.getByText("Short reply", { exact: true }).waitFor();
         const toggle = page.locator(".message.user .user-message-toggle");
         assert.equal(await toggle.isVisible(), lines > 5);

@@ -60,10 +60,14 @@ The pager owns all retained source edits. Don't bypass it with direct
 | `reconcile()` | `Promise<boolean> \| null`; retries protected, over-budget trimming. Returns `null` when no attempt is needed, including `trim: false`. |
 | `dispose()` | Returns `void`; cancels fetches and queued work. Dispose before replacing source ownership or disposing the list. |
 
-`updateItemLive` delegates to runtime `updateItem`; it doesn't override the
-list's `scrollingUpdates` policy. Configure `scrollingUpdates: "live"` for
-height-changing tokens to render during a gesture. The pager's structural
-operations still wait for idle.
+`updateItemLive` delegates to runtime `updateItem`, so the runtime's one
+commit rule applies and no option is needed. A height-changing token renders
+in place during a gesture. Its height lands at once when the row sits at or
+below the viewport's anchor row, and otherwise at the settle. Under native
+anchoring, away from the scroll edges, it also lands at once above the
+reader. The pager's structural operations prepare during a gesture and
+commit when the list is idle, or mid-gesture under native anchoring away
+from the scroll edges.
 
 Handle rejected operation promises, including
 `paging.reconcile()?.catch(reportError)`. Invalid live configuration, changed
@@ -200,7 +204,7 @@ width changes; it doesn't install listeners or observers.
 ### User-message collapse
 
 `prepareUserMessageCollapse(row, id, initiallyExpanded, remember, width,
-measurementContainer?)` returns `void` and prepares one new, detached row.
+probeContainer?)` returns `void` and prepares one new, detached row.
 Call once per element, before returning it from `render`; don't call it on
 an already mounted or previously prepared row.
 
@@ -214,9 +218,10 @@ an already mounted or previously prepared row.
   focus-driven expansion. Keep it safe to call synchronously; schedule
   intent-bearing `remeasure(key, { anchor: "viewport" })` as appropriate.
 - `width: number` is the row's measurement width in CSS pixels.
-- `measurementContainer` defaults to `document.body`. Match the runtime's
-  measurement ancestor, inherited typography, and CSS variables. Preparation
-  temporarily attaches the row there and leaves it detached afterward.
+- `probeContainer` defaults to `document.body`. Use an element that
+  inherits the list viewport's typography and CSS variables, such as the
+  viewport. Preparation temporarily attaches the row there, inside a hidden
+  probe, and leaves it detached afterward.
 
 Import `integrations/collapse.css`, supply your button appearance and a
 computed pixel line-height, and preserve the helper's classes. The fixed

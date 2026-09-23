@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdir } from "node:fs/promises";
 import { chromium, firefox, webkit } from "playwright";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 await mkdir("browser-artifacts/conversation-tree", { recursive: true });
@@ -11,13 +12,7 @@ for (const engine of [firefox, webkit, chromium]) {
     const page = await browser.newPage({
       viewport: { width: 1200, height: 820 },
     });
-    const errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
-    page.on("dialog", (dialog) => dialog.accept());
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    const errors = await openStreamingDemo(page, base, { acceptDialogs: true });
     const toggle = page.getByRole("button", {
       name: "Conversation tree",
       exact: true,
@@ -362,11 +357,7 @@ for (const engine of [firefox, webkit, chromium]) {
         );
       }, nodes);
       await page.keyboard.press("Escape");
-      await page.locator("#import-file").setInputFiles({
-        name: "tree-placement.md",
-        mimeType: "text/markdown",
-        buffer: Buffer.from(markdown),
-      });
+      await importTranscript(page, markdown, { name: "tree-placement.md" });
       await page.locator('#viewport [data-key="2"]').waitFor();
       await toggle.click();
       await page

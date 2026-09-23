@@ -60,7 +60,7 @@ covers interactions with another feature.
 | `gallery` | Controls, headers, paging, reloads, and resizing. |
 | `photo-preview` | Loading, navigation, zoom, cleanup, and overlay behavior. |
 | `history` | Paged history, edge styles, and tail behavior. |
-| `runtime` | Dynamic resizing, follow landing, pin replacement, streaming heights, and lab logging. |
+| `runtime` | Dynamic resizing, follow landing, pin replacement, streaming heights, hidden streaming rows, native anchoring and glides, paging during a stream, and lab logging. |
 | `shared` | Sticky headers, theme persistence, and thinking Markdown. |
 | `feed` | Feed demo behavior. |
 | `newspaper` | Newspaper demo behavior. |
@@ -98,6 +98,21 @@ feature folder. Read the server URL from `BROWSER_MATRIX_URL`, use isolated
 Playwright contexts, and close browsers in `finally`. Keep assertions in the
 script; the runner reports its exit status without weakening failures or retrying
 them automatically. New feature folders are discovered without a manifest edit.
+
+Reuse the shared helpers instead of repeating setup:
+
+- `shared/transcript.mjs` opens the streaming demo and waits for it to boot
+  (`openStreamingDemo`, `waitForBoot`), builds transcripts
+  (`transcriptMarkdown`, `datedTranscript`, `pagingTranscript`), and imports
+  them (`importTranscript`, `openTranscript`).
+- `shared/openai-stream.mjs` provides an offline OpenAI provider: seeded
+  settings (`OFFLINE_AI_SETTINGS`, `seedAISettings`, `seedMissingAISettings`),
+  Server-Sent Events responses for `page.route` (`fulfillOpenAI`),
+  a stream the test drives from the page (`openAIStreamMock`), and requests
+  that stay pending until aborted or finished (`pendingOpenAIMock`).
+- `shared/trail-pixels.mjs` reads the dominant gap and text colors around a
+  box in a screenshot (`bandColors`) and counts pixel differences between two
+  trail screenshots (`compareTrailPixels`).
 
 Run the affected group, `pnpm run test:regression-runner`, `pnpm run check`, and
 `pnpm test` before handing off changes. Updating a shared browser helper can

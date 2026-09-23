@@ -375,7 +375,7 @@ p.ai-settings-note {
   overscroll-behavior-y: contain;
 }
 
-/* The pill loader (`?edge=pill`): an overlay that is never scroll geometry, a
+/* The pill loader (settings: "Scrollback loader: Floating pill"): an overlay that is never scroll geometry, a
    floating pill over the viewport's top edge, shown while older messages
    load and briefly when scrollback exhausts. The default loader is the
    in-flow boundary slot below. */

@@ -1,6 +1,7 @@
 // Simulated history edits must expose the way back to the built-in sample.
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const browser = await { firefox, webkit }[engine].launch();
@@ -9,10 +10,7 @@ try {
   for (const mutation of ["version", "delete", "refresh", "send"]) {
     const page = await browser.newPage();
     await page.route("https://api.openai.com/**", (route) => route.abort());
-    await page.goto(`${base}/demos/streaming/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await openStreamingDemo(page, base);
     const latest = page
       .locator(".message.assistant")
       .filter({ has: page.locator(".message-actions[data-latest]") });

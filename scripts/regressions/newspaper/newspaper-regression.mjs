@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { firefox, webkit } from "playwright";
+import { waitForBoot } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4193";
 for (const engine of [firefox, webkit]) {
@@ -18,9 +19,7 @@ for (const engine of [firefox, webkit]) {
       }),
     );
     await page.goto(`${base}/demos/newspaper/`);
-    await page.waitForFunction(
-      () => !document.documentElement.classList.contains("booting"),
-    );
+    await waitForBoot(page);
     for (const width of [1100, 375]) {
       await page.setViewportSize({ width, height: 800 });
       for (const variant of ["radar", "broadsheet", "modular", "reader"]) {

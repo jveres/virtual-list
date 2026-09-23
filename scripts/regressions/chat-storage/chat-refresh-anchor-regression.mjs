@@ -1,6 +1,12 @@
 // Refresh always glides before replacing the old reply or requesting a new one.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
+import {
+  OFFLINE_AI_SETTINGS,
+  pendingOpenAIMock,
+  seedAISettings,
+} from "../shared/openai-stream.mjs";
+import { importTranscript, openStreamingDemo } from "../shared/transcript.mjs";
 
 const engine = process.env.BROWSER_ENGINE ?? "firefox";
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
@@ -46,37 +52,14 @@ try {
         if (scenario.short && placement === "footer") continue;
         const page = await browser.newPage({ viewport: layout });
         page.setDefaultTimeout(6000);
-        const errors = [];
-        page.on("pageerror", (error) => errors.push(error.message));
-        page.on("dialog", (dialog) => dialog.accept());
         try {
-          await page.addInitScript(() => {
-            localStorage.setItem(
-              "virtual-list:ai-settings",
-              JSON.stringify({
-                provider: "openai",
-                apiKey: "offline-test",
-                model: "gpt-5-mini",
-              }),
-            );
-            const original = window.fetch;
-            window.fetch = (input, init) => {
-              if (!String(input).startsWith("https://api.openai.com/"))
-                return original(input, init);
-              window.refreshRequests = (window.refreshRequests ?? 0) + 1;
-              return new Promise((_resolve, reject) => {
-                init.signal.addEventListener(
-                  "abort",
-                  () => reject(new DOMException("Cancelled", "AbortError")),
-                  { once: true },
-                );
-              });
-            };
+          await page.addInitScript(seedAISettings, OFFLINE_AI_SETTINGS);
+          await page.addInitScript(pendingOpenAIMock, {
+            counter: "refreshRequests",
           });
-          await page.goto(`${base}/demos/streaming/`);
-          await page.waitForFunction(
-            () => !document.documentElement.classList.contains("booting"),
-          );
+          const errors = await openStreamingDemo(page, base, {
+            acceptDialogs: true,
+          });
           await page.locator("#landing-mode").evaluate((element, value) => {
             element.value = value;
             element.dispatchEvent(new Event("change", { bubbles: true }));
@@ -175,11 +158,7 @@ try {
                 );
               })
             : turns.join("");
-          await page.locator("#import-file").setInputFiles({
-            name: "refresh-anchor.md",
-            mimeType: "text/markdown",
-            buffer: Buffer.from(fixture),
-          });
+          await importTranscript(page, fixture, { name: "refresh-anchor.md" });
           const refresh = page
             .locator(".message.assistant")
             .filter({

@@ -2,7 +2,6 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createStickyHeaders } from "../../demos/shared/sticky-headers";
 import { createStickyHeaders as createCompanion } from "../../src/companions/index";
 
 describe("sticky headers", () => {
@@ -225,7 +224,8 @@ describe("sticky headers", () => {
       ["day:0", document.createElement("div")],
       ["day:1", document.createElement("div")],
     ]);
-    const sticky = createStickyHeaders({
+    const sticky = createCompanion({
+      observeScroll: true,
       container,
       viewport,
       headerKeys: () => [...positions.keys()],
@@ -462,7 +462,8 @@ describe("sticky headers", () => {
       ["day:0", { top: 0, height: 44 }],
       ["day:1", { top: 100, height: 44 }],
     ]);
-    const sticky = createStickyHeaders({
+    const sticky = createCompanion({
+      observeScroll: true,
       container,
       viewport,
       headerKeys: () => ["day:0", "day:1"],

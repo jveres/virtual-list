@@ -59,7 +59,6 @@ beforeEach(() => {
   // The parser tolerates unavailable glyph metrics; avoid jsdom's canvas warning.
   vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
   viewer.create.mockImplementation(() => ({
-    active: false,
     bind: (element, photo) => {
       bindings.set(element, photo);
     },
@@ -160,7 +159,14 @@ describe("chat image preview source identity", () => {
     const next = adjacent(photo, 1);
 
     expect(platform.blobs.size).toBe(0);
-    expect(options.previewUrl(photo, 1800)).toBe(attachment.dataUrl);
+    // The data URL stays the identity; the viewer displays it through its own
+    // object URL (WebKit decodes data-URL images again under a moving drag).
+    expect((photo as PhotoPreviewItem & { url: string }).url).toBe(
+      attachment.dataUrl,
+    );
+    const shown = options.previewUrl(photo, 1800);
+    expect(shown).toMatch(/^blob:/);
+    expect(options.previewUrl(photo, 1800)).toBe(shown);
     if (!next) throw new Error("Missing next image");
     expect(options.previewUrl(next, 1800)).toBe(
       new URL("/next.png", document.baseURI).href,
