@@ -13,6 +13,8 @@ WebKit-specific issue, must be stated explicitly.
   a fresh temporary browser profile, and closed DevTools.
 - Match the reported monitor, window size, display scaling, and refresh rate.
   A fast built-in-display result does not resolve an external-display issue.
+- Use `pnpm run profile:boot` to time a demo's boot in the installed Firefox
+  (cold and warm loads, from the page's performance marks).
 - Use `pnpm run profile:firefox` for native macOS scroll input. Use manual
   capture for real trackpad momentum. Do not substitute Playwright wheel
   events for native gesture-release behavior in Firefox.

@@ -16,6 +16,7 @@
     "test:regression-runner": "node --test scripts/regression-suite.checks.mjs",
     "test:chat-tree": "node scripts/regression-suite.mjs --group=chat-tree",
     "profile:firefox": "node scripts/firefox-profile.mjs",
+    "profile:boot": "node scripts/boot-timing.mjs",
     "test:firefox-profile": "node --test scripts/firefox-profile/*.checks.mjs",
     "test:watch": "vitest"
   },
@@ -24,7 +25,7 @@
     "@types/node": "^26.6.2",
     "jsdom": "^30.1.1",
     "katex": "^0.18.7",
-    "markdown-viewer": "github:jveres/markdown-viewer#v0.7.1",
+    "markdown-viewer": "github:jveres/markdown-viewer#v0.8.0",
     "playwright": "^1.63.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",

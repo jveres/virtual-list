@@ -4153,6 +4153,7 @@ viewport.addEventListener(
 
 syncMetrics();
 document.documentElement.classList.remove("booting");
+performance.mark("chat:visible");
 
 const imagePreview = createChatImagePreview(viewport, () => transcript);
 const headingCache = new WeakMap<Message, readonly ResponseHeading[]>();

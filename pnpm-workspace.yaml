@@ -1,3 +1,3 @@
 allowBuilds:
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#502d57cb82cc3ce1ef6aba26a688fef27fb94c24: true
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#a2b7dbd044964b53e801a4a457eb173e393f956a: true
 blockExoticSubdeps: false
