@@ -59,11 +59,17 @@ export function createMessageContent(
   host: HTMLElement,
   initialCursor: CursorMode,
   initialTrail: TrailMode = "off",
+  freshStream = false,
 ): MessageContentHandle {
   const slots = new Map<string, TextSlot | ToolSlot>();
   let cursor = initialCursor;
   let trailMode = initialTrail;
   let mounted = false;
+  // Text arriving now is new: a viewer created with it would count it as
+  // already shown, and the streaming trail would skip it. That holds for
+  // the first build of a row whose stream just started, and for any text
+  // segment that starts while the row is live, such as after a tool call.
+  let newText = freshStream;
   function trailOption() {
     return mounted && trailMode !== "off"
       ? { durationMs: trailMode === "long" ? 1200 : 600 }
@@ -99,7 +105,7 @@ export function createMessageContent(
               kind: "text",
               host: wrapper,
               handle: createMarkdownViewer(wrapper, {
-                text: part.text,
+                text: streaming && newText ? "" : part.text,
                 isStreaming: streaming,
                 streamingTrail: trailOption(),
                 preserveStreamingHeight: true,
@@ -138,6 +144,7 @@ export function createMessageContent(
           slot.call = part.call;
         }
       }
+      newText = true;
     },
     setCursor(next) {
       cursor = next;

@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 export function instrumentRuntime(source) {
   const replacements = [
     [
-      "function syncCanvasHeight(totalSize: number, floor = true): void {",
-      'function syncCanvasHeight(totalSize: number, floor = true): void {\n    globalThis.__runtimeAudit?.event("canvas-height", totalSize);',
+      "function syncCanvasHeight(totalSize: number, floor: boolean): void {",
+      'function syncCanvasHeight(totalSize: number, floor: boolean): void {\n    globalThis.__runtimeAudit?.event("canvas-height", totalSize);',
     ],
     [
       "const height = quantize(measured);",

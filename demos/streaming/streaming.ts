@@ -2258,9 +2258,18 @@ function buildStaticRow(message: Message): HTMLElement {
   return row;
 }
 
+// Messages whose stream started since their row was last built. Their
+// first streaming row treats its text as new, so the trail fades it.
+const freshStreams = new Set<Message["id"]>();
+
 function buildStreamingRow(message: Message): HTMLElement {
   const { row, content } = buildChatRow(message);
-  const handle = createMessageContent(content, cursorMode, trailMode);
+  const handle = createMessageContent(
+    content,
+    cursorMode,
+    trailMode,
+    freshStreams.delete(message.id),
+  );
   handle.update(message, streamingDisplayText(message), true);
   streamingViewers.set(row, handle);
   return row;
@@ -2827,7 +2836,10 @@ async function streamOpenAIResponse(
       if (abort.cancelled) return;
       updateMessage(messageId, (message) => {
         // The row stays "thinking" until the first real activity arrives.
-        if (!started) message.status = "streaming";
+        if (!started) {
+          message.status = "streaming";
+          freshStreams.add(message.id);
+        }
         switch (chunk.kind) {
           case "files":
             message.generatedFiles = storedGeneratedFiles([
@@ -3343,12 +3355,14 @@ async function sendMessage(action?: SendAction): Promise<void> {
 
       updateMessage(assistantId, (message) => {
         message.status = "streaming";
+        freshStreams.add(message.id);
       });
       await streamResponse(reply, assistantId, abort);
     }
   } finally {
     try {
       if (sendEpoch === conversationEpoch && assistantId !== null) {
+        freshStreams.delete(assistantId);
         updateMessage(assistantId, (message) => {
           message.status = abort.cancelled ? "cancelled" : "done";
         });
