@@ -1,6 +1,7 @@
 // Profile generated chat history using the demo's static markdown renderer.
 // Start Vite on port 4175, then: node scripts/markdown-profile.mjs
 // Chromium heap snapshots and all results go to ignored browser-artifacts/.
+import "./firefox-app-data.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import process from "node:process";
 import { chromium, firefox, webkit } from "playwright";

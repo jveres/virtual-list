@@ -5,6 +5,7 @@
 // own; 300 means it anchored, 0 means the change suppressed anchoring.
 //   node scripts/anchoring-structure-probe.mjs
 // Playwright engine builds, at rest; this says nothing about momentum.
+import "./firefox-app-data.mjs";
 import { chromium, firefox, webkit } from "playwright";
 
 const cases = [

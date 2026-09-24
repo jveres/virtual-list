@@ -1,3 +1,4 @@
+import "./firefox-app-data.mjs";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import { chromium, firefox, webkit } from "playwright";

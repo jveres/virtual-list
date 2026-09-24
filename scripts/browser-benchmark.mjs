@@ -2,6 +2,7 @@
 // node scripts/browser-benchmark.mjs --url=http://127.0.0.1:4175
 // Optional: --engine=chromium|firefox|webkit
 // Synthetic fixed-height rows isolate runtime cost, not application rendering.
+import "./firefox-app-data.mjs";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import process from "node:process";

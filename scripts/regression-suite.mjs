@@ -1,3 +1,4 @@
+import "./firefox-app-data.mjs";
 import { spawn } from "node:child_process";
 import { readdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";

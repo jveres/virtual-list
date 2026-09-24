@@ -4,6 +4,7 @@
 // visible row in place by moving scrollTop itself.
 //   node scripts/anchoring-probe.mjs
 // Playwright engine builds only; this says nothing about native momentum.
+import "./firefox-app-data.mjs";
 import process from "node:process";
 import { chromium, firefox, webkit } from "playwright";
 

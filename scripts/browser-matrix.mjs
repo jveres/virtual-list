@@ -14,6 +14,7 @@
 // Install engines once with:
 //   pnpm exec playwright install chromium firefox webkit
 
+import "./firefox-app-data.mjs";
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";

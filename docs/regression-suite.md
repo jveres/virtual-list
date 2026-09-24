@@ -16,6 +16,12 @@ pnpm exec playwright install chromium firefox webkit
 pnpm run test:regression
 ```
 
+On macOS 27, Firefox started from an agent or editor exits with "Could not
+find profile folder" (Mozilla bug 2060476). The runners give it temporary
+`MOZ_APP_DATA` and `MOZ_LOCAL_APP_DATA` directories through
+`scripts/firefox-app-data.mjs`; import that module in any new script that
+launches Firefox on its own.
+
 Choose a feature group, multiple groups, or part of a script name:
 
 ```sh

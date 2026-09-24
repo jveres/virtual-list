@@ -6,7 +6,7 @@ allowBuilds:
   markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#98cec535d7a08b1d6ec171c8b518bef5f7a8a593: true
   markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#3eccedfa17f60bf0dca0b65f71c5a3983dce633f: true
   markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#d2340f2a4e9680a1a922e7af0edcf0874b2d3f11: false
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#328828a09302cb36666ef3011bbfbdfeafe6c640: true
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#60277dd8d08eacba541b098657e5f9d050d8c845: true
 blockExoticSubdeps: false
 minimumReleaseAgeExclude:
   - katex@0.18.1
