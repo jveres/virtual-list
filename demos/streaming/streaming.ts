@@ -1811,6 +1811,8 @@ function resetConversationState(): void {
   loadedEnd = 0;
   loadingTop = false;
   htmlCache.clear();
+  // Message ids restart, so a stale entry would mark a new chat's message.
+  freshStreams.clear();
   nextMessageId = 1;
   nextResponse = 0;
 }

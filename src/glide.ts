@@ -38,8 +38,8 @@ const MAX_DURATION_MS = 1080;
  * (or the whole trip when shorter) — uses a cubic ease-out over
  * `landingMs`, with no separate low-speed tail. A hop of one viewport and
  * a jump across the whole list arrive identically. The APPROACH leg covers
- * the rest with constant braking to the landing leg's entry speed, its
- * duration derived from distance and capped at `approachCapMs`.
+ * the rest, braking into the landing leg's entry speed, its duration
+ * derived from distance and capped at `approachCapMs`.
  */
 interface GlidePace {
   landingMs: number;
@@ -77,22 +77,26 @@ function easeOutLanding(t: number): number {
 interface Legs {
   approachPx: number;
   approachMs: number;
-  /** Approach speeds, px/ms: it brakes at a constant rate from `approachStartSpeed` to the landing's entry speed. */
-  approachStartSpeed: number;
+  /** The landing's initial braking, px/ms², which the approach ends with. */
+  landingBraking: number;
+  /** Extra approach speed, px/ms, fading out quadratically; 0 uncapped. */
+  approachExtra: number;
   entrySpeed: number;
   landingPx: number;
   landingMs: number;
 }
 
-// The approach brakes at a constant rate into the landing: its speed falls
-// linearly from a start speed to the landing's entry speed, and the rate
-// is the landing's own initial braking, so the hand-off is continuous in
-// speed AND in deceleration — a long trip is one unbroken slow-down ending
-// in the same landing as a short hop. (A decay that reached the entry
-// speed asymptotically held a constant speed for its last third and then
-// braked hard: a visible stutter one viewport before the end.) A capped
-// approach brakes harder than the landing; the seam then softens the
-// braking, never resumes it.
+// The approach brakes into the landing: at the hand-off its speed is the
+// landing's entry speed and its braking is the landing's own initial
+// braking, so the seam is continuous in speed AND in deceleration — a long
+// trip is one unbroken slow-down ending in the same landing as a short
+// hop. Uncapped, the approach brakes at that constant rate. A capped
+// approach has more distance to cover in its time: it starts faster and
+// brakes harder, and its braking eases linearly down to the landing's.
+// (Constant harder braking dropped to a third at the seam with the demo's
+// 450ms pace: the scroll lurched just before landing. A decay that reached
+// the entry speed asymptotically held a constant speed for its last third
+// and then braked hard.)
 function planLegs(distance: number, pace: GlidePace): Legs {
   const landingPx = Math.min(distance, pace.landingPx);
   const approachPx = Math.max(0, distance - landingPx);
@@ -111,13 +115,24 @@ function planLegs(distance: number, pace: GlidePace): Legs {
     approachPx > 0 && entrySpeed > 0
       ? Math.min(pace.approachCapMs, uncappedMs)
       : 0;
-  // Mean speed of a linear decay is (v0 + v1) / 2.
-  const approachStartSpeed =
-    approachMs > 0 ? (2 * approachPx) / approachMs - entrySpeed : 0;
+  // With s the share of approach time left, the speed is
+  // v1 + a·T·s + c·s²: braking a at the seam, and a·T/2 + c/3 above v1 on
+  // average. c covers what constant braking cannot in a capped time.
+  const approachExtra =
+    approachMs > 0
+      ? Math.max(
+          0,
+          3 *
+            (approachPx / approachMs -
+              entrySpeed -
+              (landingBraking * approachMs) / 2),
+        )
+      : 0;
   return {
     approachPx,
     approachMs,
-    approachStartSpeed,
+    landingBraking,
+    approachExtra,
     entrySpeed,
     landingPx,
     landingMs: pace.landingMs,
@@ -127,11 +142,14 @@ function planLegs(distance: number, pace: GlidePace): Legs {
 /** Distance travelled after `elapsed` ms of a trip with these legs. */
 function travelled(legs: Legs, elapsed: number): number {
   if (legs.approachMs > 0 && elapsed < legs.approachMs) {
-    const t = elapsed / legs.approachMs;
-    // Speed v1 + (v0 - v1)(1 - t) integrated: arrives exactly on the
-    // approach distance at the entry speed.
-    const { approachStartSpeed: v0, entrySpeed: v1, approachMs } = legs;
-    return approachMs * (v1 * t + ((v0 - v1) * (1 - (1 - t) ** 2)) / 2);
+    const s = 1 - elapsed / legs.approachMs;
+    // The speed integrated from the start: arrives exactly on the approach
+    // distance at the entry speed.
+    const { landingBraking: a, approachExtra: c, entrySpeed: v1 } = legs;
+    const T = legs.approachMs;
+    return (
+      T * (v1 * (1 - s) + (a * T * (1 - s ** 2)) / 2 + (c * (1 - s ** 3)) / 3)
+    );
   }
   const u = Math.min(
     1,

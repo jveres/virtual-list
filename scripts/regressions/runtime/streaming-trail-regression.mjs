@@ -56,8 +56,8 @@ for (const engine of [firefox, chromium, webkit]) {
         document
           .getAnimations()
           .filter((a) => a.effect?.target?.matches?.("[data-trail-group]"));
-      window.covered = (expected) => {
-        const nodes = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      window.covered = (expected, scope = root) => {
+        const nodes = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT);
         for (let node = nodes.nextNode(); node; node = nodes.nextNode()) {
           const start = node.data.indexOf(expected);
           if (start < 0) continue;
@@ -381,6 +381,32 @@ for (const engine of [firefox, chromium, webkit]) {
       resumed: 1,
       destroyed: 0,
     });
+    // A stream whose status change and first text arrive in one update
+    // builds its row with that text; the text is still new and fades in.
+    const fresh = await page.evaluate(async () => {
+      const { createMessageContent } = await import(
+        "/demos/streaming/message-content.ts"
+      );
+      const host = document.querySelector("#host");
+      const content = createMessageContent(host, "none", "long", true);
+      const markdown = "First words";
+      content.update({ markdown }, markdown, true);
+      content.setMounted(true);
+      const deadline = performance.now() + 2000;
+      while (host.querySelector(".markdown")?.textContent !== markdown) {
+        if (performance.now() > deadline)
+          throw new Error("Renderer did not flush the fresh-stream fixture");
+        await new Promise(requestAnimationFrame);
+      }
+      await new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(resolve)),
+      );
+      const covered = window.covered("First words", host);
+      const groups = host.querySelectorAll("[data-trail-group]").length;
+      content.destroy();
+      return { covered, groups };
+    });
+    assert.deepEqual(fresh, { covered: true, groups: 1 });
     await page.goto(`${base}/demos/streaming/?trail=${"long"}&fast-long`);
     await page.waitForFunction(
       (value) => document.querySelector("#trail-mode")?.value === value,

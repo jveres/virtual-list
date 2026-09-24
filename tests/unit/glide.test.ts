@@ -500,4 +500,32 @@ describe("glide", () => {
     }
     expect(steps[1]).toBeGreaterThan(steps[steps.length - 2] as number);
   });
+
+  it("a capped approach eases its braking into the landing's", () => {
+    // The demo's pace: a 450ms landing also caps the approach at 450ms, so
+    // a trip of a dozen viewports must brake harder than the landing does.
+    // Braking may change gradually, never jump at the seam: constant hard
+    // braking once dropped to a third there, a lurch just before landing.
+    const host = harness(0, 9_470, false);
+    const writes: number[] = [];
+    const write = host.write;
+    host.write = (top) => {
+      write(top);
+      writes.push(top);
+    };
+    startGlide(host, glidePace(751, 450), () => {});
+    vi.advanceTimersByTime(3_000);
+    expect(host.top).toBe(9_470);
+    const steps = writes.slice(1).map((top, i) => top - (writes[i] as number));
+    const braking = steps
+      .slice(1)
+      .map((step, i) => (steps[i] as number) - step);
+    // Skip the first frame (it starts the clock) and the whole-pixel tail.
+    for (let i = 2; i < braking.length - 6; i++) {
+      expect(
+        Math.abs((braking[i] as number) - (braking[i - 1] as number)),
+        `frame ${i}: ${braking.slice(i - 2, i + 2).map((b) => b.toFixed(1))}`,
+      ).toBeLessThan(2);
+    }
+  });
 });

@@ -270,8 +270,8 @@ true`, supplies `isStreaming`, and normalizes display text through
 when finalizing. The helper is not an HTML sanitizer; keep the renderer's
 sanitization enabled and render plain user text through `textContent`.
 
-The Markdown example uses the repository's `markdown-viewer` version
-(`v0.2.4`, pinned in [package.json](../package.json)). Its renderer dependency
+The Markdown example uses the `markdown-viewer` version pinned in
+[package.json](../package.json). Its renderer dependency
 is separate from the source-only core
 and paged examples. The extracted CSS includes the full demo's footer
 reservation selectors; a host must supply that markup to use those rules.
@@ -288,7 +288,7 @@ no trail option. Set the renderer option to `false` in `onUnmount` and restore
 your configuration in `onMount`, including for retained offscreen rows.
 Ending a stream lets active fades finish; disabling the option or destroying
 the viewer clears them immediately. See the
-[renderer API documentation](https://github.com/jveres/markdown-viewer/tree/v0.2.4#fade-newly-streamed-text)
+[renderer API documentation](https://github.com/jveres/markdown-viewer#fade-newly-streamed-text)
 for the full lifecycle and rendering-cost contract.
 
 ## Verification

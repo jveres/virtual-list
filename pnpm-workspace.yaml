@@ -1,13 +1,3 @@
 allowBuilds:
-  esbuild: true
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#5280b3fcd15bed9831ca90cb5046d3820d55e210: true
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#4a210ae4f5524ada3ca9f8215742d26929a5ca3d: true
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#78a62ed5cb4e48d1164ce1b4cb806c92369b8539: true
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#98cec535d7a08b1d6ec171c8b518bef5f7a8a593: true
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#3eccedfa17f60bf0dca0b65f71c5a3983dce633f: true
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#d2340f2a4e9680a1a922e7af0edcf0874b2d3f11: false
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#4618040767eaa2f9b23694dd1054f95831fe6559: true
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#502d57cb82cc3ce1ef6aba26a688fef27fb94c24: true
 blockExoticSubdeps: false
-minimumReleaseAgeExclude:
-  - katex@0.18.1
-  - vite@8.2.1
