@@ -127,7 +127,7 @@ On the tested Safari 27 build, HTTP WebDriver tried to attach to the regular
 Safari instance, which rejected it because it was not launched for automation.
 The MCP path avoids that startup failure and permits native input. Its Inspector
 connection adds measurement overhead even with the Inspector UI closed. Compare
-MCP captures with the same transport. For a follow-only control, disconnect the
+MCP captures with the same transport. For a follow or button control, disconnect the
 owned driver before measurement:
 
 ```sh
@@ -140,8 +140,8 @@ driver with `SIGKILL`, waits for exit, then releases the gate. A graceful driver
 exit closes Safari's automation window before it can record. The page starts
 and exports the recording itself; the runner closes the owned Safari instance
 afterward. `run.json` records the detached transport and cleanup. This option
-requires Safari and the follow scenario; it does not support manual gestures
-or scripted scrollback.
+requires Safari and the follow or buttons scenario; it does not support manual
+gestures or scripted scrollback.
 
 This control removes the live Inspector client during measurement. It does not
 prove that connecting Inspector earlier had no lasting effect. Use the
@@ -208,6 +208,17 @@ up to eight stack frames and eight selectors per example. They report total
 records and omitted groups or example details. Counts describe invalidations,
 not the duration of a style flush. Empty invalidation results in timing mode
 mean that tracing category was disabled.
+
+`chrome-analysis.json` also retains `slowWindows`: up to eight non-overlapping
+renderer events lasting at least 32 ms, with the 20 largest inclusive sampled
+stacks in each interval. Times are relative to the capture marker. Nested
+events do not create duplicate windows, recursive frames count once per
+sample, and samples are clipped to the selected interval. `selfMs` and
+`inclusiveMs` are sampled wall time, not CPU utilization. Inspect
+`maxSampleGapMs` before interpreting a stack: a long sampling gap weakens its
+attribution. Overlapping sample intervals count once, with discarded overlap
+reported as `overlappingSampleMs`. Missing CPU data produces `null` frames.
+This analysis runs after capture and adds no work to the page's scroll path.
 
 The most useful metrics are grouped by question:
 

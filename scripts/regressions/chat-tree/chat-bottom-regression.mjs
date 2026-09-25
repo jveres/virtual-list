@@ -103,23 +103,15 @@ for (const engine of [firefox, webkit, chromium]) {
     await jump(1);
     await jump(108);
     const returned = await geometry(107, 108);
-    await page.waitForFunction(
-      async () =>
-        new Promise((resolve) => {
-          const request = indexedDB.open("virtual-list-demo", 1);
-          request.onsuccess = () => {
-            const db = request.result;
-            const get = db
-              .transaction("openai-history")
-              .objectStore("openai-history")
-              .get("simulated-history");
-            get.onsuccess = () => {
-              resolve(get.result?.markdown.includes('"stopped":true') === true);
-              db.close();
-            };
-          };
-        }),
-    );
+    await page.waitForFunction(async () => {
+      const { loadSimulatedHistory } = await import(
+        "/demos/streaming/openai.ts"
+      );
+      const history = await loadSimulatedHistory();
+      return history?.tree?.nodes.some(
+        (node) => node.id === 108 && node.message.stopped === true,
+      );
+    });
     await page.reload();
     await waitForBoot(page);
     await page.locator(".message-stopped").waitFor();

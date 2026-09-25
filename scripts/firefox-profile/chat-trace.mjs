@@ -1,6 +1,89 @@
 import assert from "node:assert/strict";
 import { distribution } from "./chat-analysis.mjs";
 
+// Retain attribution for a few isolated stalls before the raw CPU profile is
+// discarded. Whole-capture totals can hide an expensive one-off operation.
+function attributeSlowWindows(events, origin, cpu) {
+  const windows = [];
+  for (const event of [...events].sort((a, b) => b.overlapMs - a.overlapMs)) {
+    if (event.overlapMs < 32 || windows.length === 8) break;
+    const startMs = Math.max(0, event.startMs);
+    const endMs = startMs + event.overlapMs;
+    if (
+      windows.some((window) => startMs < window.endMs && endMs > window.startMs)
+    )
+      continue;
+    windows.push({ name: event.name, startMs, endMs });
+  }
+  const nodes = new Map((cpu?.nodes ?? []).map((node) => [node.id, node]));
+  const parents = new Map();
+  for (const node of nodes.values())
+    for (const child of node.children ?? []) parents.set(child, node.id);
+  return windows.map((window) => {
+    if (!cpu) return { ...window, samples: null, frames: null };
+    const frames = new Map();
+    let time = cpu.startTime;
+    let coveredUntil = time;
+    let samples = 0;
+    let maxSampleGapMs = 0;
+    let overlappingSampleMs = 0;
+    const start = origin + window.startMs * 1000;
+    const end = origin + window.endMs * 1000;
+    for (const [index, leaf] of cpu.samples.entries()) {
+      const delta = cpu.timeDeltas[index];
+      const previous = time;
+      time += delta;
+      // V8 can report backward sample timestamps. Preserve the first
+      // attribution for overlapping time rather than counting it twice.
+      overlappingSampleMs += Math.max(
+        0,
+        (Math.min(time, coveredUntil, end) - Math.max(previous, start)) / 1000,
+      );
+      const overlap =
+        (Math.min(time, end) - Math.max(previous, coveredUntil, start)) / 1000;
+      coveredUntil = Math.max(coveredUntil, time);
+      if (overlap <= 0) continue;
+      samples++;
+      maxSampleGapMs = Math.max(maxSampleGapMs, delta / 1000);
+      const seenNodes = new Set();
+      const seenFrames = new Set();
+      let id = leaf;
+      while (nodes.has(id) && !seenNodes.has(id)) {
+        seenNodes.add(id);
+        const frame = nodes.get(id).callFrame;
+        const key = JSON.stringify([
+          frame.url,
+          frame.lineNumber,
+          frame.columnNumber,
+          frame.functionName,
+        ]);
+        if (!seenFrames.has(key)) {
+          seenFrames.add(key);
+          const entry = frames.get(key) ?? {
+            ...frame,
+            selfMs: 0,
+            inclusiveMs: 0,
+          };
+          entry.inclusiveMs += overlap;
+          if (id === leaf) entry.selfMs += overlap;
+          frames.set(key, entry);
+        }
+        id = parents.get(id);
+      }
+    }
+    return {
+      ...window,
+      samples,
+      maxSampleGapMs,
+      overlappingSampleMs,
+      frames: [...frames.values()]
+        .sort((a, b) => b.inclusiveMs - a.inclusiveMs || b.selfMs - a.selfMs)
+        .slice(0, 20),
+      omittedFrames: Math.max(0, frames.size - 20),
+    };
+  });
+}
+
 export function analyzeChatChrome(trace, cpu = null) {
   assert.ok(Array.isArray(trace?.traceEvents), "Expected Chrome traceEvents");
   const marks = (name) =>
@@ -168,6 +251,7 @@ export function analyzeChatChrome(trace, cpu = null) {
     longestEvents: longest
       .sort((a, b) => b.overlapMs - a.overlapMs)
       .slice(0, 50),
+    slowWindows: attributeSlowWindows(longest, start.ts, cpu),
     scriptSamples: [...samples.values()]
       .sort((a, b) => b.sampledWallMs - a.sampledWallMs)
       .slice(0, 50),
@@ -191,6 +275,7 @@ export function analyzeChatChrome(trace, cpu = null) {
     limits: [
       "Event durations are nested inclusive wall time; do not sum categories as CPU.",
       "V8 samples are sampled wall time, not thread CPU utilization.",
+      "Slow-window stacks clip sample intervals to at most eight non-overlapping renderer events of at least 32 ms. Recursive frames count once per stack. Long sample gaps weaken attribution; these stacks do not establish CPU utilization or causality.",
       "Invalidation records are diagnostic-only causes; their counts are not flush durations. Empty records in timing mode mean the category was not enabled.",
       "Other threads summarize overlapping compositor, raster, GPU, and browser events. Shared process work is not necessarily caused by this page; durations overlap and are not CPU utilization.",
       "Missing presentation events mean unavailable telemetry. Presentation records do not independently measure a physical screen.",

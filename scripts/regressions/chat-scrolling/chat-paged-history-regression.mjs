@@ -14,6 +14,19 @@ async function smoothBottom(page) {
   const result = await page.evaluate(async () => {
     const viewport = document.querySelector("#viewport");
     let lastTop = viewport.scrollTop;
+    let initial = null;
+    let maximum = null;
+    const scrollTo = viewport.scrollTo;
+    viewport.scrollTo = function (options) {
+      if (options.behavior === "smooth" && initial === null) {
+        // Restoration is asynchronous. Observe the animation's actual start,
+        // after the new window has committed and before native movement.
+        initial = viewport.scrollTop;
+        maximum = viewport.scrollHeight - viewport.clientHeight;
+        lastTop = initial;
+      }
+      return scrollTo.call(this, options);
+    };
     const positions = [];
     const capture = () => {
       lastTop = viewport.scrollTop;
@@ -21,28 +34,35 @@ async function smoothBottom(page) {
     viewport.addEventListener("scroll", capture, { passive: true });
     let frame;
     const sample = () => {
-      positions.push(lastTop);
+      if (initial !== null) positions.push(lastTop);
       frame = requestAnimationFrame(sample);
     };
     try {
       document.querySelector("#scroll-bottom-btn").click();
-      const initial = viewport.scrollTop;
-      const maximum = viewport.scrollHeight - viewport.clientHeight;
-      lastTop = initial;
+      const tailRenderedSynchronously =
+        viewport.querySelector('[data-key="124"]') !== null;
       frame = requestAnimationFrame(sample);
       await new Promise((resolve) => setTimeout(resolve, 2200));
       return {
         initial,
         maximum,
         positions,
+        tailRenderedSynchronously,
         final: viewport.scrollTop,
         finalMaximum: viewport.scrollHeight - viewport.clientHeight,
       };
     } finally {
       cancelAnimationFrame(frame);
       viewport.removeEventListener("scroll", capture);
+      viewport.scrollTo = scrollTo;
     }
   });
+  assert.equal(
+    result.tailRenderedSynchronously,
+    false,
+    "restoration yields before rendering the evicted tail",
+  );
+  assert.notEqual(result.initial, null, "restoration starts native animation");
   assert.ok(
     result.maximum - result.initial > 100,
     "restoration must not land at the end before the glide",
@@ -105,6 +125,22 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
       afterTwoPages[1],
       96,
       "two page loads must evict the latest page",
+    );
+    // A newer top command cancels restoration before it can replace history.
+    await page.evaluate(() => {
+      document.querySelector("#scroll-bottom-btn").click();
+      document.querySelector("#scroll-top-btn").click();
+    });
+    await page.waitForFunction((before) => {
+      const status = document.querySelector("#window-status").textContent;
+      const first = Number(
+        /loaded ([\d,]+)-/.exec(status)?.[1].replaceAll(",", ""),
+      );
+      return first < before && !status.includes("loading");
+    }, afterTwoPages[0]);
+    assert.ok(
+      (await readRange())[1] < 124,
+      "cancelled restoration cannot replace the newer top command",
     );
     await smoothBottom(page);
     assert.equal((await readRange())[1], 124);

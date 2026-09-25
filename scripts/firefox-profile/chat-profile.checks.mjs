@@ -729,3 +729,135 @@ test("Chrome invalidation summaries group causes, bound examples, and exclude un
   assert.equal(summary.styleRecalculationElements.count, 2);
   assert.equal(summary.styleRecalculationElements.max, 100);
 });
+
+test("Chrome slow-window stacks clip boundaries and deduplicate nested events and recursive frames", () => {
+  const frame = (functionName) => ({
+    functionName,
+    url: "app.js",
+    lineNumber: 0,
+    columnNumber: 0,
+  });
+  const trace = {
+    traceEvents: [
+      { name: "chat-profile-start", ph: "R", ts: 10000, pid: 1, tid: 2 },
+      { name: "chat-profile-end", ph: "R", ts: 110000, pid: 1, tid: 2 },
+      { name: "Task", ph: "X", ts: 5000, dur: 60000, pid: 1, tid: 2 },
+      { name: "Nested", ph: "X", ts: 20000, dur: 40000, pid: 1, tid: 2 },
+      { name: "Later", ph: "X", ts: 70000, dur: 50000, pid: 1, tid: 2 },
+      { name: "Other thread", ph: "X", ts: 10000, dur: 90000, pid: 1, tid: 3 },
+    ],
+  };
+  const cpu = {
+    startTime: 0,
+    nodes: [
+      { id: 1, callFrame: frame("root"), children: [2, 4] },
+      { id: 2, callFrame: frame("recursive"), children: [3] },
+      { id: 3, callFrame: frame("recursive") },
+      { id: 4, callFrame: frame("other") },
+    ],
+    samples: [3, 3, 4, 3],
+    timeDeltas: [20000, 30000, 25000, 45000],
+  };
+  const windows = analyzeChatChrome(trace, cpu).slowWindows;
+  assert.deepEqual(
+    windows.map(({ name, startMs, endMs, samples }) => ({
+      name,
+      startMs,
+      endMs,
+      samples,
+    })),
+    [
+      { name: "Task", startMs: 0, endMs: 55, samples: 3 },
+      { name: "Later", startMs: 60, endMs: 100, samples: 2 },
+    ],
+  );
+  assert.equal(
+    windows[0].frames.find((f) => f.functionName === "recursive").inclusiveMs,
+    40,
+  );
+  assert.equal(
+    windows[0].frames.find((f) => f.functionName === "recursive").selfMs,
+    40,
+  );
+  assert.equal(
+    windows[0].frames.find((f) => f.functionName === "root").inclusiveMs,
+    55,
+  );
+  assert.equal(
+    windows[1].frames.find((f) => f.functionName === "other").selfMs,
+    5,
+  );
+  assert.equal(windows[1].maxSampleGapMs, 45);
+  assert.equal(analyzeChatChrome(trace).slowWindows[0].frames, null);
+});
+
+test("Chrome slow-window summaries bound retained windows and stack frames", () => {
+  const trace = {
+    traceEvents: [
+      { name: "chat-profile-start", ph: "R", ts: 0, pid: 1, tid: 2 },
+      { name: "chat-profile-end", ph: "R", ts: 1000000, pid: 1, tid: 2 },
+      ...Array.from({ length: 10 }, (_, i) => ({
+        name: "Task",
+        ph: "X",
+        ts: i * 100000,
+        dur: 40000,
+        pid: 1,
+        tid: 2,
+      })),
+    ],
+  };
+  const cpu = {
+    startTime: 0,
+    nodes: Array.from({ length: 25 }, (_, id) => ({
+      id,
+      callFrame: {
+        functionName: `frame${id}`,
+        url: "app.js",
+        lineNumber: id,
+        columnNumber: 0,
+      },
+      children: id < 24 ? [id + 1] : [],
+    })),
+    samples: [24],
+    timeDeltas: [1000000],
+  };
+  const windows = analyzeChatChrome(trace, cpu).slowWindows;
+  assert.equal(windows.length, 8);
+  assert.equal(windows[0].frames.length, 20);
+  assert.equal(windows[0].omittedFrames, 5);
+  assert.equal(windows[0].maxSampleGapMs, 1000);
+});
+
+test("Chrome backward sample timestamps cannot inflate a slow window", () => {
+  const trace = {
+    traceEvents: [
+      { name: "chat-profile-start", ph: "R", ts: 0, pid: 1, tid: 2 },
+      { name: "chat-profile-end", ph: "R", ts: 100000, pid: 1, tid: 2 },
+      { name: "Task", ph: "X", ts: 0, dur: 50000, pid: 1, tid: 2 },
+    ],
+  };
+  const cpu = {
+    startTime: 0,
+    nodes: [
+      { id: 1, callFrame: { functionName: "first" } },
+      { id: 2, callFrame: { functionName: "second" } },
+    ],
+    samples: [1, 2, 2, 1],
+    timeDeltas: [30000, -5000, 20000, 20000],
+  };
+  const window = analyzeChatChrome(trace, cpu).slowWindows[0];
+  assert.equal(window.overlappingSampleMs, 5);
+  assert.equal(window.samples, 3);
+  assert.equal(
+    window.frames.find((f) => f.functionName === "first").selfMs,
+    35,
+  );
+  assert.equal(
+    window.frames.find((f) => f.functionName === "second").selfMs,
+    15,
+  );
+  assert.equal(
+    window.frames.reduce((sum, f) => sum + f.selfMs, 0),
+    50,
+  );
+});

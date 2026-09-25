@@ -9,6 +9,11 @@ Use the [consumer guide](../streaming-consumer.md) and
 
 ## September 25 clean-code and performance audit
 
+The [staged tail-restoration follow-up](staged-tail-restoration-2026-09-25.md)
+addresses synchronous history rebuilding before bottom navigation, verifies
+cancellation and concurrent stream updates, and adds bounded attribution for
+individual Chrome stalls.
+
 The [native smooth navigation result](native-smooth-navigation-2026-09-25.md)
 records native top/bottom animation, cross-browser completion and cancellation,
 blank-content diagnostics, and the user's smoothness confirmation.

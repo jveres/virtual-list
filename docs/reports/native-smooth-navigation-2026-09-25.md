@@ -77,6 +77,8 @@ diagnostic measured that work separately at 143 ms. Native scrolling does not
 remove that preparation cost. The user's smoothness confirmation concerns the
 regular demo after testing idle navigation, streaming, and loaded history; it
 does not establish that every synthetic interval is below one display period.
+The subsequent [staged restoration investigation](staged-tail-restoration-2026-09-25.md)
+addresses this remaining preparation work separately.
 
 Local timing IDs are `firefox-timing-2dw832` (custom-button baseline),
 `firefox-timing-uEtQAh`, `safari-timing-GJYwJn`, and `chrome-timing-1H7n5p`.

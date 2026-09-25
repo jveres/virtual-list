@@ -385,11 +385,21 @@ const rootNode = (): TreeNode => ({
 });
 const tree = new Map<number, TreeNode>([[TREE_ROOT_ID, rootNode()]]);
 let conversationTree: ReturnType<typeof createConversationTree> | undefined;
-let treeNavigation: AbortController | null = null;
+// Tree jumps and tail restoration share ownership of staged window changes.
+let windowNavigation: AbortController | null = null;
+
+function cancelWindowNavigation(): void {
+  const navigation = windowNavigation;
+  if (!navigation) return;
+  windowNavigation = null;
+  navigation.abort();
+  latestPromptId = lastPromptId(transcript);
+  if (!paging) resetPaging();
+}
 
 function refreshConversationTree(): void {
-  treeNavigation?.abort();
-  treeNavigation = null;
+  windowNavigation?.abort();
+  windowNavigation = null;
   // Structural operations finish updating the loaded window in this task.
   queueMicrotask(() => conversationTree?.refresh());
 }
@@ -824,6 +834,7 @@ async function navigateTreeMessage(
   )
     return false;
   cancelUserEdit();
+  cancelWindowNavigation();
   const activeIndex = transcriptIndexById.get(messageId);
   if (
     activeIndex !== undefined &&
@@ -833,9 +844,8 @@ async function navigateTreeMessage(
   ) {
     return scrollToTreeTarget(list, messageId, headingIndex);
   }
-  treeNavigation?.abort();
   const controller = new AbortController();
-  treeNavigation = controller;
+  windowNavigation = controller;
   // Invalidate any older fetch before it can supersede this explicit jump.
   const epoch = ++conversationEpoch;
   activeLoad = null;
@@ -928,17 +938,25 @@ async function navigateTreeMessage(
       controller.signal,
       { interrupt: true },
     );
-    if (!committed || epoch !== conversationEpoch) {
-      if (epoch === conversationEpoch) latestPromptId = previousPin;
+    if (
+      !committed ||
+      controller.signal.aborted ||
+      epoch !== conversationEpoch ||
+      windowNavigation !== controller
+    ) {
+      if (epoch === conversationEpoch && windowNavigation === controller)
+        latestPromptId = previousPin;
       return false;
     }
     return await scrollToTreeTarget(list, messageId, headingIndex);
   } finally {
-    if (epoch === conversationEpoch && !paging) {
-      latestPromptId = previousPin;
-      resetPaging();
+    if (windowNavigation === controller) {
+      windowNavigation = null;
+      if (epoch === conversationEpoch && !paging) {
+        latestPromptId = previousPin;
+        resetPaging();
+      }
     }
-    if (treeNavigation === controller) treeNavigation = null;
   }
 }
 
@@ -1594,7 +1612,7 @@ function loadOlderChunk(signal: AbortSignal): Promise<void> {
 // Fetch during scrolling; prepare and commit through the runtime's idle
 // window-update queue. The loader stays visible until that commit completes.
 function loadOlderMessages({ signal, complete }: ReachContext): void {
-  if (treeNavigation) {
+  if (windowNavigation) {
     complete();
     return;
   }
@@ -1618,7 +1636,7 @@ function loadNewerMessages(context: ReachContext): void {
   const owner = paging;
   if (
     !owner ||
-    treeNavigation ||
+    windowNavigation ||
     owner.loading ||
     !owner.canLoad("end") ||
     context.signal.aborted
@@ -3490,6 +3508,7 @@ function stepsByPrompt(event: MouseEvent): boolean {
 }
 
 scrollTopBtn.addEventListener("click", (event) => {
+  cancelWindowNavigation();
   if (stepsByPrompt(event) && jumpToPrompt("previous")) return;
   // Targets the currently committed snapshot only. If older history loads
   // while the glide runs, the prepend commits — without movement — when
@@ -3499,21 +3518,89 @@ scrollTopBtn.addEventListener("click", (event) => {
   });
 });
 
-scrollBottomBtn.addEventListener("click", (event) => {
-  if (stepsByPrompt(event) && jumpToPrompt("next")) return;
+async function scrollToLatest(): Promise<boolean> {
+  const list = virtualList;
+  if (!list) return false;
   if (loadedEnd < transcript.length) {
-    // The old viewport may exceed the restored window's entire height.
-    // Anchor its first message explicitly: either an end anchor or a clamped
-    // old offset would land immediately, leaving the glide nothing to do.
-    selectWindowAround(transcript.length - 1);
-    const first = transcript[loadedStart];
-    if (first) pushItems({ key: String(first.id), offset: 0 }, true);
+    const controller = new AbortController();
+    windowNavigation = controller;
+    const epoch = conversationEpoch;
+    paging?.dispose();
+    paging = undefined;
+    activeLoad = null;
+    loadingTop = false;
+    setEdgeState("hidden");
+    setBottomLoading(true);
+    syncMetrics();
+    try {
+      const committed = await list.updateWindow(
+        () => {
+          if (controller.signal.aborted || epoch !== conversationEpoch)
+            return null;
+          const { start, end } = windowAround(
+            transcript.length - 1,
+            transcript.length,
+          );
+          const snapshot = transcript.slice(start, end);
+          const first = snapshot[0];
+          if (!first) return null;
+          const topSlot =
+            edgeLoaderMode === "slot" && (start > 0 || topBoundaryLoadSeen);
+          return {
+            items: rowsForRuntime(snapshot),
+            // Keep room for the native end animation after restoration.
+            anchor: { key: String(first.id), offset: 0 },
+            edgeSlots: { start: topSlot ? edgeSlotSpec : null, end: null },
+            onCommit: () => {
+              loadedStart = start;
+              loadedEnd = end;
+              edgeSlotRequested = topSlot;
+              if (!topSlot) edgeSlotElement = null;
+              bottomEdgeSlotRequested = false;
+              bottomEdgeSlotElement = null;
+              refreshLoadedWindow();
+              resetPaging();
+              // Tokens or stop can change an evicted reply during staging.
+              // The new pager already has the archive's latest objects; only
+              // the prepared runtime rows still need those replacements.
+              for (const [index, message] of messages.entries()) {
+                if (message !== snapshot[index])
+                  list.updateItem(String(message.id), message);
+              }
+              stickyHeaders?.refresh();
+              syncMetrics();
+            },
+          };
+        },
+        controller.signal,
+        { interrupt: true },
+      );
+      if (
+        !committed ||
+        controller.signal.aborted ||
+        epoch !== conversationEpoch ||
+        virtualList !== list
+      )
+        return false;
+    } finally {
+      if (windowNavigation === controller) {
+        windowNavigation = null;
+        if (epoch === conversationEpoch) {
+          if (!paging) resetPaging();
+          setBottomLoading(false);
+          syncMetrics();
+        }
+      }
+    }
   }
-  // Landing at the end re-engages end-follow, so a click during a stream
-  // resumes following (the runtime's follow state, not demo bookkeeping).
-  void virtualList?.scrollTo("end", {
-    behavior: "smooth",
-  });
+  // Landing at the end resumes automatic stream following.
+  return list.scrollTo("end", { behavior: "smooth" });
+}
+
+scrollBottomBtn.addEventListener("click", (event) => {
+  cancelWindowNavigation();
+  if (stepsByPrompt(event) && jumpToPrompt("next")) return;
+  void scrollToLatest().catch(reportPagingError);
 });
 
 restoreDraft();
@@ -4194,7 +4281,7 @@ window.addEventListener("pagehide", () => {
   paging?.dispose();
   virtualList?.dispose();
   stickyHeaders?.destroy();
-  treeNavigation?.abort();
+  windowNavigation?.abort();
   conversationTree?.dispose();
 });
 window.addEventListener("pagehide", () => imagePreview.dispose());
