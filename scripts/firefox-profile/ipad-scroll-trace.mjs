@@ -1,8 +1,54 @@
 // Requires an already-running local ios_webkit_debug_proxy and no other debugger.
 import { randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { writeReproduction } from "./artifacts.mjs";
 import { installIpadScrollProbe } from "./ipad-scroll-probe.mjs";
+
+/** Keep page transitions and aggregate motion, without retaining frame traces. */
+export function summarizeIpadScroll(data) {
+  const { records, ...metadata } = data;
+  const counts = {};
+  const transitions = [];
+  let lastTop = data.top;
+  let minTop = lastTop;
+  let maxTop = lastTop;
+  let travel = 0;
+  let lastWrite;
+  let comparedWrites = 0;
+  let maxWriteError = 0;
+  for (const record of records) {
+    const [time, type, value] = record;
+    counts[type] = (counts[type] ?? 0) + 1;
+    if (type === "write") lastWrite = { time, top: value };
+    if (type === "scroll") {
+      minTop = Math.min(minTop, value);
+      maxTop = Math.max(maxTop, value);
+      travel += Math.abs(value - lastTop);
+      lastTop = value;
+      if (lastWrite && time - lastWrite.time <= 100) {
+        comparedWrites++;
+        maxWriteError = Math.max(
+          maxWriteError,
+          Math.abs(value - lastWrite.top),
+        );
+      }
+    }
+    if (["paging", "window", "settle", "takeover", "viewport"].includes(type))
+      transitions.push(record);
+  }
+  return {
+    ...metadata,
+    counts,
+    motion: { minTop, maxTop, lastTop, travel },
+    writes: {
+      comparedScrolls: comparedWrites,
+      maxErrorWithin100ms: maxWriteError,
+    },
+    transitions: transitions.slice(-200),
+    omittedTransitions: Math.max(0, transitions.length - 200),
+  };
+}
 
 /** Route both bridge-level failures and nested WebKit responses. */
 export function connectWebKit(ws, timeoutMs = 8000) {
@@ -142,6 +188,14 @@ async function main() {
     throw new Error("Expected a local WebKit debugging bridge");
   await mkdir("browser-artifacts/ipad-scroll", { recursive: true });
   const dir = await mkdtemp("browser-artifacts/ipad-scroll/run-");
+  await writeReproduction(dir, {
+    command: [
+      "node",
+      "scripts/firefox-profile/ipad-scroll-trace.mjs",
+      endpoint.href,
+      ...(process.argv.includes("--state") ? ["--state"] : []),
+    ],
+  });
   const session = connectWebKit(new WebSocket(endpoint));
   const { command, evaluate } = session;
   const id = randomUUID();
@@ -181,32 +235,42 @@ async function main() {
         const { scriptSource } = await command("Debugger.getScriptSource", {
           scriptId: script.scriptId,
         });
-        const [needle, args] = path.endsWith("virtual-list.ts")
+        const probes = path.endsWith("virtual-list.ts")
           ? [
-              "function interruptNativeScroll(",
-              '"takeover",controller.isScrollPhaseActive(),reason,viewport.scrollTop',
+              [
+                "function interruptNativeScroll(",
+                '"takeover",controller.isScrollPhaseActive(),reason,viewport.scrollTop',
+              ],
+              [
+                "const finish = (applied, error",
+                '"window",applied,cancelRequested,signal?.aborted ?? false,job?.width ?? null,viewportWidth,job?.structure ?? null,structure,viewport.scrollTop',
+              ],
             ]
           : [
-              "function finishScrollPhase(",
-              '"settle",scrollPhaseActive,scrollPhaseMoved,performance.now()-lastScrollSampleAt,viewport.scrollTop',
+              [
+                "function finishScrollPhase(",
+                '"settle",scrollPhaseActive,scrollPhaseMoved,performance.now()-lastScrollSampleAt,viewport.scrollTop',
+              ],
             ];
-        const line = scriptSource
-          .split("\n")
-          .findIndex((value) => value.includes(needle));
-        if (line < 0) throw new Error(`Missing state probe: ${needle}`);
-        const result = await command("Debugger.setBreakpoint", {
-          location: { scriptId: script.scriptId, lineNumber: line + 1 },
-          options: {
-            autoContinue: true,
-            actions: [
-              { type: "evaluate", data: `${ownedProbe}?.record(${args})` },
-            ],
-          },
-        });
-        breakpoints.push(result.breakpointId);
+        for (const [needle, args] of probes) {
+          const line = scriptSource
+            .split("\n")
+            .findIndex((value) => value.includes(needle));
+          if (line < 0) throw new Error(`Missing state probe: ${needle}`);
+          const result = await command("Debugger.setBreakpoint", {
+            location: { scriptId: script.scriptId, lineNumber: line + 1 },
+            options: {
+              autoContinue: true,
+              actions: [
+                { type: "evaluate", data: `${ownedProbe}?.record(${args})` },
+              ],
+            },
+          });
+          breakpoints.push(result.breakpointId);
+        }
       }
-      if (breakpoints.length !== 2)
-        throw new Error("Expected both runtime state probes");
+      if (breakpoints.length !== 3)
+        throw new Error("Expected all three runtime state probes");
       await command("Debugger.setBreakpointsActive", { active: true });
     }
     console.log("RECORDING READY", dir, JSON.stringify(metadata));
@@ -215,8 +279,10 @@ async function main() {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       const data = await evaluate(`${ownedProbe}?.snapshot()`);
       if (!data) throw new Error("Device trace disappeared");
-      await writeFile(`${dir}/trace.json.tmp`, JSON.stringify(data));
-      await rename(`${dir}/trace.json.tmp`, `${dir}/trace.json`);
+      await writeFile(
+        `${dir}/summary.json`,
+        JSON.stringify(summarizeIpadScroll(data), null, 2),
+      );
       const fresh = data.records.slice(last);
       last = data.records.length;
       if (fresh.length)

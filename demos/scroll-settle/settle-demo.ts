@@ -1,4 +1,5 @@
-import { type Glide, glidePace, startGlide } from "../../src/glide.js";
+import type { Glide } from "../../src/glide.js";
+import { startNativeGlide } from "../../src/native-glide.js";
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,
@@ -372,8 +373,7 @@ function buildController(): ScrollSettleController {
     cancelActiveSmoothScroll: () => glide?.cancel(),
     // Scrollends emitted mid-glide are not the user's release.
     // The glide's own completion is the only thing that ends its phase:
-    // Safari emits a scrollend after every programmatic write, and judging
-    // "reached" by proximity ended the phase while frames were still coming.
+    // The native glide confirms its destination before reporting completion.
     noSmoothScrollInFlight: () => glide === null,
     onGestureStarted: () => {
       gestures += 1;
@@ -446,28 +446,19 @@ function glideTo(boundary: Boundary): void {
   // commit at the settle that follows its landing.
   controller.beginProgrammaticGesture();
   log(`glide ${boundary}`, "mark");
-  glide = startGlide(
-    {
-      read: () => viewport.scrollTop,
-      write: (top) => {
-        controller.recordProgrammaticScrollTop(top);
-        viewport.scrollTop = top;
-      },
-      target,
-    },
-    glidePace(viewport.clientHeight),
-    (completed) => {
-      glide = null;
-      log(
-        `glide ${completed ? "landed" : "cancelled"}`,
-        completed ? "good" : "warn",
-      );
-      // A landed glide settles through the controller's normal cooldown;
-      // a cancelled one belongs to the user gesture that took over.
-      if (completed) controller.markSettlePending();
-      scheduleStatus();
-    },
-  );
+  // Let the browser replace its momentum animation. Per-frame scrollTop
+  // writes can compete with iOS's asynchronous scroller after a swipe.
+  glide = startNativeGlide(viewport, target, (completed) => {
+    glide = null;
+    log(
+      `glide ${completed ? "landed" : "cancelled"}`,
+      completed ? "good" : "warn",
+    );
+    // A landed glide settles through the controller's normal cooldown;
+    // a cancelled one belongs to the user gesture that took over.
+    if (completed) controller.markSettlePending();
+    scheduleStatus();
+  });
 }
 
 // --- Raw event trace (what the engine actually emits) -----------------------

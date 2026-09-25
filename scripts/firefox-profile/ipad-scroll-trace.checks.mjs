@@ -3,7 +3,38 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { installIpadScrollProbe } from "./ipad-scroll-probe.mjs";
-import { connectWebKit } from "./ipad-scroll-trace.mjs";
+import { connectWebKit, summarizeIpadScroll } from "./ipad-scroll-trace.mjs";
+
+test("device summary retains paging evidence without per-frame scroll records", () => {
+  const summary = summarizeIpadScroll({
+    top: 0,
+    browser: "Test browser",
+    records: [
+      [0, "paging", "loaded 73-102/102", 0, 1000, 500],
+      [1, "write", 400],
+      [2, "scroll", 390],
+      [3, "scroll", 400],
+      [4, "scrollend", 400],
+      [5, "window", false, false, false, 390, 392, 1, 1, 400],
+    ],
+  });
+  assert.equal(summary.records, undefined);
+  assert.deepEqual(summary.motion, {
+    minTop: 0,
+    maxTop: 400,
+    lastTop: 400,
+    travel: 400,
+  });
+  assert.deepEqual(summary.writes, {
+    comparedScrolls: 2,
+    maxErrorWithin100ms: 10,
+  });
+  assert.deepEqual(
+    summary.transitions.map((record) => record[1]),
+    ["paging", "window"],
+  );
+  assert.equal(summary.counts.scrollend, 1);
+});
 
 class FakeSocket {
   readyState = 1;

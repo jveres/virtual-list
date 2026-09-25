@@ -7,6 +7,12 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 26 iOS follow-up
+
+The [iOS scroll handoff investigation](ios-scroll-handoff-2026-09-26.md) records
+the confirmed scroll-settle button correction, mobile paging coverage, device
+diagnostics, and the still-open paging and tail-restoration reports.
+
 ## September 25 clean-code and performance audit
 
 The [streaming-trail DOM stability fix](streaming-trail-dom-stability-2026-09-25.md)

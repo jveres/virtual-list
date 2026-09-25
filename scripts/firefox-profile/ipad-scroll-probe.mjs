@@ -27,6 +27,7 @@ export function installIpadScrollProbe(id) {
     top: vp.scrollTop,
     touchAction: getComputedStyle(top).touchAction,
     browser: navigator.userAgent,
+    anchoring: vp.firstElementChild?.dataset.anchoring ?? null,
   };
   const records = [];
   const start = performance.now();
@@ -96,6 +97,25 @@ export function installIpadScrollProbe(id) {
     ])
       listen(document, type, input);
     listen(vp, "scroll", () => record("scroll", vp.scrollTop));
+    listen(vp, "scrollend", () => record("scrollend", vp.scrollTop));
+    const status = document.getElementById("window-status");
+    let previousStatus;
+    const paging = () => {
+      const value = status?.textContent;
+      if (!value || value === previousStatus) return;
+      previousStatus = value;
+      record("paging", value, vp.scrollTop, vp.scrollHeight, vp.clientHeight);
+    };
+    if (status) {
+      const observer = new MutationObserver(paging);
+      cleanups.push(() => observer.disconnect());
+      observer.observe(status, {
+        childList: true,
+        characterData: true,
+        subtree: true,
+      });
+      paging();
+    }
     const get = () => accessor.get.call(vp);
     const set = (value) => {
       record("write", value);
@@ -137,7 +157,16 @@ export function installIpadScrollProbe(id) {
       dispose,
       snapshot: () => {
         renew();
-        return { ...metadata, records, dropped };
+        return {
+          ...metadata,
+          current: {
+            top: vp.scrollTop,
+            height: vp.scrollHeight,
+            viewport: vp.clientHeight,
+          },
+          records,
+          dropped,
+        };
       },
     };
     renew();
