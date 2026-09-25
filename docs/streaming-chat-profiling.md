@@ -211,14 +211,31 @@ mean that tracing category was disabled.
 
 `chrome-analysis.json` also retains `slowWindows`: up to eight non-overlapping
 renderer events lasting at least 32 ms, with the 20 largest inclusive sampled
-stacks in each interval. Times are relative to the capture marker. Nested
-events do not create duplicate windows, recursive frames count once per
-sample, and samples are clipped to the selected interval. `selfMs` and
+stacks and the 12 largest leaf self-time entries in each interval. The separate
+`selfFrames` list keeps expensive leaves visible when many ancestor frames fill
+the inclusive list. Both lists report omitted counts. Times are relative to the
+capture marker. Nested events do not create duplicate windows, recursive
+frames count once per sample, and samples are clipped to the selected interval. `selfMs` and
 `inclusiveMs` are sampled wall time, not CPU utilization. Inspect
 `maxSampleGapMs` before interpreting a stack: a long sampling gap weakens its
 attribution. Overlapping sample intervals count once, with discarded overlap
 reported as `overlappingSampleMs`. Missing CPU data produces `null` frames.
 This analysis runs after capture and adds no work to the page's scroll path.
+
+Diagnostic probe version 4 also times native `insertBefore`, `removeChild`,
+and `remove` calls. `work.domOperations` reports totals and up to 64 individual
+calls lasting at least 4 ms. A large DOM rebuild can consist entirely of short
+calls, so `bursts` groups mutations within the innermost instrumented operation
+when its total duration reaches 16 ms. It retains up to 64 bursts, each with the
+16 most expensive method/parent-tag/child-tag groups and omitted counts.
+
+Burst records include the operation, stream phase, delivered character count,
+call count, and cumulative native-call time. These timers exclude the recorder's
+bookkeeping; enclosing operation spans include it. Parent classes are bounded
+examples, not grouping keys. The recorder retains no text content or DOM-node
+references and adds no layout reads. These diagnostics add per-mutation work:
+compare the same probe version and mode, and use timing mode to assess overhead.
+Missing records mean no qualifying retained event, not absence of DOM work.
 
 The most useful metrics are grouped by question:
 

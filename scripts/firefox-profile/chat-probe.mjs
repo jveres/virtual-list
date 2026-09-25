@@ -98,6 +98,11 @@ export function installChatProbe(config) {
   const navigation = [];
   const scrollWrites = [];
   const coverage = [];
+  const domOperations = new Map();
+  const slowDomOperations = [];
+  const domBursts = [];
+  let omittedDomOperations = 0;
+  let omittedDomBursts = 0;
   const navigationTimers = [];
   let navigationCommand = null;
   const nativeRaf = window.requestAnimationFrame;
@@ -222,6 +227,96 @@ export function installChatProbe(config) {
               callers: stack.slice(-4).map((entry) => entry.name),
             });
           return descriptor.value.apply(this, args);
+        },
+      });
+      restore.push(() => Object.defineProperty(prototype, name, descriptor));
+    }
+    for (const [prototype, name] of [
+      [Node.prototype, "insertBefore"],
+      [Node.prototype, "removeChild"],
+      [Element.prototype, "remove"],
+    ]) {
+      const descriptor = Object.getOwnPropertyDescriptor(prototype, name);
+      if (typeof descriptor?.value !== "function" || !descriptor.configurable)
+        continue;
+      Object.defineProperty(prototype, name, {
+        ...descriptor,
+        value(...args) {
+          if (!active) return descriptor.value.apply(this, args);
+          const parent = name === "remove" ? this?.parentNode : this;
+          const subject = name === "remove" ? this : args[0];
+          const begin = now();
+          try {
+            return descriptor.value.apply(this, args);
+          } finally {
+            const durationMs = now() - begin;
+            const total = domOperations.get(name) ?? {
+              name,
+              count: 0,
+              inclusiveMs: 0,
+              maxMs: 0,
+            };
+            total.count++;
+            total.inclusiveMs += durationMs;
+            total.maxMs = Math.max(total.maxMs, durationMs);
+            domOperations.set(name, total);
+            const owner = stack.at(-1);
+            if (owner) {
+              const parentTag = parent instanceof Node ? parent.nodeName : null;
+              const subjectTag =
+                subject instanceof Node ? subject.nodeName : null;
+              const key = `${name}:${parentTag}:${subjectTag}`;
+              owner.domGroups ??= new Map();
+              const groups = owner.domGroups;
+              const group = groups.get(key) ?? {
+                name,
+                parentTag,
+                subjectTag,
+                parentClassExample:
+                  parent instanceof Element
+                    ? (parent.getAttribute("class") ?? "").slice(0, 160)
+                    : null,
+                count: 0,
+                inclusiveMs: 0,
+                maxMs: 0,
+              };
+              group.count++;
+              group.inclusiveMs += durationMs;
+              group.maxMs = Math.max(group.maxMs, durationMs);
+              groups.set(key, group);
+            }
+            if (durationMs >= 4) {
+              if (slowDomOperations.length < Math.min(64, config.limit)) {
+                const describe = (node) =>
+                  node instanceof Node
+                    ? {
+                        tag: node.nodeName,
+                        classes:
+                          node.nodeType === 1
+                            ? (node.getAttribute("class") ?? "").slice(0, 160)
+                            : null,
+                        childrenAfter: node.childNodes.length,
+                      }
+                    : null;
+                slowDomOperations.push({
+                  time: begin,
+                  durationMs,
+                  name,
+                  phase,
+                  characters,
+                  parent: describe(parent),
+                  subject: describe(subject),
+                  row:
+                    parent instanceof Element
+                      ? (parent
+                          .closest("[data-key]")
+                          ?.getAttribute("data-key") ?? null)
+                      : null,
+                  callers: stack.slice(-4).map((entry) => entry.name),
+                });
+              } else omittedDomOperations++;
+            }
+          }
         },
       });
       restore.push(() => Object.defineProperty(prototype, name, descriptor));
@@ -500,6 +595,28 @@ export function installChatProbe(config) {
       if (stack.pop() !== span) throw new Error("Unbalanced profiling spans");
       if (stack.length) stack.at(-1).children += duration;
       const self = Math.max(0, duration - span.children);
+      if (duration >= 16 && span.domGroups) {
+        if (domBursts.length < Math.min(64, config.limit)) {
+          const groups = [...span.domGroups.values()].sort(
+            (a, b) => b.inclusiveMs - a.inclusiveMs,
+          );
+          domBursts.push({
+            time: span.start - startTime,
+            durationMs: duration,
+            name: span.name,
+            phase: span.phase,
+            characters,
+            entity: span.entity,
+            count: groups.reduce((sum, group) => sum + group.count, 0),
+            inclusiveMs: groups.reduce(
+              (sum, group) => sum + group.inclusiveMs,
+              0,
+            ),
+            groups: groups.slice(0, 16),
+            omittedGroups: Math.max(0, groups.length - 16),
+          });
+        } else omittedDomBursts++;
+      }
       const key = `${span.phase}|${span.name}`;
       const aggregate = operations.get(key) ?? {
         name: span.name,
@@ -681,7 +798,7 @@ export function installChatProbe(config) {
       final = boundary();
       const result = {
         schema: 1,
-        probeVersion: 2,
+        probeVersion: 4,
         timeOrigin: performance.timeOrigin,
         startTime,
         durationMs,
@@ -719,6 +836,17 @@ export function installChatProbe(config) {
             }
           : null,
         mutations: config.diagnostic ? mutations : null,
+        domOperations: config.diagnostic
+          ? {
+              totals: [...domOperations.values()],
+              slow: slowDomOperations,
+              omitted: omittedDomOperations,
+              thresholdMs: 4,
+              bursts: domBursts,
+              omittedBursts: omittedDomBursts,
+              burstThresholdMs: 16,
+            }
+          : null,
         stream: { done: streamDone, characters, chunks, events },
         scroll: { scrolls, ends, wheels },
         instrumentation: {

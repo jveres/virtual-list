@@ -43,7 +43,10 @@ for (const { browser, scenario } of [
     assert.deepEqual(summary.invalidReasons, [], browser);
     assert.equal(server.requests.length, 1);
     assert.equal(server.requests[0].finished, true);
-    assert.equal(summary.probeVersion, 2);
+    assert.equal(summary.probeVersion, 4);
+    assert.ok(
+      summary.work.domOperations.totals.some((entry) => entry.count > 0),
+    );
     if (scenario === "follow") {
       assert.deepEqual(
         result.recording.phases.map((phase) => phase.name),

@@ -9,6 +9,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 
 ## September 25 clean-code and performance audit
 
+The [streaming-trail DOM stability fix](streaming-trail-dom-stability-2026-09-25.md)
+uses grouped mutation metrics to identify completed-content rewrites when a reply
+moves offscreen. It records the upstream correction and three trials per browser.
+
+The [native listener-order control](native-scroll-listener-control-2026-09-25.md)
+records a rejected optimization: changing event order moved attribution without
+a repeatable reduction in work.
+
 The [staged tail-restoration follow-up](staged-tail-restoration-2026-09-25.md)
 addresses synchronous history rebuilding before bottom navigation, verifies
 cancellation and concurrent stream updates, and adds bounded attribution for

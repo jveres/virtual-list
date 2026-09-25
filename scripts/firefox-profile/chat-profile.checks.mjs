@@ -232,6 +232,12 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
     w.Element.prototype,
     "scrollTop",
   );
+  const insertBefore = w.Node.prototype.insertBefore;
+  const measuredInsert = function (...args) {
+    time += 5;
+    return insertBefore.apply(this, args);
+  };
+  w.Node.prototype.insertBefore = measuredInsert;
   try {
     w.eval(
       `(${installChatProbe.toString()})(${JSON.stringify({ turns: [], workload: { characters: 10, chunks: 1 }, diagnostic: true, limit: 2, scenario: "follow", trail: "off" })})`,
@@ -272,7 +278,39 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
     viewport.scrollTop = 42;
     api.delivery("response.output_text.delta", 10);
     api.delivery("response.completed", 0);
+    viewport.dataset.key = "diagnostic-row";
+    const mutationSpan = api.enter("mutation-burst", viewport);
+    for (let i = 0; i < 3; i++) {
+      const child = w.document.createElement("span");
+      assert.equal(viewport.insertBefore(child, null), child);
+    }
+    assert.throws(
+      () =>
+        viewport.insertBefore(
+          w.document.createElement("span"),
+          w.document.createElement("span"),
+        ),
+      { name: "NotFoundError" },
+    );
+    api.leave(mutationSpan);
     const result = api.stop();
+    assert.equal(result.probeVersion, 4);
+    assert.equal(result.domOperations.slow.length, 2);
+    assert.equal(result.domOperations.omitted, 2);
+    assert.equal(result.domOperations.slow[0].row, "diagnostic-row");
+    assert.equal(result.domOperations.slow[0].subject.tag, "SPAN");
+    assert.equal(result.domOperations.slow[0].parent.childrenAfter, 1);
+    assert.equal(result.domOperations.slow[0].durationMs, 5);
+    const insertions = result.domOperations.totals.find(
+      (entry) => entry.name === "insertBefore",
+    );
+    assert.equal(insertions.count, 4);
+    assert.equal(insertions.inclusiveMs, 20);
+    assert.equal(result.domOperations.bursts.length, 1);
+    assert.equal(result.domOperations.bursts[0].count, 4);
+    assert.equal(result.domOperations.bursts[0].groups[0].subjectTag, "SPAN");
+    assert.equal(result.domOperations.bursts[0].inclusiveMs, 20);
+    assert.equal(w.Node.prototype.insertBefore, measuredInsert);
     assert.deepEqual(
       Array.from(result.coverage, (row) => row.missingPx),
       [50, 0],
@@ -826,6 +864,10 @@ test("Chrome slow-window summaries bound retained windows and stack frames", () 
   assert.equal(windows[0].frames.length, 20);
   assert.equal(windows[0].omittedFrames, 5);
   assert.equal(windows[0].maxSampleGapMs, 1000);
+  assert.equal(windows[0].selfFrames.length, 1);
+  assert.equal(windows[0].selfFrames[0].functionName, "frame24");
+  assert.equal(windows[0].selfFrames[0].selfMs, 40);
+  assert.equal(windows[0].omittedSelfFrames, 0);
 });
 
 test("Chrome backward sample timestamps cannot inflate a slow window", () => {

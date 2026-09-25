@@ -20,7 +20,8 @@ function attributeSlowWindows(events, origin, cpu) {
   for (const node of nodes.values())
     for (const child of node.children ?? []) parents.set(child, node.id);
   return windows.map((window) => {
-    if (!cpu) return { ...window, samples: null, frames: null };
+    if (!cpu)
+      return { ...window, samples: null, frames: null, selfFrames: null };
     const frames = new Map();
     let time = cpu.startTime;
     let coveredUntil = time;
@@ -71,6 +72,9 @@ function attributeSlowWindows(events, origin, cpu) {
         id = parents.get(id);
       }
     }
+    const selfFrames = [...frames.values()]
+      .filter((entry) => entry.selfMs > 0)
+      .sort((a, b) => b.selfMs - a.selfMs);
     return {
       ...window,
       samples,
@@ -80,6 +84,10 @@ function attributeSlowWindows(events, origin, cpu) {
         .sort((a, b) => b.inclusiveMs - a.inclusiveMs || b.selfMs - a.selfMs)
         .slice(0, 20),
       omittedFrames: Math.max(0, frames.size - 20),
+      // A deep stack can fill every inclusive slot with ancestors. Keep the
+      // expensive leaves too so the operation doing the work is not lost.
+      selfFrames: selfFrames.slice(0, 12),
+      omittedSelfFrames: Math.max(0, selfFrames.length - 12),
     };
   });
 }
