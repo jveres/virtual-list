@@ -14,6 +14,11 @@ import { readCapture } from "./capture.mjs";
 import { analyzeChatChrome } from "./chat-trace.mjs";
 import { auditCpu } from "./cpu.mjs";
 import { SafariMcp } from "./safari-mcp.mjs";
+import {
+  identifyWebContent,
+  scheduleSample,
+  webContentPids,
+} from "./safari-sample.mjs";
 import { validateDisplay } from "./safari-validation.mjs";
 
 const exec = promisify(execFile);
@@ -75,7 +80,7 @@ export async function captureFirefox(server, directory, options, signal) {
   ];
   if (options.display) args.push(`--display=${options.display}`);
   if (options.refreshHz) args.push(`--refresh-hz=${options.refreshHz}`);
-  if (options.scenario === "follow")
+  if (["follow", "buttons"].includes(options.scenario))
     args.push(`--idle-seconds=${options.seconds}`);
   else if (options.scenario === "manual")
     args.push(`--manual-seconds=${options.seconds}`);
@@ -268,7 +273,8 @@ export async function capturePlaywright(server, directory, options, signal) {
       browser: browser.version(),
       display: native?.display ?? null,
       geometry,
-      nativeInput: installed && options.scenario !== "follow",
+      nativeInput:
+        installed && ["scrollback", "manual"].includes(options.scenario),
       isolated: true,
     };
     if (cdp) {
@@ -386,6 +392,10 @@ async function captureSafariMcp(
 ) {
   const native = await nativeTools(directory, options.display);
   const existing = new Set(await safariPids());
+  const oldContent = options.safariSample
+    ? new Set(await webContentPids())
+    : null;
+  let sampler;
   signal.throwIfAborted();
   const log = createWriteStream(join(directory, "safaridriver.log"));
   const driver = spawn("/usr/bin/safaridriver", ["--mcp"], {
@@ -408,7 +418,7 @@ async function captureSafariMcp(
     driverPid: driver.pid,
     transport: "safaridriver-mcp",
     isolated: true,
-    nativeInput: options.scenario !== "follow",
+    nativeInput: ["scrollback", "manual"].includes(options.scenario),
     display: native.display,
     nativeTimeline: "unavailable; use a separate Web Inspector capture",
     connectionOverhead:
@@ -452,6 +462,11 @@ async function captureSafariMcp(
     validateDisplay(d, geometry);
     metadata.geometry = geometry;
     metadata.browser = await evaluate("navigator.userAgent");
+    const snapshotCrop = options.safariSnapshots
+      ? await evaluate(
+          "(() => {const r=document.querySelector('#viewport').getBoundingClientRect();const m=document.querySelector('.message').getBoundingClientRect();return {x:Math.max(r.x,m.x)/innerWidth,y:r.y/innerHeight,width:Math.min(r.width,m.width)/innerWidth,height:r.height/innerHeight};})()",
+        )
+      : null;
     const point = await evaluate(
       "(() => { const r=document.querySelector('#viewport').getBoundingClientRect(); return {x:screenX+r.x+r.width/2,y:screenY+outerHeight-innerHeight+r.y+r.height/2}; })()",
     );
@@ -465,6 +480,10 @@ async function captureSafariMcp(
       true,
       "Safari test document is not focused",
     );
+    if (oldContent) {
+      metadata.webContent = await identifyWebContent(oldContent, evaluate);
+      await sleep(1000);
+    }
     if (options.safariDetached) {
       await evaluate(`(fetch('/__chat-profile/start').then(response => {
         if (!response.ok) throw new Error('Capture start cancelled');
@@ -502,11 +521,44 @@ async function captureSafariMcp(
       server.releaseCapture();
     } else await evaluate("globalThis.__chatProfile.start()");
     metadata.stage = "capturing";
-    const end = Date.now() + options.seconds * 1000;
+    if (options.safariSample) {
+      sampler = scheduleSample(
+        metadata.webContent.pid,
+        directory,
+        options.safariSample,
+      );
+      metadata.nativeSample = sampler.metadata;
+    }
+    const capturedAt = Date.now();
+    const end = capturedAt + options.seconds * 1000;
+    const snapshots = options.safariSnapshots
+      ? [
+          options.durationMs / 4 + 150,
+          options.durationMs / 4 + 650,
+          options.durationMs / 2 + 150,
+          options.durationMs + 3150,
+          options.durationMs + 3650,
+          options.durationMs + 5650,
+        ]
+      : [];
+    metadata.snapshots = [];
     if (options.scenario === "manual")
       console.log("Scroll the foreground test Safari now.");
     while (Date.now() < end) {
       signal.throwIfAborted();
+      if (snapshots.length && Date.now() - capturedAt >= snapshots[0]) {
+        const snapshot = {
+          requestedAt: snapshots.shift(),
+          startedAt: Date.now() - capturedAt,
+          file: `snapshot-${metadata.snapshots.length}.png`,
+        };
+        await tool("screenshot", {
+          savePath: join(directory, snapshot.file),
+          full_page: false,
+        });
+        snapshot.completedAt = Date.now() - capturedAt;
+        metadata.snapshots.push(snapshot);
+      }
       if (options.scenario === "scrollback") {
         await exec(
           native.helper,
@@ -530,8 +582,29 @@ async function captureSafariMcp(
       );
     const recording = await waitFor(() => server.recording, signal);
     recording.transport = metadata.transport;
+    recording.nativeSampling = options.safariSample ?? null;
+    recording.renderSnapshots = options.safariSnapshots ?? false;
     // Persist before cleanup so a failed browser shutdown cannot lose it.
     await json(join(directory, "recording.json"), recording);
+    await sampler?.complete();
+    if (snapshotCrop) {
+      for (const snapshot of metadata.snapshots) {
+        const result = await exec(native.helper, [
+          "image-metrics",
+          join(directory, snapshot.file),
+          ...[
+            snapshotCrop.x,
+            snapshotCrop.y,
+            snapshotCrop.width,
+            snapshotCrop.height,
+          ].map(String),
+        ]);
+        snapshot.pixels = JSON.parse(result.stdout);
+      }
+      metadata.snapshotCrop = snapshotCrop;
+      metadata.snapshotLimitations =
+        "Browser snapshots can force paint and add overhead. Pixel density can reveal blank content, but is not physical presentation timing; interpret with mounted-row coverage and inspect representative images.";
+    }
     metadata.stage = "captured";
     return {
       recording,
@@ -543,6 +616,7 @@ async function captureSafariMcp(
     metadata.captureError = String(error);
     throw error;
   } finally {
+    await sampler?.close();
     try {
       if (
         tab &&

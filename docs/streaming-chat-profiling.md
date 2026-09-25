@@ -184,6 +184,7 @@ small summaries and source replay files remain; nothing is uploaded.
 | `reproduce.json`, `reproduce.patch` | Exact command, revision, source hashes, and changes from that revision, including untracked source. Apply the patch in a separate worktree to reconstruct the measured code. |
 | `firefox-cpu.json`, `firefox-attribution.json`, `firefox-bursts.json` | Sampled native costs and stacks across runtime, demo, renderer, and browser work. |
 | `chrome-analysis.json`, `chrome-metrics.json` | Marked-renderer events, styled-element distributions, optional invalidation causes, sampled script attribution, other-thread categories including compositor/raster/GPU work, and before/after CDP performance counters. Shared-process work is not necessarily caused by this page. |
+| `safari-sample-summary.json` | Optional native main-thread stack counts for a selected interval. Includes the 40 most frequent WebCore, WebKit, JavaScriptCore, and IPC symbols; recursive calls count once per stack path. |
 
 To reproduce a capture, check out its revision, apply its source patch, install
 the locked dependencies, and run the saved command. Match the browser build,
@@ -236,6 +237,61 @@ reads are potential flush sites, not proof that a layout was forced. Chrome's
 [Long Animation Frames API](https://developer.chrome.com/docs/web-platform/long-animation-frames)
 provides additional forced-style/layout attribution for supported long frames.
 
+## Check programmatic navigation and rendered content
+
+Use the buttons scenario to test the actual top and bottom controls during
+streaming and again when idle:
+
+```sh
+pnpm run profile:chat -- --browser=safari --scenario=buttons \
+  --display=LU28R55 --mode=diagnostic --scheduler --safari-detached
+```
+
+The default 12-second stream presses top at 3 seconds, bottom at 6 seconds,
+top at 15 seconds, and bottom at 17.5 seconds. The scenario needs a stream
+of at least 8 seconds and at least 7.5 seconds afterward. A capture fails if
+any command does not reach its requested edge or scroll-end events are missing.
+Edge arrival uses the runtime's cached state. Pending history can subsequently
+change the scroll range while preserving the reading anchor.
+
+`navigation` reports the frame intervals overlapping each command's first
+1.8 seconds, including a long interval that started before the click. It also
+records scroll writes and their instrumented callers, retaining the first
+120 writes per window plus total and omitted counts. Timing mode marks these
+write counts as unavailable; zero means no writes only in diagnostic mode.
+`glides` adds custom
+animation intervals, endpoint rebases, direction changes, and the difference
+between a requested position and the next observed position. Native animations
+appear as `scrollTo` requests; they do not generate custom-glide frame records.
+These measurements do not prove that the browser displayed the content.
+
+`coverage` checks the union of mounted, connected rows against the visible
+content interval whenever the runtime publishes its viewport. It uses cached
+row geometry and does not add layout reads to the animation sampler. A missing
+interval suggests a window update problem. Complete coverage cannot rule out
+missing paint, stale browser layers, or compositor movement between events.
+
+For a separate Safari rendering diagnostic, keep the driver connected and take
+browser screenshots during the same button sequence:
+
+```sh
+pnpm run profile:chat -- --browser=safari --scenario=buttons \
+  --display=LU28R55 --mode=diagnostic --scheduler --safari-snapshots
+```
+
+The runner takes six viewport snapshots and analyzes the message column after
+measurement. `run.json` records capture timing, the dominant quantized color
+fraction, and horizontal luminance-edge density. A nearly uniform image can
+reveal blank content; compare it with mounted coverage and the expected content.
+There is no universal density threshold for all messages or themes. Browser
+snapshots can force paint and add overhead, so this is separate diagnostic
+evidence. It does not measure physical display presentation. Raw screenshots
+follow the same automatic cleanup policy as other synthetic captures.
+
+The comparison tool rejects different probe versions, screenshot settings,
+and native-sampling settings. Compare matching timing captures separately
+from these diagnostics.
+
 ## Diagnose Safari scheduling gaps
 
 Use the optional scheduling probe when frame intervals alone cannot explain a
@@ -265,6 +321,10 @@ With `--scheduler`, `summary.json` also contains:
 - `scheduling.trailChanges`: direct trail-layer additions/removals and group
   removals, timestamped when the mutation observer delivers them. These markers
   locate cleanup but do not measure its cost.
+- `scheduling.trailDisposals`: frame, callback, timer, and posted-task
+  distributions overlapping each layer removal, from 100 ms before to 200 ms
+  after observer delivery. This includes fast cleanup that never appears in
+  the slow-frame list. An overlapping long interval retains its full duration.
 - `slowFrames[].scheduling`: overlapping timer, task, and callback observations,
   plus trail changes within 100 ms of the interval.
 
@@ -279,6 +339,36 @@ observer. Keep it enabled with the same version in paired measurements; the
 comparison tool rejects a mismatch. Ordinary timing mode leaves these off.
 No layout reads are added to the frame sampler. Raw probe records follow the
 same automatic cleanup and reproduction policy as other chat captures.
+
+### Sample native Safari work
+
+On macOS, use the system `sample` tool to attribute a known interval without
+installing Xcode or opening Web Inspector. For the default workload's final
+trail cleanup:
+
+```sh
+pnpm run profile:chat -- --browser=safari --display=LU28R55 \
+  --refresh-hz=60 --mode=diagnostic --scheduler --safari-detached \
+  --safari-sample=13.7:2:10
+```
+
+The three values are start time in seconds, duration in seconds, and sampling
+interval in milliseconds. The runner requires diagnostic mode, limits duration
+to 1–10 seconds, and leaves at least one second before capture end. Adjust the
+start time when changing the workload or fade duration.
+
+The runner excludes pre-existing WebContent processes. Before measurement, it
+uses a 600 ms CPU calibration in its test page to identify one new WebContent
+process, then waits one second. Ambiguous ownership fails the capture. It
+samples only that process, terminates its own sampler on cancellation or
+timeout, summarizes the main-thread call graph, and removes the raw stack file.
+The command and sampling settings are retained in reproduction metadata.
+
+Stack counts are inclusive and overlap. They identify native work present in
+the chosen interval, not exact per-frame CPU durations. Sampling suspends the
+process: a 1 ms interval substantially amplified the observed Safari stall.
+Use 10 ms for initial attribution, and validate improvements with separate
+captures without sampling. The comparator rejects different sampling settings.
 
 ## Investigate and compare
 

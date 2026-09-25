@@ -877,13 +877,29 @@ describe("programmatic gestures", () => {
     harness.scrollTo(700);
     harness.scrollEnd(); // Mid-glide scrollend: not the release.
 
-    // Timing discriminates the paths: an HONORED scrollend would settle
-    // after the bare cooldown (~140ms); the ignored one leaves settling to
-    // the wheel-scrollend fallback (~280ms after the last scroll event),
-    // since the harness keeps the glide in flight throughout.
-    vi.advanceTimersByTime(200);
+    // A native animation can have quiet main-thread intervals. Neither a
+    // stale end nor the quiet fallback may release its ownership.
+    vi.advanceTimersByTime(2000);
     expect(harness.settled()).toBe(0);
+    harness.setSmoothActive(false);
+    harness.controller.markSettlePending();
     vi.advanceTimersByTime(200);
     expect(harness.settled()).toBe(1);
+  });
+
+  it("should cancel an owned animation for navigation keys but preserve editable input", () => {
+    const harness = mount("firefox-wheel");
+    harness.setSmoothActive(true);
+    harness.controller.beginProgrammaticGesture();
+    const input = document.createElement("textarea");
+    harness.viewport.append(input);
+    input.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true }),
+    );
+    expect(harness.cancelledSmooth()).toBe(0);
+    harness.viewport.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "PageUp", bubbles: true }),
+    );
+    expect(harness.cancelledSmooth()).toBe(1);
   });
 });

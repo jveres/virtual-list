@@ -8,17 +8,23 @@ import { capturePlaywright } from "../../firefox-profile/chat-browsers.mjs";
 import { createChatProfileServer } from "../../firefox-profile/chat-server.mjs";
 
 await mkdir("browser-artifacts/chat-profile", { recursive: true });
-for (const browser of ["engine-firefox", "engine-chromium", "engine-webkit"]) {
+for (const { browser, scenario } of [
+  "engine-firefox",
+  "engine-chromium",
+  "engine-webkit",
+].flatMap((browser) =>
+  ["follow", "buttons"].map((scenario) => ({ browser, scenario })),
+)) {
   const options = {
     browser,
     diagnostic: true,
     scheduler: true,
-    scenario: "follow",
+    scenario,
     trail: "long",
     sections: 6,
     history: 20,
-    durationMs: 2000,
-    seconds: 6,
+    durationMs: scenario === "buttons" ? 8000 : 2000,
+    seconds: scenario === "buttons" ? 16 : 6,
   };
   const directory = await mkdtemp("browser-artifacts/chat-profile/regression-");
   const server = await createChatProfileServer(options);
@@ -37,10 +43,27 @@ for (const browser of ["engine-firefox", "engine-chromium", "engine-webkit"]) {
     assert.deepEqual(summary.invalidReasons, [], browser);
     assert.equal(server.requests.length, 1);
     assert.equal(server.requests[0].finished, true);
-    assert.deepEqual(
-      result.recording.phases.map((phase) => phase.name),
-      ["send-glide", "send-landed"],
-    );
+    assert.equal(summary.probeVersion, 2);
+    if (scenario === "follow") {
+      assert.deepEqual(
+        result.recording.phases.map((phase) => phase.name),
+        ["send-glide", "send-landed"],
+      );
+    } else {
+      assert.deepEqual(
+        summary.navigation.map(({ direction, reached }) => ({
+          direction,
+          reached,
+        })),
+        ["top", "bottom", "top", "bottom"].map((direction) => ({
+          direction,
+          reached: true,
+        })),
+      );
+      assert.ok(summary.navigation.every((command) => command.writeCount > 0));
+    }
+    assert.ok(summary.coverage.samples > 30);
+    assert.equal(summary.coverage.missingPx.max, 0);
     assert.ok(
       summary.work.expensive.some(
         (item) =>
@@ -57,13 +80,19 @@ for (const browser of ["engine-firefox", "engine-chromium", "engine-webkit"]) {
         (change) => change.layersRemoved > 0,
       ),
     );
+    assert.ok(summary.scheduling.trailDisposals.length > 0);
+    assert.ok(
+      summary.scheduling.trailDisposals.every(
+        (disposal) => disposal.frameMs.count > 0,
+      ),
+    );
     assert.ok(
       result.recording.spans.every(
         (span) => span[2] >= 0 && span[2] <= span[1],
       ),
     );
     console.log(
-      `${browser}: complete local stream, bounded attribution, and movement verified`,
+      `${browser} ${scenario}: complete local stream, bounded attribution, coverage, and movement verified`,
     );
   } finally {
     try {

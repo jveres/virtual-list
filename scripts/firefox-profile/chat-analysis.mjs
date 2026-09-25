@@ -59,7 +59,7 @@ function schedulingWindow(recording, frame) {
   };
 }
 
-function analyzeScheduling(recording) {
+function analyzeScheduling(recording, intervals) {
   const scheduling = recording.scheduling;
   if (!scheduling) return { available: false };
   const callbacks = new Map();
@@ -97,12 +97,99 @@ function analyzeScheduling(recording) {
       })),
     rafCallbacks: [...callbacks.values()].sort((a, b) => b.totalMs - a.totalMs),
     trailChanges: scheduling.trailChanges,
+    trailDisposals: scheduling.trailChanges
+      .filter((change) => change.layersRemoved > 0)
+      .map((change) => {
+        const start = change.time - 100,
+          end = change.time + 200;
+        const frames = intervals.filter(
+          (frame) => frame.start < end && frame.end > start,
+        );
+        const window = schedulingWindow(recording, {
+          callbackStart: start,
+          callbackEnd: end,
+        });
+        return {
+          time: change.time,
+          window: [start, end],
+          frameMs: distribution(frames.map((frame) => frame.duration)),
+          callbackGapMs: distribution(
+            frames
+              .map((frame) => frame.callbackGapMs)
+              .filter((value) => value !== null),
+          ),
+          timerLatenessMs: window.timerLatenessMs,
+          postRafTaskMs: window.postRafTaskMs,
+        };
+      }),
     limitations: [
       "Timer lateness and posted-task delay include scheduling and browser work; they are not JS CPU or paint timings.",
       "rAF callback names can collide; durations exclude work outside callbacks and callbacks queued before probe start.",
       "Trail markers record direct child-list changes at MutationObserver delivery, not animation completion or removal cost.",
       "This opt-in probe adds one 16 ms timer, at most one queued task, rAF wrappers, and a child-list observer. Compare with the same probe settings.",
     ],
+  };
+}
+
+function analyzeGlides(recording) {
+  if (!recording.glides) return { available: false };
+  const groups = new Map();
+  for (const frame of recording.glides) {
+    if (!groups.has(frame.id)) groups.set(frame.id, []);
+    groups.get(frame.id).push(frame);
+  }
+  return {
+    available: true,
+    navigation: recording.navigation ?? [],
+    trips: [...groups].map(([id, entries]) => {
+      const frames = entries.filter((entry) => entry.timestamp !== undefined);
+      const steps = frames.slice(1).map((frame, index) => {
+        const before = frames[index];
+        const dt = frame.timestamp - before.timestamp;
+        return {
+          time: frame.time,
+          dt,
+          actualStep: frame.current - before.current,
+          requestedStep: frame.written - before.written,
+          writeError: frame.current - before.written,
+          targetDelta: frame.target - before.target,
+          rebased: frame.rebased,
+          velocity: dt > 0 ? (frame.current - before.current) / dt : 0,
+        };
+      });
+      const reversals = steps.filter(
+        (step, index) =>
+          index > 0 &&
+          Math.abs(step.actualStep) > 1 &&
+          Math.abs(steps[index - 1].actualStep) > 1 &&
+          Math.sign(step.actualStep) !== Math.sign(steps[index - 1].actualStep),
+      );
+      return {
+        id,
+        phase: frames[0]?.phase ?? null,
+        start: frames[0]?.time ?? null,
+        end: entries.at(-1)?.time ?? null,
+        completed: entries.at(-1)?.completed ?? null,
+        distance: frames.length ? frames.at(-1).current - frames[0].current : 0,
+        frameMs: distribution(steps.map((step) => step.dt)),
+        writeErrorPx: distribution(
+          steps.map((step) => Math.abs(step.writeError)),
+        ),
+        rebases: steps.filter((step) => step.rebased).length,
+        targetChanges: steps.filter((step) => Math.abs(step.targetDelta) > 2)
+          .length,
+        reversals: reversals.length,
+        stalledFrames: steps.filter(
+          (step) =>
+            Math.abs(step.actualStep) < 0.5 && Math.abs(step.writeError) > 1,
+        ).length,
+        worstWriteErrors: steps
+          .toSorted((a, b) => Math.abs(b.writeError) - Math.abs(a.writeError))
+          .slice(0, 5),
+        slowestFrames: steps.toSorted((a, b) => b.dt - a.dt).slice(0, 5),
+      };
+    }),
+    note: "Glide values come from existing runtime reads and writes; no extra layout reads. Current position is the next callback's observation, not physical presentation. Replanning and paging can legitimately change velocity.",
   };
 }
 
@@ -170,10 +257,17 @@ export function analyzeChat(
     reasons.push("Stream did not complete with the expected input");
   if (moving.length < 30) reasons.push("Insufficient scroll movement");
   if (
-    recording.scenario !== "follow" &&
+    ["scrollback", "manual"].includes(recording.scenario) &&
     (recording.scroll.wheels < 30 || recording.scroll.ends < 1)
   )
     reasons.push("Missing gesture input or scroll-end events");
+  if (
+    recording.scenario === "buttons" &&
+    (recording.navigation?.length !== 4 ||
+      recording.navigation.some((command) => command.reached !== true) ||
+      recording.scroll.ends < 4)
+  )
+    reasons.push("Incomplete button navigation or missing scroll-end events");
   if (recording.errors.length) reasons.push("Page errors occurred");
   if (recording.invalidations.length)
     reasons.push("Focus, visibility, or geometry changed during capture");
@@ -270,7 +364,10 @@ export function analyzeChat(
   );
   return {
     schema: 1,
+    probeVersion: recording.probeVersion ?? 1,
     transport: recording.transport ?? "unspecified",
+    nativeSampling: recording.nativeSampling ?? null,
+    renderSnapshots: recording.renderSnapshots ?? false,
     valid: reasons.length === 0,
     invalidReasons: reasons,
     evidence: native
@@ -310,7 +407,51 @@ export function analyzeChat(
     },
     phases,
     slowFrames,
-    scheduling: analyzeScheduling(recording),
+    scheduling: analyzeScheduling(recording, intervals),
+    glides: analyzeGlides(recording),
+    coverage: {
+      available: Array.isArray(recording.coverage),
+      samples: recording.coverage?.length ?? 0,
+      missingPx: distribution(
+        (recording.coverage ?? []).map((entry) => entry.missingPx),
+      ),
+      gaps: (recording.coverage ?? [])
+        .filter((entry) => entry.missingPx > 1)
+        .slice(0, 20),
+      note: "Cached row geometry and DOM connection at publication; this does not prove that pixels were painted or cover compositor-only movement between events.",
+    },
+    navigation: (recording.navigation ?? []).map((command) => {
+      const frames = intervals.filter(
+        (frame) =>
+          frame.end >= command.time && frame.start <= command.time + 1800,
+      );
+      const writes = (recording.scrollWrites ?? []).filter(
+        (write) =>
+          write.time >= command.time && write.time <= command.time + 1800,
+      );
+      return {
+        ...command,
+        windowMs: 1800,
+        frameMs: distribution(frames.map((frame) => frame.duration)),
+        movingFrameMs: distribution(
+          frames
+            .filter((frame) => Math.abs(frame.movement) > 0.01)
+            .map((frame) => frame.duration),
+        ),
+        distance: frames.reduce(
+          (sum, frame) => sum + Math.abs(frame.movement),
+          0,
+        ),
+        writesAvailable: Array.isArray(recording.scrollWrites),
+        writeCount: Array.isArray(recording.scrollWrites)
+          ? writes.length
+          : null,
+        omittedWrites: Array.isArray(recording.scrollWrites)
+          ? Math.max(0, writes.length - 120)
+          : null,
+        writes: writes.slice(0, 120),
+      };
+    }),
     input: {
       ...recording.scroll,
       deliveryToNextRafMs: distribution(
@@ -372,6 +513,19 @@ export function analyzeChat(
 
 export function compareChat(before, after) {
   const mismatches = [];
+  for (const [key, fallback] of [
+    ["probeVersion", 1],
+    ["renderSnapshots", false],
+  ])
+    if ((before[key] ?? fallback) !== (after[key] ?? fallback))
+      mismatches.push(key);
+  if (
+    !isDeepStrictEqual(
+      before.nativeSampling ?? null,
+      after.nativeSampling ?? null,
+    )
+  )
+    mismatches.push("nativeSampling");
   if (
     (before.scheduling?.version ?? null) !== (after.scheduling?.version ?? null)
   )

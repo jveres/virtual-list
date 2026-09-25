@@ -12,6 +12,58 @@ import { createChatProfileServer } from "./chat-server.mjs";
 import { analyzeChatChrome } from "./chat-trace.mjs";
 import { chatWorkload } from "./chat-workload.mjs";
 
+test("button and snapshot captures reject incomplete or incompatible setups", () => {
+  for (const [args, message] of [
+    [["--scenario=buttons", "--stream-ms=7000"], /buttons scenario needs/],
+    [["--scenario=buttons", "--seconds=19"], /buttons scenario needs/],
+    [["--safari-snapshots"], /--safari-snapshots requires/],
+    [
+      ["--browser=safari", "--scenario=buttons", "--safari-snapshots"],
+      /--safari-snapshots requires/,
+    ],
+    [
+      [
+        "--browser=safari",
+        "--scenario=buttons",
+        "--mode=diagnostic",
+        "--safari-snapshots",
+        "--safari-detached",
+      ],
+      /--safari-snapshots requires/,
+    ],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [new URL("../profile-chat.mjs", import.meta.url).pathname, ...args],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, message);
+    assert.equal(result.stdout, "");
+  }
+});
+
+test("native Safari samples reject incompatible browsers and timing mode", () => {
+  for (const [browser, mode] of [
+    ["firefox", "diagnostic"],
+    ["safari", "timing"],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        new URL("../profile-chat.mjs", import.meta.url).pathname,
+        `--browser=${browser}`,
+        `--mode=${mode}`,
+        "--safari-sample=13.7:2:10",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--safari-sample requires/);
+    assert.equal(result.stdout, "");
+  }
+});
+
 test("detached Safari rejects incompatible captures before launching", () => {
   for (const [browser, scenario] of [
     ["chrome", "follow"],
@@ -115,7 +167,7 @@ test("every source target is present once, parses after instrumentation, and fai
       assert.ok(changed.includes(JSON.stringify(`${path}:${name}`)));
     assert.throws(
       () => instrumentChat("", path, true),
-      /Profiling target changed/,
+      /Profiling (target|hook) changed/,
     );
     if (
       !["demos/streaming/streaming.ts", "demos/streaming/openai.ts"].includes(
@@ -209,9 +261,23 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
       callback(time);
     }
     delete viewport.clientHeight;
+    api.coverage({ scrollTop: 100, height: 100 }, 200, [
+      [100, 50, true],
+      [150, 50, false],
+    ]);
+    api.coverage({ scrollTop: 100, height: 100 }, 200, [
+      [150, 50, true],
+      [100, 60, true],
+    ]);
+    viewport.scrollTop = 42;
     api.delivery("response.output_text.delta", 10);
     api.delivery("response.completed", 0);
     const result = api.stop();
+    assert.deepEqual(
+      Array.from(result.coverage, (row) => row.missingPx),
+      [50, 0],
+    );
+    assert.equal(result.scrollWrites[0].top, 42);
     assert.equal(result.operations.find((op) => op.name === "outer").selfMs, 6);
     assert.equal(result.frames.length, 2);
     assert.equal(result.dropped.frames, 2);
@@ -264,6 +330,82 @@ function recording() {
     mutations: null,
   };
 }
+
+test("button captures require every destination and report glide stalls and replanning", () => {
+  const r = recording();
+  r.scenario = "buttons";
+  r.scroll.ends = 4;
+  r.navigation = ["top", "bottom", "top", "bottom"].map((direction, i) => ({
+    time: i * 100,
+    direction,
+    reached: true,
+  }));
+  r.glides = [
+    {
+      id: 1,
+      time: 0,
+      timestamp: 0,
+      current: 0,
+      written: 10,
+      target: 100,
+      rebased: false,
+      phase: "button-bottom",
+    },
+    {
+      id: 1,
+      time: 16,
+      timestamp: 16,
+      current: 10,
+      written: 20,
+      target: 100,
+      rebased: false,
+    },
+    {
+      id: 1,
+      time: 32,
+      timestamp: 32,
+      current: 10,
+      written: 11,
+      target: 150,
+      rebased: true,
+    },
+    {
+      id: 1,
+      time: 64,
+      timestamp: 64,
+      current: 11,
+      written: 30,
+      target: 150,
+      rebased: false,
+    },
+    { id: 1, time: 80, completed: true },
+  ];
+  const summary = analyzeChat(r);
+  assert.equal(summary.valid, true);
+  assert.equal(summary.navigation[0].writesAvailable, false);
+  assert.equal(summary.navigation[0].writeCount, null);
+  r.scrollWrites = Array.from({ length: 141 }, (_, time) => ({
+    time,
+    top: time,
+  }));
+  const writes = analyzeChat(r).navigation[0];
+  assert.equal(writes.writesAvailable, true);
+  assert.equal(writes.writeCount, 141);
+  assert.equal(writes.omittedWrites, 21);
+  assert.equal(writes.writes.length, 120);
+  const trip = summary.glides.trips[0];
+  assert.equal(trip.completed, true);
+  assert.equal(trip.rebases, 1);
+  assert.equal(trip.targetChanges, 1);
+  assert.equal(trip.stalledFrames, 1);
+  assert.equal(trip.writeErrorPx.max, 10);
+  assert.equal(trip.frameMs.max, 32);
+  assert.equal(summary.navigation.length, 4);
+  r.navigation[0].reached = false;
+  assert.deepEqual(analyzeChat(r).invalidReasons, [
+    "Incomplete button navigation or missing scroll-end events",
+  ]);
+});
 
 test("scheduler probe preserves callbacks and cancellation, bounds records, and closes its tasks", () => {
   const dom = new JSDOM(
@@ -409,6 +551,8 @@ test("scheduler analysis distinguishes a frame gap with responsive tasks from de
   assert.equal(responsive.slowFrames[0].callbackGapMs, 96);
   assert.equal(responsive.slowFrames[0].scheduling.timerTicks, 5);
   assert.equal(responsive.slowFrames[0].scheduling.timerLatenessMs.max, 1);
+  assert.equal(responsive.scheduling.trailDisposals[0].frameMs.max, 96);
+  assert.equal(responsive.scheduling.trailDisposals[0].timerLatenessMs.max, 1);
   r.scheduling.timers = [[0, 16, 97]];
   r.scheduling.tasks = [[2, 97]];
   r.scheduling.rafWork = [
@@ -418,6 +562,7 @@ test("scheduler analysis distinguishes a frame gap with responsive tasks from de
   const blocked = analyzeChat(r);
   assert.equal(blocked.slowFrames[0].scheduling.timerLatenessMs.max, 81);
   assert.equal(blocked.slowFrames[0].scheduling.postRafTaskMs.max, 95);
+  assert.equal(blocked.scheduling.trailDisposals[0].timerLatenessMs.max, 81);
   assert.equal(blocked.slowFrames[0].scheduling.rafCallbacks[0].durationMs, 80);
   assert.equal(blocked.slowFrames[0].scheduling.rafCallbacks.length, 1);
   assert.equal(blocked.slowFrames[0].scheduling.rafCallbacks[0].overlapMs, 80);
@@ -482,6 +627,19 @@ test("analysis rejects incomplete, stationary, overflowed, and interrupted evide
   after.transport = "safaridriver-mcp";
   assert.deepEqual(compareChat(before, after).mismatches, ["transport"]);
   after.transport = before.transport;
+  after.nativeSampling = {
+    atSeconds: 13.7,
+    durationSeconds: 2,
+    intervalMs: 10,
+  };
+  assert.deepEqual(compareChat(before, after).mismatches, ["nativeSampling"]);
+  after.nativeSampling = null;
+  after.renderSnapshots = true;
+  assert.deepEqual(compareChat(before, after).mismatches, ["renderSnapshots"]);
+  after.renderSnapshots = false;
+  after.probeVersion = 2;
+  assert.deepEqual(compareChat(before, after).mismatches, ["probeVersion"]);
+  after.probeVersion = before.probeVersion;
   before.monitor = { name: "External", scale: 2, width: 1920 };
   after.monitor = { width: 1920, name: "External", scale: 2 };
   assert.equal(compareChat(before, after).comparable, true);

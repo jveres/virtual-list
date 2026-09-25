@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { realpath } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -36,6 +37,9 @@ export async function createChatProfileServer(options = {}) {
       strictPort: true,
       hmr: false,
       open: false,
+      // Worktrees can share a dependency directory. WASM is served from
+      // that real path, not from the node_modules symlink Vite sees here.
+      fs: { allow: [root, await realpath(resolve(root, "node_modules"))] },
     },
     plugins: [
       {

@@ -85,6 +85,7 @@ export type ScrollTarget = string | "start" | "end";
 export interface ScrollOptions {
   align?: "start";
   behavior?: "auto" | "smooth";
+  /** An explicit duration uses the custom glide; otherwise smooth is native. */
   duration?: number;
   offset?: number;
   pin?: { key: string; offset?: number };

@@ -22,8 +22,12 @@ test("raw cleanup preserves summaries and source replay while removing nested ca
       "run.json",
       "reproduce.json",
       "reproduce.patch",
+      "upstream.patch",
       "recording.json",
       "chrome-trace.json.gz",
+      "safari-sample.txt",
+      "safari-sample-summary.json",
+      "snapshot-0.png",
       "firefox/profile.json",
     ])
       await writeFile(join(directory, path), "owned fixture");
@@ -32,7 +36,9 @@ test("raw cleanup preserves summaries and source replay while removing nested ca
       "reproduce.json",
       "reproduce.patch",
       "run.json",
+      "safari-sample-summary.json",
       "summary.json",
+      "upstream.patch",
     ]);
     assert.equal(
       await readFile(join(directory, "summary.json"), "utf8"),
@@ -107,6 +113,8 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
           traceInvalidations: true,
           scheduler: true,
           safariDetached: true,
+          safariSnapshots: true,
+          safariSample: { atSeconds: 13.7, durationSeconds: 2, intervalMs: 10 },
           durationMs: 12000,
           seconds: 20,
         },
@@ -121,6 +129,8 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
     assert.ok(saved.command.includes("--trace-invalidations"));
     assert.ok(saved.command.includes("--scheduler"));
     assert.ok(saved.command.includes("--safari-detached"));
+    assert.ok(saved.command.includes("--safari-snapshots"));
+    assert.ok(saved.command.includes("--safari-sample=13.7:2:10"));
     assert.ok(saved.command.includes("--stream-ms=12000"));
     assert.equal(Object.keys(saved.sourceHashes).length, 6);
     assert.match(

@@ -91,7 +91,7 @@ for (const engine of [firefox, webkit, chromium]) {
     );
 
     // With all history loaded, returning across the top slot must hand the
-    // pinned date pill back to its inline row in the glide's own frame.
+    // pinned date pill back to its inline row in the scroll-frame update.
     await page.locator("#scroll-top-btn").click();
     await page.waitForFunction(
       () => document.querySelector("#viewport").scrollTop === 0,
@@ -111,27 +111,20 @@ for (const engine of [firefox, webkit, chromium]) {
           inline.getBoundingClientRect().top -
           viewport.getBoundingClientRect().top +
           viewport.scrollTop;
-        const originalFrame = window.requestAnimationFrame;
-        const descriptor = Object.getOwnPropertyDescriptor(
-          viewport,
-          "scrollTop",
-        );
-        let writes = 0;
         const samples = [];
-        Object.defineProperty(viewport, "scrollTop", {
-          ...descriptor,
-          set(value) {
-            writes++;
-            descriptor.set.call(this, value);
-          },
-        });
-        window.requestAnimationFrame = (callback) =>
-          originalFrame.call(window, (time) => {
-            const before = writes;
-            callback(time);
-            if (writes !== before) {
+        let frame = 0;
+        let lastTop = viewport.scrollTop;
+        // Native animation does not invoke the JavaScript scrollTop setter.
+        // Sample after the runtime's scroll handler has queued its frame work.
+        const sampleScroll = () => {
+          if (frame) return;
+          frame = requestAnimationFrame(() => {
+            frame = 0;
+            const top = viewport.scrollTop;
+            if (top !== lastTop) {
+              lastTop = top;
               samples.push({
-                top: viewport.scrollTop,
+                top,
                 pinned: overlay.style.display !== "none",
                 inlineHidden: inlineVisual.classList.contains(
                   "vl-sticky-inline-hidden",
@@ -140,6 +133,8 @@ for (const engine of [firefox, webkit, chromium]) {
               });
             }
           });
+        };
+        viewport.addEventListener("scroll", sampleScroll, { passive: true });
         try {
           document.querySelector("#scroll-top-btn").click();
           await new Promise((resolve, reject) => {
@@ -148,14 +143,15 @@ for (const engine of [firefox, webkit, chromium]) {
               if (viewport.scrollTop === 0) resolve();
               else if (performance.now() > deadline)
                 reject(new Error("return-to-top glide did not land"));
-              else originalFrame.call(window, poll);
+              else requestAnimationFrame(poll);
             };
-            originalFrame.call(window, poll);
+            requestAnimationFrame(poll);
           });
+          await new Promise(requestAnimationFrame);
           return { boundary, samples };
         } finally {
-          window.requestAnimationFrame = originalFrame;
-          Object.defineProperty(viewport, "scrollTop", descriptor);
+          cancelAnimationFrame(frame);
+          viewport.removeEventListener("scroll", sampleScroll);
         }
       });
       assert.ok(handoff.boundary > 0, "fixture retains its top slot");

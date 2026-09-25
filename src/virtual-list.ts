@@ -7,6 +7,7 @@ import {
   type GeometryViewport,
 } from "./geometry";
 import { type Glide, type GlideHost, glidePace, startGlide } from "./glide";
+import { startNativeGlide } from "./native-glide";
 import {
   type GeometryWindow,
   PositionedGeometry,
@@ -1917,15 +1918,18 @@ export function createVirtualList<T>(
    */
   function interruptNativeScroll(
     reason: "command" | "resize" = "command",
+    nativeMotion = true,
   ): void {
     if (!controller.isScrollPhaseActive()) return;
-    const top = viewport.scrollTop;
-    writeScrollTop(top);
-    const overflow = viewport.style.overflowY;
-    viewport.style.overflowY = "hidden";
-    void viewport.offsetHeight;
-    viewport.style.overflowY = overflow;
-    writeScrollTop(top);
+    if (nativeMotion) {
+      const top = viewport.scrollTop;
+      writeScrollTop(top);
+      const overflow = viewport.style.overflowY;
+      viewport.style.overflowY = "hidden";
+      void viewport.offsetHeight;
+      viewport.style.overflowY = overflow;
+      writeScrollTop(top);
+    }
     takingOver = reason;
     try {
       controller.finishGesture();
@@ -1937,8 +1941,11 @@ export function createVirtualList<T>(
   function takeover(): void {
     follow.stop();
     settleParked(false);
+    const wasGliding = glide !== null;
     glide?.cancel();
-    interruptNativeScroll();
+    // Cancelling an owned glide already stops it. Rebuilding the scrolling
+    // layer here can strand the next native Safari animation.
+    interruptNativeScroll("command", !wasGliding);
   }
 
   // --- Data -----------------------------------------------------------------
@@ -2548,26 +2555,30 @@ export function createVirtualList<T>(
     }
     // A glide is a phase of its own: held work waits for its landing.
     controller.beginProgrammaticGesture();
-    glide = startGlide(
-      glideHost(destination),
-      glidePace(viewport.clientHeight, o.duration),
-      (completed) =>
-        pass(() => {
-          glide = null;
-          glideToPin = false;
-          if (!completed || disposed) {
-            done(false);
-            if (!disposed) controller.markSettlePending();
-            return;
-          }
-          parked = {
-            done,
-            landed: () => landedOn(target, below, pinnedEnd),
-            followsEnd: target === "end",
-          };
-          controller.markSettlePending();
-        }),
-    );
+    const complete = (completed: boolean): void =>
+      pass(() => {
+        glide = null;
+        glideToPin = false;
+        if (!completed || disposed) {
+          done(false);
+          if (!disposed) controller.markSettlePending();
+          return;
+        }
+        parked = {
+          done,
+          landed: () => landedOn(target, below, pinnedEnd),
+          followsEnd: target === "end",
+        };
+        controller.markSettlePending();
+      });
+    glide =
+      o.duration === undefined && typeof viewport.scrollTo === "function"
+        ? startNativeGlide(viewport, destination, complete)
+        : startGlide(
+            glideHost(destination),
+            glidePace(viewport.clientHeight, o.duration),
+            complete,
+          );
     glideToPin =
       pinning &&
       keyed &&

@@ -145,7 +145,10 @@ The runtime lives under `src/`:
 - `wheel-policy.ts` — Firefox release classification and Chromium wheel
   suppression state. Only the selected engine's policy is instantiated;
   shared input listeners and settle scheduling remain in the controller.
-- `glide.ts` — the programmatic smooth scroll: a fixed landing leg (the last
+- `native-glide.ts` — browser-owned smooth navigation, with target-confirmed
+  completion, a fallback for missing `scrollend`, and input cancellation.
+- `glide.ts` — automatic smooth follow and commands with an explicit duration:
+  a fixed landing leg (the last
   viewport of travel, always the same time and ease-out) after a distance-
   derived approach, so a one-viewport hop and a jump across the list arrive
   identically; exact landing, at least a pixel per frame, live target,
@@ -270,8 +273,13 @@ list.dispose();
   `offset` lands it below a floating header. Realigning a pin removes unused
   trailing space
   after landing, without shortening the scroll range during the glide.
-  A smooth command is interrupted by genuine user
-  input and resolves `false`; a command to `"end"` re-engages end-follow.
+  A smooth command is interrupted by genuine user input and resolves `false`;
+  a command to `"end"` re-engages end-follow.
+- `behavior: "smooth"` uses the browser's native animation unless you specify
+  `duration`. The browser chooses its timing. Completion requires arrival at
+  the live target; an early `scrollend` alone cannot complete the command.
+  A quiet fallback handles missing events and no-op commands. Supplying
+  `duration` selects the custom glide and controls its landing time.
 - `scrollTo("end", { pin: { key, offset? } })` establishes a persistent pin
   and lands at the end in one command, without first scrolling to the pinned
   row. A short tail leaves that row at its inset; a long tail lands at the

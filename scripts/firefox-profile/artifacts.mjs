@@ -8,11 +8,13 @@ const retained = new Set([
   "summary.json",
   "reproduce.json",
   "reproduce.patch",
+  "upstream.patch",
   "firefox-cpu.json",
   "firefox-attribution.json",
   "firefox-bursts.json",
   "chrome-analysis.json",
   "chrome-metrics.json",
+  "safari-sample-summary.json",
   "cpu.json",
   "bursts.json",
   "attribution.json",
@@ -90,6 +92,14 @@ export async function writeReproduction(
     "trace-invalidations": o.traceInvalidations,
     scheduler: o.scheduler,
     "safari-detached": o.safariDetached,
+    "safari-snapshots": o.safariSnapshots,
+    "safari-sample": o.safariSample
+      ? [
+          o.safariSample.atSeconds,
+          o.safariSample.durationSeconds,
+          o.safariSample.intervalMs,
+        ].join(":")
+      : undefined,
     display: o.display,
     "refresh-hz": o.refreshHz,
     seconds: o.seconds,

@@ -3,6 +3,7 @@ import { parseSync } from "vite";
 
 // Parse function boundaries; never edit production files or silently skip a target.
 export const chatTargets = {
+  "src/glide.ts": ["tick", "advance", "land"],
   "src/virtual-list.ts": [
     "commit",
     "liveCommit",
@@ -23,6 +24,7 @@ export const chatTargets = {
     "commitHeight",
     "updateItem",
     "stageFrame",
+    "writeScrollTop",
   ],
   "src/scroll-settle.ts": [
     "handleScroll",
@@ -100,6 +102,11 @@ export function instrumentChat(source, path, diagnostic) {
         node.body.start + 1,
         `\nconst __chatSpan = globalThis.__chatProfile?.enter(${JSON.stringify(label)}, ${identity}, ${input});\ntry {\n`,
       );
+      if (path === "src/virtual-list.ts" && name === "publish")
+        insert(
+          node.body.start + 1,
+          "\nglobalThis.__chatProfile?.coverage(vp, geometry.contentSize, Array.from(mountedRows, row => [geometry.offsetOf(row.key), row.height, row.slot.isConnected]));\n",
+        );
       insert(
         node.body.end - 1,
         "\n} finally { globalThis.__chatProfile?.leave(__chatSpan); }\n",
@@ -124,6 +131,20 @@ export function instrumentChat(source, path, diagnostic) {
     );
     source = source.replace(needle, replacement);
   };
+  if (path === "src/glide.ts" && diagnostic) {
+    replace(
+      "const current = host.read();",
+      "const current = host.read();\n    const __glidePrevious = [lastWritten, lastTarget, startTime];",
+    );
+    replace(
+      "host.write(current + step);",
+      "globalThis.__chatProfile?.glideFrame(host, now, current, target, current + step, elapsed, __glidePrevious, startTime);\n    host.write(current + step);",
+    );
+    replace(
+      "onDone(completed);",
+      "globalThis.__chatProfile?.glideDone(host, completed);\n    onDone(completed);",
+    );
+  }
   if (path === "demos/streaming/openai.ts") {
     replace(
       'const RESPONSES_URL = "https://api.openai.com/v1/responses";',

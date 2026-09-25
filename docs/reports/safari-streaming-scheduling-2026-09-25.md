@@ -1,5 +1,9 @@
 # Safari streaming scheduling investigation
 
+Follow-up: the [trail disposal fix](safari-trail-disposal-2026-09-25.md)
+adds native attribution and measures a smaller late pause with an upstream
+overlay-order change. It also investigates the programmatic-button symptom.
+
 The previously unexplained late pause follows streaming-trail disposal. It
 delays queued tasks as well as animation frames, moves earlier with a shorter
 fade, and disappears when the trail is disabled. It survives disconnecting the

@@ -195,10 +195,9 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-// Landing durations for pinning a new message and the two edge buttons.
+// Landing duration for pinning a new message.
 // Longer trips add an approach of at most the chosen landing duration.
 const NEW_MESSAGE_SCROLL_DURATION_MS = 450;
-const CHAT_SCROLL_DURATION_MS = 650;
 // Synthetic days over the transcript: one separator per this many messages.
 const MESSAGES_PER_DAY = 12;
 // The in-flow scrollback slot's fixed height.
@@ -3497,7 +3496,6 @@ scrollTopBtn.addEventListener("click", (event) => {
   // the phase settles; another press continues from there.
   void virtualList?.scrollTo("start", {
     behavior: "smooth",
-    duration: CHAT_SCROLL_DURATION_MS,
   });
 });
 
@@ -3515,7 +3513,6 @@ scrollBottomBtn.addEventListener("click", (event) => {
   // resumes following (the runtime's follow state, not demo bookkeeping).
   void virtualList?.scrollTo("end", {
     behavior: "smooth",
-    duration: CHAT_SCROLL_DURATION_MS,
   });
 });
 

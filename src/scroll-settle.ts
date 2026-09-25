@@ -412,6 +412,7 @@ export function createScrollSettleController(
   function canScheduleWheelScrollEndFallback(): boolean {
     return (
       usesWheelScrollEndFallback() &&
+      host.noSmoothScrollInFlight() &&
       scrollPhaseActive &&
       scrollPhaseMoved &&
       !nativeScrollEndPending &&
@@ -942,6 +943,33 @@ export function createScrollSettleController(
     handleScrollPhaseMaybeEnd();
   }
 
+  function handleKeydown(event: KeyboardEvent): void {
+    if (
+      event.defaultPrevented ||
+      event.metaKey ||
+      event.ctrlKey ||
+      event.altKey ||
+      ![
+        "ArrowUp",
+        "ArrowDown",
+        "PageUp",
+        "PageDown",
+        "Home",
+        "End",
+        " ",
+      ].includes(event.key) ||
+      (event.target instanceof Element &&
+        event.target.closest(
+          'input, textarea, select, [contenteditable]:not([contenteditable="false"])',
+        ))
+    )
+      return;
+    observeInitialInput();
+    cancelPendingReleaseForDirectInput();
+    handleScrollPhaseStart();
+  }
+
+  viewport.addEventListener("keydown", handleKeydown);
   viewport.addEventListener("scroll", handleScroll, { passive: true });
   viewport.addEventListener("scrollend", handleScrollEnd, { passive: true });
   viewport.addEventListener("wheel", handleWheel, { passive: true });
@@ -986,6 +1014,7 @@ export function createScrollSettleController(
     dispose: () => {
       cancelScrollPhaseTimers();
       viewport.removeEventListener("scroll", handleScroll);
+      viewport.removeEventListener("keydown", handleKeydown);
       viewport.removeEventListener("scrollend", handleScrollEnd);
       viewport.removeEventListener("wheel", handleWheel);
       if (supportsPointerEvents) {

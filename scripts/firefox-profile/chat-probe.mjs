@@ -94,6 +94,12 @@ export function installChatProbe(config) {
   const tasks = [];
   const rafWork = [];
   const trailChanges = [];
+  const glides = [];
+  const navigation = [];
+  const scrollWrites = [];
+  const coverage = [];
+  const navigationTimers = [];
+  let navigationCommand = null;
   const nativeRaf = window.requestAnimationFrame;
   let timer = 0;
   let channel;
@@ -140,6 +146,9 @@ export function installChatProbe(config) {
       innerHeight,
       dpr: devicePixelRatio,
     },
+    reducedMotion:
+      globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
+      null,
     status: document.querySelector("#window-status")?.textContent ?? null,
   });
   const countAccess = (name) => {
@@ -175,6 +184,13 @@ export function installChatProbe(config) {
             ? {
                 set(value) {
                   countAccess(`write:${name}`);
+                  if (active && this === viewport && name === "scrollTop")
+                    append("scrollWrites", scrollWrites, {
+                      time: now(),
+                      method: "scrollTop",
+                      top: value,
+                      callers: stack.slice(-4).map((entry) => entry.name),
+                    });
                   descriptor.set.call(this, value);
                 },
               }
@@ -184,6 +200,8 @@ export function installChatProbe(config) {
       }
     for (const [prototype, name] of [
       [Element.prototype, "getBoundingClientRect"],
+      [Element.prototype, "scrollTo"],
+      [Element.prototype, "scrollBy"],
       [Range.prototype, "getBoundingClientRect"],
       [Range.prototype, "getClientRects"],
     ]) {
@@ -194,6 +212,15 @@ export function installChatProbe(config) {
         ...descriptor,
         value(...args) {
           countAccess(`call:${name}`);
+          if (active && this === viewport && name.startsWith("scroll"))
+            append("scrollWrites", scrollWrites, {
+              time: now(),
+              method: name,
+              top: typeof args[0] === "object" ? args[0]?.top : args[1],
+              behavior:
+                typeof args[0] === "object" ? args[0]?.behavior : "auto",
+              callers: stack.slice(-4).map((entry) => entry.name),
+            });
           return descriptor.value.apply(this, args);
         },
       });
@@ -417,6 +444,39 @@ export function installChatProbe(config) {
   window.addEventListener("unhandledrejection", onError);
   const api = {
     seedHistory,
+    glideFrame(
+      host,
+      timestamp,
+      current,
+      target,
+      written,
+      elapsed,
+      previous,
+      began,
+    ) {
+      if (!active || !config.diagnostic) return;
+      append("glides", glides, {
+        time: now(),
+        timestamp: timestamp - startTime,
+        id: entityId(host),
+        phase,
+        current,
+        target,
+        written,
+        elapsed,
+        previousWrite: previous[0],
+        previousTarget: previous[1],
+        rebased: previous[2] !== began,
+      });
+    },
+    glideDone(host, completed) {
+      if (active && config.diagnostic)
+        append("glides", glides, {
+          time: now(),
+          id: entityId(host),
+          completed,
+        });
+    },
     enter(name, entity, text) {
       if (!active || !config.diagnostic) return null;
       const duplicate =
@@ -467,6 +527,29 @@ export function installChatProbe(config) {
         span.unchangedText,
       ]);
     },
+    coverage(vp, contentSize, rows) {
+      if (!active) return;
+      const end = Math.min(vp.scrollTop + vp.height, contentSize);
+      let covered = 0;
+      let cursor = Math.max(0, vp.scrollTop);
+      for (const [start, height, connected] of rows.toSorted(
+        (a, b) => a[0] - b[0],
+      )) {
+        if (!connected) continue;
+        const from = Math.max(cursor, start);
+        const to = Math.min(end, start + height);
+        if (to <= from) continue;
+        covered += to - from;
+        cursor = to;
+      }
+      append("coverage", coverage, {
+        time: now(),
+        top: vp.scrollTop,
+        height: vp.height,
+        rows: rows.length,
+        missingPx: Math.max(0, end - Math.max(0, vp.scrollTop) - covered),
+      });
+    },
     state(state) {
       currentState = {
         count: state.count,
@@ -476,6 +559,15 @@ export function installChatProbe(config) {
         held: state.held,
         totalSize: state.totalSize,
       };
+      if (
+        active &&
+        navigationCommand &&
+        !navigationCommand.reached &&
+        (navigationCommand.direction === "top" ? state.atStart : state.atEnd)
+      ) {
+        navigationCommand.reached = true;
+        navigationCommand.reachedAt = now();
+      }
       if (active) append("states", states, [now(), currentState]);
     },
     delivery(type, length) {
@@ -542,6 +634,24 @@ export function installChatProbe(config) {
       prompt.value = "Produce the deterministic complex profiling reply.";
       prompt.dispatchEvent(new Event("input", { bubbles: true }));
       document.querySelector("#send-btn").click();
+      if (config.scenario === "buttons") {
+        for (const [at, direction] of [
+          [config.workload.durationMs / 4, "top"],
+          [config.workload.durationMs / 2, "bottom"],
+          [config.workload.durationMs + 3000, "top"],
+          [config.workload.durationMs + 5500, "bottom"],
+        ]) {
+          navigationTimers.push(
+            setTimeout(() => {
+              if (!active) return;
+              api.phase(`button-${direction}`);
+              navigationCommand = { time: now(), direction, reached: false };
+              append("navigation", navigation, navigationCommand);
+              document.querySelector(`#scroll-${direction}-btn`).click();
+            }, at),
+          );
+        }
+      }
       return { timeOrigin: performance.timeOrigin, startTime };
     },
     stop() {
@@ -554,6 +664,7 @@ export function installChatProbe(config) {
       active = false;
       cancelAnimationFrame(frame);
       clearTimeout(timer);
+      for (const timeout of navigationTimers) clearTimeout(timeout);
       channel?.port1.close();
       channel?.port2.close();
       mutation.disconnect();
@@ -570,6 +681,7 @@ export function installChatProbe(config) {
       final = boundary();
       const result = {
         schema: 1,
+        probeVersion: 2,
         timeOrigin: performance.timeOrigin,
         startTime,
         durationMs,
@@ -585,6 +697,10 @@ export function installChatProbe(config) {
         deliveries,
         spans,
         phases,
+        navigation,
+        scrollWrites: config.diagnostic ? scrollWrites : null,
+        coverage: config.diagnostic ? coverage : null,
+        glides: config.diagnostic ? glides : null,
         entries,
         operations: [...operations.values()],
         access: [...access].map(([key, count]) => ({ key, count })),

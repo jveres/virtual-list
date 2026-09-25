@@ -9,6 +9,10 @@ Use the [consumer guide](../streaming-consumer.md) and
 
 ## September 25 clean-code and performance audit
 
+The [native smooth navigation result](native-smooth-navigation-2026-09-25.md)
+records native top/bottom animation, cross-browser completion and cancellation,
+blank-content diagnostics, and the user's smoothness confirmation.
+
 The [clean-code and performance audit](clean-performance-audit-2026-09-25.md)
 records two resolved medium findings, regression coverage, and paired
 installed-Firefox measurements on the external display.
@@ -45,6 +49,10 @@ fix, completion-cost reduction, and checks across installed browsers.
 The [follow-up review](streaming-followup-review-2026-09-25.md) rejects a
 source-range cache and network-read coalescing, records the final native
 scrollback check, and identifies the remaining Safari attribution limit.
+
+The [Safari trail disposal fix](safari-trail-disposal-2026-09-25.md) records
+native stack attribution, the upstream overlay-order correction, and measured
+cleanup without retaining empty trail layers.
 
 The [Safari scheduling investigation](safari-streaming-scheduling-2026-09-25.md)
 adds task/frame/lifecycle correlation and disconnected-driver captures. It

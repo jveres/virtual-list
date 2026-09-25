@@ -2,6 +2,7 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Darwin
+import ImageIO
 
 func fail(_ message: String) -> Never {
     fputs(message + "\n", stderr)
@@ -12,6 +13,45 @@ let args = CommandLine.arguments
 guard args.count >= 2 else { fail("Expected displays, place, focus, scroll, or quit") }
 
 switch args[1] {
+case "image-metrics":
+    guard args.count == 7, let x = Double(args[3]), let y = Double(args[4]),
+          let width = Double(args[5]), let height = Double(args[6]),
+          x >= 0, y >= 0, width > 0, height > 0, x + width <= 1.001, y + height <= 1.001,
+          let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: args[2]) as CFURL, nil),
+          let image = CGImageSourceCreateImageAtIndex(source, 0, nil),
+          let cropped = image.cropping(to: CGRect(x: x * Double(image.width), y: y * Double(image.height),
+              width: width * Double(image.width), height: height * Double(image.height))) else {
+        fail("Expected PNG and normalized crop x/y/width/height")
+    }
+    let w = min(512, cropped.width)
+    let h = max(1, Int(Double(cropped.height) * Double(w) / Double(cropped.width)))
+    var pixels = [UInt8](repeating: 0, count: w * h * 4)
+    let drawn = pixels.withUnsafeMutableBytes { bytes -> Bool in
+        guard let context = CGContext(data: bytes.baseAddress, width: w, height: h, bitsPerComponent: 8,
+            bytesPerRow: w * 4, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue) else { return false }
+        context.draw(cropped, in: CGRect(x: 0, y: 0, width: w, height: h))
+        return true
+    }
+    guard drawn else { fail("Cannot decode screenshot pixels") }
+    var colors: [Int: Int] = [:]
+    var edges = 0
+    for row in 0..<h {
+        var previous: Int? = nil
+        for column in 0..<w {
+            let at = (row * w + column) * 4
+            let r = Int(pixels[at]), g = Int(pixels[at + 1]), b = Int(pixels[at + 2])
+            colors[(r >> 4) << 8 | (g >> 4) << 4 | (b >> 4), default: 0] += 1
+            let light = (r + g + b) / 3
+            if let before = previous, abs(light - before) > 24 { edges += 1 }
+            previous = light
+        }
+    }
+    let result: [String: Any] = ["width": w, "height": h,
+        "dominantFraction": Double(colors.values.max() ?? 0) / Double(w * h),
+        "edgeFraction": Double(edges) / Double(w * h)]
+    let data = try JSONSerialization.data(withJSONObject: result)
+    print(String(data: data, encoding: .utf8)!)
 case "displays":
     let top = NSScreen.screens[0].frame.maxY
     let screens: [[String: Any]] = NSScreen.screens.enumerated().map { index, screen in

@@ -10,6 +10,7 @@ import {
   captureSafari,
 } from "./firefox-profile/chat-browsers.mjs";
 import { createChatProfileServer } from "./firefox-profile/chat-server.mjs";
+import { sampleOptions } from "./firefox-profile/safari-sample.mjs";
 
 const { values } = parseArgs({
   args: process.argv.slice(2).filter((arg) => arg !== "--"),
@@ -21,6 +22,8 @@ const { values } = parseArgs({
     "trace-invalidations": { type: "boolean", default: false },
     scheduler: { type: "boolean", default: false },
     "safari-detached": { type: "boolean", default: false },
+    "safari-sample": { type: "string" },
+    "safari-snapshots": { type: "boolean", default: false },
     display: { type: "string" },
     "refresh-hz": { type: "string" },
     seconds: { type: "string", default: "20" },
@@ -35,11 +38,13 @@ if (values.help) {
   console.log(`Profile the real streaming chat with deterministic local SSE; no account or remote inference.
   --browser firefox|chrome|safari  Installed browser; default Firefox
             engine-firefox|engine-chromium|engine-webkit  Headless correctness checks only
-  --scenario follow|scrollback|manual  Installed Safari automation requires Safari 27+
+  --scenario follow|scrollback|buttons|manual  Safari automation requires Safari 27+
   --mode timing|diagnostic       Optional synchronous spans, access and mutation counters
   --trace-invalidations         Chrome diagnostic only; use a short, reduced fixture
   --scheduler                   Timer/task latency, rAF work, and trail lifecycle diagnostics
-  --safari-detached             Disconnect the Safari driver before a self-timed follow capture
+  --safari-detached             Disconnect the Safari driver before follow/button captures
+  --safari-sample S:D:I         Native diagnostic: start seconds, duration seconds, interval ms
+  --safari-snapshots            Browser pixel checks; diagnostic buttons, driver connected
   --display INDEX|NAME           Default first external display, otherwise built-in
   --refresh-hz N                 Actual display rate if different from reported maximum
   --seconds N                   Measurement window (default 20; scripted Firefox rounds up)
@@ -61,16 +66,17 @@ if (
   ].includes(values.browser)
 )
   throw new Error("Invalid --browser");
-if (!["follow", "scrollback", "manual"].includes(values.scenario))
+if (!["follow", "scrollback", "manual", "buttons"].includes(values.scenario))
   throw new Error("Invalid --scenario");
 if (!["timing", "diagnostic"].includes(values.mode))
   throw new Error("Invalid --mode");
 if (
   values["safari-detached"] &&
-  (values.browser !== "safari" || values.scenario !== "follow")
+  (values.browser !== "safari" ||
+    !["follow", "buttons"].includes(values.scenario))
 )
   throw new Error(
-    "--safari-detached requires --browser=safari --scenario=follow",
+    "--safari-detached requires --browser=safari --scenario=follow or buttons",
   );
 if (
   values["trace-invalidations"] &&
@@ -94,6 +100,13 @@ if (
   throw new Error(
     "Use 5..50 seconds with at least 3 seconds after stream completion",
   );
+if (
+  values.scenario === "buttons" &&
+  (durationMs < 8000 || seconds * 1000 < durationMs + 7500)
+)
+  throw new Error(
+    "The buttons scenario needs an 8-second stream and at least 7.5 seconds after it",
+  );
 const refreshHz =
   values["refresh-hz"] === undefined ? undefined : Number(values["refresh-hz"]);
 if (
@@ -103,6 +116,24 @@ if (
   throw new Error("Invalid --refresh-hz");
 if (values.browser.startsWith("engine-") && values.scenario === "manual")
   throw new Error("Manual input requires a headed installed browser");
+const safariSample = sampleOptions(values["safari-sample"], seconds);
+if (
+  values["safari-snapshots"] &&
+  (values.browser !== "safari" ||
+    values.mode !== "diagnostic" ||
+    values.scenario !== "buttons" ||
+    values["safari-detached"])
+)
+  throw new Error(
+    "--safari-snapshots requires Safari diagnostic buttons with the driver connected",
+  );
+if (
+  safariSample &&
+  (values.browser !== "safari" || values.mode !== "diagnostic")
+)
+  throw new Error(
+    "--safari-sample requires --browser=safari --mode=diagnostic",
+  );
 const options = {
   browser: values.browser,
   scenario: values.scenario,
@@ -110,6 +141,8 @@ const options = {
   traceInvalidations: values["trace-invalidations"],
   scheduler: values.scheduler,
   safariDetached: values["safari-detached"],
+  safariSample,
+  safariSnapshots: values["safari-snapshots"],
   display: values.display,
   refreshHz,
   seconds,
