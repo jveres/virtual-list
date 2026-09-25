@@ -38,6 +38,10 @@ The [status formatter investigation](streaming-status-formatting-2026-09-25.md)
 reuses a locale formatter in streaming status updates. It records the small
 diagnostic saving, timing controls, and the unresolved completion stalls.
 
+The [stream-finalization investigation](streaming-finalization-2026-09-25.md)
+retains processed renderer blocks through completion. It records the upstream
+fix, completion-cost reduction, and checks across installed browsers.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is
