@@ -21,7 +21,7 @@ importers:
         specifier: ^0.18.7
         version: 0.18.7
       markdown-viewer:
-        specifier: git+https://github.com/jveres/markdown-viewer.git
+        specifier: github:jveres/markdown-viewer#v0.8.2
         version: git+https://github.com/jveres/markdown-viewer.git#6bcb22706d687120116f31b718e68a0efa9a6579
       playwright:
         specifier: ^1.63.0
