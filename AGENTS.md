@@ -23,6 +23,8 @@ WebKit-specific issue, must be stated explicitly.
 - Save a baseline and a comparable repeat after a change. Report browser
   version, display geometry, workload, timing, and limitations. Do not infer
   smooth physical presentation from regular animation-frame callbacks.
+- Limit comparison rounds to three trials per browser unless the user asks
+  for more. Do not expand a completed comparison just to increase the sample.
 - Use raw profiles only as temporary inputs to analysis, and remove them when
   the run ends. Keep compact summaries and reproduction metadata under ignored
   `browser-artifacts/`: revision, source patch and hashes, deterministic workload,

@@ -34,6 +34,10 @@ The [imported-chat send investigation](imported-chat-send-2026-09-25.md)
 removes full-transcript export and parsing from simulated sends after loading
 older history, with a focused Chrome capture and persistence regressions.
 
+The [status formatter investigation](streaming-status-formatting-2026-09-25.md)
+reuses a locale formatter in streaming status updates. It records the small
+diagnostic saving, timing controls, and the unresolved completion stalls.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is

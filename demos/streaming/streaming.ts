@@ -2615,8 +2615,10 @@ function handleRowDestroy(element: HTMLElement): void {
 
 // --- Demo chrome ------------------------------------------------------------
 
+const countFormatter = new Intl.NumberFormat();
+
 function formatCount(value: number): string {
-  return Math.round(value).toLocaleString();
+  return countFormatter.format(Math.round(value));
 }
 
 function syncScrollButtons(state: VirtualListState): void {
