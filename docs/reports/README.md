@@ -24,6 +24,12 @@ removes repeated image-preview subtree scans during a mutation batch. It records
 18 interleaved installed-browser timing trials, a 6.2% reduction in Chrome's
 median main-thread task time, and the limits of the Firefox and Safari results.
 
+The [cursor style-invalidation optimization](streaming-cursor-restyles-2026-09-25.md)
+replaces two expensive renderer selectors with a local cursor-block marker.
+It records rejected controls and 18 interleaved installed-browser trials:
+Chrome's median task time falls 37.5% and style time falls 85.1%, while Firefox
+and Safari timings are effectively unchanged. Completion stalls remain.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is

@@ -18,6 +18,7 @@ const { values } = parseArgs({
     browser: { type: "string", default: "firefox" },
     scenario: { type: "string", default: "follow" },
     mode: { type: "string", default: "timing" },
+    "trace-invalidations": { type: "boolean", default: false },
     display: { type: "string" },
     "refresh-hz": { type: "string" },
     seconds: { type: "string", default: "20" },
@@ -34,6 +35,7 @@ if (values.help) {
             engine-firefox|engine-chromium|engine-webkit  Headless correctness checks only
   --scenario follow|scrollback|manual  Installed Safari automation requires Safari 27+
   --mode timing|diagnostic       Optional synchronous spans, access and mutation counters
+  --trace-invalidations         Chrome diagnostic only; use a short, reduced fixture
   --display INDEX|NAME           Default first external display, otherwise built-in
   --refresh-hz N                 Actual display rate if different from reported maximum
   --seconds N                   Measurement window (default 20; scripted Firefox rounds up)
@@ -59,6 +61,13 @@ if (!["follow", "scrollback", "manual"].includes(values.scenario))
   throw new Error("Invalid --scenario");
 if (!["timing", "diagnostic"].includes(values.mode))
   throw new Error("Invalid --mode");
+if (
+  values["trace-invalidations"] &&
+  (values.browser !== "chrome" || values.mode !== "diagnostic")
+)
+  throw new Error(
+    "--trace-invalidations requires --browser=chrome --mode=diagnostic",
+  );
 if (!["off", "short", "long"].includes(values.trail))
   throw new Error("Invalid --trail");
 const seconds = Number(values.seconds);
@@ -87,6 +96,7 @@ const options = {
   browser: values.browser,
   scenario: values.scenario,
   diagnostic: values.mode === "diagnostic",
+  traceInvalidations: values["trace-invalidations"],
   display: values.display,
   refreshHz,
   seconds,

@@ -31,7 +31,7 @@ export async function writeReproduction(
       maxBuffer: 16 * 1024 * 1024,
     });
   const relevant = (path) =>
-    /^(src\/|demos\/|scripts\/|package\.json$|pnpm-lock\.yaml$|vite\.config\.|tsconfig\.)/.test(
+    /^(src\/|demos\/|integrations\/|patches\/|scripts\/|package\.json$|pnpm-(lock|workspace)\.yaml$|vite\.config\.|tsconfig\.)/.test(
       path,
     );
   const tracked = [
@@ -87,6 +87,7 @@ export async function writeReproduction(
     browser: o.browser,
     scenario: o.scenario,
     mode: o.diagnostic ? "diagnostic" : "timing",
+    "trace-invalidations": o.traceInvalidations,
     display: o.display,
     "refresh-hz": o.refreshHz,
     seconds: o.seconds,
@@ -95,8 +96,8 @@ export async function writeReproduction(
     history: o.history,
     trail: o.trail,
   }))
-    if (!report.command && value !== undefined)
-      command.push(`--${name}=${value}`);
+    if (!report.command && value !== undefined && value !== false)
+      command.push(value === true ? `--${name}` : `--${name}=${value}`);
   await writeFile(join(directory, "reproduce.patch"), patch);
   await writeFile(
     join(directory, "reproduce.json"),

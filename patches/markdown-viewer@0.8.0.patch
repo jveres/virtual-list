@@ -1,0 +1,91 @@
+diff --git a/dist/styles/viewer.css b/dist/styles/viewer.css
+--- a/dist/styles/viewer.css
++++ b/dist/styles/viewer.css
+@@ -116,3 +116,3 @@
+-   The sibling form stays local: `.markdown:has(> .cursor:last-child) >
+-   :nth-last-child(2)` restyled every block whenever the cursor moved. */
+-.markdown-viewer .markdown > :has(+ .cursor:last-child) {
++   The renderer marks only the preceding block. A relational selector here
++   makes unrelated streaming mutations invalidate large subtrees in Chrome. */
++.markdown-viewer .markdown > [data-cursor-block]:not(.cursor) {
+@@ -131,1 +131,1 @@
+-.markdown-viewer .markdown > :has(+ .cursor:last-child) > :last-child {
++.markdown-viewer .markdown > [data-cursor-block]:not(.cursor) > :last-child {
+diff --git a/dist/MarkdownViewer.js b/dist/MarkdownViewer.js
+--- a/dist/MarkdownViewer.js
++++ b/dist/MarkdownViewer.js
+@@ -83,6 +83,7 @@
+     trailSeen = false;
+     // The one cursor node of a stream; see morphStreaming.
+     cursorElement = null;
++    cursorBlock = null;
+     options;
+     phase;
+     memo = createRenderMemo();
+@@ -242,6 +243,7 @@
+         resetMorphCache(this.container ?? undefined);
+         this.cursorController?.reset();
+         this.cursorElement = null;
++        this.setCursorBlock(null);
+         this.ensureKaTeXLoaded();
+         this.settleRender = true;
+         try {
+@@ -276,6 +278,7 @@
+         this.cursorController?.destroy();
+         this.cursorController = null;
+         this.cursorElement = null;
++        this.setCursorBlock(null);
+         if (this.root && this.host?.contains(this.root)) {
+             this.host.replaceChildren();
+         }
+@@ -406,6 +409,7 @@
+             return;
+         // The fallback replaces the tree outside the morph layer.
+         resetMorphCache(container);
++        this.setCursorBlock(null);
+         container.replaceChildren();
+         this.memo.appliedHtml = null;
+         if (fallback === undefined) {
+@@ -491,6 +495,10 @@
+         }
+         if (this.phase === "streaming") {
+             this.morphStreaming(container, content);
++            const cursor = this.cursorElement;
++            this.setCursorBlock(cursor?.parentElement === container && cursor === container.lastElementChild
++                ? cursor.previousElementSibling
++                : null);
+             this.applyText(this.pending.text);
+             this.memo.appliedHtml = content;
+             const duration = performance.now() - startTime;
+@@ -504,6 +512,7 @@
+             }
+             return;
+         }
++        this.setCursorBlock(null);
+         morphContentSync(container, content);
+         this.applyText(this.pending.text);
+         this.cursorElement = null;
+@@ -543,6 +552,16 @@
+                 (memo.shown[1]?.at ?? now) <= now - SHOWN_HISTORY_MS))
+             memo.shown.splice(0, 1);
+         memo.appliedText = text;
++    }
++    // Keep cursor spacing local without a sibling :has() invalidation set.
++    // A morph may strip the marker even when the block identity survives.
++    setCursorBlock(block) {
++        if (this.cursorBlock !== block) {
++            this.cursorBlock?.removeAttribute("data-cursor-block");
++            this.cursorBlock = block;
++        }
++        if (block && !block.hasAttribute("data-cursor-block"))
++            block.setAttribute("data-cursor-block", "");
+     }
+     // One cursor node per stream. Each render re-creates the cursor span
+     // wherever the writing position landed, and in place the morph would
+@@ -753,4 +772,4 @@
+ export function createMarkdownViewer(host, options) {
+     return new MarkdownViewer(host, options);
+ }
+-//# sourceMappingURL=MarkdownViewer.js.map
+\ No newline at end of file
++// Source mapping omitted for the locally patched runtime.

@@ -54,13 +54,23 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
   try {
     git(["init", "-q"]);
     await mkdir(join(root, "src"));
+    await mkdir(join(root, "integrations"));
+    await mkdir(join(root, "patches"));
     await mkdir(join(root, "capture"));
     await writeFile(join(root, "src/value.js"), "export const value = 1;\n");
+    await writeFile(
+      join(root, "integrations/viewer.css"),
+      "p { color: red; }\n",
+    );
     await writeFile(
       join(root, "src/removed.js"),
       "export const removed = true;\n",
     );
-    git(["add", "src"]);
+    await writeFile(
+      join(root, "pnpm-workspace.yaml"),
+      "blockExoticSubdeps: false\n",
+    );
+    git(["add", "src", "integrations", "pnpm-workspace.yaml"]);
     git([
       "-c",
       "user.name=Fixture",
@@ -73,15 +83,28 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
     const revision = git(["rev-parse", "HEAD"]).trim();
     await writeFile(join(root, "src/value.js"), "export const value = 2;\n");
     await writeFile(join(root, "src/new.js"), "export const added = true;\n");
+    await writeFile(
+      join(root, "integrations/viewer.css"),
+      "p { color: blue; }\n",
+    );
     git(["rm", "src/removed.js"]);
+    await writeFile(
+      join(root, "patches/viewer.patch"),
+      "reproducible dependency patch\n",
+    );
+    await writeFile(
+      join(root, "pnpm-workspace.yaml"),
+      "patchedDependencies:\n  viewer@1.0.0: patches/viewer.patch\n",
+    );
     await writeReproduction(
       join(root, "capture"),
       {
         revision,
         options: {
-          browser: "safari",
+          browser: "chrome",
           scenario: "follow",
           diagnostic: true,
+          traceInvalidations: true,
           durationMs: 12000,
           seconds: 20,
         },
@@ -92,12 +115,41 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
       await readFile(join(root, "capture/reproduce.json"), "utf8"),
     );
     assert.equal(saved.revision, revision);
-    assert.ok(saved.command.includes("--browser=safari"));
+    assert.ok(saved.command.includes("--browser=chrome"));
+    assert.ok(saved.command.includes("--trace-invalidations"));
     assert.ok(saved.command.includes("--stream-ms=12000"));
-    assert.equal(Object.keys(saved.sourceHashes).length, 3);
+    assert.equal(Object.keys(saved.sourceHashes).length, 6);
+    assert.match(
+      saved.sourceHashes["integrations/viewer.css"],
+      /^[a-f0-9]{64}$/,
+    );
     assert.equal(saved.sourceHashes["src/removed.js"], null);
-    git(["restore", "--source=HEAD", "--staged", "--worktree", "src"]);
+    await writeReproduction(
+      join(root, "capture"),
+      {
+        revision,
+        options: { traceInvalidations: false },
+      },
+      root,
+    );
+    const defaults = JSON.parse(
+      await readFile(join(root, "capture/reproduce.json"), "utf8"),
+    );
+    assert.equal(
+      defaults.command.some((arg) => arg.startsWith("--trace-invalidations")),
+      false,
+    );
+    git([
+      "restore",
+      "--source=HEAD",
+      "--staged",
+      "--worktree",
+      "src",
+      "integrations",
+      "pnpm-workspace.yaml",
+    ]);
     await rm(join(root, "src/new.js"));
+    await rm(join(root, "patches/viewer.patch"));
     git(["apply", "capture/reproduce.patch"]);
     await assert.rejects(readFile(join(root, "src/removed.js")), {
       code: "ENOENT",
@@ -109,6 +161,18 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
     assert.equal(
       await readFile(join(root, "src/new.js"), "utf8"),
       "export const added = true;\n",
+    );
+    assert.equal(
+      await readFile(join(root, "integrations/viewer.css"), "utf8"),
+      "p { color: blue; }\n",
+    );
+    assert.equal(
+      await readFile(join(root, "patches/viewer.patch"), "utf8"),
+      "reproducible dependency patch\n",
+    );
+    assert.equal(
+      await readFile(join(root, "pnpm-workspace.yaml"), "utf8"),
+      "patchedDependencies:\n  viewer@1.0.0: patches/viewer.patch\n",
     );
   } finally {
     await rm(root, { recursive: true, force: true });

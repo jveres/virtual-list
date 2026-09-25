@@ -1,10 +1,10 @@
 // Real renderer geometry, synthetic embedded image; no API requests.
 import assert from "node:assert/strict";
-import { firefox, webkit } from "playwright";
+import { chromium, firefox, webkit } from "playwright";
 import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:5173";
-for (const [name, engine] of Object.entries({ firefox, webkit })) {
+for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
   if (process.env.BROWSER_ENGINE && process.env.BROWSER_ENGINE !== name)
     continue;
   const browser = await engine.launch();

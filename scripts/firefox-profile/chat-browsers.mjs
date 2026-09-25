@@ -217,7 +217,10 @@ export async function capturePlaywright(server, directory, options, signal) {
       await cdp.send("Profiler.start");
       await cdp.send("Tracing.start", {
         categories:
-          "devtools.timeline,blink.user_timing,toplevel,v8,gpu,cc,disabled-by-default-devtools.timeline.frame",
+          "devtools.timeline,blink.user_timing,toplevel,v8,gpu,cc,disabled-by-default-devtools.timeline.frame" +
+          (options.traceInvalidations
+            ? ",disabled-by-default-devtools.timeline.invalidationTracking"
+            : ""),
         transferMode: "ReturnAsStream",
       });
     }
@@ -253,6 +256,7 @@ export async function capturePlaywright(server, directory, options, signal) {
     const recording = await page.evaluate(() =>
       globalThis.__chatProfile.stop(),
     );
+    recording.traceInvalidations = options.traceInvalidations ?? false;
     await json(join(directory, "recording.json"), recording);
     const metadata = {
       browser: browser.version(),

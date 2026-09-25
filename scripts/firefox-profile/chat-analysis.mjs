@@ -183,6 +183,7 @@ export function analyzeChat(
       ? "installed-browser-native-input-or-follow"
       : "automation-correctness-only",
     mode: recording.mode,
+    traceInvalidations: recording.traceInvalidations ?? false,
     scenario: recording.scenario,
     workload: recording.workload,
     userAgent: recording.userAgent,
@@ -278,6 +279,10 @@ export function compareChat(before, after) {
     "browserBuild",
   ])
     if (before[key] !== after[key]) mismatches.push(key);
+  if (
+    (before.traceInvalidations ?? false) !== (after.traceInvalidations ?? false)
+  )
+    mismatches.push("traceInvalidations");
   if (!isDeepStrictEqual(before.monitor, after.monitor))
     mismatches.push("monitor");
   if (before.workload.hash !== after.workload.hash) mismatches.push("workload");

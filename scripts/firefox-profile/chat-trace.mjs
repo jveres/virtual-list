@@ -18,6 +18,9 @@ export function analyzeChatChrome(trace, cpu = null) {
     "Mismatched chat trace markers",
   );
   const categories = new Map();
+  const invalidations = new Map();
+  let invalidationRecords = 0;
+  const styledElements = [];
   const threads = new Map();
   const threadNames = new Map();
   const processNames = new Map();
@@ -32,6 +35,48 @@ export function analyzeChatChrome(trace, cpu = null) {
   const longest = [];
   for (const event of trace.traceEvents) {
     const renderer = event.pid === start.pid && event.tid === start.tid;
+    if (
+      renderer &&
+      event.ts >= start.ts &&
+      event.ts <= end.ts &&
+      /InvalidationTracking$/.test(event.name)
+    ) {
+      const data = event.args?.data ?? {};
+      invalidationRecords++;
+      const frame = data.stackTrace?.[0];
+      const key = JSON.stringify([
+        event.name,
+        data.reason,
+        data.changedAttribute,
+        data.changedClass,
+        data.changedPseudo,
+        data.selectorPart,
+        data.subtree,
+        data.selectors?.map((selector) => selector.selector),
+        frame?.functionName,
+        frame?.url,
+        frame?.lineNumber,
+      ]);
+      const group = invalidations.get(key) ?? {
+        name: event.name,
+        count: 0,
+        example: {
+          reason: data.reason,
+          nodeName: data.nodeName,
+          subtree: data.subtree,
+          changedAttribute: data.changedAttribute,
+          changedClass: data.changedClass,
+          changedPseudo: data.changedPseudo,
+          selectorPart: data.selectorPart,
+          selectors: data.selectors?.slice(0, 8),
+          omittedSelectors: Math.max(0, (data.selectors?.length ?? 0) - 8),
+          stackTrace: data.stackTrace?.slice(0, 8),
+          omittedStackFrames: Math.max(0, (data.stackTrace?.length ?? 0) - 8),
+        },
+      };
+      group.count++;
+      invalidations.set(key, group);
+    }
     if (
       renderer &&
       event.name === "AnimationFrame::Presentation" &&
@@ -49,6 +94,12 @@ export function analyzeChatChrome(trace, cpu = null) {
     const overlapMs =
       (Math.min(event.ts + event.dur, end.ts) - Math.max(event.ts, start.ts)) /
       1000;
+    if (
+      renderer &&
+      event.name === "UpdateLayoutTree" &&
+      Number.isFinite(event.args?.elementCount)
+    )
+      styledElements.push(event.args.elementCount);
     if (!renderer) {
       const key = `${event.pid}:${event.tid}`;
       const thread = threads.get(key) ?? {
@@ -101,6 +152,12 @@ export function analyzeChatChrome(trace, cpu = null) {
   return {
     durationMs: (end.ts - start.ts) / 1000,
     renderer: { pid: start.pid, tid: start.tid },
+    styleRecalculationElements: distribution(styledElements),
+    invalidationRecords,
+    omittedInvalidationGroups: Math.max(0, invalidations.size - 64),
+    invalidations: [...invalidations.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 64),
     categories: [...categories]
       .map(([name, values]) => ({
         name,
@@ -134,6 +191,7 @@ export function analyzeChatChrome(trace, cpu = null) {
     limits: [
       "Event durations are nested inclusive wall time; do not sum categories as CPU.",
       "V8 samples are sampled wall time, not thread CPU utilization.",
+      "Invalidation records are diagnostic-only causes; their counts are not flush durations. Empty records in timing mode mean the category was not enabled.",
       "Other threads summarize overlapping compositor, raster, GPU, and browser events. Shared process work is not necessarily caused by this page; durations overlap and are not CPU utilization.",
       "Missing presentation events mean unavailable telemetry. Presentation records do not independently measure a physical screen.",
     ],

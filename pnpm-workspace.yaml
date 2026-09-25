@@ -1,3 +1,5 @@
 allowBuilds:
   markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#a2b7dbd044964b53e801a4a457eb173e393f956a: true
 blockExoticSubdeps: false
+patchedDependencies:
+  markdown-viewer@0.8.0: patches/markdown-viewer@0.8.0.patch

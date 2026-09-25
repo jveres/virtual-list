@@ -6,6 +6,9 @@ export const chatTargets = {
   "src/virtual-list.ts": [
     "commit",
     "liveCommit",
+    "viewportState",
+    "repositionMounted",
+    "followIfBehindEnd",
     "reconcileWindow",
     "mountWindow",
     "publish",

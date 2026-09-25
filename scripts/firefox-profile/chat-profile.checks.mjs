@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
@@ -9,6 +10,31 @@ import { chatTargets, instrumentChat } from "./chat-instrument.mjs";
 import { installChatProbe } from "./chat-probe.mjs";
 import { analyzeChatChrome } from "./chat-trace.mjs";
 import { chatWorkload } from "./chat-workload.mjs";
+
+test("invalidation tracing rejects unsupported browsers and timing mode before launching", () => {
+  for (const [browser, mode] of [
+    ["firefox", "diagnostic"],
+    ["engine-chromium", "diagnostic"],
+    ["chrome", "timing"],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        new URL("../profile-chat.mjs", import.meta.url).pathname,
+        `--browser=${browser}`,
+        `--mode=${mode}`,
+        "--trace-invalidations",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(
+      result.stderr,
+      /--trace-invalidations requires --browser=chrome --mode=diagnostic/,
+    );
+    assert.equal(result.stdout, "");
+  }
+});
 
 test("workload has reproducible input, ordered deadlines, and a complete local response", () => {
   const a = chatWorkload(),
@@ -224,6 +250,13 @@ test("analysis rejects incomplete, stationary, overflowed, and interrupted evide
   after.mode = "diagnostic";
   assert.deepEqual(compareChat(before, after).mismatches, ["mode"]);
   after.mode = before.mode;
+  after.traceInvalidations = true;
+  assert.deepEqual(compareChat(before, after).mismatches, [
+    "traceInvalidations",
+  ]);
+  after.traceInvalidations = before.traceInvalidations;
+  delete before.traceInvalidations;
+  assert.equal(compareChat(before, after).comparable, true);
   after.workload = { ...after.workload, trail: "off" };
   assert.deepEqual(compareChat(before, after).mismatches, ["trail"]);
   after.workload = before.workload;
@@ -264,4 +297,58 @@ test("Chrome attribution clips work to the marked renderer and preserves unavail
     () => analyzeChatChrome({ traceEvents: trace.traceEvents.slice(1) }),
     /start marker/,
   );
+});
+
+test("Chrome invalidation summaries group causes, bound examples, and exclude unrelated events", () => {
+  const stackTrace = Array.from({ length: 12 }, (_, i) => ({
+    functionName: `update${i}`,
+    url: "http://localhost/viewer.js",
+    lineNumber: i,
+  }));
+  const invalidation = {
+    name: "StyleRecalcInvalidationTracking",
+    ph: "I",
+    ts: 2000,
+    pid: 1,
+    tid: 2,
+    args: {
+      data: {
+        reason: "Related style rule",
+        nodeName: "DIV",
+        subtree: true,
+        stackTrace,
+      },
+    },
+  };
+  const style = {
+    name: "UpdateLayoutTree",
+    ph: "X",
+    ts: 2000,
+    dur: 1000,
+    pid: 1,
+    tid: 2,
+    args: { elementCount: 20 },
+  };
+  const summary = analyzeChatChrome({
+    traceEvents: [
+      { name: "chat-profile-start", ph: "R", ts: 1000, pid: 1, tid: 2 },
+      { name: "chat-profile-end", ph: "R", ts: 11000, pid: 1, tid: 2 },
+      invalidation,
+      { ...invalidation, ts: 3000 },
+      { ...invalidation, tid: 3 },
+      { ...invalidation, ts: 12000 },
+      style,
+      { ...style, args: { elementCount: 100 } },
+      { ...style, tid: 3 },
+      { ...style, ts: 12000 },
+    ],
+  });
+  assert.equal(summary.invalidationRecords, 2);
+  assert.equal(summary.invalidations.length, 1);
+  assert.equal(summary.invalidations[0].count, 2);
+  assert.equal(summary.invalidations[0].example.stackTrace.length, 8);
+  assert.equal(summary.invalidations[0].example.omittedStackFrames, 4);
+  assert.equal(summary.omittedInvalidationGroups, 0);
+  assert.equal(summary.styleRecalculationElements.count, 2);
+  assert.equal(summary.styleRecalculationElements.max, 100);
 });

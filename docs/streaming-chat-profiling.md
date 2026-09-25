@@ -101,6 +101,22 @@ automation windows restrict native user input; Apple's
 describes those isolated windows. Use the manual workflow below on older
 Safari versions and for browsers without an automated adapter.
 
+For a Chrome style-recalculation investigation, enable invalidation stacks on
+a short, reduced workload:
+
+```sh
+pnpm run profile:chat -- --browser=chrome --mode=diagnostic \
+  --trace-invalidations --display=LU28R55 --refresh-hz=60 \
+  --seconds=8 --stream-ms=4000 --sections=12 --history=40
+```
+
+This option records reasons, affected nodes, CSS selectors when available, and
+mutation stacks. It has substantial overhead; the full default workload can
+overflow Chrome's trace buffer and lose the required markers. Use it to locate
+causes, then repeat the full workload without the flag to measure performance.
+The runner rejects this flag outside installed Chrome diagnostic mode, and the
+comparison tool rejects captures with different invalidation settings.
+
 ## Read the report
 
 Each invocation creates a unique directory under `browser-artifacts/chat-profile/`.
@@ -114,7 +130,7 @@ small summaries and source replay files remain; nothing is uploaded.
 | `summary.json` | Validity, distributions, slow-frame attribution, expensive operations, repeated-call candidates, geometry accesses, DOM churn, and paging changes. |
 | `reproduce.json`, `reproduce.patch` | Exact command, revision, source hashes, and changes from that revision, including untracked source. Apply the patch in a separate worktree to reconstruct the measured code. |
 | `firefox-cpu.json`, `firefox-attribution.json`, `firefox-bursts.json` | Sampled native costs and stacks across runtime, demo, renderer, and browser work. |
-| `chrome-analysis.json`, `chrome-metrics.json` | Marked-renderer events, sampled script attribution, other-thread categories including compositor/raster/GPU work, and before/after CDP performance counters. Shared-process work is not necessarily caused by this page. |
+| `chrome-analysis.json`, `chrome-metrics.json` | Marked-renderer events, styled-element distributions, optional invalidation causes, sampled script attribution, other-thread categories including compositor/raster/GPU work, and before/after CDP performance counters. Shared-process work is not necessarily caused by this page. |
 
 To reproduce a capture, check out its revision, apply its source patch, install
 the locked dependencies, and run the saved command. Match the browser build,
@@ -124,9 +140,20 @@ procedure; OS scheduling and real trackpad timing still vary. If a new question
 needs more detail, extend the analysis and rerun the fixture instead of keeping
 a large raw archive.
 
+Source replay includes integration CSS, dependency patches, and the pnpm
+workspace configuration as well as application and profiling source. A patched
+dependency is reconstructed by the locked install after you apply the source
+patch; don't edit the installed package by hand.
+
 Firefox burst summaries bound write details to 64 evenly spaced writes and
 eight nearest input events per write. They preserve total and omitted counts.
 Extend the analyzer and rerun when an event-order question needs more detail.
+
+Chrome invalidation summaries retain the 64 most frequent cause groups, with
+up to eight stack frames and eight selectors per example. They report total
+records and omitted groups or example details. Counts describe invalidations,
+not the duration of a style flush. Empty invalidation results in timing mode
+mean that tracing category was disabled.
 
 The most useful metrics are grouped by question:
 

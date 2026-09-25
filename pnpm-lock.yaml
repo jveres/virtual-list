@@ -4,6 +4,9 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  markdown-viewer@0.8.0: 16459264357e7d41879173b6379b02172c967adcbb1c28ae883d98a77c6d4c42
+
 importers:
 
   .:
@@ -22,7 +25,7 @@ importers:
         version: 0.18.7
       markdown-viewer:
         specifier: github:jveres/markdown-viewer#v0.8.0
-        version: git+https://github.com/jveres/markdown-viewer.git#a2b7dbd044964b53e801a4a457eb173e393f956a
+        version: git+https://github.com/jveres/markdown-viewer.git#a2b7dbd044964b53e801a4a457eb173e393f956a(patch_hash=16459264357e7d41879173b6379b02172c967adcbb1c28ae883d98a77c6d4c42)
       playwright:
         specifier: ^1.63.0
         version: 1.63.0
@@ -1183,7 +1186,7 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#a2b7dbd044964b53e801a4a457eb173e393f956a:
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#a2b7dbd044964b53e801a4a457eb173e393f956a(patch_hash=16459264357e7d41879173b6379b02172c967adcbb1c28ae883d98a77c6d4c42):
     dependencies:
       comrak-wasm: https://codeload.github.com/jveres/comrak-wasm/tar.gz/7b5e99586fad9232e7ec2ece2caab8c642f234eb
       highlight.js: 11.12.0
