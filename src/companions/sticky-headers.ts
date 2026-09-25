@@ -86,6 +86,7 @@ export function createStickyHeaders(
   let keys: string[] = [];
   let tops: number[] = [];
   let heights: number[] = [];
+  let ordinals: number[] = [];
   let groupCount = 0;
   let activeGroup = -1;
   let incomingGroup = -1;
@@ -99,7 +100,7 @@ export function createStickyHeaders(
   const headerHeight = (ordinal: number): number => heights[ordinal] ?? 0;
 
   const fillSlot = (slot: HTMLElement, ordinal: number): void => {
-    renderHeader(slot, ordinal);
+    renderHeader(slot, ordinals[ordinal] ?? ordinal);
     slot.style.height = `${headerHeight(ordinal)}px`;
   };
 
@@ -245,21 +246,28 @@ export function createStickyHeaders(
   const refresh = (scrollTop?: number): void => {
     if (disposed) return;
     const scroll = scrollTop ?? viewport.scrollTop;
-    const nextKeys = headerKeys();
-    const positions = nextKeys.map(positionOf);
+    // Missing runtime keys have no position. Keep them out of the ordered
+    // search while preserving the host's original rendering ordinals.
+    const headers = headerKeys().flatMap((key, ordinal) => {
+      const position = positionOf(key);
+      return position ? [{ key, ordinal, ...position }] : [];
+    });
+    const nextKeys = headers.map((header) => header.key);
     const changed =
       nextKeys.length !== keys.length ||
       nextKeys.some(
         (key, index) =>
           key !== keys[index] ||
-          (positions[index]?.top ?? 0) !== tops[index] ||
-          (positions[index]?.height ?? 0) !== heights[index],
+          headers[index]?.ordinal !== ordinals[index] ||
+          headers[index]?.top !== tops[index] ||
+          headers[index]?.height !== heights[index],
       );
     if (changed) {
       // The host can reuse and mutate its array between publications.
       keys = [...nextKeys];
-      tops = positions.map((position) => position?.top ?? 0);
-      heights = positions.map((position) => position?.height ?? 0);
+      tops = headers.map((header) => header.top);
+      heights = headers.map((header) => header.height);
+      ordinals = headers.map((header) => header.ordinal);
       activeGroup = -1;
       clearIncoming();
     }

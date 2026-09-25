@@ -7,6 +7,12 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 25 clean-code and performance audit
+
+The [clean-code and performance audit](clean-performance-audit-2026-09-25.md)
+records two resolved medium findings, regression coverage, and paired
+installed-Firefox measurements on the external display.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is

@@ -5,6 +5,44 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStickyHeaders as createCompanion } from "../../src/companions/index";
 
 describe("sticky headers", () => {
+  it("should skip unavailable headers and preserve their source ordinals", () => {
+    const container = document.createElement("div");
+    const viewport = document.createElement("div");
+    const keys = ["missing-start", "a", "missing-middle", "b", "missing-end"];
+    const positions = new Map([
+      ["a", { top: 100, height: 40 }],
+      ["b", { top: 200, height: 40 }],
+    ]);
+    const sticky = createCompanion({
+      container,
+      viewport,
+      headerKeys: () => keys,
+      positionOf: (key) => positions.get(key) ?? null,
+      renderHeader: (slot, ordinal) => {
+        slot.textContent = keys[ordinal] ?? "invalid ordinal";
+      },
+    });
+    const overlay = container.querySelector<HTMLElement>(".vl-sticky-header");
+    const slots = container.querySelectorAll(".sticky-group");
+    try {
+      expect(overlay?.style.display).toBe("none");
+      sticky.update(100);
+      expect(slots[0]?.textContent).toBe("a");
+      sticky.update(180);
+      expect(slots[1]?.textContent).toBe("b");
+      sticky.update(200);
+      expect(slots[0]?.textContent).toBe("b");
+      keys.unshift("another-missing");
+      sticky.refresh(200);
+      expect(slots[0]?.textContent).toBe("b");
+      positions.clear();
+      sticky.refresh(200);
+      expect(overlay?.style.display).toBe("none");
+    } finally {
+      sticky.destroy();
+    }
+  });
+
   it("should remove the overlay if initial header rendering fails", () => {
     const container = document.createElement("div");
     const viewport = document.createElement("div");
