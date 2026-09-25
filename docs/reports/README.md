@@ -42,6 +42,10 @@ The [stream-finalization investigation](streaming-finalization-2026-09-25.md)
 retains processed renderer blocks through completion. It records the upstream
 fix, completion-cost reduction, and checks across installed browsers.
 
+The [follow-up review](streaming-followup-review-2026-09-25.md) rejects a
+source-range cache and network-read coalescing, records the final native
+scrollback check, and identifies the remaining Safari attribution limit.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is
