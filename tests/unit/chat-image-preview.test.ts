@@ -130,6 +130,26 @@ function photoFor(image: HTMLImageElement): PhotoPreviewItem {
 }
 
 describe("chat image preview source identity", () => {
+  it("should bound row scans during a batch of streaming text mutations", async () => {
+    const entry = message(1, "/image.png");
+    const row = rowFor(entry);
+    const image = imageAt(row);
+    const text = document.createElement("p");
+    row.append(text);
+    bindRows([entry], row);
+    const original = photoFor(image);
+    const scans = vi.spyOn(row, "querySelectorAll");
+
+    for (let i = 0; i < 40; i++) text.textContent = `Streaming chunk ${i}`;
+    await Promise.resolve();
+
+    expect(photoFor(image).id).toBe(original.id);
+    // One subtree scan and one ordinal lookup, independent of mutation count.
+    expect(
+      scans.mock.calls.filter(([selector]) => selector === "img"),
+    ).toHaveLength(2);
+  });
+
   it("should navigate past an attachment and preserve preview identity after its display URL is released", () => {
     const platform = attachmentImagePlatform();
     const attachment = {

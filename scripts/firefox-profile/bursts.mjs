@@ -1,5 +1,39 @@
 import { runAnalysisCli, selectCapture, stackFrames } from "./capture.mjs";
 
+/** Retain representative write/input ordering without repeating the full stream. */
+export function compactBursts(report) {
+  const count = report.writeCount ?? report.writes.length;
+  const writes =
+    report.writes.length > 64
+      ? Array.from(
+          { length: 64 },
+          (_, index) =>
+            report.writes[
+              Math.round((index * (report.writes.length - 1)) / 63)
+            ],
+        )
+      : report.writes;
+  const note =
+    "Write details are limited to 64 evenly spaced writes and their 8 nearest input events; counts include omitted details. Rerun the fixture with expanded analysis for other event-order questions.";
+  return {
+    ...report,
+    writeCount: count,
+    omittedWriteDetails: count - writes.length,
+    writes: writes.map((entry) => ({
+      ...entry,
+      nearbyInputCount: entry.nearbyInputCount ?? entry.nearbyInput.length,
+      nearbyInput: entry.nearbyInput
+        .toSorted(
+          (a, b) =>
+            Math.abs(a.start - entry.time) - Math.abs(b.start - entry.time),
+        )
+        .slice(0, 8)
+        .sort((a, b) => a.start - b.start),
+    })),
+    limitations: [...new Set([...report.limitations, note])],
+  };
+}
+
 /** Inspect the three longest content-thread awake intervals and write/input order. */
 export function inspectBursts(profile, recording) {
   const { process, thread, entries, start, end } = selectCapture(
@@ -60,7 +94,7 @@ export function inspectBursts(profile, recording) {
           .map((e) => ({ type: e.data.eventType, start: e.start })),
       };
     });
-  return {
+  return compactBursts({
     contentPid: thread.pid,
     start,
     end,
@@ -71,7 +105,7 @@ export function inspectBursts(profile, recording) {
       "Stacks are sampled, truncated to 16 frames, and may contain unsymbolicated native addresses.",
       "Harness phases start before native input delivery; nearby events show actual observed order.",
     ],
-  };
+  });
 }
 
 await runAnalysisCli(import.meta.url, inspectBursts);

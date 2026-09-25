@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { gzipSync } from "node:zlib";
-import { inspectBursts } from "./bursts.mjs";
+import { compactBursts, inspectBursts } from "./bursts.mjs";
 import { readCapture } from "./capture.mjs";
 import { auditCpu } from "./cpu.mjs";
 
@@ -100,6 +100,29 @@ test("a zero-time start marker is valid and async spans cannot hide an awake bur
   assert.equal(burst.awake[0].stacks[0].samples, 1);
   assert.deepEqual(burst.writes[0].nearbyInput, [{ type: "wheel", start: 25 }]);
   assert.equal(burst.writes[0].time, 22);
+});
+
+test("burst summaries bound repeated input details while preserving counts and endpoint writes", () => {
+  const { profile, recording, thread } = fixture();
+  recording.writes = Array.from({ length: 200 }, (_, time) => ({
+    time,
+    value: time,
+    phase: "up-0",
+  }));
+  for (let time = 0; time < 20; time++)
+    thread.markers.data.push([2, time, time + 0.1, 1, { eventType: "wheel" }]);
+  const result = inspectBursts(profile, recording);
+  assert.equal(result.writeCount, 200);
+  assert.equal(result.omittedWriteDetails, 136);
+  assert.equal(result.writes.length, 64);
+  assert.equal(result.writes[0].write.time, 0);
+  assert.equal(result.writes.at(-1).write.time, 199);
+  assert.equal(result.writes[0].nearbyInputCount, 21);
+  assert.deepEqual(
+    result.writes[0].nearbyInput.map((event) => event.start),
+    [0, 1, 2, 3, 4, 5, 6, 7],
+  );
+  assert.deepEqual(compactBursts(result), result);
 });
 
 test("mixed phases are not credited as fully active input bins", () => {

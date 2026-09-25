@@ -276,6 +276,7 @@ export function createChatImagePreview(
     // Reconcile affected rows against final DOM order, not every mounted image:
     // unrelated virtual rows must not repeatedly read large data-URL strings.
     const affected = new Set<HTMLImageElement>();
+    const roots = new Set<Node>();
     const collect = (node: Node): void => {
       if (!(node instanceof Element)) return;
       if (node instanceof HTMLImageElement) affected.add(node);
@@ -286,15 +287,18 @@ export function createChatImagePreview(
       if (record.type === "childList" || record.attributeName === "data-key") {
         if (record.target instanceof Element) {
           const row = record.target.closest("[data-key], .attachment-chip");
-          if (row) collect(row);
+          if (row) roots.add(row);
         }
-        if (record.attributeName === "data-key") collect(record.target);
-        for (const node of record.addedNodes) collect(node);
-        for (const node of record.removedNodes) collect(node);
+        if (record.attributeName === "data-key") roots.add(record.target);
+        for (const node of record.addedNodes) roots.add(node);
+        for (const node of record.removedNodes) roots.add(node);
       } else if (record.target instanceof HTMLImageElement) {
         affected.add(record.target);
       }
     }
+    // A renderer can mutate the same row many times in one delivery. Its
+    // final subtree is unchanged while we inspect the records; scan it once.
+    for (const root of roots) collect(root);
     for (const image of affected) bind(image);
   });
   observer.observe(viewport, {

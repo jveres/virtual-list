@@ -229,6 +229,12 @@ test("analysis rejects incomplete, stationary, overflowed, and interrupted evide
   after.workload = before.workload;
   after.transport = "safaridriver-mcp";
   assert.deepEqual(compareChat(before, after).mismatches, ["transport"]);
+  after.transport = before.transport;
+  before.monitor = { name: "External", scale: 2, width: 1920 };
+  after.monitor = { width: 1920, name: "External", scale: 2 };
+  assert.equal(compareChat(before, after).comparable, true);
+  after.monitor.scale = 1;
+  assert.deepEqual(compareChat(before, after).mismatches, ["monitor"]);
 });
 
 test("Chrome attribution clips work to the marked renderer and preserves unavailable presentation", () => {

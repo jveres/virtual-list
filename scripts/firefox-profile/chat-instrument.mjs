@@ -43,6 +43,7 @@ export const chatTargets = {
     "update",
     "appendStaticMessageContent",
   ],
+  "demos/streaming/image-preview.ts": ["bind", "collect"],
   "demos/shared/markdown.ts": ["renderMarkdown"],
   "demos/streaming/openai.ts": ["chunksFromEvent", "saveOpenAIHistory"],
 };

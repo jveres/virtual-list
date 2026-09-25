@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { parseArgs } from "node:util";
+import { isDeepStrictEqual, parseArgs } from "node:util";
 
 export function distribution(values) {
   const sorted = values.toSorted((a, b) => a - b);
@@ -87,10 +87,7 @@ export function analyzeChat(
   if (Object.values(recording.dropped).some((count) => count > 0))
     reasons.push("Telemetry buffer overflow");
   if (!recording.frames.length) reasons.push("No frame samples");
-  if (
-    JSON.stringify(recording.initial.window) !==
-    JSON.stringify(recording.final.window)
-  )
+  if (!isDeepStrictEqual(recording.initial.window, recording.final.window))
     reasons.push("Window/display geometry changed during capture");
   const threshold = 1500 / refreshHz;
   const expensive = recording.operations.toSorted(
@@ -281,14 +278,11 @@ export function compareChat(before, after) {
     "browserBuild",
   ])
     if (before[key] !== after[key]) mismatches.push(key);
-  if (JSON.stringify(before.monitor) !== JSON.stringify(after.monitor))
+  if (!isDeepStrictEqual(before.monitor, after.monitor))
     mismatches.push("monitor");
   if (before.workload.hash !== after.workload.hash) mismatches.push("workload");
   if (before.workload.trail !== after.workload.trail) mismatches.push("trail");
-  if (
-    JSON.stringify(before.initial.window) !==
-    JSON.stringify(after.initial.window)
-  )
+  if (!isDeepStrictEqual(before.initial.window, after.initial.window))
     mismatches.push("window/display");
   if (!before.valid || !after.valid) mismatches.push("invalid capture");
   return {

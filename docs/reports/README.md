@@ -19,6 +19,11 @@ captures, operation attribution, cross-engine checks, and the Safari 27
 automation startup fix. Use the [workflow guide](../streaming-chat-profiling.md)
 for new investigations.
 
+The [first profiler-led optimization](streaming-image-scans-2026-09-25.md)
+removes repeated image-preview subtree scans during a mutation batch. It records
+18 interleaved installed-browser timing trials, a 6.2% reduction in Chrome's
+median main-thread task time, and the limits of the Firefox and Safari results.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is

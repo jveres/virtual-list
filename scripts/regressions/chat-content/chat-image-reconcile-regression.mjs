@@ -97,6 +97,23 @@ for (const engine of [chromium, firefox, webkit]) {
       };
       let blobUrl;
       try {
+        const query = rows[0].querySelectorAll;
+        let batchScans = 0;
+        rows[0].querySelectorAll = function (selector) {
+          if (selector === "img") batchScans++;
+          return query.call(this, selector);
+        };
+        try {
+          for (let i = 0; i < 40; i++) {
+            const text = document.createElement("span");
+            text.textContent = `Streaming chunk ${i}`;
+            rows[0].append(text);
+          }
+          await settle();
+        } finally {
+          rows[0].querySelectorAll = query;
+        }
+        reads.fill(0);
         const textRow = document.createElement("div");
         textRow.textContent = "An unrelated virtual row";
         host.append(textRow);
@@ -137,6 +154,7 @@ for (const engine of [chromium, firefox, webkit]) {
           normalized: normalizedReads[0] > dataSourceReads[0],
         };
         return {
+          batchScans,
           unrelated,
           rekeyed,
           label,
@@ -153,6 +171,11 @@ for (const engine of [chromium, firefox, webkit]) {
         if (blobUrl) URL.revokeObjectURL(blobUrl);
       }
     });
+    assert.equal(
+      result.batchScans,
+      2,
+      "a mutation batch scans each image row once, then resolves its ordinal",
+    );
     assert.deepEqual(
       result.unrelated,
       [0, 0],

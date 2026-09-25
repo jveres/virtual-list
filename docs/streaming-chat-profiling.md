@@ -124,6 +124,10 @@ procedure; OS scheduling and real trackpad timing still vary. If a new question
 needs more detail, extend the analysis and rerun the fixture instead of keeping
 a large raw archive.
 
+Firefox burst summaries bound write details to 64 evenly spaced writes and
+eight nearest input events per write. They preserve total and omitted counts.
+Extend the analyzer and rerun when an event-order question needs more detail.
+
 The most useful metrics are grouped by question:
 
 | Question | Evidence and interpretation |
