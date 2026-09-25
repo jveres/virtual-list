@@ -19,6 +19,93 @@ export function distribution(values) {
   };
 }
 
+function schedulingWindow(recording, frame) {
+  const scheduling = recording.scheduling;
+  if (!scheduling || frame.callbackStart === null || frame.callbackEnd === null)
+    return null;
+  const { callbackStart: start, callbackEnd: end } = frame;
+  const overlaps = (a, b) => a < end && b > start;
+  return {
+    timerTicks: scheduling.timers.filter(
+      (tick) => tick[2] > start && tick[2] <= end,
+    ).length,
+    timerLatenessMs: distribution(
+      scheduling.timers
+        .filter((tick) => overlaps(tick[1], tick[2]))
+        .map((tick) => Math.max(0, tick[2] - tick[1])),
+    ),
+    postRafTaskMs: distribution(
+      scheduling.tasks
+        .filter((task) => overlaps(task[0], task[1]))
+        .map((task) => task[1] - task[0]),
+    ),
+    rafCallbacks: scheduling.rafWork
+      .filter((work) => overlaps(work[0], work[0] + work[1]))
+      .toSorted((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([time, durationMs, name, , source]) => ({
+        time,
+        durationMs,
+        overlapMs: Math.max(
+          0,
+          Math.min(time + durationMs, end) - Math.max(time, start),
+        ),
+        name,
+        source: source ?? null,
+      })),
+    trailChanges: scheduling.trailChanges.filter(
+      (change) => change.time >= start - 100 && change.time <= end + 100,
+    ),
+  };
+}
+
+function analyzeScheduling(recording) {
+  const scheduling = recording.scheduling;
+  if (!scheduling) return { available: false };
+  const callbacks = new Map();
+  for (const [, duration, name, , source] of scheduling.rafWork) {
+    const entry = callbacks.get(name) ?? {
+      name,
+      calls: 0,
+      totalMs: 0,
+      maxMs: 0,
+    };
+    entry.calls++;
+    entry.totalMs += duration;
+    entry.maxMs = Math.max(entry.maxMs, duration);
+    if (source && duration === entry.maxMs) entry.slowestSource = source;
+    callbacks.set(name, entry);
+  }
+  return {
+    available: true,
+    version: scheduling.version,
+    timerPeriodMs: scheduling.timerPeriodMs,
+    timerLatenessMs: distribution(
+      scheduling.timers.map((tick) => Math.max(0, tick[2] - tick[1])),
+    ),
+    postRafTaskMs: distribution(
+      scheduling.tasks.map((task) => task[1] - task[0]),
+    ),
+    worstTimers: scheduling.timers
+      .toSorted((a, b) => b[2] - b[1] - (a[2] - a[1]))
+      .slice(0, 10)
+      .map(([scheduled, due, ran]) => ({
+        scheduled,
+        due,
+        ran,
+        lateMs: Math.max(0, ran - due),
+      })),
+    rafCallbacks: [...callbacks.values()].sort((a, b) => b.totalMs - a.totalMs),
+    trailChanges: scheduling.trailChanges,
+    limitations: [
+      "Timer lateness and posted-task delay include scheduling and browser work; they are not JS CPU or paint timings.",
+      "rAF callback names can collide; durations exclude work outside callbacks and callbacks queued before probe start.",
+      "Trail markers record direct child-list changes at MutationObserver delivery, not animation completion or removal cost.",
+      "This opt-in probe adds one 16 ms timer, at most one queued task, rAF wrappers, and a child-list observer. Compare with the same probe settings.",
+    ],
+  };
+}
+
 export function analyzeChat(
   recording,
   { refreshHz = 60, native = false, metadata = null } = {},
@@ -59,6 +146,12 @@ export function analyzeChat(
         start: previous[0],
         end: frame[0],
         duration: frame[0] - previous[0],
+        callbackStart: Number.isFinite(previous[11]) ? previous[11] : null,
+        callbackEnd: Number.isFinite(frame[11]) ? frame[11] : null,
+        callbackGapMs:
+          Number.isFinite(previous[11]) && Number.isFinite(frame[11])
+            ? frame[11] - previous[11]
+            : null,
         movement: frame[1] - previous[1],
         phase: previous[2],
         streaming: previous[10] ?? previous[3] < recording.workload.characters,
@@ -137,6 +230,7 @@ export function analyzeChat(
       }
       return {
         ...frame,
+        scheduling: schedulingWindow(recording, frame),
         operations: [...overlapping.values()]
           .sort((a, b) => b.inclusiveMs - a.inclusiveMs)
           .slice(0, 10),
@@ -200,6 +294,14 @@ export function analyzeChat(
       allMs: distribution(intervals.map((frame) => frame.duration)),
       movingMs: distribution(moving.map((frame) => frame.duration)),
       streamingMs: distribution(streaming.map((frame) => frame.duration)),
+      callbackGapMs: distribution(
+        intervals.map((frame) => frame.callbackGapMs).filter(Number.isFinite),
+      ),
+      callbackEntryLagMs: distribution(
+        recording.frames
+          .filter((frame) => Number.isFinite(frame[11]))
+          .map((frame) => frame[11] - frame[0]),
+      ),
       longThresholdMs: threshold,
       longIntervals: intervals.filter((frame) => frame.duration > threshold)
         .length,
@@ -208,6 +310,7 @@ export function analyzeChat(
     },
     phases,
     slowFrames,
+    scheduling: analyzeScheduling(recording),
     input: {
       ...recording.scroll,
       deliveryToNextRafMs: distribution(
@@ -269,6 +372,10 @@ export function analyzeChat(
 
 export function compareChat(before, after) {
   const mismatches = [];
+  if (
+    (before.scheduling?.version ?? null) !== (after.scheduling?.version ?? null)
+  )
+    mismatches.push("scheduler");
   for (const key of [
     "mode",
     "scenario",

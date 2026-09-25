@@ -46,6 +46,11 @@ The [follow-up review](streaming-followup-review-2026-09-25.md) rejects a
 source-range cache and network-read coalescing, records the final native
 scrollback check, and identifies the remaining Safari attribution limit.
 
+The [Safari scheduling investigation](safari-streaming-scheduling-2026-09-25.md)
+adds task/frame/lifecycle correlation and disconnected-driver captures. It
+links the late pause to trail disposal, distinguishes responsive-task frame
+gaps, and records two rejected upstream CSS controls.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is

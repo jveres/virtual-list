@@ -88,6 +88,8 @@ export async function writeReproduction(
     scenario: o.scenario,
     mode: o.diagnostic ? "diagnostic" : "timing",
     "trace-invalidations": o.traceInvalidations,
+    scheduler: o.scheduler,
+    "safari-detached": o.safariDetached,
     display: o.display,
     "refresh-hz": o.refreshHz,
     seconds: o.seconds,

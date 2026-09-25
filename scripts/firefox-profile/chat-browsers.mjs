@@ -465,7 +465,42 @@ async function captureSafariMcp(
       true,
       "Safari test document is not focused",
     );
-    await evaluate("globalThis.__chatProfile.start()");
+    if (options.safariDetached) {
+      await evaluate(`(fetch('/__chat-profile/start').then(response => {
+        if (!response.ok) throw new Error('Capture start cancelled');
+        globalThis.__chatProfile.start();
+        setTimeout(() => fetch('/__chat-profile/recording', {
+          method:'POST', body:JSON.stringify(globalThis.__chatProfile.stop())
+        }), ${options.seconds * 1000});
+      }), true)`);
+      await waitFor(() => server.captureArmed, signal);
+      // EOF asks MCP to close its automation window. Terminating only the
+      // owned driver lets us test whether the page survives without Inspector.
+      driver.kill("SIGKILL");
+      await Promise.race([
+        exited,
+        new Promise((_, reject) =>
+          setTimeout(
+            () =>
+              reject(new Error("Safari driver did not detach before capture")),
+            1500,
+          ).unref(),
+        ),
+      ]);
+      metadata.driverClosed = true;
+      metadata.driverDetach =
+        "SIGKILL of owned driver before releasing server start gate";
+      metadata.transport = "safaridriver-mcp-detached";
+      metadata.connectionOverhead =
+        "Driver exited before self-timed capture; no Inspector client commands during measurement";
+      await sleep(500);
+      signal.throwIfAborted();
+      assert.ok(
+        (await safariPids()).includes(pid),
+        "Safari exited during driver detach",
+      );
+      server.releaseCapture();
+    } else await evaluate("globalThis.__chatProfile.start()");
     metadata.stage = "capturing";
     const end = Date.now() + options.seconds * 1000;
     if (options.scenario === "manual")
@@ -489,9 +524,10 @@ async function captureSafariMcp(
         await sleep(700);
       } else await sleep(200);
     }
-    await evaluate(
-      "(fetch('/__chat-profile/recording',{method:'POST',body:JSON.stringify(globalThis.__chatProfile.stop())}),true)",
-    );
+    if (!options.safariDetached)
+      await evaluate(
+        "(fetch('/__chat-profile/recording',{method:'POST',body:JSON.stringify(globalThis.__chatProfile.stop())}),true)",
+      );
     const recording = await waitFor(() => server.recording, signal);
     recording.transport = metadata.transport;
     // Persist before cleanup so a failed browser shutdown cannot lose it.

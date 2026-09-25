@@ -19,6 +19,8 @@ const { values } = parseArgs({
     scenario: { type: "string", default: "follow" },
     mode: { type: "string", default: "timing" },
     "trace-invalidations": { type: "boolean", default: false },
+    scheduler: { type: "boolean", default: false },
+    "safari-detached": { type: "boolean", default: false },
     display: { type: "string" },
     "refresh-hz": { type: "string" },
     seconds: { type: "string", default: "20" },
@@ -36,6 +38,8 @@ if (values.help) {
   --scenario follow|scrollback|manual  Installed Safari automation requires Safari 27+
   --mode timing|diagnostic       Optional synchronous spans, access and mutation counters
   --trace-invalidations         Chrome diagnostic only; use a short, reduced fixture
+  --scheduler                   Timer/task latency, rAF work, and trail lifecycle diagnostics
+  --safari-detached             Disconnect the Safari driver before a self-timed follow capture
   --display INDEX|NAME           Default first external display, otherwise built-in
   --refresh-hz N                 Actual display rate if different from reported maximum
   --seconds N                   Measurement window (default 20; scripted Firefox rounds up)
@@ -61,6 +65,13 @@ if (!["follow", "scrollback", "manual"].includes(values.scenario))
   throw new Error("Invalid --scenario");
 if (!["timing", "diagnostic"].includes(values.mode))
   throw new Error("Invalid --mode");
+if (
+  values["safari-detached"] &&
+  (values.browser !== "safari" || values.scenario !== "follow")
+)
+  throw new Error(
+    "--safari-detached requires --browser=safari --scenario=follow",
+  );
 if (
   values["trace-invalidations"] &&
   (values.browser !== "chrome" || values.mode !== "diagnostic")
@@ -97,6 +108,8 @@ const options = {
   scenario: values.scenario,
   diagnostic: values.mode === "diagnostic",
   traceInvalidations: values["trace-invalidations"],
+  scheduler: values.scheduler,
+  safariDetached: values["safari-detached"],
   display: values.display,
   refreshHz,
   seconds,

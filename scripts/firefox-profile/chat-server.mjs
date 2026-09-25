@@ -14,6 +14,7 @@ export async function createChatProfileServer(options = {}) {
     turns: workload.turns,
     workload: { ...workload.metadata, trail: options.trail ?? "long" },
     diagnostic: options.diagnostic ?? false,
+    scheduler: options.scheduler ?? false,
     scenario: options.scenario ?? "follow",
     trail: options.trail ?? "long",
     limit: options.limit ?? 100000,
@@ -21,6 +22,8 @@ export async function createChatProfileServer(options = {}) {
   const sources = {};
   const requests = [];
   let recording = null;
+  let captureReleased = false;
+  const pendingStarts = new Set();
   const streams = new Set();
   const server = await createServer({
     root,
@@ -62,7 +65,17 @@ export async function createChatProfileServer(options = {}) {
               "Content-Security-Policy",
               "connect-src 'self' data: blob:",
             );
-            if (req.url === "/__chat-profile/recording") {
+            if (req.url === "/__chat-profile/start") {
+              res.setHeader("Cache-Control", "no-store");
+              if (req.method !== "GET") {
+                res.writeHead(405).end();
+              } else if (captureReleased) {
+                res.writeHead(204).end();
+              } else {
+                pendingStarts.add(res);
+                res.once("close", () => pendingStarts.delete(res));
+              }
+            } else if (req.url === "/__chat-profile/recording") {
               if (req.method !== "POST") {
                 res.statusCode = 405;
                 res.end();
@@ -169,7 +182,17 @@ export async function createChatProfileServer(options = {}) {
     get recording() {
       return recording;
     },
+    get captureArmed() {
+      return pendingStarts.size > 0;
+    },
+    releaseCapture() {
+      captureReleased = true;
+      for (const res of pendingStarts) res.writeHead(204).end();
+      pendingStarts.clear();
+    },
     async close() {
+      for (const res of pendingStarts) res.writeHead(503).end();
+      pendingStarts.clear();
       for (const stream of streams) stream.destroy();
       await server.close();
     },

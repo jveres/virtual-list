@@ -12,6 +12,7 @@ for (const browser of ["engine-firefox", "engine-chromium", "engine-webkit"]) {
   const options = {
     browser,
     diagnostic: true,
+    scheduler: true,
     scenario: "follow",
     trail: "long",
     sections: 6,
@@ -47,6 +48,15 @@ for (const browser of ["engine-firefox", "engine-chromium", "engine-webkit"]) {
       ),
     );
     assert.ok(summary.work.geometryAccess.length > 0);
+    assert.ok(summary.scheduling.timerLatenessMs.count > 30);
+    assert.ok(summary.scheduling.postRafTaskMs.count > 30);
+    assert.ok(summary.scheduling.rafCallbacks.length > 0);
+    assert.ok(summary.frames.callbackGapMs.count > 30);
+    assert.ok(
+      summary.scheduling.trailChanges.some(
+        (change) => change.layersRemoved > 0,
+      ),
+    );
     assert.ok(
       result.recording.spans.every(
         (span) => span[2] >= 0 && span[2] <= span[1],

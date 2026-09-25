@@ -105,6 +105,8 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
           scenario: "follow",
           diagnostic: true,
           traceInvalidations: true,
+          scheduler: true,
+          safariDetached: true,
           durationMs: 12000,
           seconds: 20,
         },
@@ -117,6 +119,8 @@ test("reproduction patch reconstructs modified, deleted, and untracked source at
     assert.equal(saved.revision, revision);
     assert.ok(saved.command.includes("--browser=chrome"));
     assert.ok(saved.command.includes("--trace-invalidations"));
+    assert.ok(saved.command.includes("--scheduler"));
+    assert.ok(saved.command.includes("--safari-detached"));
     assert.ok(saved.command.includes("--stream-ms=12000"));
     assert.equal(Object.keys(saved.sourceHashes).length, 6);
     assert.match(

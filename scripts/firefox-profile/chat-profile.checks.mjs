@@ -8,8 +8,56 @@ import { parseSync } from "vite";
 import { analyzeChat, compareChat } from "./chat-analysis.mjs";
 import { chatTargets, instrumentChat } from "./chat-instrument.mjs";
 import { installChatProbe } from "./chat-probe.mjs";
+import { createChatProfileServer } from "./chat-server.mjs";
 import { analyzeChatChrome } from "./chat-trace.mjs";
 import { chatWorkload } from "./chat-workload.mjs";
+
+test("detached Safari rejects incompatible captures before launching", () => {
+  for (const [browser, scenario] of [
+    ["chrome", "follow"],
+    ["safari", "scrollback"],
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        new URL("../profile-chat.mjs", import.meta.url).pathname,
+        `--browser=${browser}`,
+        `--scenario=${scenario}`,
+        "--safari-detached",
+      ],
+      { encoding: "utf8" },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /--safari-detached requires/);
+    assert.equal(result.stdout, "");
+  }
+});
+
+test("self-timed capture waits for its server gate and cancelled gates reject startup", async () => {
+  for (const action of ["release", "close"]) {
+    const server = await createChatProfileServer({ sections: 2, history: 10 });
+    try {
+      let responded = false;
+      const response = fetch(new URL("/__chat-profile/start", server.url)).then(
+        (value) => {
+          responded = true;
+          return value;
+        },
+      );
+      const deadline = Date.now() + 2000;
+      while (!server.captureArmed && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.equal(server.captureArmed, true);
+      assert.equal(responded, false);
+      if (action === "release") server.releaseCapture();
+      else await server.close();
+      assert.equal((await response).status, action === "release" ? 204 : 503);
+      assert.equal(server.captureArmed, false);
+    } finally {
+      await server.close();
+    }
+  }
+});
 
 test("invalidation tracing rejects unsupported browsers and timing mode before launching", () => {
   for (const [browser, mode] of [
@@ -109,9 +157,14 @@ test("instrumented returns and exceptions preserve behavior and close spans", ()
 test("recorder bounds telemetry, subtracts nested work, and restores DOM descriptors", () => {
   const dom = new JSDOM(
     '<div id="viewport"></div><textarea id="prompt"></textarea><button id="send-btn"></button>',
-    { url: "http://localhost:4197", runScripts: "outside-only" },
+    {
+      url: "http://localhost:4197",
+      runScripts: "outside-only",
+      pretendToBeVisual: true,
+    },
   );
   const w = dom.window;
+  w.document.hasFocus = () => true;
   let time = 100;
   let callback;
   w.requestAnimationFrame = (fn) => {
@@ -132,6 +185,9 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
       `(${installChatProbe.toString()})(${JSON.stringify({ turns: [], workload: { characters: 10, chunks: 1 }, diagnostic: true, limit: 2, scenario: "follow", trail: "off" })})`,
     );
     const api = w.__chatProfile;
+    w.document.hasFocus = () => false;
+    assert.throws(() => api.start(), /focused, visible/);
+    w.document.hasFocus = () => true;
     api.start();
     const outer = api.enter("outer", null);
     time += 2;
@@ -208,6 +264,169 @@ function recording() {
     mutations: null,
   };
 }
+
+test("scheduler probe preserves callbacks and cancellation, bounds records, and closes its tasks", () => {
+  const dom = new JSDOM(
+    '<div id="viewport"></div><textarea id="prompt"></textarea><button id="send-btn"></button>',
+    {
+      url: "http://localhost:4197",
+      runScripts: "outside-only",
+      pretendToBeVisual: true,
+    },
+  );
+  const w = dom.window;
+  w.document.hasFocus = () => true;
+  let time = 100,
+    next = 0,
+    closed = 0,
+    posted = 0;
+  const callbacks = new Map(),
+    timers = new Map();
+  w.requestAnimationFrame = (callback) => {
+    callbacks.set(++next, callback);
+    return next;
+  };
+  const originalRaf = w.requestAnimationFrame;
+  w.cancelAnimationFrame = (id) => callbacks.delete(id);
+  w.setTimeout = (callback) => {
+    timers.set(++next, callback);
+    return next;
+  };
+  w.clearTimeout = (id) => timers.delete(id);
+  let channel;
+  w.MessageChannel = class {
+    constructor() {
+      channel = this;
+    }
+    port1 = {
+      close() {
+        closed++;
+      },
+    };
+    port2 = {
+      postMessage() {
+        posted++;
+      },
+      close() {
+        closed++;
+      },
+    };
+  };
+  w.performance.now = () => time;
+  w.performance.mark = () => {};
+  w.performance.getEntriesByName = () => [{}];
+  w.PerformanceObserver = { supportedEntryTypes: [] };
+  try {
+    w.eval(
+      `(${installChatProbe.toString()})(${JSON.stringify({ turns: [], workload: {}, scheduler: true, diagnostic: false, limit: 2, scenario: "follow", trail: "off" })})`,
+    );
+    const api = w.__chatProfile;
+    api.start();
+    const cancelled = w.requestAnimationFrame(() =>
+      assert.fail("cancelled callback"),
+    );
+    w.cancelAnimationFrame(cancelled);
+    assert.equal(callbacks.has(cancelled), false);
+    let receiver, timestamp;
+    w.requestAnimationFrame(function paint(value) {
+      receiver = this;
+      timestamp = value;
+      time += 4;
+    });
+    const due = [...callbacks.values()];
+    callbacks.clear();
+    time = 120;
+    for (const callback of due) callback.call(w, 116);
+    assert.equal(receiver, w);
+    assert.equal(timestamp, 116);
+    time = 130;
+    channel.port1.onmessage();
+    // A busy main thread delivers the due timer late; reschedule from now.
+    for (let i = 0; i < 3; i++) {
+      const [id, callback] = timers.entries().next().value;
+      timers.delete(id);
+      time += 30;
+      callback();
+    }
+    const throwing = w.requestAnimationFrame(() => {
+      time += 9;
+      throw new Error("callback failed");
+    });
+    assert.throws(
+      () => callbacks.get(throwing).call(w, time),
+      /callback failed/,
+    );
+    const result = api.stop();
+    assert.deepEqual(Array.from(result.scheduling.rafWork[0]), [
+      20,
+      4,
+      "paint",
+      16,
+      null,
+    ]);
+    assert.deepEqual(Array.from(result.scheduling.tasks[0]), [20, 30]);
+    assert.equal(result.scheduling.version, 2);
+    assert.equal(result.scheduling.rafWork[1][1], 9);
+    assert.match(result.scheduling.rafWork[1][4], /callback failed/);
+    assert.deepEqual(Array.from(result.scheduling.timers[0]), [0, 16, 60]);
+    assert.equal(result.scheduling.timers.length, 2);
+    assert.equal(result.dropped.timers, 1);
+    assert.equal(posted, 1);
+    assert.equal(closed, 2);
+    assert.equal(timers.size, 0);
+    assert.equal(w.requestAnimationFrame, originalRaf);
+  } finally {
+    w.close();
+  }
+});
+
+test("scheduler analysis distinguishes a frame gap with responsive tasks from delayed tasks", () => {
+  const r = recording();
+  r.frames.forEach((frame) => {
+    frame[11] = frame[0] + 2;
+  });
+  r.frames[1][0] = 96;
+  r.frames[1][11] = 98;
+  for (let i = 2; i < r.frames.length; i++) {
+    r.frames[i][0] += 80;
+    r.frames[i][11] += 80;
+  }
+  r.scheduling = {
+    version: 1,
+    timerPeriodMs: 16,
+    timers: [
+      [0, 16, 17],
+      [17, 33, 34],
+      [34, 50, 51],
+      [51, 67, 68],
+      [68, 84, 85],
+    ],
+    tasks: [[2, 3]],
+    rafWork: [[2, 1, "paint", 0]],
+    trailChanges: [{ time: 97, layersRemoved: 1 }],
+  };
+  const responsive = analyzeChat(r);
+  assert.equal(responsive.slowFrames[0].callbackGapMs, 96);
+  assert.equal(responsive.slowFrames[0].scheduling.timerTicks, 5);
+  assert.equal(responsive.slowFrames[0].scheduling.timerLatenessMs.max, 1);
+  r.scheduling.timers = [[0, 16, 97]];
+  r.scheduling.tasks = [[2, 97]];
+  r.scheduling.rafWork = [
+    [3, 80, "paint", 0],
+    [98, 50, "next-frame", 96],
+  ];
+  const blocked = analyzeChat(r);
+  assert.equal(blocked.slowFrames[0].scheduling.timerLatenessMs.max, 81);
+  assert.equal(blocked.slowFrames[0].scheduling.postRafTaskMs.max, 95);
+  assert.equal(blocked.slowFrames[0].scheduling.rafCallbacks[0].durationMs, 80);
+  assert.equal(blocked.slowFrames[0].scheduling.rafCallbacks.length, 1);
+  assert.equal(blocked.slowFrames[0].scheduling.rafCallbacks[0].overlapMs, 80);
+  assert.equal(blocked.slowFrames[0].scheduling.trailChanges.length, 1);
+  assert.deepEqual(
+    compareChat(responsive, analyzeChat(recording())).mismatches,
+    ["scheduler"],
+  );
+});
 
 test("analysis rejects incomplete, stationary, overflowed, and interrupted evidence", () => {
   const valid = recording();

@@ -90,6 +90,14 @@ export function installChatProbe(config) {
   const entries = [];
   const errors = [];
   const invalidations = [];
+  const timers = [];
+  const tasks = [];
+  const rafWork = [];
+  const trailChanges = [];
+  const nativeRaf = window.requestAnimationFrame;
+  let timer = 0;
+  let channel;
+  let pendingTask = null;
   const observers = [];
   const restore = [];
   const capabilities = {};
@@ -111,6 +119,8 @@ export function installChatProbe(config) {
     return identities.get(entity);
   };
   const boundary = () => ({
+    focused: document.hasFocus(),
+    visibility: document.visibilityState,
     top: viewport.scrollTop,
     height: viewport.clientHeight,
     scrollHeight: viewport.scrollHeight,
@@ -263,15 +273,84 @@ export function installChatProbe(config) {
       }
     }
   }
+  function observeScheduling() {
+    // One rescheduled timer, no catch-up burst. A late timer measures task
+    // scheduling delay, not JavaScript CPU time or physical presentation.
+    const scheduleTimer = () => {
+      const scheduled = now();
+      timer = setTimeout(() => {
+        if (!active) return;
+        append("timers", timers, [scheduled, scheduled + 16, now()]);
+        scheduleTimer();
+      }, 16);
+    };
+    scheduleTimer();
+    channel = new MessageChannel();
+    channel.port1.onmessage = () => {
+      if (!active || pendingTask === null) return;
+      append("tasks", tasks, [pendingTask, now()]);
+      pendingTask = null;
+    };
+    const wrappedRaf = function (callback) {
+      if (typeof callback !== "function") return nativeRaf.call(this, callback);
+      return nativeRaf.call(this, function (timestamp) {
+        if (!active) return callback.call(this, timestamp);
+        const start = now();
+        try {
+          return callback.call(this, timestamp);
+        } finally {
+          const duration = now() - start;
+          append("rafWork", rafWork, [
+            start,
+            duration,
+            callback.name || "anonymous",
+            timestamp - startTime,
+            // Read source after slow callbacks, outside their timing. This
+            // identifies anonymous closures without collecting hot-path stacks.
+            duration >= 8
+              ? Function.prototype.toString.call(callback).slice(0, 600)
+              : null,
+          ]);
+        }
+      });
+    };
+    window.requestAnimationFrame = wrappedRaf;
+    restore.push(() => {
+      if (window.requestAnimationFrame === wrappedRaf)
+        window.requestAnimationFrame = nativeRaf;
+    });
+  }
   const mutation = new MutationObserver((records) => {
     if (!active) return;
-    mutations.callbacks++;
+    if (config.diagnostic) mutations.callbacks++;
+    let layersAdded = 0;
+    let layersRemoved = 0;
+    let groupsRemoved = 0;
     for (const record of records) {
-      mutations.added += record.addedNodes.length;
-      mutations.removed += record.removedNodes.length;
-      if (record.type === "attributes") mutations.attributes++;
-      if (record.type === "characterData") mutations.text++;
+      if (config.diagnostic) {
+        mutations.added += record.addedNodes.length;
+        mutations.removed += record.removedNodes.length;
+        if (record.type === "attributes") mutations.attributes++;
+        if (record.type === "characterData") mutations.text++;
+      }
+      if (config.scheduler) {
+        for (const node of record.addedNodes)
+          if (node.nodeType === 1 && node.hasAttribute("data-streaming-trail"))
+            layersAdded++;
+        for (const node of record.removedNodes) {
+          if (node.nodeType !== 1) continue;
+          if (node.hasAttribute("data-streaming-trail")) layersRemoved++;
+          if (node.hasAttribute("data-trail-group")) groupsRemoved++;
+        }
+      }
     }
+    if (layersAdded || layersRemoved || groupsRemoved)
+      append("trailChanges", trailChanges, {
+        time: now(),
+        layersAdded,
+        layersRemoved,
+        groupsRemoved,
+      });
   });
   // Bypass our optional access counters for the probe's own scroll sample.
   const scrollGetter = Object.getOwnPropertyDescriptor(
@@ -309,6 +388,7 @@ export function installChatProbe(config) {
     });
   const sample = (time) => {
     if (!active) return;
+    const entered = now();
     frameIndex++;
     append("frames", frames, [
       time - startTime,
@@ -322,11 +402,16 @@ export function installChatProbe(config) {
       currentState?.held ?? false,
       // rAF's supplied timestamp can precede event delivery in this frame.
       // Use callback-entry time for input delay, not the animation timeline.
-      lastInput === null ? null : now() - lastInput,
+      lastInput === null ? null : entered - lastInput,
       !streamDone,
+      entered,
     ]);
     lastInput = null;
-    frame = requestAnimationFrame(sample);
+    if (channel && pendingTask === null) {
+      pendingTask = entered;
+      channel.port2.postMessage(0);
+    }
+    frame = nativeRaf.call(window, sample);
   };
   window.addEventListener("error", onError);
   window.addEventListener("unhandledrejection", onError);
@@ -419,6 +504,8 @@ export function installChatProbe(config) {
     start() {
       if (started || !api.ready())
         throw new Error("Chat profiling is not ready or already started");
+      if (!document.hasFocus() || document.visibilityState === "hidden")
+        throw new Error("Chat profiling requires a focused, visible document");
       started = true;
       viewport = document.querySelector("#viewport");
       initial = boundary();
@@ -438,18 +525,19 @@ export function installChatProbe(config) {
         window.addEventListener(event, invalidate);
       document.addEventListener("visibilitychange", invalidate);
       observePerformance();
-      if (config.diagnostic) {
-        instrumentDOM();
+      if (config.diagnostic) instrumentDOM();
+      if (config.diagnostic || config.scheduler) {
         mutation.observe(viewport, {
           childList: true,
           subtree: true,
-          attributes: true,
-          characterData: true,
+          attributes: config.diagnostic,
+          characterData: config.diagnostic,
         });
       }
       active = true;
+      if (config.scheduler) observeScheduling();
       performance.mark("chat-profile-start");
-      frame = requestAnimationFrame(sample);
+      frame = nativeRaf.call(window, sample);
       const prompt = document.querySelector("#prompt");
       prompt.value = "Produce the deterministic complex profiling reply.";
       prompt.dispatchEvent(new Event("input", { bubbles: true }));
@@ -465,6 +553,9 @@ export function installChatProbe(config) {
       const durationMs = now();
       active = false;
       cancelAnimationFrame(frame);
+      clearTimeout(timer);
+      channel?.port1.close();
+      channel?.port2.close();
       mutation.disconnect();
       for (const cleanup of restore.reverse()) cleanup();
       window.removeEventListener("scroll", onScroll, true);
@@ -501,6 +592,16 @@ export function installChatProbe(config) {
         dropped,
         errors,
         invalidations,
+        scheduling: config.scheduler
+          ? {
+              version: 2,
+              timerPeriodMs: 16,
+              timers,
+              tasks,
+              rafWork,
+              trailChanges,
+            }
+          : null,
         mutations: config.diagnostic ? mutations : null,
         stream: { done: streamDone, characters, chunks, events },
         scroll: { scrolls, ends, wheels },

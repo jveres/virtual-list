@@ -127,8 +127,26 @@ On the tested Safari 27 build, HTTP WebDriver tried to attach to the regular
 Safari instance, which rejected it because it was not launched for automation.
 The MCP path avoids that startup failure and permits native input. Its Inspector
 connection adds measurement overhead even with the Inspector UI closed. Compare
-MCP captures with the same transport; use the standalone manual workflow for a
-control without this connection.
+MCP captures with the same transport. For a follow-only control, disconnect the
+owned driver before measurement:
+
+```sh
+pnpm run profile:chat -- --browser=safari --scenario=follow \
+  --display=LU28R55 --refresh-hz=60 --safari-detached
+```
+
+The page waits on a local server gate. The runner terminates only its owned
+driver with `SIGKILL`, waits for exit, then releases the gate. A graceful driver
+exit closes Safari's automation window before it can record. The page starts
+and exports the recording itself; the runner closes the owned Safari instance
+afterward. `run.json` records the detached transport and cleanup. This option
+requires Safari and the follow scenario; it does not support manual gestures
+or scripted scrollback.
+
+This control removes the live Inspector client during measurement. It does not
+prove that connecting Inspector earlier had no lasting effect. Use the
+standalone manual workflow for a session that never connects Inspector. Do not
+combine connected and detached transports into one performance baseline.
 
 The obsolete HTTP WebDriver adapter was removed from this runner. WebDriver
 automation windows restrict native user input; Apple's
@@ -202,6 +220,7 @@ The most useful metrics are grouped by question:
 | Did DOM or retained data grow? | Mutation counts; node/image/scroll-height snapshots at capture boundaries; retained-count changes and held-state samples. Initial/final heap sizes are Chromium-only when exposed and are not leak proof. |
 | Was input delayed? | Wheel-event age and handler-to-next-rAF delay. These are main-thread observations, not input-to-display latency. |
 | Did the browser stall? | Long-task and long-animation-frame entries where supported; native tasks, GC slices, layout/paint, raster/compositor/GPU tracks. Missing entries mean unavailable data. |
+| Did tasks stall with the frames? | `--scheduler` adds timer lateness, posted-task delay, animation callback duration, and trail lifecycle markers. A frame gap with responsive timers has different evidence from a gap that also delays tasks. |
 
 The animation-frame sampler reads only cached numbers. Geometry and node-count
 snapshots happen at capture boundaries. Diagnostic mode wraps selected
@@ -216,6 +235,50 @@ varies by browser, so zero-duration calls are not proof of zero cost. Geometry
 reads are potential flush sites, not proof that a layout was forced. Chrome's
 [Long Animation Frames API](https://developer.chrome.com/docs/web-platform/long-animation-frames)
 provides additional forced-style/layout attribution for supported long frames.
+
+## Diagnose Safari scheduling gaps
+
+Use the optional scheduling probe when frame intervals alone cannot explain a
+pause. It works in all supported browsers and requires no native tracing tool:
+
+```sh
+pnpm run profile:chat -- --browser=safari --display=LU28R55 \
+  --refresh-hz=60 --mode=diagnostic --scheduler --trail=long
+```
+
+The common recorder saves both the animation timeline timestamp and callback
+entry time. `frames.callbackGapMs` measures actual callback spacing;
+`callbackEntryLagMs` measures how far entry follows the supplied timestamp.
+Neither measures display presentation.
+
+With `--scheduler`, `summary.json` also contains:
+
+- `scheduling.timerLatenessMs`: delay beyond a rescheduled 16 ms timer's due
+  time. The timer does not enqueue catch-up work after a stall.
+- `scheduling.postRafTaskMs`: time from the frame sampler to a posted
+  `MessageChannel` task. Only one task can be pending. This includes other
+  callbacks, browser work, and scheduling delays; it is not a paint duration.
+- `scheduling.rafCallbacks`: callback counts, total time, and maximum time.
+  Slow callbacks include at most 600 characters of function source to help
+  identify anonymous closures. Names can collide, and callbacks queued before
+  capture are not wrapped.
+- `scheduling.trailChanges`: direct trail-layer additions/removals and group
+  removals, timestamped when the mutation observer delivers them. These markers
+  locate cleanup but do not measure its cost.
+- `slowFrames[].scheduling`: overlapping timer, task, and callback observations,
+  plus trail changes within 100 ms of the interval.
+
+Timer and task lateness do not identify JavaScript CPU, garbage collection, or
+native rendering by themselves. Compare lifecycle timing and controlled
+workloads before attributing a cause. For example, compare `--trail=long`,
+`--trail=short`, and `--trail=off` in three trials to test whether a pause follows
+the fade duration. These are causal controls, not equivalent visual workloads.
+
+The probe adds a timer, posted tasks, callback wrappers, and a child-list
+observer. Keep it enabled with the same version in paired measurements; the
+comparison tool rejects a mismatch. Ordinary timing mode leaves these off.
+No layout reads are added to the frame sampler. Raw probe records follow the
+same automatic cleanup and reproduction policy as other chat captures.
 
 ## Investigate and compare
 
@@ -243,14 +306,16 @@ Use this investigation sequence:
    repeated geometry reconciliation without a state change. Use a diagnostic
    control to test that hypothesis before changing production behavior.
 6. Run correctness regressions, then repeat timing captures in interleaved
-   baseline/fixed order. Compare at least three trials per version. Retain compact
-   summaries and reproduction recipes; report distributions and uncertainty.
+   baseline/fixed order. Limit each comparison round to three trials per browser
+   unless the user requests more. Retain compact summaries and reproduction
+   recipes; report distributions and uncertainty.
 7. Repeat in the other installed browsers and with real trackpad gestures.
    Validate visible jitter on the affected physical display; use manual marks,
    an external recording, or browser presentation tracks as appropriate.
 
 The comparison command refuses changed mode, workload, browser, display/window,
-refresh rate, scenario, evidence type, automation transport, or invalid runs:
+refresh rate, scenario, evidence type, automation transport, scheduling-probe
+version, or invalid runs:
 
 ```sh
 node scripts/firefox-profile/chat-analysis.mjs --compare \
