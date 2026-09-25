@@ -177,6 +177,11 @@ export async function capturePlaywright(server, directory, options, signal) {
           windowState: "normal",
         },
       });
+      if (options.maximize)
+        await cdp.send("Browser.setWindowBounds", {
+          windowId,
+          bounds: { windowState: "maximized" },
+        });
     }
     await page.goto(server.url);
     await waitFor(
@@ -184,6 +189,7 @@ export async function capturePlaywright(server, directory, options, signal) {
       signal,
     );
     await page.waitForTimeout(2000);
+    await options.preparePage?.(page);
     await page.bringToFront();
     const geometry = await page.evaluate(() => ({
       x: screenX,

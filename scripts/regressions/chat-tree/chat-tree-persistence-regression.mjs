@@ -143,12 +143,14 @@ for (const engine of [firefox, webkit, chromium]) {
       .filter({ hasText: "Compact version" })
       .waitFor();
     const original = await records();
+    assert.equal(original.history.markdown, undefined);
+    assert.deepEqual(original.history.tree, fixture.tree);
     await select(3);
     const switched = await records();
-    assert.equal(
-      switched.history.markdown,
-      original.history.markdown,
-      "branch selection leaves transcript bytes unchanged",
+    assert.deepEqual(
+      switched.history.tree,
+      original.history.tree,
+      "branch selection leaves the structured snapshot unchanged",
     );
     assert.equal(switched.history.revision, original.history.revision);
     assert.equal(switched.selection.revision, original.history.revision);

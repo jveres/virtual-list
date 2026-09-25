@@ -58,6 +58,41 @@ Boot is a separate measurement. Use the existing `pnpm run profile:boot` command
 against a normal demo server for cold and warm `chat:visible` timing. Streaming
 captures warm the page before starting and do not measure navigation performance.
 
+## Profile send after loading older history
+
+For a simulated-provider send regression, use the focused installed-Chrome
+capture. This is a browser-specific exception to the Firefox-first workflow.
+Supply the original transcript locally; the runner records its hash and size
+without copying its contents into the report or sending it to a provider.
+
+```sh
+node scripts/firefox-profile/imported-send.mjs \
+  --transcript=/path/to/local-chat.md --display=LU28R55 --refresh-hz=60
+```
+
+The runner maximizes an isolated Chrome window, imports the transcript, and
+presses Page Up until the loaded history range expands. It presses Page Up once
+more, lets scrolling settle, and sends a message. A capture fails if older
+history did not load, the viewport is too close to the end, the glide does not
+land, or focus, geometry, or recording validity changes.
+
+`summary.json` reports time spent preparing the send, time to first scroll
+movement, time to landing, frame intervals, and scroll-step distributions.
+A long send task can finish before the first animation callback: regular later
+frame intervals do not mean the send was responsive. `--mode=diagnostic` adds
+operation costs. Reply streaming after landing is excluded because simulated
+token delays are random. The shared Chrome trace covers the full four-second
+capture, so inspect event times before attributing its costs to the glide.
+
+Use the same input hash, browser build, display, window geometry, and loaded
+range for comparisons. Raw traces and screenshots are removed after analysis.
+Keep the original transcript in its existing private location to reproduce the
+capture. `--browser=engine-firefox`, `engine-chromium`, or `engine-webkit` runs
+headless correctness controls; these do not establish native performance.
+Headless WebKit uses scripted viewport paging because Page Up does not reliably
+scroll its focused viewport. The input method is recorded in `run.json`.
+Keyboard setup does not test trackpad momentum or prove smooth presentation.
+
 ## Browser coverage
 
 The same local stream and common recorder run in each engine. Native browser

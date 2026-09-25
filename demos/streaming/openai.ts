@@ -601,13 +601,18 @@ function clearOpenAIHistory(): void {
   );
 }
 
-export interface SimulatedHistory {
-  markdown: string;
+type SimulatedContent =
+  | { tree: TranscriptTree; markdown?: never }
+  | { markdown: string; tree?: never };
+
+interface SimulatedProgress {
   nextResponse: number;
   changed: boolean;
   /** Untrusted until checked against the parsed transcript tree. */
   selection?: unknown;
 }
+
+export type SimulatedHistory = SimulatedContent & SimulatedProgress;
 
 // A separate record preserves the simulated version tree without touching
 // the real-provider history or requiring an IndexedDB schema migration.
@@ -634,7 +639,15 @@ export async function loadSimulatedHistory(): Promise<SimulatedHistory | null> {
       },
     );
     if (sessionSimulatedHistory) return sessionSimulatedHistory;
-    if (!isRecord(stored) || typeof stored.markdown !== "string") return null;
+    if (!isRecord(stored)) return null;
+    let content: SimulatedContent;
+    if ("tree" in stored) {
+      const parsed = validateStoredTranscriptTree(stored.tree);
+      if (!parsed?.tree) return null;
+      content = { tree: parsed.tree };
+    } else if (typeof stored.markdown === "string") {
+      content = { markdown: stored.markdown };
+    } else return null;
     const choices =
       isRecord(selection) &&
       typeof stored.revision === "string" &&
@@ -645,7 +658,7 @@ export async function loadSimulatedHistory(): Promise<SimulatedHistory | null> {
     sessionSimulatedRevision =
       typeof stored.revision === "string" ? stored.revision : undefined;
     sessionSimulatedHistory = {
-      markdown: stored.markdown,
+      ...content,
       nextResponse:
         typeof progress.nextResponse === "number" &&
         Number.isSafeInteger(progress.nextResponse) &&
@@ -662,7 +675,7 @@ export async function loadSimulatedHistory(): Promise<SimulatedHistory | null> {
 }
 
 export function saveSimulatedHistory(
-  history: Omit<SimulatedHistory, "selection">,
+  history: SimulatedContent & Omit<SimulatedProgress, "selection">,
 ): void {
   sessionSimulatedHistory = history;
   // getRandomValues also works when the demo is served over local-network HTTP.

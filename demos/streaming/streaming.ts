@@ -1853,7 +1853,10 @@ async function prepareSimulatedConversation(): Promise<void> {
   const history = await loadSimulatedHistory();
   if (!history) return;
   try {
-    const parsed = parseBranchingTranscript(history.markdown);
+    const parsed = history.tree
+      ? selectTranscriptBranches(history.tree, history.tree)
+      : parseBranchingTranscript(history.markdown);
+    if (!parsed) return;
     const imported =
       parsed.tree && history.selection
         ? (selectTranscriptBranches(parsed.tree, history.selection) ?? parsed)
@@ -1873,11 +1876,18 @@ async function prepareSimulatedConversation(): Promise<void> {
 
 function persistSimulatedConversation(): void {
   if (getAISettings().provider !== "simulated") return;
-  const markdown = transcriptMarkdown();
-  importedConversation = parseBranchingTranscript(markdown);
+  // These messages are already validated. Keep a structured snapshot instead
+  // of exporting and reparsing every body and embedded image on each send.
+  const snapshot = treeSnapshot(
+    (message) => storedConversation([message], true)[0],
+  );
+  importedConversation = {
+    tree: snapshot,
+    turns: storedConversation(transcript, true),
+  };
   simulatedNextResponse = nextResponse;
   saveSimulatedHistory({
-    markdown,
+    tree: snapshot,
     nextResponse,
     changed: simulatedConversationChanged,
   });

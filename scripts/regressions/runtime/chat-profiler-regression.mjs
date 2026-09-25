@@ -36,6 +36,10 @@ for (const browser of ["engine-firefox", "engine-chromium", "engine-webkit"]) {
     assert.deepEqual(summary.invalidReasons, [], browser);
     assert.equal(server.requests.length, 1);
     assert.equal(server.requests[0].finished, true);
+    assert.deepEqual(
+      result.recording.phases.map((phase) => phase.name),
+      ["send-glide", "send-landed"],
+    );
     assert.ok(
       summary.work.expensive.some(
         (item) =>

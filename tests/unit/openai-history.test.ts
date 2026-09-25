@@ -12,6 +12,11 @@ function installHistoryDatabase() {
             const transaction = {
               oncomplete: () => {},
               objectStore: () => ({
+                delete: (key: string) => {
+                  records.delete(key);
+                  queueMicrotask(() => transaction.oncomplete());
+                  return { transaction };
+                },
                 put: (value: unknown, key: string) => {
                   records.set(key, structuredClone(value));
                   queueMicrotask(() => transaction.oncomplete());
@@ -22,7 +27,10 @@ function installHistoryDatabase() {
                     result: structuredClone(records.get(key)),
                     onsuccess: () => {},
                   };
-                  queueMicrotask(() => read.onsuccess());
+                  queueMicrotask(() => {
+                    read.onsuccess();
+                    transaction.oncomplete();
+                  });
                   return read;
                 },
               }),
@@ -36,6 +44,7 @@ function installHistoryDatabase() {
       return request;
     },
   });
+  return records;
 }
 
 it.each(["openai", "chatgpt"] as const)(
@@ -303,4 +312,73 @@ it("should save history without requiring secure-context UUID support", async ()
   saveSimulatedHistory(history);
 
   await expect(loadSimulatedHistory()).resolves.toEqual(history);
+});
+
+it("should restore structured simulated history and branch choices after storage reload", async () => {
+  installHistoryDatabase();
+  const history = await import("../../demos/streaming/openai");
+  const tree: TranscriptTree = {
+    selectedRootId: 1,
+    nodes: [
+      {
+        id: 1,
+        parentId: 0,
+        selectedChildId: 2,
+        message: { role: "user", markdown: "Prompt" },
+      },
+      {
+        id: 2,
+        parentId: 1,
+        selectedChildId: null,
+        message: { role: "assistant", markdown: "First reply" },
+      },
+      {
+        id: 3,
+        parentId: 1,
+        selectedChildId: null,
+        message: { role: "assistant", markdown: "", stopped: true },
+      },
+    ],
+  };
+  history.saveSimulatedHistory({ tree, nextResponse: 2, changed: true });
+  const selection = {
+    selectedRootId: 1,
+    nodes: tree.nodes.map((n) => ({
+      id: n.id,
+      selectedChildId: n.id === 1 ? 3 : null,
+    })),
+  };
+  expect(history.saveSimulatedSelection(selection, 3, true)).toBe(true);
+  await history.loadSimulatedHistory();
+  vi.resetModules();
+  const reloaded = await import("../../demos/streaming/openai");
+  await expect(reloaded.loadSimulatedHistory()).resolves.toEqual({
+    tree,
+    nextResponse: 3,
+    changed: true,
+    selection,
+  });
+});
+
+it("should read legacy simulated Markdown and reject malformed structured snapshots", async () => {
+  const records = installHistoryDatabase();
+  records.set("simulated-history", {
+    markdown: "**User**\n\nLegacy",
+    nextResponse: 4,
+    changed: true,
+  });
+  let history = await import("../../demos/streaming/openai");
+  await expect(history.loadSimulatedHistory()).resolves.toEqual({
+    markdown: "**User**\n\nLegacy",
+    nextResponse: 4,
+    changed: true,
+  });
+  records.set("simulated-history", {
+    tree: { selectedRootId: 99, nodes: [] },
+    nextResponse: 4,
+    changed: true,
+  });
+  vi.resetModules();
+  history = await import("../../demos/streaming/openai");
+  await expect(history.loadSimulatedHistory()).resolves.toBeNull();
 });

@@ -41,6 +41,7 @@ export const chatTargets = {
     "syncScrollButtons",
     "rowsForRuntime",
     "persistOpenAIConversation",
+    "persistSimulatedConversation",
   ],
   "demos/streaming/message-content.ts": [
     "update",
@@ -135,6 +136,14 @@ export function instrumentChat(source, path, diagnostic) {
   }
   if (path === "demos/streaming/streaming.ts") {
     source = `await globalThis.__chatProfile.seedHistory;\n${source}`;
+    replace(
+      "const pinCommand = regenerating",
+      'globalThis.__chatProfile?.phase("send-glide");\n    const pinCommand = regenerating',
+    );
+    replace(
+      "pinCommand.then(() => {",
+      'pinCommand.then((completed) => {\n        globalThis.__chatProfile?.phase(completed ? "send-landed" : "send-cancelled");',
+    );
     replace(
       "syncScrollButtons(state);",
       "globalThis.__chatProfile?.state(state, snapshot);\n      syncScrollButtons(state);",

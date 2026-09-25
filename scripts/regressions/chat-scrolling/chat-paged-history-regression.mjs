@@ -5,6 +5,7 @@ import {
   importTranscript,
   openStreamingDemo,
   pagingTranscript,
+  waitForBoot,
 } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
@@ -138,9 +139,47 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
       await page.locator('#viewport [data-key="124"]').innerText(),
       /History turn 124/,
     );
+    await page.locator("#scroll-top-btn").click();
+    await page.waitForFunction((before) => {
+      const first = /loaded ([\d,]+)-/.exec(
+        document.querySelector("#window-status").textContent,
+      )?.[1];
+      return Number(first?.replaceAll(",", "")) < before;
+    }, restored[0]);
+    await page.locator("#prompt").fill("Keep this send after loading history");
+    await page.locator("#send-btn").click();
+    await page.waitForFunction(() => {
+      const prompt = document.querySelector('#viewport [data-key="125"]');
+      const viewport = document.querySelector("#viewport");
+      if (!prompt) return false;
+      const top =
+        prompt.getBoundingClientRect().top -
+        viewport.getBoundingClientRect().top;
+      return top >= 0 && top < 80;
+    });
+    await page.locator("#send-btn.stop-btn").click();
+    const saved = await page.evaluate(async () => {
+      const { loadSimulatedHistory } = await import(
+        "/demos/streaming/openai.ts"
+      );
+      const history = await loadSimulatedHistory();
+      return {
+        count: history.tree.nodes.length,
+        prompt: history.tree.nodes.find((node) => node.id === 125).message
+          .markdown,
+      };
+    });
+    assert.equal(saved.count, 126);
+    assert.equal(saved.prompt, "Keep this send after loading history");
+    await page.reload();
+    await waitForBoot(page);
+    assert.equal(
+      await page.locator('#viewport [data-key="125"] .markdown').innerText(),
+      "Keep this send after loading history",
+    );
     assert.deepEqual(errors, []);
     console.log(
-      `${engine.name()}: bounded full-demo history, offscreen pin eviction, and explicit tail restoration passed`,
+      `${engine.name()}: bounded history, tail restoration, and send after loading older history survives reload`,
     );
   } finally {
     await browser.close();

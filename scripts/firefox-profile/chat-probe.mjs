@@ -86,6 +86,7 @@ export function installChatProbe(config) {
   const states = [];
   const deliveries = [];
   const spans = [];
+  const phases = [];
   const entries = [];
   const errors = [];
   const invalidations = [];
@@ -406,6 +407,7 @@ export function installChatProbe(config) {
       if (!/^[a-z0-9-]{1,40}$/.test(next))
         throw new Error("Invalid profiling phase");
       phase = next;
+      if (active) append("phases", phases, { time: now(), name: next });
       performance.mark(`chat-profile:${next}`);
     },
     ready() {
@@ -491,6 +493,7 @@ export function installChatProbe(config) {
         states,
         deliveries,
         spans,
+        phases,
         entries,
         operations: [...operations.values()],
         access: [...access].map(([key, count]) => ({ key, count })),
@@ -508,7 +511,8 @@ export function installChatProbe(config) {
         },
       };
       // Stop an unfinished local response only after recording its incomplete state.
-      if (!streamDone) document.querySelector("#send-btn")?.click();
+      if (document.querySelector("#send-btn")?.classList.contains("stop-btn"))
+        document.querySelector("#send-btn").click();
       return result;
     },
   };
