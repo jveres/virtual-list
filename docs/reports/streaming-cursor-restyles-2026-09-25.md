@@ -22,10 +22,29 @@ resets, rendering fails, or the viewer is destroyed. DOM relationship checks
 don't read layout. An unchanged marker isn't written again, but a marker
 removed by morphing is restored even when the block's identity is unchanged.
 
-The patch is applied to the pinned `markdown-viewer` distribution through
-pnpm's recorded patch hash. It preserves cursor spacing without changing the
-virtual-list geometry reads, which remain necessary for native anchoring and
-scroll-range changes. See the [patch maintenance notes](../../patches/README.md).
+The measurements below used a local distribution patch at `dfa1a67`. The same
+fix now lives in the renderer's TypeScript and CSS sources in
+[markdown-viewer v0.8.1](https://github.com/jveres/markdown-viewer/tree/v0.8.1),
+with upstream browser regression coverage. This repository pins that GitHub
+tag; the local patch has been removed. The fix preserves cursor spacing
+without changing virtual-list geometry reads, which remain necessary for
+native anchoring and scroll-range changes.
+
+## Upstream release
+
+The fix was moved upstream in `markdown-viewer` commit `1264199` and released
+as `v0.8.1`. Its static checks, 1,144 unit tests, production build, and full
+cursor browser suite passed. The built renderer differs from the measured
+local patch only in formatting and its regenerated source-map reference;
+the built CSS is identical. This migration does not represent a new timing
+measurement.
+
+After installing the published GitHub tag, the consumer passed static checks,
+unit tests, all 107 portable profiler checks, and its production build. Cursor
+lifecycle, cursor-block spacing, image spacing, idle cursor, shared footer
+(including touch), and standalone Markdown streaming regressions passed in
+Firefox, Chromium, and WebKit. Generated upstream screenshots were removed,
+and no test browsers or servers remained.
 
 ## Diagnostic controls
 
@@ -170,8 +189,9 @@ have closed.
 
 ## Reproduce
 
-Use the profiler and patch from this report's commit. For the baseline, create
-a separate worktree at that same revision and restore `pnpm-lock.yaml` and
+To reproduce the original measurements, use the profiler and patch from
+`dfa1a67`. For the baseline, create a separate worktree at that same revision
+and restore `pnpm-lock.yaml` and
 `pnpm-workspace.yaml` from `bcfdb65` there. Install dependencies in both
 worktrees with `pnpm install --frozen-lockfile`. This keeps the same profiler
 while enabling or disabling only the renderer patch.

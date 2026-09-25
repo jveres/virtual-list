@@ -42,6 +42,13 @@ WebKit-specific issue, must be stated explicitly.
   automation sessions, and servers you started when work ends. Audit for
   leftovers. Preserve pre-existing user processes unless asked to stop them.
 
+## Dependency fixes
+
+Fix dependency defects in the owning repository, with regression coverage.
+Publish a new version and GitHub tag, then pin this repository to that fixed
+tag and update the lockfile. Do not substitute a local dependency patch unless
+the user explicitly authorizes one.
+
 ## Verification
 
 Use `pnpm run check`, `pnpm test`, and relevant browser regressions after code
