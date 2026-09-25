@@ -1,9 +1,10 @@
 import { execFileSync, spawn } from "node:child_process";
-import { createReadStream, createWriteStream } from "node:fs";
+import { createWriteStream } from "node:fs";
 import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   statfs,
@@ -11,11 +12,14 @@ import {
 } from "node:fs/promises";
 import { createServer } from "node:net";
 import { dirname, join, resolve } from "node:path";
-import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { createGzip } from "node:zlib";
 import { analyzeDirectory } from "./firefox-profile/analyze.mjs";
+import { discardRaw, writeReproduction } from "./firefox-profile/artifacts.mjs";
+import { attributeProfile } from "./firefox-profile/attribute.mjs";
+import { inspectBursts } from "./firefox-profile/bursts.mjs";
+import { readCapture } from "./firefox-profile/capture.mjs";
+import { auditCpu } from "./firefox-profile/cpu.mjs";
 import { serializedExpression } from "./firefox-profile/expression.mjs";
 
 const { values: options } = parseArgs({
@@ -43,6 +47,8 @@ const { values: options } = parseArgs({
     live: { type: "boolean", default: false },
     "refresh-hz": { type: "string" },
     "manual-seconds": { type: "string", default: "0" },
+    "idle-seconds": { type: "string", default: "0" },
+    "temporary-raw": { type: "boolean", default: false },
   },
 });
 if (options.help) {
@@ -63,6 +69,7 @@ if (options.help) {
   --live                 Save before shutdown using Firefox's moz:profiler command
   --refresh-hz N         Actual refresh rate, if different from reported maximum
   --manual-seconds N     Capture your real gestures instead of scripted input
+  --idle-seconds N       Capture automatic scrolling without injecting gestures
 Requires macOS, Node 22+, Swift, Accessibility, and a running demo server.
 See docs/firefox-profiling.md. Artifacts stay local; nothing is uploaded.`);
   process.exit(0);
@@ -91,7 +98,9 @@ const interval = number("interval-ms", 1, 100);
 const settle = number("settle-ms", 0, 10000);
 const warmup = number("warmup-ms", 0, 60000);
 const manual = number("manual-seconds", 0, 600);
-if (!manual && down + up === 0)
+const automatic = number("idle-seconds", 0, 600);
+if (manual && automatic) throw new Error("Choose manual or idle capture");
+if (!manual && !automatic && down + up === 0)
   throw new Error("Specify at least one gesture burst");
 if (!["masonry", "rows", "none"].includes(options.layout))
   throw new Error("Invalid --layout");
@@ -115,7 +124,7 @@ execFileSync(
   "/usr/bin/swiftc",
   [
     "-module-cache-path",
-    compilerCache,
+    await realpath(compilerCache),
     fileURLToPath(new URL("./firefox-profile/native.swift", import.meta.url)),
     "-o",
     helper,
@@ -181,6 +190,9 @@ await new Promise((resolve, reject) => {
 const port = probe.address().port;
 await new Promise((resolve) => probe.close(resolve));
 const metadata = {
+  revision: execFileSync("git", ["rev-parse", "HEAD"], {
+    encoding: "utf8",
+  }).trim(),
   options,
   monitor,
   refreshHz,
@@ -190,6 +202,27 @@ const metadata = {
 const saveMetadata = () =>
   writeFile(join(directory, "run.json"), JSON.stringify(metadata, null, 2));
 await saveMetadata();
+if (!options["temporary-raw"]) {
+  const command = ["pnpm", "run", "profile:firefox", "--"];
+  for (const [key, value] of Object.entries(options)) {
+    if (
+      ["output", "temporary-raw", "help", "list-displays"].includes(key) ||
+      value === undefined ||
+      value === false
+    )
+      continue;
+    command.push(value === true ? `--${key}` : `--${key}=${value}`);
+  }
+  if (options.setup) {
+    await writeFile(
+      join(directory, "reproduce-setup.js"),
+      await readFile(options.setup),
+    );
+    command[command.findIndex((arg) => arg.startsWith("--setup="))] =
+      "--setup=reproduce-setup.js";
+  }
+  await writeReproduction(directory, { revision: metadata.revision, command });
+}
 const child = spawn(
   options.firefox,
   [
@@ -244,6 +277,7 @@ const interrupt = () => {
 };
 process.on("SIGINT", interrupt);
 process.on("SIGTERM", interrupt);
+process.on("SIGHUP", interrupt);
 function rejectPending() {
   for (const waiter of pending.values())
     waiter.reject(new Error("Firefox connection closed"));
@@ -451,11 +485,13 @@ try {
     window.__runtimeAudit?.start();performance.mark('ff-profile-start');window.__ffProfile.frame=requestAnimationFrame(sample);return true;
   })()`);
   recordingStarted = true;
-  if (manual) {
+  if (manual || automatic) {
     console.log(
-      `Manual capture: scroll the test window for ${manual} seconds.`,
+      manual
+        ? `Manual capture: scroll the test window for ${manual} seconds.`
+        : `Automatic capture: observe streaming for ${automatic} seconds.`,
     );
-    for (let second = 0; second < manual; second++) {
+    for (let second = 0; second < (manual || automatic); second++) {
       if (interrupted) throw new Error("Capture interrupted");
       await sleep(1000);
     }
@@ -586,11 +622,9 @@ try {
   ws?.close();
   rejectPending();
   log.end();
-  process.removeListener("SIGINT", interrupt);
-  process.removeListener("SIGTERM", interrupt);
   metadata.finished = new Date().toISOString();
   // This exact directory belongs to the child above. Never remove it while
-  // that browser is alive, and never remove raw captures or run metadata.
+  // that browser is alive. Raw captures are discarded after analysis below.
   if (ended) {
     try {
       await rm(browserProfile, { recursive: true });
@@ -604,36 +638,57 @@ try {
   }
   await saveMetadata();
 }
-if (metadata.status === "captured") {
-  try {
-    const summary = await analyzeDirectory(directory);
-    await writeFile(
-      join(directory, "summary.json"),
-      JSON.stringify(summary, null, 2),
-    );
-    await pipeline(
-      createReadStream(join(directory, "profile.json")),
-      createGzip(),
-      createWriteStream(join(directory, "profile.json.gz")),
-    );
-    console.log(
-      JSON.stringify(
-        {
-          frames: summary.animationFrameIntervalsMs,
-          scrollEvents: summary.scrollEvents,
-          longIntervals: summary.longIntervals,
-          writes: summary.scrollPositionWrites.length,
-        },
-        null,
-        2,
-      ),
-    );
-    metadata.status = "complete";
-    await saveMetadata();
-  } catch (error) {
-    metadata.status = "failed";
-    metadata.error = `Artifact analysis failed: ${String(error)}`;
-    await saveMetadata();
-    throw error;
+try {
+  if (metadata.status === "captured") {
+    try {
+      const summary = await analyzeDirectory(directory);
+      await writeFile(
+        join(directory, "summary.json"),
+        JSON.stringify(summary, null, 2),
+      );
+      if (!options["temporary-raw"]) {
+        const { profile, recording } = await readCapture(directory);
+        for (const [name, result] of [
+          ["cpu.json", auditCpu(profile, recording)],
+          ["bursts.json", inspectBursts(profile, recording)],
+          [
+            "attribution.json",
+            attributeProfile(profile, { filter: "", top: 50 }),
+          ],
+        ])
+          await writeFile(
+            join(directory, name),
+            JSON.stringify(result, null, 2),
+          );
+      }
+      console.log(
+        JSON.stringify(
+          {
+            frames: summary.animationFrameIntervalsMs,
+            scrollEvents: summary.scrollEvents,
+            longIntervals: summary.longIntervals,
+            writes: summary.scrollPositionWrites.length,
+          },
+          null,
+          2,
+        ),
+      );
+      metadata.status = "complete";
+      await saveMetadata();
+    } catch (error) {
+      metadata.status = "failed";
+      metadata.error = `Artifact analysis failed: ${String(error)}`;
+      await saveMetadata();
+      throw error;
+    }
   }
+} finally {
+  // A parent chat capture owns temporary raw files until its own analysis ends.
+  if (!options["temporary-raw"]) {
+    await discardRaw(directory);
+    metadata.rawDataRemoved = true;
+    await saveMetadata();
+  }
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+    process.removeListener(signal, interrupt);
 }

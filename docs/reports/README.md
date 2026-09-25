@@ -13,6 +13,12 @@ The [clean-code and performance audit](clean-performance-audit-2026-09-25.md)
 records two resolved medium findings, regression coverage, and paired
 installed-Firefox measurements on the external display.
 
+The [streaming chat profiler verification](streaming-chat-profiler-2026-09-25.md)
+records the repeatable complex SSE workload, native Firefox and Chrome
+captures, operation attribution, cross-engine checks, and the Safari 27
+automation startup fix. Use the [workflow guide](../streaming-chat-profiling.md)
+for new investigations.
+
 ## Streaming integration evidence
 
 These reports support candidate `9af905c`, whose application source is
@@ -137,21 +143,18 @@ candidate status; it doesn't erase earlier failures or measurements.
 
 ## Raw capture retention
 
-Raw profiles, screenshots, and trace data stay local under ignored
-`browser-artifacts/` and are never committed. On September 22, 2026, raw
-captures cited by reports before that date were pruned. Their run IDs and
-folder names remain in the reports as historical labels. Each report's
-commands, with the tracked fixtures and scripts, reproduce its workload; a
-new capture gets a new run ID.
+Raw profiles, screenshots, and trace data are temporary local analysis inputs
+under ignored `browser-artifacts/` and are never committed. At the user's
+request, captures are removed after analysis. The September 25 cleanup removes
+the remaining old raw trials and obsolete probes. Compact summaries, source
+replay metadata, tracked fixtures, and curated reports preserve the useful
+results and procedure. New Firefox and chat captures enforce this policy.
 
-The pruning kept these irreproducible inputs:
-
-- The two real-trackpad captures of the
-  [external-display jitter report](external-display-scroll-jitter-2026-09-22.md),
-  `run-xRJClr` and `run-Z5EGQC`.
-- The three September 20 Safari Web Inspector recordings.
-- The compiled native helper at `safari-native-scroll/native`, which
-  `run-image-source.mjs` requires.
+Run IDs in historical reports remain labels even after pruning. Their commands
+and tracked fixtures reproduce synthetic workloads with a new run ID. Exact
+manual gestures and older unrecorded source edits cannot be replayed. New
+captures include source hashes and a patch against their revision so that
+uncommitted code can be reconstructed before repeating the procedure.
 
 Follow the [Firefox workflow](../firefox-profiling.md) for new
 investigations. Add future curated reports here with their revision,

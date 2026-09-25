@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Darwin
 
@@ -8,7 +9,7 @@ func fail(_ message: String) -> Never {
 }
 
 let args = CommandLine.arguments
-guard args.count >= 2 else { fail("Expected displays, focus, scroll, or quit") }
+guard args.count >= 2 else { fail("Expected displays, place, focus, scroll, or quit") }
 
 switch args[1] {
 case "displays":
@@ -30,6 +31,36 @@ case "quit":
     if let app = NSRunningApplication(processIdentifier: pid), !app.terminate() {
         fail("Could not terminate the isolated Firefox instance")
     }
+case "place":
+    guard args.count == 7, let pid = Int32(args[2]),
+          let x = Double(args[3]), let y = Double(args[4]),
+          let width = Double(args[5]), let height = Double(args[6]),
+          width > 0, height > 0,
+          let app = NSRunningApplication(processIdentifier: pid) else {
+        fail("Expected PID, x, y, width, and height")
+    }
+    guard AXIsProcessTrusted() else { fail("Window placement requires Accessibility permission") }
+    let application = AXUIElementCreateApplication(pid)
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(application, kAXWindowsAttribute as CFString, &value) == .success,
+          let windows = value as? [AXUIElement], windows.count == 1 else {
+        fail("Expected exactly one owned automation window")
+    }
+    var point = CGPoint(x: x, y: y)
+    var size = CGSize(width: width, height: height)
+    guard let position = AXValueCreate(.cgPoint, &point),
+          AXUIElementSetAttributeValue(windows[0], kAXPositionAttribute as CFString, position) == .success else {
+        fail("Could not move the owned automation window")
+    }
+    // AppKit updates the window's display asynchronously. Resizing immediately
+    // can clamp its height to the previous (smaller) display's usable area.
+    usleep(200000)
+    guard let dimensions = AXValueCreate(.cgSize, &size),
+          AXUIElementSetAttributeValue(windows[0], kAXSizeAttribute as CFString, dimensions) == .success else {
+        fail("Could not place the owned automation window")
+    }
+    app.activate(options: [])
+    AXUIElementPerformAction(windows[0], kAXRaiseAction as CFString)
 case "focus":
     guard args.count == 5, let pid = Int32(args[2]),
           let x = Double(args[3]), let y = Double(args[4]),

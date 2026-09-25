@@ -5,6 +5,11 @@ workflow captures the installed browser with native macOS scroll gestures,
 without opening DevTools or touching your normal browser profile. Use the
 results to identify a bottleneck before changing the runtime.
 
+For a repeatable complex stream through the full chat demo, use the
+[cross-browser streaming workflow](streaming-chat-profiling.md). It adds local
+SSE replay, bounded operation attribution, validity checks, and comparison
+reports while retaining this native Firefox capture as the primary baseline.
+
 ## Requirements
 
 The capture runner requires macOS, Node.js 22 or later, the Swift compiler
@@ -45,8 +50,10 @@ The runner requires at least 10 GiB of free disk space before starting. Swift
 compilation uses one shared `.swift-cache/` in the output parent, rather than
 a separate cache for every capture. After its browser exits, the runner removes
 that run's temporary `browser-profile/`, including after a failed capture.
-`run.json` records successful profile removal or a cleanup error. Raw captures,
-metadata, logs, and screenshots remain available locally.
+`run.json` records successful profile removal or a cleanup error. Compact
+summaries and reproduction metadata remain available locally. Raw
+captures, browser logs, screenshots, and per-run helpers are removed after
+automatic analysis.
 
 The runner focuses the scroll container after navigation and again after
 warmup, immediately before measurement. It uses a native click on a temporary
@@ -151,87 +158,51 @@ The [external-display jitter report](reports/external-display-scroll-jitter-2026
 explains its measures and limits. Scripted gestures can't reproduce this
 kind of defect, because the helper's ticks don't match the display's frames.
 
-## Inspect the artifacts
+## Inspect the summaries
 
-Each run preserves its configuration and evidence in a new directory. Nothing
-is uploaded automatically, and rerunning does not overwrite earlier runs.
+Each run preserves compact results and its reproduction recipe in a new
+folder. Raw profiles, frame records, screenshots, and logs are temporary inputs
+and are deleted after analysis, including failed runs. Nothing is uploaded.
 
-- `run.json`: options, monitor geometry, browser version, and completion status.
-- `profile.json` and `profile.json.gz`: raw native Firefox profile.
-- `frames.json`: animation-frame times, cached scroll positions, scroll-event
-  counts, gesture-end counts, page progress, and the diagnostic demos' visible
-  counters after each gesture.
+- `run.json`: options, monitor geometry, browser build, status, and cleanup.
 - `summary.json`: measurement-window timing and marker summaries.
-- `final.png`: a screenshot taken after measurement.
-- `browser.log`: browser output, including startup or shutdown errors.
-- `setup.js`: the optional workload setup expression used for this capture.
-- `browser-profile/`: temporary isolated browser data, removed after shutdown.
-  If interrupted cleanup leaves it behind, keep it private and confirm the
-  owning browser has exited before removing it.
-- `partial-frames.json`: partial evidence when a capture fails, if available.
+- `cpu.json`: sampled CPU by thread and phase, with attribution.
+- `bursts.json`: longest content-thread awake intervals and sampled stacks.
+- `attribution.json`: script samples and layout invalidation attribution.
+- `reproduce.json`: exact command, Git revision, and source hashes.
+- `reproduce.patch`: changes from that revision, including untracked source.
+- `reproduce-setup.js`: the input expression, when `--setup` was supplied.
 
-Open the raw profile locally in [Firefox Profiler](https://profiler.firefox.com/).
-Inspect the call tree, markers, and renderer/compositor tracks that are
-actually present. Sharing from that interface uploads data; review the capture
-and obtain authorization first. Profiles can contain source locations, URLs,
-screenshots, and other sensitive data.
+To repeat a run, check out its revision in a separate worktree and apply its
+source patch. Install the locked dependencies, start the demo server, and run
+the recorded command with the recorded browser build and display geometry.
+Copy `reproduce-setup.js` into that checkout when present. For a fully specified
+complex streaming input and a server owned by the runner, use `profile:chat`.
 
-Regenerate a summary or run the portable analyzer checks with:
+The native analyzer modules run before raw data is removed. The chat runner's
+internal `--temporary-raw` handoff keeps those inputs only until its parent
+finishes analysis and removes the entire nested capture. This is not a
+persistent archive mode.
 
-```sh
-node scripts/firefox-profile/analyze.mjs browser-artifacts/firefox/run-EXAMPLE
-pnpm run test:firefox-profile
-```
+Self samples include native work beneath the nearest JavaScript frame. Layout
+invalidation stacks identify earlier work, not necessarily a call that forces
+layout. CPU percentages refer to one core; missing CPU telemetry is unavailable,
+not zero. Full 100 ms bins omit a final partial bin and carry sampling
+uncertainty. An awake interval is not necessarily one JavaScript task.
 
-To attribute content-thread samples and inspect captured layout
-invalidations, run the attribution script. It filters function names by a
-path fragment (default `/src/`, the runtime). Self samples include native
-work beneath the nearest JavaScript frame, but native labels containing
-page URLs do not count as JavaScript. Reflow groups identify earlier
-invalidation stacks, not necessarily calls that force layout; "sync" means
-non-interruptible reflow. The output includes invalidation-to-reflow delays
-and counts nonempty style passes between consecutive refresh tick starts.
-
-```sh
-node scripts/firefox-profile/attribute.mjs browser-artifacts/firefox/run-EXAMPLE --filter=/src/
-```
-
-The [runtime hot path profile](reports/runtime-hot-path-profile.md) records the
-corrected attribution and the limits on what it can establish.
-The [measured proposal results](reports/measured-performance-proposals.md) record
-retained optimizations, rejected experiments, and comparable captures.
-
-For sampled thread CPU and the longest content-thread awake intervals, use
-the additional offline tools. Both accept plain or compressed raw profiles
-and print JSON to stdout without changing the capture:
-
-```sh
-node scripts/firefox-profile/cpu.mjs browser-artifacts/firefox/run-EXAMPLE
-node scripts/firefox-profile/bursts.mjs browser-artifacts/firefox/run-EXAMPLE
-```
-
-CPU percentages refer to one core. Full 100 ms bins omit a final partial
-bin; missing CPU telemetry is unavailable, not zero. CPU deltas are credited
-to their sample timestamps, so bin boundaries have sampling uncertainty.
-The burst report separates nested callbacks, collection slices, and sampled
-stacks: an awake interval is not necessarily one JavaScript task.
-
-The analyzer accepts this runner's raw live and shutdown profiles, including
-compressed ones. It does not accept processed exports from Firefox Profiler
-share links. Both `ff-profile-start` and `ff-profile-end` markers must exist
-in the content thread. Startup, warmup, and final screenshot capture are
-outside that window.
+The tools accept raw live and shutdown profiles while analyzing them. Both
+`ff-profile-start` and `ff-profile-end` must exist on the content thread.
+Startup, warmup, and final screenshots fall outside the measurement window.
+Run the portable tool checks with `pnpm run test:firefox-profile`.
 
 ## Keep reports and tooling in Git
 
-`browser-artifacts/` is an ignored output directory, not the home for durable
-project knowledge. Keep raw profiles, run-local setup copies, trace JSON,
-generated screenshots, compiled helpers, and caches there. Keep raw captures
-while their investigation is open. After its report is committed, you can
-prune them with the user's approval; the report, its commands, and the
-tracked fixtures reproduce the workload. Keep irreproducible inputs, such as
-manual trackpad captures and Web Inspector recordings, until the user
-approves their removal.
+`browser-artifacts/` stores compact summaries and reproduction metadata.
+Keep raw captures only while analysis needs them; remove them at the end of
+the run. Preserve reusable workload fixtures and source changes so a new
+capture can answer later questions without keeping large trace archives.
+Manual gesture timing and OS scheduling cannot be replayed exactly; record
+the procedure and uncertainty rather than promising identical measurements.
 
 Put curated reports under `docs/reports/` and list them in the
 [report index](reports/README.md). Keep reusable profiling tools and synthetic

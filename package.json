@@ -17,6 +17,7 @@
     "test:chat-tree": "node scripts/regression-suite.mjs --group=chat-tree",
     "profile:firefox": "node scripts/firefox-profile.mjs",
     "profile:boot": "node scripts/boot-timing.mjs",
+    "profile:chat": "node scripts/profile-chat.mjs",
     "test:firefox-profile": "node --test scripts/firefox-profile/*.checks.mjs",
     "test:watch": "vitest"
   },
