@@ -25,6 +25,11 @@ interface ChatImage extends PhotoPreviewItem {
   ordinal?: number;
 }
 
+interface RowImages {
+  message: ImageMessage | undefined;
+  ordinals: Map<HTMLImageElement, number>;
+}
+
 /** Adapt mounted chat images to the gallery viewer without changing Markdown. */
 export function createChatImagePreview(
   viewport: HTMLElement,
@@ -197,7 +202,35 @@ export function createChatImagePreview(
     return images;
   }
 
-  function bind(image: HTMLImageElement): void {
+  function bindAll(images: Iterable<HTMLImageElement>): void {
+    // A mutation delivery sees one final DOM order. Resolve each row once,
+    // including when many images share a large, still-streaming reply.
+    const rows = new Map<HTMLElement, RowImages>();
+    let messages: readonly ImageMessage[] | undefined;
+    const rowImages = (row: HTMLElement): RowImages => {
+      let entry = rows.get(row);
+      if (!entry) {
+        messages ??= getMessages?.() ?? [];
+        entry = {
+          message: messages.find((item) => String(item.id) === row.dataset.key),
+          ordinals: new Map(
+            Array.from(
+              row.querySelectorAll<HTMLImageElement>("img"),
+              (image, index) => [image, index],
+            ),
+          ),
+        };
+        rows.set(row, entry);
+      }
+      return entry;
+    };
+    for (const image of images) bind(image, rowImages);
+  }
+
+  function bind(
+    image: HTMLImageElement,
+    rowImages: (row: HTMLElement) => RowImages,
+  ): void {
     if (
       !viewport.contains(image) ||
       !image.complete ||
@@ -211,12 +244,9 @@ export function createChatImagePreview(
     const url = attachmentImageSource(image, selectedUrl || image.src);
     const previous = photos.get(image);
     const row = image.closest<HTMLElement>("[data-key]");
-    const message = getMessages?.().find(
-      (entry) => String(entry.id) === row?.dataset.key,
-    );
-    const ordinal = row
-      ? Array.from(row.querySelectorAll("img")).indexOf(image)
-      : -1;
+    const entries = row ? rowImages(row) : undefined;
+    const message = entries?.message;
+    const ordinal = entries?.ordinals.get(image) ?? -1;
     const photo: ChatImage = {
       // Navigation checks this identity against sanitized message content.
       // A live DOM image ahead of the model cannot match another image's ID.
@@ -299,7 +329,7 @@ export function createChatImagePreview(
     // A renderer can mutate the same row many times in one delivery. Its
     // final subtree is unchanged while we inspect the records; scan it once.
     for (const root of roots) collect(root);
-    for (const image of affected) bind(image);
+    bindAll(affected);
   });
   observer.observe(viewport, {
     subtree: true,
@@ -308,7 +338,7 @@ export function createChatImagePreview(
     attributeFilter: ["src", "srcset", "alt", "data-key"],
   });
   const onLoad = (event: Event) => {
-    if (event.target instanceof HTMLImageElement) bind(event.target);
+    if (event.target instanceof HTMLImageElement) bindAll([event.target]);
   };
   const onError = (event: Event) => {
     if (event.target instanceof HTMLImageElement) unbind(event.target);
@@ -321,8 +351,7 @@ export function createChatImagePreview(
   viewport.addEventListener("load", onLoad, true);
   viewport.addEventListener("error", onError, true);
   viewport.addEventListener("click", onClick, true);
-  for (const image of viewport.querySelectorAll<HTMLImageElement>("img"))
-    bind(image);
+  bindAll(viewport.querySelectorAll<HTMLImageElement>("img"));
 
   return {
     dispose() {

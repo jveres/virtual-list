@@ -116,11 +116,18 @@ function bindRows(messages: Message[], ...rows: HTMLElement[]) {
   const viewport = document.createElement("div");
   viewport.append(...rows);
   document.body.append(viewport);
-  const preview = createChatImagePreview(viewport, () => messages);
+  const getMessages = vi.fn(() => messages);
+  const preview = createChatImagePreview(viewport, getMessages);
   disposers.push(() => preview.dispose());
   const options = viewer.create.mock.calls.at(-1)?.[0];
   if (!options?.getAdjacentPhoto) throw new Error("Missing preview navigation");
-  return { viewport, preview, options, adjacent: options.getAdjacentPhoto };
+  return {
+    viewport,
+    preview,
+    options,
+    adjacent: options.getAdjacentPhoto,
+    getMessages,
+  };
 }
 
 function photoFor(image: HTMLImageElement): PhotoPreviewItem {
@@ -130,25 +137,34 @@ function photoFor(image: HTMLImageElement): PhotoPreviewItem {
 }
 
 describe("chat image preview source identity", () => {
-  it("should bound row scans during a batch of streaming text mutations", async () => {
-    const entry = message(1, "/image.png");
-    const row = rowFor(entry);
-    const image = imageAt(row);
-    const text = document.createElement("p");
-    row.append(text);
-    bindRows([entry], row);
-    const original = photoFor(image);
-    const scans = vi.spyOn(row, "querySelectorAll");
+  it.each([1, 12])(
+    "should bound row scans with %i images during a batch of streaming text mutations",
+    async (count) => {
+      const entry = message(
+        1,
+        ...Array.from({ length: count }, (_, index) => `/image-${index}.png`),
+      );
+      const row = rowFor(entry);
+      const image = imageAt(row);
+      const text = document.createElement("p");
+      row.append(text);
+      const { getMessages } = bindRows([entry], row);
+      expect(getMessages).toHaveBeenCalledTimes(1);
+      getMessages.mockClear();
+      const original = photoFor(image);
+      const scans = vi.spyOn(row, "querySelectorAll");
 
-    for (let i = 0; i < 40; i++) text.textContent = `Streaming chunk ${i}`;
-    await Promise.resolve();
+      for (let i = 0; i < 40; i++) text.textContent = `Streaming chunk ${i}`;
+      await Promise.resolve();
 
-    expect(photoFor(image).id).toBe(original.id);
-    // One subtree scan and one ordinal lookup, independent of mutation count.
-    expect(
-      scans.mock.calls.filter(([selector]) => selector === "img"),
-    ).toHaveLength(2);
-  });
+      expect(photoFor(image).id).toBe(original.id);
+      expect(getMessages).toHaveBeenCalledTimes(1);
+      // One subtree scan and one ordinal scan, independent of image/mutation count.
+      expect(
+        scans.mock.calls.filter(([selector]) => selector === "img"),
+      ).toHaveLength(2);
+    },
+  );
 
   it("should navigate past an attachment and preserve preview identity after its display URL is released", () => {
     const platform = attachmentImagePlatform();

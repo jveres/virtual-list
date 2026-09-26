@@ -29,6 +29,11 @@ extends Chrome attribution to 16 ms stalls, fixes repeated live-range allocation
 in the upstream renderer, and records rejected layout controls and the remaining
 large-row restoration costs.
 
+The [image lookup batch follow-up](streaming-image-batches-2026-09-26.md)
+removes repeated per-image row and transcript scans, rejects a width-containment
+control, and distinguishes the remaining restoration work from the measured
+binding savings.
+
 ## September 25 clean-code and performance audit
 
 The [streaming-trail DOM stability fix](streaming-trail-dom-stability-2026-09-25.md)

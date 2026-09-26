@@ -37,6 +37,18 @@ for (const engine of [chromium, firefox, webkit]) {
         row.append(image);
         return image;
       });
+      // Many images in one reply must share the ordinal scan, including
+      // duplicate sources. Load them before measuring mutation work.
+      for (let index = 1; index < 12; index++) {
+        const image = new Image();
+        loads.push(
+          new Promise((resolve) =>
+            image.addEventListener("load", resolve, { once: true }),
+          ),
+        );
+        image.src = canvas.toDataURL();
+        rows[0].append(image);
+      }
       await Promise.all(loads);
       await Promise.all(images.map((image) => image.decode()));
       const messages = [1, 2, 3].map((id) => ({
@@ -174,7 +186,7 @@ for (const engine of [chromium, firefox, webkit]) {
     assert.equal(
       result.batchScans,
       2,
-      "a mutation batch scans each image row once, then resolves its ordinal",
+      "a mutation batch scans the 12-image row once, then resolves all ordinals in one scan",
     );
     assert.deepEqual(
       result.unrelated,
