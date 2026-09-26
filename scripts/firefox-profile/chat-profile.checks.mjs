@@ -294,7 +294,7 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
     );
     api.leave(mutationSpan);
     const result = api.stop();
-    assert.equal(result.probeVersion, 4);
+    assert.equal(result.probeVersion, 5);
     assert.equal(result.domOperations.slow.length, 2);
     assert.equal(result.domOperations.omitted, 2);
     assert.equal(result.domOperations.slow[0].row, "diagnostic-row");
@@ -325,6 +325,60 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
       descriptor,
     );
     assert.throws(() => api.start(), /already started/);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("bottom completion requires the restored tail and a finished window handoff", () => {
+  const dom = new JSDOM(
+    '<div id="viewport"></div><textarea id="prompt"></textarea><button id="send-btn"></button><button id="scroll-top-btn"></button><button id="scroll-bottom-btn"></button>',
+    {
+      url: "http://localhost:4197",
+      runScripts: "outside-only",
+      pretendToBeVisual: true,
+    },
+  );
+  const w = dom.window;
+  let time = 100;
+  const timers = new Map();
+  w.setTimeout = (fn, delay) => {
+    timers.set(delay, fn);
+    return delay;
+  };
+  w.clearTimeout = () => {};
+  w.requestAnimationFrame = () => 1;
+  w.cancelAnimationFrame = () => {};
+  w.document.hasFocus = () => true;
+  w.performance.now = () => time;
+  w.performance.mark = () => {};
+  w.performance.getEntriesByName = () => [{}];
+  w.PerformanceObserver = { supportedEntryTypes: [] };
+  try {
+    w.eval(
+      `(${installChatProbe.toString()})(${JSON.stringify({ turns: [], workload: { durationMs: 12000 }, scenario: "buttons", limit: 100 })})`,
+    );
+    const api = w.__chatProfile;
+    api.start();
+    timers.get(3000)();
+    time = 120;
+    api.state({ atStart: true });
+    timers.get(6000)();
+    time = 140;
+    api.state({ atEnd: true }); // Missing metadata must fail closed.
+    time = 160;
+    api.state({ atEnd: true }, null, { latestLoaded: false, pending: true });
+    time = 180;
+    api.state({ atEnd: true }, null, { latestLoaded: true, pending: true });
+    time = 200;
+    api.state({ atEnd: false }, null, { latestLoaded: true, pending: false });
+    time = 220;
+    api.state({ atEnd: true }, null, { latestLoaded: true, pending: false });
+    const result = api.stop();
+    assert.equal(result.navigation[0].reachedAt, 20);
+    assert.equal(result.navigation[1].reachedAt, 120);
+    assert.equal(result.states.at(-1)[1].latestLoaded, true);
+    assert.equal(result.states.at(-1)[1].navigationPending, false);
   } finally {
     dom.window.close();
   }

@@ -98,8 +98,10 @@ width control, and image-batch candidate. No extra Firefox trials are added.
 `pnpm run check`, all 1,066 unit tests, and all 126 portable profiling checks
 pass. The expanded 12-image reconciliation regression passes in Chromium,
 Firefox, and WebKit. The full image-preview interaction regression passes in
-its configured Firefox and WebKit cases. Every native candidate reaches all
-four button destinations with zero gaps in cached coverage publications.
+its configured Firefox and WebKit cases. Every native candidate reports all
+four button destinations with zero gaps in cached coverage publications. The
+later [completion-metric correction](staged-row-layout-2026-09-26.md#corrected-navigation-metric)
+shows why the old bottom count alone cannot prove restored-tail arrival.
 No iPhone/iPad momentum measurement is part of this round.
 
 Run the same commands at the baseline and candidate revisions:

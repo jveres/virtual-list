@@ -101,6 +101,7 @@ import {
   shareChatFile,
   supportsChatSharing,
 } from "./share.js";
+import { stageMessageLayout } from "./staged-message.js";
 
 import "../shared/styles.css";
 
@@ -3891,6 +3892,13 @@ function mountConversation(): void {
       start: edgeSlotRequested ? edgeSlotSpec : null,
       end: bottomEdgeSlotRequested ? bottomEdgeSlotSpec : null,
     },
+    stage: (row, element) =>
+      !isDayHeader(row) &&
+      row.role === "assistant" &&
+      (row.status === "done" || row.status === "cancelled") &&
+      row.markdown.length >= 16384
+        ? stageMessageLayout(element)
+        : undefined,
     followBehavior: "smooth",
     followMode,
     followInset: stickyInset(),

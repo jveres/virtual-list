@@ -74,8 +74,11 @@ The allocation regression and two fixed captures support the fix despite
 that timing variability. The small diagnostic sample does not establish a
 general browser-wide speedup.
 
-All three browsers reach all four button destinations, with zero uncovered
-pixels at cached coverage publications. Their moving-frame results are:
+All three browsers report all four button destinations, with zero uncovered
+pixels at cached coverage publications. The later
+[completion-metric correction](staged-row-layout-2026-09-26.md#corrected-navigation-metric)
+shows why the old bottom count alone cannot prove restored-tail arrival.
+Their moving-frame results are:
 
 | Browser | Moving p95: baseline → fixed trials | Maximum: baseline → fixed trials |
 | --- | --- | --- |

@@ -239,6 +239,16 @@ references and adds no layout reads. These diagnostics add per-mutation work:
 compare the same probe version and mode, and use timing mode to assess overhead.
 Missing records mean no qualifying retained event, not absence of DOM work.
 
+Probe version 5 corrects bottom-button completion during tail restoration.
+Reaching the old loaded window's end is only an intermediate destination. The
+probe now requires `atEnd`, the latest transcript page loaded, and no pending
+window handoff. State samples retain the latter two flags without reading DOM
+geometry. Top-button completion still targets the current loaded window's
+start. Version 4 captures can show an early bottom completion and cannot prove
+that the restored tail was reached. Compare equal probe versions; the
+[staged-layout report](reports/staged-row-layout-2026-09-26.md) separates the
+version 4 performance comparison from version 5 completion validation.
+
 The most useful metrics are grouped by question:
 
 | Question | Evidence and interpretation |

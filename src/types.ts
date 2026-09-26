@@ -33,6 +33,15 @@ export interface VirtualListOptions<T> {
   key: (item: T) => string;
   /** Build a row, or update `existing` in place (return it) or replace it. */
   render: (item: T, existing?: HTMLElement) => HTMLElement;
+  /**
+   * Optional incremental first layout for new measured rows in updateWindow.
+   * Called after render, before connection. Each iterator step runs in a
+   * separate hidden preparation slice, followed by a layout read. Return
+   * undefined for ordinary rows. Synchronous updates never call this hook.
+   * Cancellation calls return() before onDestroy; restore any withheld DOM
+   * there. Steps must be synchronous and must not start independent work.
+   */
+  stage?: (item: T, element: HTMLElement) => Iterator<void, void> | undefined;
   /** Declared heights: never measured; only the overscan window is rendered. */
   height?: (item: T) => number;
   /** Declared placement (masonry). Requires `height`; all items or none. */

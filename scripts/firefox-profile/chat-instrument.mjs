@@ -167,7 +167,7 @@ export function instrumentChat(source, path, diagnostic) {
     );
     replace(
       "syncScrollButtons(state);",
-      "globalThis.__chatProfile?.state(state, snapshot);\n      syncScrollButtons(state);",
+      "globalThis.__chatProfile?.state(state, snapshot, { latestLoaded: loadedEnd >= transcript.length, pending: windowNavigation !== null });\n      syncScrollButtons(state);",
     );
   }
   return source;

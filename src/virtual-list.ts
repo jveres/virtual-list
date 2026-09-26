@@ -2144,6 +2144,7 @@ export function createVirtualList<T>(
         fresh: [string, T][];
         cursor: number;
         rows: Map<string, Row<T>>;
+        partial: { row: Row<T>; steps: Iterator<void, void> } | null;
         ready: boolean;
       }
       let job: Job | null = null;
@@ -2153,6 +2154,13 @@ export function createVirtualList<T>(
       let frame = 0;
       let idleHandle = 0;
       const canIdle = !interrupt && typeof requestIdleCallback === "function";
+
+      const discard = (abandoned: Job): void => {
+        const partial = abandoned.partial;
+        abandoned.partial = null;
+        if (partial) host(() => partial.steps.return?.());
+        for (const row of abandoned.rows.values()) destroyRow(row);
+      };
 
       const cleanup = (): void => {
         windowJobs.delete(run);
@@ -2171,7 +2179,7 @@ export function createVirtualList<T>(
         const errors = error === undefined ? [] : flatten(error);
         const abandoned = job;
         job = null;
-        for (const row of abandoned?.rows.values() ?? []) destroyRow(row);
+        if (abandoned) discard(abandoned);
         errors.push(...failures.splice(mark));
         try {
           if (!disposed && !defer(() => pass(publish))) pass(publish);
@@ -2233,10 +2241,26 @@ export function createVirtualList<T>(
           let count = 0;
           while (j.cursor < j.fresh.length && count < JOB_MIN_ROWS) {
             if (deadline && deadline.timeRemaining() < IDLE_SLICE_MIN_MS) break;
+            if (j.partial) {
+              const partial = j.partial;
+              last = partial.row;
+              if (partial.steps.next().done) {
+                j.partial = null;
+                j.cursor += 1;
+              }
+              // The browser lays out this chunk before the next one arrives.
+              break;
+            }
             const [key, item] = j.fresh[j.cursor] as [string, T];
             const row = createRow(key, item, render(item), 1);
+            j.rows.set(key, row);
             if (!alive()) {
-              destroyRow(row);
+              cancel();
+              return;
+            }
+            const steps = options.stage?.(item, row.element);
+            if (steps) j.partial = { row, steps };
+            if (!alive()) {
               cancel();
               return;
             }
@@ -2244,11 +2268,10 @@ export function createVirtualList<T>(
               row,
               insertionPoint(j.order, j.index.get(key) as number, j.rows),
             );
-            j.rows.set(key, row);
-            j.cursor += 1;
+            if (!steps) j.cursor += 1;
             count += 1;
             last = row;
-            if (!deadline && performance.now() - started >= 3) break;
+            if (steps || (!deadline && performance.now() - started >= 3)) break;
           }
           last?.element.getBoundingClientRect();
           if (ended()) return;
@@ -2329,7 +2352,7 @@ export function createVirtualList<T>(
               idleHandle = 0;
               checkedItems = null;
               checkedRevision = -1;
-              for (const row of abandoned.rows.values()) destroyRow(row);
+              discard(abandoned);
               if (ended()) return;
             }
             const j = job;
@@ -2390,7 +2413,10 @@ export function createVirtualList<T>(
               const { keys, byKey } = indexItems(snapshot, false);
               const fresh = [...byKey].filter(([key]) => !rows.has(key));
               if (ended()) return;
-              if (fresh.length > JOB_MIN_ROWS) {
+              if (
+                fresh.length > JOB_MIN_ROWS ||
+                (options.stage && fresh.length > 0)
+              ) {
                 job = {
                   next: {
                     ...next,
@@ -2408,6 +2434,7 @@ export function createVirtualList<T>(
                   fresh,
                   cursor: 0,
                   rows: new Map(),
+                  partial: null,
                   ready: false,
                 };
                 staging();

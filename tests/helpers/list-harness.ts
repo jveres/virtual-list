@@ -144,6 +144,7 @@ export interface MountHooks {
   onUnmount?: (element: HTMLElement, m: Msg) => void;
   /** Runs at the start of every render (probe hook). */
   onRender?: (m: Msg, existing?: HTMLElement) => void;
+  stage?: VirtualListOptions<Msg>["stage"];
   onKey?: (m: Msg) => void;
   /** Runs at every height read of a row. */
   onMeasure?: (m: Msg) => void;
@@ -236,6 +237,7 @@ export function mount(items: Msg[], hooks: MountHooks = {}): Harness {
     pinning: hooks.pinning,
     onMount: hooks.onMount,
     onUnmount: hooks.onUnmount,
+    stage: hooks.stage,
     render: (m, existing) => {
       hooks.onRender?.(m, existing);
       if (hooks.throwOn !== undefined && m.body === hooks.throwOn) {

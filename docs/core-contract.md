@@ -69,6 +69,11 @@ The following rules govern preparation, scrolling, and commits:
    prepare in bounded animation-frame slices during existing motion. It
    ends that motion before committing the replacement; fresh input cancels
    the command's preparation.
+   The optional `stage(item, element)` iterator also divides one measured row's
+   first layout between preparation slices. Its partial content remains hidden
+   and outside committed geometry. An unfinished iterator is closed before
+   destruction when preparation is cancelled or rebuilt; it must restore any
+   withheld DOM in `return()`. All row content must be ready before commit.
 3. After the cross-browser settle signal, the runtime may
    **atomically commit**, in one frame:
    - keys,

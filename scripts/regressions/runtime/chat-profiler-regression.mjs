@@ -22,7 +22,7 @@ for (const { browser, scenario } of [
     scenario,
     trail: "long",
     sections: 6,
-    history: 20,
+    history: scenario === "buttons" ? 160 : 20,
     durationMs: scenario === "buttons" ? 8000 : 2000,
     seconds: scenario === "buttons" ? 16 : 6,
   };
@@ -43,7 +43,7 @@ for (const { browser, scenario } of [
     assert.deepEqual(summary.invalidReasons, [], browser);
     assert.equal(server.requests.length, 1);
     assert.equal(server.requests[0].finished, true);
-    assert.equal(summary.probeVersion, 4);
+    assert.equal(summary.probeVersion, 5);
     assert.ok(
       summary.work.domOperations.totals.some((entry) => entry.count > 0),
     );
@@ -64,6 +64,15 @@ for (const { browser, scenario } of [
         })),
       );
       assert.ok(summary.navigation.every((command) => command.writeCount > 0));
+      for (const command of summary.navigation.filter(
+        (command) => command.direction === "bottom",
+      )) {
+        const [, state] = result.recording.states.find(
+          ([time]) => time >= command.reachedAt,
+        );
+        assert.equal(state.latestLoaded, true);
+        assert.equal(state.navigationPending, false);
+      }
     }
     assert.ok(summary.coverage.samples > 30);
     assert.equal(summary.coverage.missingPx.max, 0);

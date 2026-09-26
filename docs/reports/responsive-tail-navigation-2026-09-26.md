@@ -52,9 +52,12 @@ The final bottom command restores the evicted tail after streaming has stopped:
 
 Preparation overlaps motion in the candidate, so its slowest preparation frame
 now counts as moving. This is an initial-response improvement, not evidence of
-lower rendering cost. Both runs reach all four requested edges and report zero
-uncovered pixels at cached geometry publications. Those observations do not
-prove that every physical frame paints correctly.
+lower rendering cost. Both runs report all four requested edges and zero
+uncovered pixels at cached geometry publications. The later
+[staged-layout investigation](staged-row-layout-2026-09-26.md#corrected-navigation-metric)
+found that this probe can complete bottom navigation at the old window's edge;
+the completion metric alone does not prove restored-tail arrival. Coverage
+publications do not prove that every physical frame paints correctly.
 
 Local run IDs are `firefox-diagnostic-WKlXCj` and
 `firefox-diagnostic-Y81pL8`. Both retain source hashes, patches, workload metadata,

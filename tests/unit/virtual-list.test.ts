@@ -750,6 +750,190 @@ describe("settle-time window updates", () => {
 });
 
 describe("incremental window preparation", () => {
+  it("should keep a chunked row hidden until its final height can commit", async () => {
+    const steps: number[] = [];
+    const stage = vi.fn((item: Msg, element: HTMLElement) => {
+      let count = 0;
+      return {
+        next: () => {
+          expect(element.isConnected).toBe(true);
+          expect(element.parentElement?.getAttribute("aria-hidden")).toBe(
+            "true",
+          );
+          steps.push(++count);
+          h.heights.set(item.id, count * 100);
+          return { done: count === 3, value: undefined };
+        },
+        return: vi.fn(() => ({ done: true as const, value: undefined })),
+      };
+    });
+    const h = mount(range(0, 20), { stage });
+    expect(stage).not.toHaveBeenCalled();
+    const committed = vi.fn();
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, message(20)],
+      onCommit: committed,
+    }));
+    vi.advanceTimersByTime(16);
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(steps).toEqual([]);
+    for (let count = 1; count <= 3; count++) {
+      vi.advanceTimersByTime(16);
+      expect(steps).toHaveLength(count);
+      expect(h.list.state.count).toBe(20);
+      expect(h.list.elementOf("m20")).toBeNull();
+      expect(committed).not.toHaveBeenCalled();
+    }
+    advanceFramesUntil(() => committed.mock.calls.length > 0);
+    await expect(applied).resolves.toBe(true);
+    expect(h.list.positionOf("m20")).toEqual({ top: 2000, height: 300 });
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(stage.mock.results[0]?.value.return).not.toHaveBeenCalled();
+    h.list.dispose();
+  });
+
+  it.each([0, 1])(
+    "should close a cancelled row iterator after %i steps before destroying it",
+    async (steps) => {
+      const lifecycle: string[] = [];
+      const stage = () => ({
+        next: () => {
+          lifecycle.push("step");
+          return { done: false as const, value: undefined };
+        },
+        return: () => {
+          lifecycle.push("return");
+          return { done: true as const, value: undefined };
+        },
+      });
+      const h = mount(range(0, 20), {
+        stage,
+        onDestroy: (element) => {
+          if (element.textContent === "msg 20") lifecycle.push("destroy");
+        },
+      });
+      const controller = new AbortController();
+      const applied = h.list.updateWindow(
+        ({ items }) => ({ items: [...items, message(20)] }),
+        controller.signal,
+      );
+      vi.advanceTimersByTime(16 * (1 + steps));
+      controller.abort();
+      await expect(applied).resolves.toBe(false);
+      expect(lifecycle).toEqual([
+        ...Array.from({ length: steps }, () => "step"),
+        "return",
+        "destroy",
+      ]);
+      expect(h.list.state.count).toBe(20);
+      expect(h.destroyed).toEqual([20]);
+      h.list.dispose();
+    },
+  );
+
+  it("should reject a failed chunk, close its iterator, and preserve the old window", async () => {
+    const close = vi.fn(() => ({ done: true as const, value: undefined }));
+    const h = mount(range(0, 20), {
+      stage: () => ({
+        next: () => {
+          throw new Error("chunk failed");
+        },
+        return: close,
+      }),
+    });
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, message(20)],
+    }));
+    const rejected = expect(applied).rejects.toThrow("chunk failed");
+    vi.advanceTimersByTime(32);
+    await rejected;
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(h.destroyed).toEqual([20]);
+    expect(h.list.state.count).toBe(20);
+    h.list.dispose();
+  });
+
+  it.each(["stage", "step"] as const)(
+    "should release an incomplete row when %s disposes the list",
+    async (where) => {
+      const close = vi.fn(() => ({ done: true as const, value: undefined }));
+      const h = mount(range(0, 20), {
+        stage: () => {
+          if (where === "stage") h.list.dispose();
+          return {
+            next: () => {
+              h.list.dispose();
+              return { done: false as const, value: undefined };
+            },
+            return: close,
+          };
+        },
+      });
+      const applied = h.list.updateWindow(({ items }) => ({
+        items: [...items, message(20)],
+      }));
+      vi.advanceTimersByTime(64);
+      await expect(applied).resolves.toBe(false);
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(h.destroyed.filter((id) => id === 20)).toEqual([20]);
+      expect(new Set(h.destroyedElements).size).toBe(
+        h.destroyedElements.length,
+      );
+      expect(h.viewport.childElementCount).toBe(0);
+    },
+  );
+
+  it("should close a width-stale iterator and complete its replacement", async () => {
+    let width = 300;
+    const closed: number[] = [];
+    const h = mount(range(0, 20), {
+      width: () => width,
+      stage: () => {
+        const preparedWidth = width;
+        return {
+          next: () => ({ done: preparedWidth === 500, value: undefined }),
+          return: () => {
+            closed.push(preparedWidth);
+            return { done: true as const, value: undefined };
+          },
+        };
+      },
+    });
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, message(20)],
+    }));
+    vi.advanceTimersByTime(32);
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    advanceFramesUntil(() => h.list.state.count === 21);
+    await expect(applied).resolves.toBe(true);
+    expect(closed).toEqual([300]);
+    expect(h.destroyed).toEqual([20]);
+    expect(h.list.positionOf("m20")).toEqual({ top: 2000, height: 100 });
+    h.list.dispose();
+  });
+
+  it("should apply current source content when it changes during chunked preparation", async () => {
+    let tail = message(20, "old tail");
+    const h = mount(range(0, 20), {
+      stage: () => {
+        let count = 0;
+        return { next: () => ({ done: ++count === 2, value: undefined }) };
+      },
+    });
+    const applied = h.list.updateWindow(({ items }) => ({
+      items: [...items, tail],
+    }));
+    vi.advanceTimersByTime(32);
+    tail = message(20, "updated tail");
+    h.list.updateItem("m0", message(0, "changed source"));
+    advanceFramesUntil(() => h.list.state.count === 21);
+    await expect(applied).resolves.toBe(true);
+    expect(h.list.elementOf("m20")?.textContent).toBe("updated tail");
+    expect(h.destroyed).toEqual([20]);
+    h.list.dispose();
+  });
+
   it("should commit small measured additions without staging", async () => {
     const h = mount(range(0, 20));
 

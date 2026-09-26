@@ -254,6 +254,17 @@ Explicit bottom navigation still follows the end for the current reply.
   preparation and take over when the replacement is ready. Fresh user input
   cancels either interrupting preparation. Background paging uses `false`.
   See [bounded paging](docs/bounded-paging.md) for its lifecycle and companion.
+- Optional `stage(item, element)` splits a new measured row's first layout
+  within `updateWindow`. It runs after `render`, before connection, and returns
+  a synchronous iterator or `undefined` for ordinary rows. Each iterator step
+  runs in a separate hidden preparation slice, followed by a layout read. The
+  row is measured and revealed only after completion. Cancellation, resize,
+  and disposal call an unfinished iterator's `return()` before `onDestroy`;
+  restore any withheld DOM there, even if no step has run. Steps must not start
+  independent asynchronous work. Boot, synchronous updates, and declared-height
+  rows use normal rendering without this hook. The streaming demo's
+  [completed-reply helper](demos/streaming/staged-message.ts) preserves nodes
+  while attaching a bounded number of markdown blocks per step.
 - With `height(item)`, heights must be finite and positive. The runtime
   keeps data and heights for every item, but renders only the overscan
   window. Leaving that window calls `onUnmount` and `onDestroy`; re-entry

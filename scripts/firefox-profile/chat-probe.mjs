@@ -667,7 +667,7 @@ export function installChatProbe(config) {
         missingPx: Math.max(0, end - Math.max(0, vp.scrollTop) - covered),
       });
     },
-    state(state) {
+    state(state, _viewport, navigationState) {
       currentState = {
         count: state.count,
         start: state.start,
@@ -675,12 +675,18 @@ export function installChatProbe(config) {
         following: state.following,
         held: state.held,
         totalSize: state.totalSize,
+        latestLoaded: navigationState?.latestLoaded ?? null,
+        navigationPending: navigationState?.pending ?? null,
       };
       if (
         active &&
         navigationCommand &&
         !navigationCommand.reached &&
-        (navigationCommand.direction === "top" ? state.atStart : state.atEnd)
+        (navigationCommand.direction === "top"
+          ? state.atStart
+          : state.atEnd &&
+            navigationState?.latestLoaded === true &&
+            navigationState?.pending === false)
       ) {
         navigationCommand.reached = true;
         navigationCommand.reachedAt = now();
@@ -798,7 +804,7 @@ export function installChatProbe(config) {
       final = boundary();
       const result = {
         schema: 1,
-        probeVersion: 4,
+        probeVersion: 5,
         timeOrigin: performance.timeOrigin,
         startTime,
         durationMs,

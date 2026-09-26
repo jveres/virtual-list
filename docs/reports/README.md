@@ -34,6 +34,11 @@ removes repeated per-image row and transcript scans, rejects a width-containment
 control, and distinguishes the remaining restoration work from the measured
 binding savings.
 
+The [incremental row-layout follow-up](staged-row-layout-2026-09-26.md) spreads
+large completed replies across hidden preparation slices, measures the smaller
+worst callbacks in all three browsers, and corrects premature bottom-navigation
+completion in the profiler.
+
 ## September 25 clean-code and performance audit
 
 The [streaming-trail DOM stability fix](streaming-trail-dom-stability-2026-09-25.md)
