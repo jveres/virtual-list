@@ -50,14 +50,17 @@ in `summary.json`. Per-frame records stay in memory and are removed when the
 probe is disposed; the runner no longer writes raw device traces to disk.
 The probe expires after 30 seconds without polling and removes its hooks.
 
-## Tail restoration delay remains open
+## Tail restoration follow-up
 
 The user also reported a pause before bottom navigation when the tail has been
 evicted, including an immediate stop of existing swipe momentum. The current
 implementation interrupts the gesture before staging the tail, then starts
 native animation after the prepared window commits. The
 [staged-restoration report](staged-tail-restoration-2026-09-25.md) records this
-latency tradeoff. A new investigation is measuring how to avoid that pause.
+latency tradeoff. The [responsive tail-navigation follow-up](responsive-tail-navigation-2026-09-26.md)
+starts movement during preparation. The user confirmed prompt, smooth behavior
+both from rest and during momentum. The separate top-loading failure remains
+open.
 
 ## Verification
 

@@ -2090,9 +2090,10 @@ export function createVirtualList<T>(
   function updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
-    o: { interrupt?: boolean; protectPin?: boolean } = {},
+    o: { interrupt?: boolean | "commit"; protectPin?: boolean } = {},
   ): Promise<boolean> {
-    const interrupt = o.interrupt === true;
+    const interrupt = o.interrupt === true || o.interrupt === "commit";
+    const interruptAtCommit = o.interrupt === "commit";
     const protectPin = o.protectPin !== false;
     return new Promise((resolve, reject) => {
       if (disposed || signal?.aborted) {
@@ -2241,7 +2242,7 @@ export function createVirtualList<T>(
         frame = 0;
         if (ended()) return;
         // The settle resumes this job, unless native anchoring lands it now.
-        if ((!idle() && !nativeFree()) || !job) return;
+        if ((!idle() && !nativeFree() && !interruptAtCommit) || !job) return;
         const j = job;
         work(() => {
           slice(j);
@@ -2269,7 +2270,8 @@ export function createVirtualList<T>(
       };
       function run(prepareOnly = false): void {
         if (working || finished || ended()) return;
-        if (!idle() && !prepareOnly && !nativeFree()) return;
+        if (!idle() && !prepareOnly && !nativeFree() && !interruptAtCommit)
+          return;
         const staging = (): void => {
           if (prepareOnly || (!idle() && canIdle)) {
             if (idleHandle === 0) idleHandle = requestIdleCallback(stageIdle);
@@ -2367,6 +2369,7 @@ export function createVirtualList<T>(
             // A gesture may have exposed rows the updater was allowed to trim.
             if (
               j &&
+              !interruptAtCommit &&
               context.protectedItems.some((item) => {
                 const key = keyOf(item);
                 return !j.protectedKeys.has(key) && !j.index.has(key);
@@ -2381,12 +2384,17 @@ export function createVirtualList<T>(
             const anchor = next.anchor ?? "viewport";
             if (
               !idle() &&
+              !interruptAtCommit &&
               (!nativeFree() || typeof anchor === "object" || anchor === "end")
             ) {
               waiting = true;
               return;
             }
             cleanup();
+            if (interruptAtCommit) {
+              takeover();
+              if (ended()) return;
+            }
             applyItems(
               snapshot,
               ownAnchor(next.anchor ?? "viewport"),
@@ -2409,7 +2417,7 @@ export function createVirtualList<T>(
           cancel();
           return;
         }
-        if (interrupt) {
+        if (interrupt && !interruptAtCommit) {
           try {
             pass(takeover);
           } catch (error) {
@@ -2418,7 +2426,7 @@ export function createVirtualList<T>(
           }
         }
         windowJobs.add(run);
-        if (idle() || nativeFree()) {
+        if (idle() || nativeFree() || interruptAtCommit) {
           run();
           return;
         }

@@ -234,8 +234,10 @@ list.dispose();
   commits mid-gesture, unless the update names an `"end"` or explicit anchor.
   `options.protectPin` defaults to `true`; `false` permits offscreen-pin
   eviction while protecting visible/overscan rows and explicit targets.
-  `options.interrupt` defaults to `false`; use `true` for explicit takeover,
-  not background paging.
+  `options.interrupt` defaults to `false`. Explicit navigation can use `true`
+  for immediate takeover or `"commit"` to keep existing motion during bounded
+  preparation and take over when the replacement is ready. Fresh user input
+  cancels either interrupting preparation. Background paging uses `false`.
   See [bounded paging](docs/bounded-paging.md) for its lifecycle and companion.
 - With `height(item)`, heights must be finite and positive. The runtime
   keeps data and heights for every item, but renders only the overscan

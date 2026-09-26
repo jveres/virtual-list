@@ -16,25 +16,33 @@ async function smoothBottom(page) {
     let lastTop = viewport.scrollTop;
     let initial = null;
     let maximum = null;
+    const status = () =>
+      document
+        .querySelector("#window-status")
+        .textContent.match(/loaded [\d,-]+\/[\d,]+/)?.[0];
+    const initialWindow = status();
+    let firstRequestWindow;
+    const legs = [];
     const scrollTo = viewport.scrollTo;
     viewport.scrollTo = function (options) {
       if (options.behavior === "smooth" && initial === null) {
-        // Restoration is asynchronous. Observe the animation's actual start,
-        // after the new window has committed and before native movement.
+        // The approach must begin in the old window while the tail prepares.
+        firstRequestWindow = status();
         initial = viewport.scrollTop;
         maximum = viewport.scrollHeight - viewport.clientHeight;
         lastTop = initial;
       }
+      if (options.behavior === "smooth")
+        legs.push({ from: viewport.scrollTop, to: options.top, positions: [] });
       return scrollTo.call(this, options);
     };
-    const positions = [];
     const capture = () => {
       lastTop = viewport.scrollTop;
     };
     viewport.addEventListener("scroll", capture, { passive: true });
     let frame;
     const sample = () => {
-      if (initial !== null) positions.push(lastTop);
+      legs.at(-1)?.positions.push(lastTop);
       frame = requestAnimationFrame(sample);
     };
     try {
@@ -46,8 +54,10 @@ async function smoothBottom(page) {
       return {
         initial,
         maximum,
-        positions,
+        legs,
         tailRenderedSynchronously,
+        initialWindow,
+        firstRequestWindow,
         final: viewport.scrollTop,
         finalMaximum: viewport.scrollHeight - viewport.clientHeight,
       };
@@ -63,18 +73,26 @@ async function smoothBottom(page) {
     "restoration yields before rendering the evicted tail",
   );
   assert.notEqual(result.initial, null, "restoration starts native animation");
+  assert.equal(
+    result.firstRequestWindow,
+    result.initialWindow,
+    "native movement starts before the tail finishes preparing",
+  );
   assert.ok(
     result.maximum - result.initial > 100,
     "restoration must not land at the end before the glide",
   );
-  const intermediate = new Set(
-    result.positions.filter(
-      (top) => top > result.initial + 1 && top < result.maximum - 1,
-    ),
+  const intermediate = result.legs.reduce(
+    (count, leg) =>
+      count +
+      new Set(
+        leg.positions.filter((top) => top > leg.from + 1 && top < leg.to - 1),
+      ).size,
+    0,
   );
   assert.ok(
-    intermediate.size >= 5,
-    `expected animated progress, got ${intermediate.size} intermediate positions`,
+    intermediate >= 5,
+    `expected animated progress, got ${intermediate} intermediate positions`,
   );
   assert.ok(
     Math.abs(result.finalMaximum - result.final) <= 1,

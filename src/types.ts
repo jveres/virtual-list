@@ -116,7 +116,11 @@ export interface VirtualList<T> {
   updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
-    options?: { interrupt?: boolean; protectPin?: boolean },
+    options?: {
+      /** `commit` keeps existing motion during preparation, then takes over. */
+      interrupt?: boolean | "commit";
+      protectPin?: boolean;
+    },
   ): Promise<boolean>;
   scrollTo(target: ScrollTarget, options?: ScrollOptions): Promise<boolean>;
   remeasure(key: string, options?: RemeasureOptions): void;

@@ -203,6 +203,14 @@ navigating. Recreate the pager from the committed source in `onCommit`.
 The [runtime boundary](bounded-paging.md#runtime-boundary) defines cancellation
 and errors for that path.
 
+To respond immediately when restoring an evicted tail, first request native
+smooth scrolling to the current window's end. Prepare the replacement with
+`updateWindow(updater, signal, { interrupt: "commit" })`. It stages rows during
+that motion, then takes over and commits the replacement when ready. After a
+successful commit, request the new end. Fresh input cancels the pending
+replacement. A current window already at its end has no approach distance;
+show loading feedback while preparation finishes.
+
 The animation crosses only the restored window, not every evicted page in
 the archive. The window replacement can change the visible content before
 the animation starts. If its content fits within the viewport, no scroll

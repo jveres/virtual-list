@@ -62,7 +62,10 @@ The following rules govern preparation, scrolling, and commits:
    hidden slots inside the canvas that neither paint nor change the scroll
    range. Window jobs (`updateWindow`) stage their rows in idle callbacks
    during a gesture; engines without `requestIdleCallback` prepare them at
-   the commit instead.
+   the commit instead. Explicit navigation with `interrupt: "commit"` can
+   prepare in bounded animation-frame slices during existing motion. It
+   ends that motion before committing the replacement; fresh input cancels
+   the command's preparation.
 3. After the cross-browser settle signal, the runtime may
    **atomically commit**, in one frame:
    - keys,

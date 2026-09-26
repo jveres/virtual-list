@@ -287,6 +287,12 @@ change the scroll range while preserving the reading anchor.
 records scroll writes and their instrumented callers, retaining the first
 120 writes per window plus total and omitted counts. Timing mode marks these
 write counts as unavailable; zero means no writes only in diagnostic mode.
+`firstSmoothRequestMs` measures click-to-native-request latency.
+`firstDirectionalMovementMs` measures the first sampled movement in the requested
+direction after that request. Existing momentum and layout changes can also
+move the viewport, so interpret the latter with the write log and workload.
+Both fields are `null` when the required observation is unavailable. Request
+submission alone does not prove that scrolling has started on the display.
 `glides` adds custom
 animation intervals, endpoint rebases, direction changes, and the difference
 between a requested position and the next observed position. Native animations

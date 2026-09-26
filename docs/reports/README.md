@@ -11,7 +11,11 @@ Use the [consumer guide](../streaming-consumer.md) and
 
 The [iOS scroll handoff investigation](ios-scroll-handoff-2026-09-26.md) records
 the confirmed scroll-settle button correction, mobile paging coverage, device
-diagnostics, and the still-open paging and tail-restoration reports.
+diagnostics, and the still-open paging report.
+
+The [responsive tail-navigation follow-up](responsive-tail-navigation-2026-09-26.md)
+overlaps native movement with tail preparation, reduces measured request delay
+from 277 ms to 2 ms, and records the user's confirmation from rest and momentum.
 
 ## September 25 clean-code and performance audit
 

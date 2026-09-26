@@ -39,6 +39,13 @@ data. A snapshot built before interruption can otherwise overwrite a page that
 the interruption just committed. Routine background paging must keep the
 default settle behavior.
 
+Explicit navigation can instead use `{ interrupt: "commit" }`. Existing motion
+continues while new rows prepare in bounded frame slices. Once ready, the
+command stops that motion and commits its replacement. Fresh input cancels the
+preparation. The updater runs before takeover, so this mode is for a deliberate
+replacement from authoritative source data; cancel any competing page requests
+first. A structural change or width change during preparation resolves `false`.
+
 The updater must remain synchronous. Fetch before scheduling it. Don't mutate
 the context arrays or synchronously dispatch input from the updater.
 

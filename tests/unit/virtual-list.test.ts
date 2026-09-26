@@ -1022,23 +1022,63 @@ describe("incremental window preparation", () => {
     h.list.dispose();
   });
 
-  it("should cancel an interrupting page command when the user takes over", async () => {
-    const h = mount(range(0, 20));
+  it("should preserve ongoing motion until a replacement window is ready", async () => {
+    const writes: number[] = [];
+    const h = mount(range(0, 80), {
+      boot: "start",
+      overscanPx: 0,
+      onScrollWrite: (top) => writes.push(top),
+    });
+    h.userScroll(1000);
+    writes.length = 0;
+    const committed = vi.fn();
     const applied = h.list.updateWindow(
-      () => ({ items: range(40, 64) }),
+      () => ({
+        items: range(100, 124),
+        anchor: { key: "m100", offset: 0 },
+        onCommit: committed,
+      }),
       undefined,
-      { interrupt: true },
+      { interrupt: "commit" },
     );
-    vi.advanceTimersByTime(16);
 
-    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -20 }));
+    vi.advanceTimersByTime(16);
+    expect(writes).toEqual([]);
+    expect(h.list.positionOf("m0")).not.toBeNull();
+    expect(committed).not.toHaveBeenCalled();
+    // Existing momentum exposes a different window without fresh input.
+    h.userScroll(4000);
+    expect(h.viewport.scrollTop).toBe(4000);
     vi.advanceTimersByTime(100);
 
-    await expect(applied).resolves.toBe(false);
-    expect(h.list.state.count).toBe(20);
-    expect(h.list.positionOf("m40")).toBeNull();
+    await expect(applied).resolves.toBe(true);
+    expect(committed).toHaveBeenCalledTimes(1);
+    expect(h.list.positionOf("m0")).toBeNull();
+    expect(h.list.elementOf("m100")?.textContent).toBe("msg 100");
+    expect(h.viewport.scrollTop).toBe(0);
     h.list.dispose();
   });
+
+  it.each([true, "commit"] as const)(
+    "should cancel an interrupting page command when the user takes over (%s)",
+    async (interrupt) => {
+      const h = mount(range(0, 20));
+      const applied = h.list.updateWindow(
+        () => ({ items: range(40, 64) }),
+        undefined,
+        { interrupt },
+      );
+      vi.advanceTimersByTime(16);
+
+      h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -20 }));
+      vi.advanceTimersByTime(100);
+
+      await expect(applied).resolves.toBe(false);
+      expect(h.list.state.count).toBe(20);
+      expect(h.list.positionOf("m40")).toBeNull();
+      h.list.dispose();
+    },
+  );
 });
 
 describe("positioned declared items", () => {

@@ -3533,6 +3533,11 @@ async function scrollToLatest(): Promise<boolean> {
     setBottomLoading(true);
     syncMetrics();
     try {
+      // Start moving through the loaded window while the evicted tail is
+      // prepared. Its replacement takes over only when ready to animate.
+      void list
+        .scrollTo("end", { behavior: "smooth" })
+        .catch(reportPagingError);
       const committed = await list.updateWindow(
         () => {
           if (controller.signal.aborted || epoch !== conversationEpoch)
@@ -3573,7 +3578,7 @@ async function scrollToLatest(): Promise<boolean> {
           };
         },
         controller.signal,
-        { interrupt: true },
+        { interrupt: "commit" },
       );
       if (
         !committed ||

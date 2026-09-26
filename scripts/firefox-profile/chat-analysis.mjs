@@ -429,9 +429,23 @@ export function analyzeChat(
         (write) =>
           write.time >= command.time && write.time <= command.time + 1800,
       );
+      const request = writes.find((write) => write.behavior === "smooth");
+      const firstMovement =
+        request &&
+        frames.find(
+          (frame) =>
+            (frame.callbackEnd ?? frame.end) >= request.time &&
+            (command.direction === "bottom"
+              ? frame.movement > 1
+              : frame.movement < -1),
+        );
       return {
         ...command,
         windowMs: 1800,
+        firstSmoothRequestMs: request ? request.time - command.time : null,
+        firstDirectionalMovementMs: firstMovement
+          ? (firstMovement.callbackEnd ?? firstMovement.end) - command.time
+          : null,
         frameMs: distribution(frames.map((frame) => frame.duration)),
         movingFrameMs: distribution(
           frames
@@ -502,6 +516,7 @@ export function analyzeChat(
       heldSamples: recording.frames.filter((frame) => frame[8]).length,
     },
     limits: [
+      "Navigation request latency measures API submission. First directional movement is a sampled position change after that request; concurrent momentum or layout can also change position. Neither measures physical presentation.",
       "Animation callbacks and input-to-rAF timing are not physical presentation or event-to-photon latency.",
       "Repeated calls and unchanged text are candidates, not proof of redundant work: tools, cursor, mount state, or geometry may differ.",
       "Inclusive operation times overlap; self time subtracts only other instrumented synchronous calls, not browser work or asynchronous continuations.",

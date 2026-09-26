@@ -369,6 +369,27 @@ function recording() {
   };
 }
 
+test("navigation distinguishes a smooth request from observed directional movement", () => {
+  const r = recording();
+  r.navigation = [{ time: 100, direction: "bottom", reached: true }];
+  r.scrollWrites = [{ time: 110, behavior: "smooth", top: 1000 }];
+  r.frames = [
+    [96, 300],
+    [112, 290],
+    [128, 290],
+    [144, 310],
+  ];
+  let navigation = analyzeChat(r).navigation[0];
+  assert.equal(navigation.firstSmoothRequestMs, 10);
+  assert.equal(navigation.firstDirectionalMovementMs, 44);
+  r.frames[3][1] = 290;
+  navigation = analyzeChat(r).navigation[0];
+  assert.equal(navigation.firstSmoothRequestMs, 10);
+  assert.equal(navigation.firstDirectionalMovementMs, null);
+  r.scrollWrites = [];
+  assert.equal(analyzeChat(r).navigation[0].firstSmoothRequestMs, null);
+});
+
 test("button captures require every destination and report glide stalls and replanning", () => {
   const r = recording();
   r.scenario = "buttons";
