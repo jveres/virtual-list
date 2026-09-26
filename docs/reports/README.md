@@ -22,6 +22,13 @@ The [responsive tail-navigation follow-up](responsive-tail-navigation-2026-09-26
 overlaps native movement with tail preparation, reduces measured request delay
 from 277 ms to 2 ms, and records the user's confirmation from rest and momentum.
 
+## September 26 streaming performance follow-up
+
+The [streaming range-reuse investigation](streaming-range-reuse-2026-09-26.md)
+extends Chrome attribution to 16 ms stalls, fixes repeated live-range allocation
+in the upstream renderer, and records rejected layout controls and the remaining
+large-row restoration costs.
+
 ## September 25 clean-code and performance audit
 
 The [streaming-trail DOM stability fix](streaming-trail-dom-stability-2026-09-25.md)

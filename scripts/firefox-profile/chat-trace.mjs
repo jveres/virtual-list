@@ -6,7 +6,7 @@ import { distribution } from "./chat-analysis.mjs";
 function attributeSlowWindows(events, origin, cpu) {
   const windows = [];
   for (const event of [...events].sort((a, b) => b.overlapMs - a.overlapMs)) {
-    if (event.overlapMs < 32 || windows.length === 8) break;
+    if (event.overlapMs < 16 || windows.length === 8) break;
     const startMs = Math.max(0, event.startMs);
     const endMs = startMs + event.overlapMs;
     if (
@@ -283,7 +283,7 @@ export function analyzeChatChrome(trace, cpu = null) {
     limits: [
       "Event durations are nested inclusive wall time; do not sum categories as CPU.",
       "V8 samples are sampled wall time, not thread CPU utilization.",
-      "Slow-window stacks clip sample intervals to at most eight non-overlapping renderer events of at least 32 ms. Recursive frames count once per stack. Long sample gaps weaken attribution; these stacks do not establish CPU utilization or causality.",
+      "Slow-window stacks clip sample intervals to at most eight non-overlapping renderer events of at least 16 ms. Recursive frames count once per stack. Long sample gaps weaken attribution; these stacks do not establish CPU utilization or causality.",
       "Invalidation records are diagnostic-only causes; their counts are not flush durations. Empty records in timing mode mean the category was not enabled.",
       "Other threads summarize overlapping compositor, raster, GPU, and browser events. Shared process work is not necessarily caused by this page; durations overlap and are not CPU utilization.",
       "Missing presentation events mean unavailable telemetry. Presentation records do not independently measure a physical screen.",

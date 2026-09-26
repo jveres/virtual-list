@@ -210,7 +210,7 @@ not the duration of a style flush. Empty invalidation results in timing mode
 mean that tracing category was disabled.
 
 `chrome-analysis.json` also retains `slowWindows`: up to eight non-overlapping
-renderer events lasting at least 32 ms, with the 20 largest inclusive sampled
+renderer events lasting at least 16 ms, with the 20 largest inclusive sampled
 stacks and the 12 largest leaf self-time entries in each interval. The separate
 `selfFrames` list keeps expensive leaves visible when many ancestor frames fill
 the inclusive list. Both lists report omitted counts. Times are relative to the
@@ -221,6 +221,8 @@ frames count once per sample, and samples are clipped to the selected interval. 
 attribution. Overlapping sample intervals count once, with discarded overlap
 reported as `overlappingSampleMs`. Missing CPU data produces `null` frames.
 This analysis runs after capture and adds no work to the page's scroll path.
+The 16 ms cutoff also retains short stalls near a 60 Hz frame budget; an
+event's duration alone does not prove that a frame missed presentation.
 
 Diagnostic probe version 4 also times native `insertBefore`, `removeChild`,
 and `remove` calls. `work.domOperations` reports totals and up to 64 individual

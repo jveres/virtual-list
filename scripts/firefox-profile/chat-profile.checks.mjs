@@ -850,6 +850,36 @@ test("Chrome slow-window stacks clip boundaries and deduplicate nested events an
   assert.equal(analyzeChatChrome(trace).slowWindows[0].frames, null);
 });
 
+test("Chrome slow-window stacks include single-frame stalls below 32 ms", () => {
+  const trace = {
+    traceEvents: [
+      { name: "chat-profile-start", ph: "R", ts: 0, pid: 1, tid: 2 },
+      { name: "chat-profile-end", ph: "R", ts: 100000, pid: 1, tid: 2 },
+      { name: "Update", ph: "X", ts: 0, dur: 24000, pid: 1, tid: 2 },
+      { name: "At threshold", ph: "X", ts: 30000, dur: 16000, pid: 1, tid: 2 },
+      {
+        name: "Below threshold",
+        ph: "X",
+        ts: 60000,
+        dur: 15999,
+        pid: 1,
+        tid: 2,
+      },
+    ],
+  };
+  assert.deepEqual(
+    analyzeChatChrome(trace).slowWindows.map(({ name, startMs, endMs }) => ({
+      name,
+      startMs,
+      endMs,
+    })),
+    [
+      { name: "Update", startMs: 0, endMs: 24 },
+      { name: "At threshold", startMs: 30, endMs: 46 },
+    ],
+  );
+});
+
 test("Chrome slow-window summaries bound retained windows and stack frames", () => {
   const trace = {
     traceEvents: [
