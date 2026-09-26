@@ -147,6 +147,8 @@ interface Row<T> {
   /** Clip box; the element itself for positioned cards. */
   slot: HTMLElement;
   height: number;
+  /** Measured follow limit within this row; null means no limit yet. */
+  followStart: number | null;
   /** The offset last written to the slot (NaN: none). */
   offset: number;
   /** Hidden: connected to the canvas, laid out, not painted. */
@@ -208,6 +210,8 @@ export function createVirtualList<T>(
 ): VirtualList<T> {
   const { key: keyOf, render, anchorable } = options;
   const heightOf = options.height;
+  if (heightOf && options.followStart)
+    throw new Error("followStart requires measured rows (omit height)");
   const declared = heightOf !== undefined;
   const place = options.position;
   if (place && !declared)
@@ -476,6 +480,7 @@ export function createVirtualList<T>(
       element,
       slot,
       height: quantize(height),
+      followStart: 0,
       offset: Number.NaN,
       place: "detached",
       dirty: false,
@@ -759,7 +764,17 @@ export function createVirtualList<T>(
     try {
       heights = list.map((row) => {
         if (declared) return declaredHeight(row.item);
-        const height = row.element.getBoundingClientRect().height;
+        const rect = row.element.getBoundingClientRect();
+        const height = rect.height;
+        if (!row.spec && options.followStart) {
+          const start = options.followStart(row.item, row.element);
+          row.followStart =
+            start === null
+              ? null
+              : start !== row.element && row.element.contains(start)
+                ? Math.max(0, start.getBoundingClientRect().top - rect.top)
+                : 0;
+        }
         // A mounted row reading 0 is hidden (display: none), not resized.
         if (row.place === "mounted")
           return Number.isFinite(height) && height > 0 ? height : row.height;
@@ -1116,9 +1131,7 @@ export function createVirtualList<T>(
         if (disposed) throw new Abort();
       }
       // Every render first, then one layout for every read.
-      const heights = fresh.map((row) =>
-        positive(row.element.getBoundingClientRect().height),
-      );
+      const heights = readHeights(fresh);
       fresh.forEach((row, index) => {
         row.height = quantize(heights[index] as number);
       });
@@ -1333,11 +1346,14 @@ export function createVirtualList<T>(
   function commitBody(p: Pending<T> | null, o: CommitOptions): void {
     const policy = o.policy ?? p?.anchor ?? "auto";
     const before = viewportState();
-    // A follow glide still catching up (content outgrowing it) follows the
-    // end; judged by position, the commit would anchor in place and drop it.
+    // Follow intent survives a pause at its limit. Leading content can move
+    // that limit even while the viewport is short of the end; the updated
+    // follow target below bounds the landing and never moves it backwards.
     const capture = geometry.capture(
       before,
-      policy === "auto" && followGlide ? "end" : policy,
+      policy === "auto" && (followGlide || follow.followingContent)
+        ? "end"
+        : policy,
       policy === "viewport" ? (p?.target ?? null) : null,
     );
     // Adopt the staged rows; a key removed or replaced dies after it left
@@ -1427,12 +1443,15 @@ export function createVirtualList<T>(
         result.mode === "end" &&
         takingOver === null &&
         moves;
-      if (smoothFollow && !o.keepFollow && takingOver === null)
-        follow.resolveCommit(policy, target);
       // Native flow: the rows on screen stay mounted in the new geometry, so
       // the engine can measure how far its anchor node moved and follow it.
+      // Restore the flow before follow policy reads the viewport height: an
+      // interim layout with the old tail removed can clamp the scroll offset
+      // and its later scroll event would cancel follow as apparent input.
       if (native) holdWindow(keysChanged || (p?.staged.size ?? 0) > 0);
       else repositionMounted();
+      if (smoothFollow && !o.keepFollow && takingOver === null)
+        follow.resolveCommit(policy, target);
       if (!glideFollow && moves) {
         if (o.write !== false) writeScrollTop(target);
         // Mid-phase, the engine moves the viewport: expect it, so the settle
@@ -1810,9 +1829,11 @@ export function createVirtualList<T>(
   const follow = new FollowController(
     {
       maxScrollTop: () => geometry.maxScrollTop(viewport.clientHeight),
-      lastItemTop: () => {
+      lastItemTop: (content) => {
         const key = lastItemKey();
-        return key === null ? null : geometry.offsetOf(key);
+        if (key === null) return null;
+        const start = content ? rows.get(key)?.followStart : 0;
+        return start === null ? null : geometry.offsetOf(key) + (start ?? 0);
       },
       lastItemKey,
       hidden: () => document.visibilityState === "hidden",

@@ -33,6 +33,28 @@ function flowIds(canvas: HTMLElement): number[] {
 }
 
 describe("native anchoring surface", () => {
+  it("restores the flow before follow reads layout after replacing the tail", () => {
+    let checking = false;
+    const h = mount(range(0, 50), {
+      followBehavior: "smooth",
+      replaceOnRerender: true,
+      height: () => {
+        if (checking)
+          expect(flowHeight(h.canvas())).toBeGreaterThanOrEqual(5000);
+        return 600;
+      },
+    });
+    try {
+      h.heights.set(49, 1500);
+      checking = true;
+      h.list.updateItem("m49", message(49, "streaming reply"));
+      expect(flowHeight(h.canvas())).toBe(6400);
+    } finally {
+      checking = false;
+      h.list.dispose();
+    }
+  });
+
   it("lays rows out in flow between spacers that reproduce committed geometry", () => {
     const h = mount(range(0, 50), { boot: "start" });
     expect(h.canvas().dataset.anchoring).toBe("native");

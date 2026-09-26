@@ -1,10 +1,10 @@
 import type { CapturePolicy } from "./geometry";
 
-export type FollowMode = "end" | "keep-start";
+export type FollowMode = "end" | "keep-start" | "keep-content";
 
 type FollowHost = {
   maxScrollTop(): number;
-  lastItemTop(): number | null;
+  lastItemTop(content: boolean): number | null;
   lastItemKey(): string | null;
   hidden(): boolean;
   now(): number;
@@ -27,7 +27,12 @@ export class FollowController {
     return this.following;
   }
 
-  /** An explicit end command overrides keep-start for this tail only. */
+  /** A measured start can move while following is paused short of the end. */
+  get followingContent(): boolean {
+    return this.following && this.mode === "keep-content" && !this.followsEnd;
+  }
+
+  /** An explicit end command overrides bounded follow for this tail only. */
   start(): void {
     this.endOverrideKey = this.host.lastItemKey();
     this.following = true;
@@ -64,10 +69,10 @@ export class FollowController {
     return this.mode === "end" || this.endOverrideKey !== null;
   }
 
-  /** Stop at the last item's start, but never move backwards to reach it. */
+  /** Stop at the row or content start, but never move backwards to reach it. */
   target(current: number, end = this.host.maxScrollTop()): number {
     if (this.followsEnd) return end;
-    const top = this.host.lastItemTop();
+    const top = this.host.lastItemTop(this.mode === "keep-content");
     if (top === null) return end;
     return Math.min(end, Math.max(current, Math.max(0, top - this.inset)));
   }

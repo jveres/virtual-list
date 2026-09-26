@@ -56,7 +56,8 @@ pnpm run dev
   download and upload icons, or drop a transcript on the chat; import
   replaces the separately stored OpenAI or simulated history), a settings
   dialog whose General section holds the autoscroll
-  mode (follow to the end, or stop when the reply's start reaches the top),
+  mode (follow to the end, stop at the reply's start, or let leading tool
+  calls scroll out and stop at the answer text),
   theme, scrollback loader style, and sticky day headers, and an optional
   real OpenAI
   provider, through **OpenAI API token** or **OpenAI Subscription**
@@ -178,8 +179,9 @@ const list = createVirtualList(viewport, {
   pinning: true, // false: clamp commands to content without trailing pin space
   anchoring: "auto", // | "native" | "runtime"
   followBehavior: "smooth", // | "instant"
-  followMode: "end", // | "keep-start": stop when the last row's top reaches the viewport top
-  followInset: 0, // px kept clear above that row under "keep-start"
+  followMode: "end", // | "keep-start" (row) | "keep-content" (selected element)
+  followInset: 0, // px kept clear above the row or selected content start
+  followStart: (item, row) => row.querySelector(".answer"), // optional, measured rows only
   edgeSlots: { start: { key: "loader", height: 52, render } },
   onState: (state) => {},
   onViewport: ({ scrollTop, height }) => {},
@@ -203,6 +205,14 @@ list.elementOf(key); // the mounted element | null
 list.state; // { count, start, end, atStart, atEnd, following, totalSize, held }
 list.dispose();
 ```
+
+For measured rows, `followMode: "keep-content"` stops automatic following
+when the element returned by `followStart(item, row)` reaches `followInset`
+pixels below the viewport top. Return `null` while only tools or a typing
+indicator exist; the list follows the end until the answer appears. Without
+a selector, this mode uses the row's start. The selector is read-only and
+runs with row measurements. Scroll animation frames use its cached offset.
+Explicit bottom navigation still follows the end for the current reply.
 
 - `setItems` hands over a whole snapshot. New and replaced rows are rendered
   and measured in hidden slots inside the canvas, and the commit is one

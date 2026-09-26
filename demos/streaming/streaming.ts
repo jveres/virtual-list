@@ -231,7 +231,7 @@ type LandingMode = "prompt" | "end";
 const parseEdge = (value: unknown): "slot" | "pill" =>
   value === "pill" ? "pill" : "slot";
 const parseFollow = (value: unknown): FollowMode =>
-  value === "keep-start" ? "keep-start" : "end";
+  value === "keep-start" || value === "keep-content" ? value : "end";
 const parseLanding = (value: unknown): LandingMode =>
   value === "end" ? "end" : "prompt";
 const parseCursor = (value: unknown): CursorMode =>
@@ -2643,9 +2643,8 @@ function formatCount(value: number): string {
 
 function syncScrollButtons(state: VirtualListState): void {
   setHiddenIfChanged(scrollTopBtn, state.atStart && !canLoadOlderMessages());
-  // Following to the end will get there on its own; following under
-  // "keep-start" stops at the reply's start, and the end may well be off
-  // screen — the button is the way there.
+  // Bounded follow stops at the row or answer start. Its end may still be
+  // offscreen, so keep the bottom button available.
   const headedToEnd = state.following && followMode === "end";
   setHiddenIfChanged(
     scrollBottomBtn,
@@ -3895,6 +3894,15 @@ function mountConversation(): void {
     followBehavior: "smooth",
     followMode,
     followInset: stickyInset(),
+    followStart: (message, element) => {
+      if (isDayHeader(message) || message.role !== "assistant") return element;
+      // Empty text viewers host the typing cursor. Tool disclosures can also
+      // contain markdown, but neither is the start of the answer.
+      if (!message.markdown.trim()) return null;
+      return element.querySelector<HTMLElement>(
+        ".message-content > :not(.tool-calls):not([hidden]) .markdown",
+      );
+    },
     onState: (state, snapshot) => {
       syncScrollButtons(state);
       syncMetrics(state);

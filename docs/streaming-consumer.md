@@ -70,7 +70,15 @@ it need not cancel the response. Never write the viewport's scroll position
 to compensate for streaming growth.
 
 Use `scrollTo("end")` for explicit follow intent, including rearming after a
-keep-start limit. Use `remeasure(key, { anchor: "viewport" })` for a user
+row or content start limit. To let leading tool calls scroll out, use
+`followMode: "keep-content"` with a read-only `followStart(item, row)` selector
+that returns the first answer element. Return `null` until answer text
+arrives; exclude tool output and empty cursor containers. This selector is
+for measured rows and is cached with their height, not queried on each scroll
+frame. The streaming demo exposes this as **Stop when the answer text reaches
+the top (skip tools)** in **Settings > General > Autoscroll**.
+
+Use `remeasure(key, { anchor: "viewport" })` for a user
 interaction that changes row size, such as opening a tool disclosure. Keep
 renderer handles per element and destroy them in `onDestroy`, not on every
 temporary unmount. Cancel streams and dispose the old list when replacing

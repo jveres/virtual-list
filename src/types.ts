@@ -48,6 +48,12 @@ export interface VirtualListOptions<T> {
   followBehavior?: "instant" | "smooth";
   followMode?: FollowMode;
   followInset?: number;
+  /**
+   * Start element inside a measured row for `keep-content`; null
+   * follows the end until a start exists. Read-only: runs with height reads,
+   * never in the scroll sampler. Not available with declared `height`.
+   */
+  followStart?: (item: T, element: HTMLElement) => HTMLElement | null;
   settleStrategy?: VirtualListScrollSettleStrategy;
   /**
    * Who keeps the reading position still when content above it changes.

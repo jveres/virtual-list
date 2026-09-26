@@ -300,7 +300,7 @@ interaction; the [README](../README.md) lists the public options.
   `createVirtualList(viewport, { items, key, render, height?, position?,
   boot?, pinning?, overscanPx?, anchorable?, onState?, onViewport?,
   onReachStart/End?, onMount?, onUnmount?, onDestroy?, settleStrategy?,
-  anchoring?, followBehavior?, followMode?, followInset? })`,
+  anchoring?, followBehavior?, followMode?, followInset?, followStart? })`,
   `boot` chooses where the list opens: `"end"` (the default, following
   armed) or `"start"` (the initial position, never follow intent).
   `anchoring` chooses who keeps the reader still when content above it
@@ -391,6 +391,15 @@ interaction; the [README](../README.md) lists the public options.
   that point stays put; explicit commands and explicit `"end"` anchors
   still reach the end, and boot lands at the end by default. `setFollowMode` changes
   the mode live; widening it while following catches up at once.
+  `followMode: "keep-content"` uses the descendant returned by
+  `followStart(item, element)` instead of the row's top. Returning `null`
+  follows the end until content appears; omitting the selector uses the row.
+  The selector requires measured rows (no declared `height`) and must not
+  mutate the DOM. Its offset is cached in the same read phase as row height,
+  including staged rows, updates, and reflows; scroll frames do no extra
+  layout reads. Follow intent survives movement of this content start, and
+  changing modes uses the cached position. A smaller limit never scrolls
+  backwards. Explicit end commands override either bounded mode for that tail.
   `remeasure` is the intent-bearing path for a discrete host interaction
   such as opening a tool panel. It reads the mounted row on the next animation
   frame (after the default action, before paint) and defaults to the viewport
