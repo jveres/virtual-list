@@ -2,6 +2,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { parseArgs } from "node:util";
 import { writeReproduction } from "./artifacts.mjs";
 import { installIpadScrollProbe } from "./ipad-scroll-probe.mjs";
 
@@ -17,9 +18,11 @@ export function summarizeIpadScroll(data) {
   let lastWrite;
   let comparedWrites = 0;
   let maxWriteError = 0;
+  let trustedTouchStarts = 0;
   for (const record of records) {
     const [time, type, value] = record;
     counts[type] = (counts[type] ?? 0) + 1;
+    if (type === "touchstart" && record[6] === true) trustedTouchStarts++;
     if (type === "write") lastWrite = { time, top: value };
     if (type === "scroll") {
       minTop = Math.min(minTop, value);
@@ -34,12 +37,25 @@ export function summarizeIpadScroll(data) {
         );
       }
     }
-    if (["paging", "window", "settle", "takeover", "viewport"].includes(type))
+    if (
+      [
+        "paging",
+        "window",
+        "settle",
+        "takeover",
+        "viewport",
+        "touchstart",
+        "touchend",
+        "touchcancel",
+        "scrollend",
+      ].includes(type)
+    )
       transitions.push(record);
   }
   return {
     ...metadata,
     counts,
+    trustedTouchStarts,
     motion: { minTop, maxTop, lastTop, travel },
     writes: {
       comparedScrolls: comparedWrites,
@@ -174,13 +190,25 @@ export function connectWebKit(ws, timeoutMs = 8000) {
 }
 
 async function main() {
-  if (process.argv.includes("--help")) {
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: {
+      help: { type: "boolean" },
+      state: { type: "boolean" },
+      seconds: { type: "string", default: "180" },
+    },
+  });
+  if (values.help) {
     console.log(
-      "Usage: node scripts/firefox-profile/ipad-scroll-trace.mjs ws://127.0.0.1:PORT/devtools/page/ID [--state]\nConnect to an existing local iOS bridge. Close other debugger sessions first.\nCapture lasts three minutes; Ctrl-C stops early. No message contents are recorded.",
+      "Usage: node scripts/firefox-profile/ipad-scroll-trace.mjs ws://127.0.0.1:PORT/devtools/page/ID [--state] [--seconds 180]\nConnect to an existing local iOS bridge. Close other debugger sessions first.\nCapture defaults to three minutes (maximum 30); Ctrl-C stops early. No message contents are recorded.",
     );
     return;
   }
-  const endpoint = new URL(process.argv[2]);
+  const seconds = Number(values.seconds);
+  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 1800)
+    throw new Error("seconds must be an integer from 1 to 1800");
+  if (positionals.length !== 1) throw new Error("Expected one bridge endpoint");
+  const endpoint = new URL(positionals[0]);
   if (
     endpoint.protocol !== "ws:" ||
     !["127.0.0.1", "localhost"].includes(endpoint.hostname)
@@ -193,7 +221,9 @@ async function main() {
       "node",
       "scripts/firefox-profile/ipad-scroll-trace.mjs",
       endpoint.href,
-      ...(process.argv.includes("--state") ? ["--state"] : []),
+      ...(values.state ? ["--state"] : []),
+      "--seconds",
+      String(seconds),
     ],
   });
   const session = connectWebKit(new WebSocket(endpoint));
@@ -225,7 +255,7 @@ async function main() {
     const metadata = await evaluate(
       `(${installIpadScrollProbe.toString()})(${JSON.stringify(id)})`,
     );
-    if (process.argv.includes("--state")) {
+    if (values.state) {
       await command("Debugger.enable");
       for (const script of session.scripts) {
         const path = new URL(script.url || "about:blank", "http://localhost")
@@ -274,7 +304,7 @@ async function main() {
       await command("Debugger.setBreakpointsActive", { active: true });
     }
     console.log("RECORDING READY", dir, JSON.stringify(metadata));
-    const until = Date.now() + 180000;
+    const until = Date.now() + seconds * 1000;
     while (!stopping && Date.now() < until) {
       await new Promise((resolve) => setTimeout(resolve, 1500));
       const data = await evaluate(`${ownedProbe}?.snapshot()`);

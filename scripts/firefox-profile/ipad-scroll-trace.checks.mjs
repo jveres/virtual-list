@@ -16,6 +16,8 @@ test("device summary retains paging evidence without per-frame scroll records", 
       [3, "scroll", 400],
       [4, "scrollend", 400],
       [5, "window", false, false, false, 390, 392, 1, 1, 400],
+      [6, "touchstart", "viewport", null, null, 0, false],
+      [7, "touchstart", "viewport", null, null, 0, true],
     ],
   });
   assert.equal(summary.records, undefined);
@@ -31,9 +33,10 @@ test("device summary retains paging evidence without per-frame scroll records", 
   });
   assert.deepEqual(
     summary.transitions.map((record) => record[1]),
-    ["paging", "window"],
+    ["paging", "scrollend", "window", "touchstart", "touchstart"],
   );
   assert.equal(summary.counts.scrollend, 1);
+  assert.equal(summary.trustedTouchStarts, 1);
 });
 
 class FakeSocket {

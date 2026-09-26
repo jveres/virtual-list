@@ -53,6 +53,9 @@ The following rules govern preparation, scrolling, and commits:
      its own scroll machinery and keeps the reader still. The runtime
      records the position it expects, so the settle sensor doesn't read the
      browser's adjustment as input.
+     WebKit touch phases, including their momentum tail, keep the settle gate
+     even away from an edge. Their commit explicitly preserves the reading
+     position rather than relying on a native adjustment being applied.
 
    Window reconciliation (mounting and unmounting already-known, measured
    rows at their fixed positions) continues freely throughout the scroll;
@@ -107,12 +110,14 @@ The following rules govern preparation, scrolling, and commits:
    clamp would fight it. A snapshot with an `"end"` anchor or an explicit
    `{ key, offset }` anchor, including a window job's, always waits for the
    settle during a scroll: the browser only keeps the viewport's own content
-   still. The native-anchoring exception also doesn't apply in two places,
+   still. The native-anchoring exception also doesn't apply in these cases,
    where only the at-or-below-the-anchor exception remains:
    - within 2 px of a scroll edge, where a rubber-band bounce, Firefox's
      stale scroll limit, and an early `scrollend` live;
    - during a glide, which heads for a target in the committed geometry, so
-     held work waits for its landing.
+     held work waits for its landing;
+   - during WebKit touch input and its momentum tail, until the whole scroll
+     phase settles, even when the viewport stops short of an edge.
 
    Positioned (masonry) layouts always use runtime anchoring and can't
    prove by index that a change stays below the anchor, so their structural
@@ -213,7 +218,10 @@ The definition of correct, referenced by number throughout the code:
   phase in flight (a rotation mid-fling): the layout the gesture was
   scrolling no longer exists, so the takeover settles it — held work
   commits with its anchor, rows measured at the new width — and the scroll
-  goes on in a new phase. The engine clamps the position and
+  goes on in a new phase. A staged `updateWindow` discards its old-width
+  preparation, evaluates its updater again, and rebuilds the page without
+  ending the request. Abort, disposal, and a superseding key order still
+  cancel it. The engine clamps the position and
   dispatches that scroll either before the resize is observed (a window
   resize) or in the frame after it (an in-page composer resize); the
   controller reads a scroll landing on the new maximum right after a

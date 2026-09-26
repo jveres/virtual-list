@@ -13,6 +13,11 @@ The [iOS scroll handoff investigation](ios-scroll-handoff-2026-09-26.md) records
 the confirmed scroll-settle button correction, mobile paging coverage, device
 diagnostics, and the still-open paging report.
 
+The [iPad near-top paging investigation](ipad-near-top-paging-2026-09-26.md)
+records an anchor adjustment lost in a long-lived Safari page, successful
+real-swipe validation of the touch-settle candidate, and fixes for resize,
+missing-scrollend, and changing-page-size failures found in further edge cases.
+
 The [responsive tail-navigation follow-up](responsive-tail-navigation-2026-09-26.md)
 overlaps native movement with tail preparation, reduces measured request delay
 from 277 ms to 2 ms, and records the user's confirmation from rest and momentum.

@@ -154,6 +154,8 @@ interface ScrollSettleHost {
 
 export interface ScrollSettleController {
   isScrollPhaseActive(): boolean;
+  /** Touch input and its momentum tail, until the whole phase settles. */
+  isTouchScrollPhase(): boolean;
   /** At a scroll edge (within the edge tolerance), or past it in a bounce. */
   isNearScrollEdge(): boolean;
   /** Pre-record a programmatic scrollTop write so its event isn't misread as a user scroll. */
@@ -200,6 +202,7 @@ export function createScrollSettleController(
   let chromiumQuietSettleTimer = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
+  let touchScrollPhase = false;
   let scrollEventsSinceTouchStart = 0;
 
   function nativeMaxScrollTop(): number {
@@ -456,6 +459,7 @@ export function createScrollSettleController(
     clearPendingNativeScrollEnd();
     scrollPhaseActive = false;
     scrollPhaseMoved = false;
+    touchScrollPhase = false;
     resetScrollSample();
     if (host.isDisposed()) return;
     host.onGestureReset();
@@ -851,15 +855,21 @@ export function createScrollSettleController(
   function handleTouchScrollStart(): void {
     observeInitialInput();
     touchInputActive = true;
+    // Cancellation can synchronously finish a glide and reset phase state.
+    // Mark before host callbacks and restore the touch owner afterward.
+    touchScrollPhase = true;
     scrollEventsSinceTouchStart = 0;
     cancelPendingReleaseForDirectInput();
     handleScrollPhaseStart();
+    touchScrollPhase = true;
   }
 
   function handleTouchScrollMove(): void {
     observeInitialInput();
+    touchScrollPhase = true;
     cancelPendingReleaseForDirectInput();
     handleScrollPhaseStart();
+    touchScrollPhase = true;
   }
 
   function handleTouchScrollEnd(event: TouchEvent): void {
@@ -886,6 +896,10 @@ export function createScrollSettleController(
       return;
     }
     handleScrollPhaseMaybeEnd();
+    // The last scroll may have arrived while a finger was still down, when
+    // fallback timers are forbidden. Releasing without another scroll/end
+    // must start the same quiet check as a trailing momentum scroll would.
+    scheduleWheelScrollEndFallback();
   }
 
   function isLikelyScrollbarPointer(event: PointerEvent): boolean {
@@ -914,9 +928,11 @@ export function createScrollSettleController(
       return;
     }
     activePointers.add(event.pointerId);
+    if (event.pointerType === "touch") touchScrollPhase = true;
     observeInitialInput();
     cancelPendingReleaseForDirectInput();
     handleScrollPhaseStart();
+    if (event.pointerType === "touch") touchScrollPhase = true;
   }
 
   function markPointerReleaseScrollEnd(): void {
@@ -1003,6 +1019,7 @@ export function createScrollSettleController(
 
   return {
     isScrollPhaseActive: () => scrollPhaseActive,
+    isTouchScrollPhase: () => touchInputActive || touchScrollPhase,
     isNearScrollEdge,
     recordProgrammaticScrollTop,
     beginProgrammaticGesture: () => handleScrollPhaseStart(true),

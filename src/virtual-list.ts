@@ -1790,15 +1790,22 @@ export function createVirtualList<T>(
   const cancelJobs = new Set<() => void>();
 
   const idle = (): boolean => !controller.isScrollPhaseActive();
+  const settleStrategy = options.settleStrategy ?? detectScrollSettleStrategy();
 
   /**
    * F5: under native anchoring, a change above the reading position lands
    * mid-gesture. Edges keep the settle: a bounce, Firefox's scroll limit,
    * and an early scrollend all live there. So does a glide: it heads for a
    * target in the committed snapshot, and held work waits for its landing.
+   * WebKit touch phases also wait through momentum: CSS anchoring support
+   * does not guarantee that a prepend adjusts the native scroller. The
+   * settle commit preserves the reading position with an explicit write.
    */
   const nativeFree = (): boolean =>
-    native && glide === null && !controller.isNearScrollEdge();
+    native &&
+    glide === null &&
+    !(settleStrategy === "safari-wheel" && controller.isTouchScrollPhase()) &&
+    !controller.isNearScrollEdge();
 
   const follow = new FollowController(
     {
@@ -1823,7 +1830,7 @@ export function createVirtualList<T>(
 
   const controller = createScrollSettleController({
     viewport,
-    strategy: options.settleStrategy ?? detectScrollSettleStrategy(),
+    strategy: settleStrategy,
     measureEpsilon: EPSILON_PX,
     isDisposed: () => disposed,
     canLoadAtBoundary: (boundary) =>
@@ -2189,7 +2196,6 @@ export function createVirtualList<T>(
         !signal?.aborted &&
         (!job ||
           (job.structure === structure &&
-            job.width === viewportWidth &&
             (!interrupt || job.input === inputEpoch)));
       /** Stop when the job no longer lives; true when it did. */
       const ended = (): boolean => {
@@ -2241,6 +2247,10 @@ export function createVirtualList<T>(
       const stageFrame = (): void => {
         frame = 0;
         if (ended()) return;
+        if (job && job.width !== viewportWidth) {
+          run();
+          return;
+        }
         // The settle resumes this job, unless native anchoring lands it now.
         if ((!idle() && !nativeFree() && !interruptAtCommit) || !job) return;
         const j = job;
@@ -2253,6 +2263,10 @@ export function createVirtualList<T>(
       const stageIdle = (deadline: IdleDeadline): void => {
         idleHandle = 0;
         if (ended()) return;
+        if (job && job.width !== viewportWidth) {
+          run(!idle());
+          return;
+        }
         if (idle() || !job) return; // The settle owns it now.
         const j = job;
         if (!j.ready) {
@@ -2282,6 +2296,21 @@ export function createVirtualList<T>(
           /** Evaluated mid-phase but left for the settle (a scroll write). */
           let waiting = false;
           pass(() => {
+            // Width-dependent rendering is stale after a rotation or resize,
+            // but the source request still belongs to this update. Rebuild
+            // its proposal at the new width instead of dropping the page.
+            if (job && job.width !== viewportWidth) {
+              const abandoned = job;
+              job = null;
+              if (frame !== 0) cancelAnimationFrame(frame);
+              if (idleHandle !== 0) cancelIdleCallback(idleHandle);
+              frame = 0;
+              idleHandle = 0;
+              checkedItems = null;
+              checkedRevision = -1;
+              for (const row of abandoned.rows.values()) destroyRow(row);
+              if (ended()) return;
+            }
             const j = job;
             if (j && !j.ready) {
               staging();
@@ -2379,6 +2408,12 @@ export function createVirtualList<T>(
               return;
             }
             if (ended()) return;
+            // An updater can synchronously resize through a host callback.
+            // Rebuild on the next opportunity before publishing old-width rows.
+            if (j && j.width !== viewportWidth) {
+              if (frame === 0) frame = requestAnimationFrame(runFrame);
+              return;
+            }
             // Mid-phase (native anchoring), only a snapshot that needs no
             // scroll write lands; a named or end anchor waits for the settle.
             const anchor = next.anchor ?? "viewport";

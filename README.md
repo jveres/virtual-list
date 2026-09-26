@@ -221,6 +221,9 @@ list.dispose();
   `"native"` forces the browser, and `"runtime"` forces settle-gated runtime
   scroll writes. Positioned (masonry) layouts always use the runtime. The
   canvas records the chosen mode in its `data-anchoring` attribute.
+  WebKit touch scrolling, including momentum, defers changes above the reader
+  until settle even in native mode, so the runtime can preserve the reading
+  position if the browser does not apply its anchor adjustment.
 - `updateItem(key, item, { anchor? })` replaces one item's data. The key must
   stay the same; unknown keys are ignored. It prepares only that item,
   including when a snapshot is held. After successful preparation, it patches
@@ -232,6 +235,8 @@ list.dispose();
   During a gesture it prepares the new rows in idle time and commits when the
   list is idle. Under native anchoring, away from the scroll edges, it also
   commits mid-gesture, unless the update names an `"end"` or explicit anchor.
+  A width change rebuilds pending preparation against the new layout without
+  dropping the update; the updater can be called again before its one commit.
   `options.protectPin` defaults to `true`; `false` permits offscreen-pin
   eviction while protecting visible/overscan rows and explicit targets.
   `options.interrupt` defaults to `false`. Explicit navigation can use `true`

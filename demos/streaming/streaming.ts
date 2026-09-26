@@ -1018,9 +1018,7 @@ function sourcePage(
   return {
     items: transcript.slice(start, end),
     start:
-      start > 0
-        ? { available: true, cursor: Math.max(0, start - pageSize()) }
-        : { available: false },
+      start > 0 ? { available: true, cursor: start } : { available: false },
     end:
       end < transcript.length
         ? { available: true, cursor: end }
@@ -1060,7 +1058,7 @@ function resetPaging(): void {
       );
       return first ? [String(first.id)] : [];
     },
-    load: async ({ cursor, signal }) => {
+    load: async ({ edge, cursor, signal }) => {
       await new Promise<void>((resolve) => {
         const finish = () => {
           window.clearTimeout(timer);
@@ -1071,7 +1069,12 @@ function resetPaging(): void {
         signal.addEventListener("abort", finish, { once: true });
         if (signal.aborted) finish();
       });
-      return sourcePage(cursor);
+      // A start cursor is the retained boundary, not an old page's size.
+      // Rotation can change pageSize() between fetches; always end the
+      // previous page at that boundary so history stays contiguous.
+      return edge === "start"
+        ? sourcePage(Math.max(0, cursor - pageSize()), cursor)
+        : sourcePage(cursor);
     },
     edgeSlots: ({ start, end }) => ({
       start:

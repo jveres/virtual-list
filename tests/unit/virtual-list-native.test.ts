@@ -1,7 +1,7 @@
 /**
  * @vitest-environment jsdom
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createVirtualList } from "../../src/virtual-list";
 import {
   flowHeight,
@@ -92,6 +92,44 @@ describe("native anchoring surface", () => {
     expect(h.viewport.scrollTop).toBe(101);
     h.list.dispose();
   });
+
+  it.each(["setItems", "updateWindow"] as const)(
+    "preserves a near-top reading position after WebKit touch momentum using %s",
+    async (method) => {
+      const items = range(24, 50);
+      const h = mount(items, { boot: "end", settleStrategy: "safari-wheel" });
+      try {
+        h.viewport.dispatchEvent(new Event("touchstart"));
+        h.userScroll(30);
+        const next = [...range(0, 24), ...items];
+        const update =
+          method === "updateWindow"
+            ? h.list.updateWindow(() => ({ items: next, anchor: "viewport" }))
+            : h.list.setItems(next, { anchor: "viewport" });
+        vi.advanceTimersByTime(400);
+        expect(h.list.state.count).toBe(items.length);
+        expect(h.viewport.scrollTop).toBe(30);
+
+        const release = new Event("touchend");
+        Object.defineProperty(release, "touches", { value: [] });
+        h.viewport.dispatchEvent(release);
+        // A lifted finger is not a settled gesture: momentum still owns it.
+        for (const top of [28, 26, 24, 22, 20]) {
+          h.userScroll(top);
+          vi.advanceTimersByTime(50);
+          expect(h.list.state.count).toBe(items.length);
+        }
+        h.viewport.dispatchEvent(new Event("scrollend"));
+        await vi.advanceTimersByTimeAsync(800);
+        if (method === "updateWindow") await expect(update).resolves.toBe(true);
+        expect(h.list.state.count).toBe(next.length);
+        expect(h.viewport.scrollTop).toBe(24 * ROW_H + 20);
+        expect(h.list.positionOf("m24")?.top).toBe(24 * ROW_H);
+      } finally {
+        h.list.dispose();
+      }
+    },
+  );
 
   it("holds a prepend during a glide until it lands", async () => {
     const items = range(0, 50);

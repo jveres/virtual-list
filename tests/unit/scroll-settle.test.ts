@@ -778,6 +778,37 @@ describe("safari sequences (trace replay)", () => {
     expect(harness.settled()).toBe(2);
   });
 
+  it("retains touch ownership through momentum and clears it before a later wheel phase", () => {
+    const harness = mount("safari-wheel");
+    harness.touchStart();
+    harness.scrollTo(600);
+    harness.touchEnd();
+    expect(harness.controller.isTouchScrollPhase()).toBe(true);
+    harness.scrollTo(500);
+    vi.advanceTimersByTime(50);
+    expect(harness.controller.isTouchScrollPhase()).toBe(true);
+    harness.scrollEnd();
+    vi.advanceTimersByTime(300);
+    expect(harness.controller.isScrollPhaseActive()).toBe(false);
+    expect(harness.controller.isTouchScrollPhase()).toBe(false);
+    harness.wheel(100);
+    harness.scrollTo(600);
+    expect(harness.controller.isScrollPhaseActive()).toBe(true);
+    expect(harness.controller.isTouchScrollPhase()).toBe(false);
+  });
+
+  it("settles a released near-edge touch when no later scroll or scrollend arrives", () => {
+    const harness = mount("safari-wheel");
+    harness.touchStart();
+    harness.scrollTo(30);
+    vi.advanceTimersByTime(500);
+    expect(harness.settled()).toBe(0);
+    harness.touchEnd();
+    vi.advanceTimersByTime(500);
+    expect(harness.settled()).toBe(1);
+    expect(harness.controller.isTouchScrollPhase()).toBe(false);
+  });
+
   it("cancels a pending release when touch re-grabs before new motion", () => {
     // Mid-list, so no edge quiet window could hold the settle for other
     // reasons: only the fresh touch cancelling the release does.

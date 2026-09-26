@@ -567,6 +567,31 @@ describe("settle-time window updates", () => {
       expect(h.list.state.held).toBe(false);
       h.list.dispose();
     });
+
+    it("should restart idle preparation after a resize settles the gesture", async () => {
+      let width = 300;
+      const proposals: number[] = [];
+      const h = mount(range(40, 80), { boot: "start", width: () => width });
+      h.userScroll(30);
+      const applied = h.list.updateWindow(({ items }) => {
+        proposals.push(width);
+        return { items: [...range(0, 40), ...items], anchor: "viewport" };
+      });
+      vi.advanceTimersByTime(2);
+      expect(h.list.state.count).toBe(40);
+      width = 500;
+      fireResize(1, h.viewport, VIEWPORT_H);
+      await vi.advanceTimersByTimeAsync(300);
+
+      await expect(applied).resolves.toBe(true);
+      expect(proposals).toEqual([300, 500]);
+      expect(h.viewport.scrollTop).toBe(4030);
+      expect(h.list.state.count).toBe(80);
+      h.list.dispose();
+      expect(new Set(h.destroyedElements).size).toBe(
+        h.destroyedElements.length,
+      );
+    });
   });
 
   it("should cancel fetched work before it runs and clear held state", async () => {
@@ -961,24 +986,51 @@ describe("incremental window preparation", () => {
     },
   );
 
-  it("should cancel width-stale work without committing", async () => {
+  it("should rebuild width-stale work and retain the pending update", async () => {
     let width = 300;
+    const proposals: number[] = [];
     const h = mount(range(0, 20), {
       width: () => width,
     });
-    const applied = h.list.updateWindow(({ items }) => ({
-      items: [...items, ...range(20, 44)],
-    }));
+    const applied = h.list.updateWindow(({ items }) => {
+      proposals.push(width);
+      return { items: [...items, ...range(20, 44)] };
+    });
     vi.advanceTimersByTime(16);
 
     width = 500;
+    h.heights.set(20, 180);
     fireResize(1, h.viewport, VIEWPORT_H);
     vi.advanceTimersByTime(100);
 
-    await expect(applied).resolves.toBe(false);
-    expect(h.list.state.count).toBe(20);
+    await expect(applied).resolves.toBe(true);
+    expect(proposals).toEqual([300, 500]);
+    expect(h.list.state.count).toBe(44);
+    expect(h.list.positionOf("m20")).toEqual({ top: 2000, height: 180 });
+    expect(h.destroyed).toEqual(range(20, 28).map((item) => item.id));
     expect(h.list.state.held).toBe(false);
     h.list.dispose();
+  });
+
+  it("should honor abort during disposal of width-stale prepared rows", async () => {
+    let width = 300;
+    const abort = new AbortController();
+    const h = mount(range(0, 20), {
+      width: () => width,
+      onDestroy: () => abort.abort(),
+    });
+    const applied = h.list.updateWindow(
+      ({ items }) => ({ items: [...items, ...range(20, 44)] }),
+      abort.signal,
+    );
+    vi.advanceTimersByTime(16);
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    vi.advanceTimersByTime(100);
+    await expect(applied).resolves.toBe(false);
+    expect(h.list.state.count).toBe(20);
+    h.list.dispose();
+    expect(new Set(h.destroyedElements).size).toBe(h.destroyedElements.length);
   });
 
   it("should pause batches during a new gesture and commit at the new reading position", async () => {
