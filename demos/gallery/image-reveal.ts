@@ -7,7 +7,7 @@ export function createImageReveal(viewport: HTMLElement) {
   viewport.addEventListener("scroll", onScroll, { passive: true });
   const watched = new Map<
     HTMLImageElement,
-    { visible: boolean; fade: boolean; version: number; ready: () => void }
+    { visible: boolean; fade: boolean; ready: () => void }
   >();
   const observer = new IntersectionObserver(
     (entries) => {
@@ -18,7 +18,6 @@ export function createImageReveal(viewport: HTMLElement) {
         const visible = entry.isIntersecting && entry.intersectionRatio > 0;
         if (state.visible === visible) continue;
         state.visible = visible;
-        state.version++;
         if (visible) {
           state.fade = hasScrolled;
           state.ready();
@@ -43,31 +42,44 @@ export function createImageReveal(viewport: HTMLElement) {
       const state = {
         visible: false,
         fade: false,
-        version: 0,
+        decodedSource: "",
+        decodingSource: "",
         ready: () => {
-          if (!state.visible || !image.complete || image.naturalWidth === 0)
-            return;
-          const version = ++state.version;
+          if (!image.complete || image.naturalWidth === 0) return;
           const src = image.currentSrc || image.src;
+          const reveal = () => {
+            if (!state.visible) return;
+            image.classList.toggle("fade-in", state.fade);
+            image.classList.add("revealed");
+          };
+          if (state.decodedSource === src) {
+            reveal();
+            return;
+          }
+          if (state.decodingSource === src) return;
+          // Decode once while mounted in overscan, before the viewport entrance.
+          state.decodingSource = src;
           void image.decode().then(
             () => {
               if (
                 watched.get(image) === state &&
-                state.visible &&
-                state.version === version &&
                 (image.currentSrc || image.src) === src
               ) {
-                image.classList.toggle("fade-in", state.fade);
-                image.classList.add("revealed");
+                state.decodedSource = src;
+                state.decodingSource = "";
+                reveal();
               }
             },
-            () => {}, // A replaced/unmounted source must not reveal stale pixels.
+            () => {
+              if (state.decodingSource === src) state.decodingSource = "";
+            }, // A replaced/unmounted source must not reveal stale pixels.
           );
         },
       };
       watched.set(image, state);
       image.addEventListener("load", state.ready);
       observer.observe(image);
+      state.ready();
     },
     remove,
     dispose(): void {

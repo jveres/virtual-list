@@ -7,6 +7,13 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 27 gallery momentum investigation
+
+The [gallery investigation](gallery-momentum-investigation-2026-09-27.md)
+compares the fade feature with its predecessor and an overscan preparation
+candidate. Real trackpad deceleration remains unverified; scripted native
+gestures do not reproduce the reported momentum tail.
+
 ## September 27 clean code audit
 
 The [native-scroll cleanup audit](clean-code-audit-2026-09-27.md) records fixes

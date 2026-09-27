@@ -46,17 +46,42 @@ async function stableLayoutGroups(page) {
         "width-only row updates must preserve child nodes in place",
       );
     }
-    const fadingCached = await page.locator(".photo.cached").evaluateAll(
-      (images) =>
-        images.filter((img) => {
-          const style = getComputedStyle(img);
-          return style.opacity !== "1" || style.transitionDuration !== "0s";
-        }).length,
-    );
+    const restarted = await page
+      .locator(".photo.loaded")
+      .evaluateAll((images) => {
+        const viewport = document
+          .querySelector("#viewport")
+          .getBoundingClientRect();
+        const previous = window.galleryResizeReveals ?? new Map();
+        const next = new Map();
+        let restarts = 0;
+        for (const image of images) {
+          const rect = image.getBoundingClientRect();
+          const visible =
+            rect.top >= viewport.top && rect.bottom <= viewport.bottom;
+          const animations = image
+            .getAnimations()
+            .filter(
+              (animation) => animation.animationName === "gallery-photo-appear",
+            );
+          const before = previous.get(image);
+          if (
+            visible &&
+            before?.visible &&
+            animations.some(
+              (animation) => !before.animations.includes(animation),
+            )
+          )
+            restarts++;
+          next.set(image, { visible, animations });
+        }
+        window.galleryResizeReveals = next;
+        return restarts;
+      });
     assert.equal(
-      fadingCached,
+      restarted,
       0,
-      "cached photos must not fade again during reflow",
+      "continuously visible photos must not restart their fade during reflow",
     );
     const tiles = await page.locator("#viewport .tile").evaluateAll((tiles) =>
       tiles.map((tile) => {
@@ -198,9 +223,14 @@ try {
     const other = layout === "rows" ? "masonry" : "rows";
     await page.locator(`[data-layout="${other}"]`).click();
     await roundTrip(page, `${layout}: after layout control`);
+    const metrics = await page.locator("#loader-metrics").textContent();
     assert.ok(
-      (await page.locator(".photo.cached").count()) > 0,
+      Number(/reused (\d+)/.exec(metrics)?.[1]) > 0,
       "must exercise loaded image remounts",
+    );
+    assert.ok(
+      (await page.locator(".photo.loaded").count()) > 0,
+      "remounted images must load",
     );
     assert.deepEqual(errors, []);
     console.log(

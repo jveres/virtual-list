@@ -8,13 +8,29 @@ const fixture =
 for (const engine of [firefox, chromium, webkit]) {
   const browser = await engine.launch();
   try {
-    for (const layout of ["rows", "masonry"]) {
+    for (const [layout, width] of [
+      ["rows", 390],
+      ["rows", 1900],
+      ["masonry", 390],
+      ["masonry", 1900],
+    ]) {
       const page = await browser.newPage({
-        viewport: { width: 390, height: 844 },
+        viewport: { width, height: 844 },
         reducedMotion: "no-preference",
       });
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
+      await page.addInitScript(() => {
+        const decode = HTMLImageElement.prototype.decode;
+        window.galleryDecodeCalls = new WeakMap();
+        HTMLImageElement.prototype.decode = function () {
+          window.galleryDecodeCalls.set(
+            this,
+            (window.galleryDecodeCalls.get(this) ?? 0) + 1,
+          );
+          return decode.call(this);
+        };
+      });
       let pendingDownloads = null;
       await page.route("https://picsum.photos/**", async (route) => {
         if (pendingDownloads) await pendingDownloads;
@@ -36,6 +52,11 @@ for (const engine of [firefox, chromium, webkit]) {
         await image.evaluate((img) => img.getAnimations().length),
         0,
         "initial load appears immediately",
+      );
+      assert.equal(
+        await image.evaluate((img) => window.galleryDecodeCalls.get(img)),
+        1,
+        "the initial image is decoded once",
       );
       for (const distance of [400, 2400]) {
         await page.locator("#viewport").evaluate((v, top) => {
@@ -73,6 +94,11 @@ for (const engine of [firefox, chromium, webkit]) {
           document
             .querySelector('.tile[data-id="0"] img.photo')
             ?.classList.contains("revealed"),
+        );
+        assert.equal(
+          await image.evaluate((img) => window.galleryDecodeCalls.get(img)),
+          1,
+          "re-entering overscan does not repeat decoding on the same image",
         );
         const result = await image.evaluate((img) => {
           const animation = img
@@ -145,6 +171,7 @@ for (const engine of [firefox, chromium, webkit]) {
       console.log(
         engine.name(),
         layout,
+        `${width}px`,
         "initial load, cached entries, and first-time scroll downloads passed",
       );
       await page.close();

@@ -69,6 +69,8 @@ header .ua {
   height: 100%;
   object-fit: cover;
   opacity: 0;
+  /* Prepare the fade surface in bounded overscan, before a visible entrance. */
+  will-change: opacity;
 }
 
 /* Compose load and press feedback regardless of stylesheet load order. */
@@ -99,6 +101,7 @@ header .ua {
   .photo.photo-preview-image {
     animation: none;
     transition: none;
+    will-change: auto;
   }
 }
 
