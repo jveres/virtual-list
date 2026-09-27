@@ -452,6 +452,22 @@ describe("settle-time window updates", () => {
     expect(h.list.state.count).toBe(60);
     h.list.dispose();
   });
+  it("should finish teardown when stopping native motion throws", async () => {
+    const h = mount(range(0, 40), { boot: "start" });
+    const moving = h.list.scrollTo("end", { behavior: "smooth" });
+    vi.advanceTimersByTime(32);
+    vi.spyOn(h.viewport, "scrollTo").mockImplementation(() => {
+      throw new Error("native cancellation failed");
+    });
+
+    expect(() => h.list.dispose()).toThrow("native cancellation failed");
+
+    await expect(moving).resolves.toBe(false);
+    expect(h.viewport.children).toHaveLength(0);
+    expect(h.destroyed).toHaveLength(40);
+    expect(roInstances.every(({ observed }) => observed.size === 0)).toBe(true);
+    expect(() => h.list.dispose()).not.toThrow();
+  });
   it("should settle an update queued by a render that subsequently fails", async () => {
     let queued: Promise<boolean> | undefined;
     const h = mount(range(0, 20), {

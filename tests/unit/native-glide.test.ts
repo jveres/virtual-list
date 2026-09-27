@@ -33,12 +33,52 @@ function setup(start = 0, destination = 1000) {
 }
 
 describe("native glide completion", () => {
+  it("should stop the old browser destination when the live target arrives first", () => {
+    const h = setup();
+    h.start();
+    h.target(400);
+    h.move(400);
+    vi.advanceTimersByTime(120);
+
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(true);
+    expect(h.viewport.scrollTo).toHaveBeenLastCalledWith({
+      top: 400,
+      behavior: "instant",
+    });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("should complete a no-op asynchronously without issuing an animation", () => {
     const h = setup(1000);
     expect(h.complete).not.toHaveBeenCalled();
     h.start();
     expect(h.complete).toHaveBeenCalledExactlyOnceWith(true);
     expect(h.viewport.scrollTo).not.toHaveBeenCalled();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("should retain the original failure if stopping also fails", () => {
+    const h = setup();
+    const requestError = new Error("request failed");
+    const stopError = new Error("stop failed");
+    vi.mocked(h.viewport.scrollTo)
+      .mockImplementation(() => {
+        throw stopError;
+      })
+      .mockImplementationOnce(() => {
+        throw requestError;
+      });
+
+    let failure: unknown;
+    try {
+      h.start();
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(AggregateError);
+    expect(failure).toMatchObject({ errors: [requestError, stopError] });
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(false);
+    expect(h.glide.active).toBe(false);
     expect(vi.getTimerCount()).toBe(0);
   });
 

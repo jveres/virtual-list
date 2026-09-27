@@ -7,6 +7,12 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 27 clean code audit
+
+The [native-scroll cleanup audit](clean-code-audit-2026-09-27.md) records fixes
+for changed-target motion ownership, Firefox cancellation, and interrupted
+teardown, with unit and cross-browser regressions.
+
 ## September 27 Safari paging follow-up
 
 The [consumed-edge investigation](safari-consumed-reach-2026-09-27.md) captures

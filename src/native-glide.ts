@@ -32,10 +32,26 @@ export function startNativeGlide(
     clearTimeout(timer);
     viewport.removeEventListener("scroll", onScroll);
     viewport.removeEventListener("scrollend", onEnd);
-    // A replacement or real input must release the browser animation too.
+    // Release browser motion on cancellation or early arrival at a changed
+    // target. Removing our listeners alone does not stop its old destination.
     try {
-      if (!completed && requested !== null)
-        viewport.scrollTo({ top: viewport.scrollTop, behavior: "instant" });
+      const current = viewport.scrollTop;
+      if (
+        requested !== null &&
+        (!completed || Math.abs(current - requested) > ARRIVAL_PX)
+      ) {
+        // Firefox can discard an instant request to its current position
+        // without cancelling compositor motion. Change the position by one
+        // pixel and restore it in the same task, before the browser paints.
+        try {
+          viewport.scrollTo({
+            top: current > 0 ? current - 1 : current + 1,
+            behavior: "instant",
+          });
+        } finally {
+          viewport.scrollTo({ top: current, behavior: "instant" });
+        }
+      }
     } finally {
       onDone(completed);
     }
@@ -72,7 +88,14 @@ export function startNativeGlide(
         finish(false);
       } else scheduleCheck(); // Ignore stale ends from the preceding command.
     } catch (error) {
-      finish(false);
+      try {
+        finish(false);
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "native scrolling and cleanup failed",
+        );
+      }
       throw error;
     }
   }

@@ -262,7 +262,10 @@ interaction; the [README](../README.md) lists the public options.
   Two seconds without movement at an unfinished target resolves `false`.
   Growing targets are followed in successive native legs, without restarting
   browser easing on each frame. Cancelling an owned animation stops it with
-  an instant request at the current position. Its replacement does not toggle
+  two instant requests: a one-pixel change and restoration in the same task.
+  Firefox can ignore a same-position request without stopping its animation.
+  Arrival at a changed live target also stops the old destination before
+  releasing ownership. Its replacement does not toggle
   overflow or rebuild the scrolling layer. Scroll keys cancel ownership too;
   typing in an editable control does not.
 - Runtime policy boundaries: `follow.ts` owns follow intent, destination

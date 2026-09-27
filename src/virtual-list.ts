@@ -2779,7 +2779,8 @@ export function createVirtualList<T>(
     cancelRepaint?.();
     for (const cancel of [...cancelJobs]) cancel();
     for (const tasks of openScopes) discard(tasks);
-    glide?.cancel();
+    // A failed native stop must not strand observers, rows, or queued work.
+    host(() => glide?.cancel());
     settleParked(false);
     reach.dispose();
     controller.dispose();
