@@ -2769,6 +2769,27 @@ describe("runtime — commits and slots", () => {
     windowSpy.mockRestore();
   });
 
+  it.each(["keep-start", "keep-content"] as const)(
+    "%s reports end catch-up until the bounded follow limit leaves content below",
+    (followMode) => {
+      const initial = range(0, 50);
+      const h = mount(initial, { followBehavior: "smooth", followMode });
+      h.heights.set(49, 300);
+      h.list.setItems([...initial.slice(0, -1), message(49, "short reply")]);
+      expect(h.list.state.atEnd).toBe(false);
+      expect(h.list.state.followingEnd).toBe(true);
+      vi.advanceTimersByTime(700);
+      h.heights.set(49, 900);
+      h.list.setItems([...initial.slice(0, -1), message(49, "tall reply")]);
+      expect(h.list.state.following).toBe(true);
+      expect(h.list.state.followingEnd).toBe(false);
+      vi.advanceTimersByTime(700);
+      expect(h.list.state.atEnd).toBe(false);
+      expect(h.list.state.followingEnd).toBe(false);
+      h.list.dispose();
+    },
+  );
+
   it("smoothly follows end-compatible growth when configured", () => {
     const initial = range(0, 50);
     const h = mount(initial, { followBehavior: "smooth" });

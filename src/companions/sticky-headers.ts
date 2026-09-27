@@ -80,6 +80,18 @@ export function createStickyHeaders(
   const incoming = makeSlot(1);
   overlay.append(active, incoming);
   container.appendChild(overlay);
+  const syncScrollPlaceholders = (): void => {
+    overlay.style.opacity = viewport.hasAttribute(
+      "data-scroll-placeholders-active",
+    )
+      ? "0"
+      : "";
+  };
+  viewport.addEventListener(
+    "virtual-list:scroll-placeholders",
+    syncScrollPlaceholders,
+  );
+  syncScrollPlaceholders();
 
   // Geometry is immutable between refreshes, so cache positions as compact
   // arrays instead of allocating query results inside every scroll frame.
@@ -306,6 +318,10 @@ export function createStickyHeaders(
     disposed = true;
     restoreInline();
     viewport.removeEventListener("scroll", onScroll, true);
+    viewport.removeEventListener(
+      "virtual-list:scroll-placeholders",
+      syncScrollPlaceholders,
+    );
     if (frame) cancelAnimationFrame(frame);
     frame = 0;
     overlay.remove();

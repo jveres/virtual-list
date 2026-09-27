@@ -52,6 +52,9 @@ describe("follow policy", () => {
     expect(follow.target(0)).toBe(1000);
     expect(follow.needsMotion(999.5)).toBe(false);
     state.end = 1200;
+    expect(follow.followingEnd).toBe(false);
+    follow.start();
+    expect(follow.followingEnd).toBe(true);
     expect(follow.target(1000)).toBe(1200);
     expect(follow.needsMotion(1000)).toBe(true);
   });
@@ -114,6 +117,7 @@ describe("follow policy", () => {
     state.lastTop = 1400;
     state.lastKey = "next-reply";
     state.end = 2000;
+    expect(follow.followingEnd).toBe(false);
     expect(follow.target(1200)).toBe(1360);
     expect(follow.atLimit(1360)).toBe(true);
   });
@@ -140,6 +144,7 @@ describe("follow policy", () => {
     state.end = 1200;
 
     expect(follow.armed).toBe(false);
+    expect(follow.followingEnd).toBe(false);
     expect(follow.target(900)).toBe(900);
     expect(follow.needsMotion(900)).toBe(false);
   });

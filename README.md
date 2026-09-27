@@ -267,6 +267,25 @@ Explicit bottom navigation still follows the end for the current reply.
   calls `render` without an existing element, then `onMount`. Keep state
   that must survive scrolling in item data. Unknown-height rows retain
   their measured elements and slots while they're unmounted.
+- `state.followingEnd` reports whether the current follow destination reaches the
+  end. This includes bounded follow before its stopping point and bottom
+  commands that override that point. Use it to keep a bottom-navigation
+  button hidden while streaming growth is being followed.
+- Enable `scrollPlaceholders: true` for fast-scroll skeletons in stacked lists.
+  It is off by default in the runtime and on by default in the streaming demo's
+  **Fast-scroll skeletons** setting. Call `setScrollPlaceholders(enabled)` to
+  toggle it without rebuilding the list. Skeletons use committed row heights
+  and are prepared for the loaded data window before scrolling. Keep that
+  window bounded for large histories. Real rows return after sustained slower
+  movement; renewed touch input preserves fast mode through brief handoffs.
+  Positioned layouts do not use this option.
+- Optionally supply `renderScrollPlaceholder(item, existing?)` to customize
+  skeleton content. Return a lightweight element, reusing `existing` when
+  possible. The runtime supplies its positioned, row-sized wrapper and makes
+  the skeleton inert. This callback runs when loaded items change, not on each
+  scroll event. Omit it to use the built-in skeleton; its color uses
+  `--virtual-list-placeholder-color`. Skeleton content is disposable markup;
+  avoid listeners, observers, or other resources that need separate cleanup.
 - Use `onMount` and `onUnmount` to manage resources for mounted rows.
   Don't use `element.isConnected` as a mount signal. Hidden rows that wait
   in the canvas are connected but not mounted: their slots are zero-height,

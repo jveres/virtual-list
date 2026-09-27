@@ -27,6 +27,11 @@ export class FollowController {
     return this.following;
   }
 
+  /** Effective end-follow intent, including a command overriding bounded follow. */
+  get followingEnd(): boolean {
+    return this.following && this.followsEnd;
+  }
+
   /** A measured start can move while following is paused short of the end. */
   get followingContent(): boolean {
     return this.following && this.mode === "keep-content" && !this.followsEnd;

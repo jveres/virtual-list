@@ -145,6 +145,8 @@ interface Row<T> {
   /** Clip box; the element itself for positioned cards. */
   slot: HTMLElement;
   height: number;
+  /** Last measured content width, reused by the optional skeleton. */
+  width: number;
   /** Measured follow limit within this row; null means no limit yet. */
   followStart: number | null;
   /** The offset last written to the slot (NaN: none). */
@@ -196,6 +198,7 @@ const EMPTY_STATE: VirtualListState = {
   atStart: true,
   atEnd: true,
   following: false,
+  followingEnd: false,
   totalSize: 0,
   held: false,
 };
@@ -257,6 +260,205 @@ export function createVirtualList<T>(
   const mountedRows = new Set<Row<T>>();
   const hiddenRows = new Set<Row<T>>();
   const dirtyRows = new Set<Row<T>>();
+  let placeholdersEnabled = options.scrollPlaceholders === true;
+  let fastScrolling = false;
+  let placeholderSample: { top: number; time: number } | null = null;
+  const placeholderRows = new Map<Row<T>, () => void>();
+  const skeletons = new Map<string, HTMLElement>();
+  const skeletonItems = new Map<string, T>();
+  let skeletonSurface: HTMLElement | null = null;
+  let skeletonEpoch = -1;
+  let placeholderIdleTimer = 0;
+  let placeholderLastMovement = 0;
+  const placeholderIdleMs = 120;
+  const placeholderSlowMs = 80;
+  let placeholderSlowSince: number | null = null;
+  let placeholderLastInput = 0;
+  let placeholderTouchActive = false;
+
+  function placeholderInput(): void {
+    if (!placeholdersEnabled || !fastScrolling) return;
+    placeholderLastInput = performance.now();
+    schedulePlaceholderIdle();
+  }
+  function placeholderTouchStart(): void {
+    placeholderTouchActive = true;
+    placeholderSlowSince = null;
+    placeholderInput();
+  }
+  function placeholderTouchEnd(event: TouchEvent): void {
+    placeholderTouchActive = event.touches.length > 0;
+    placeholderInput();
+  }
+  viewport.addEventListener("wheel", placeholderInput, { passive: true });
+  viewport.addEventListener("touchstart", placeholderTouchStart, {
+    passive: true,
+  });
+  viewport.addEventListener("touchend", placeholderTouchEnd, { passive: true });
+  viewport.addEventListener("touchcancel", placeholderTouchEnd, {
+    passive: true,
+  });
+
+  function schedulePlaceholderIdle(): void {
+    if (placeholderIdleTimer || !fastScrolling) return;
+    placeholderIdleTimer = window.setTimeout(
+      () => {
+        placeholderIdleTimer = 0;
+        if (disposed || !fastScrolling || placeholderTouchActive) return;
+        if (
+          performance.now() -
+            Math.max(placeholderLastMovement, placeholderLastInput) >=
+          placeholderIdleMs
+        ) {
+          placeholderSample = null;
+          showScrollPlaceholders(false);
+        } else schedulePlaceholderIdle();
+      },
+      Math.max(
+        1,
+        placeholderIdleMs -
+          (performance.now() -
+            Math.max(placeholderLastMovement, placeholderLastInput)),
+      ),
+    );
+  }
+
+  function clearRowPlaceholder(row: Row<T>): void {
+    placeholderRows.get(row)?.();
+    placeholderRows.delete(row);
+  }
+
+  function showRowPlaceholder(row: Row<T>): void {
+    if (
+      !placeholdersEnabled ||
+      !fastScrolling ||
+      row.spec ||
+      row.slot === row.element ||
+      placeholderRows.has(row)
+    )
+      return;
+    const opacity = row.element.style.getPropertyValue("opacity");
+    const priority = row.element.style.getPropertyPriority("opacity");
+    const inert = row.element.inert;
+    row.element.style.setProperty("opacity", "0", "important");
+    row.element.inert = true;
+    placeholderRows.set(row, () => {
+      if (opacity) row.element.style.setProperty("opacity", opacity, priority);
+      else row.element.style.removeProperty("opacity");
+      row.element.inert = inert;
+    });
+  }
+
+  function syncSkeletonSurface(): void {
+    if (!placeholdersEnabled || place || skeletonEpoch === epoch) return;
+    skeletonEpoch = epoch;
+    if (!skeletonSurface) {
+      skeletonSurface = document.createElement("div");
+      skeletonSurface.dataset.scrollSkeletons = "";
+      skeletonSurface.setAttribute("aria-hidden", "true");
+      skeletonSurface.inert = true;
+      skeletonSurface.style.cssText =
+        "position:absolute;top:0;left:0;width:100%;pointer-events:none;overflow-anchor:none;visibility:hidden;z-index:1";
+      canvas.prepend(skeletonSurface);
+    }
+    skeletonSurface.style.height = `${geometry.contentSize}px`;
+    const keep = new Set<string>();
+    for (const key of committedKeys) {
+      if (isSlotKey(key)) continue;
+      const row = rows.get(key);
+      const item = row?.item ?? declaredItems.get(key)?.item;
+      if (item === undefined || (anchorable && !anchorable(item))) continue;
+      keep.add(key);
+      let skeleton = skeletons.get(key);
+      if (!skeleton) {
+        skeleton = document.createElement("div");
+        skeleton.dataset.scrollPlaceholder = key;
+        skeleton.style.cssText =
+          "position:absolute;left:0;right:0;margin-inline:auto;overflow:hidden";
+        skeletonSurface.append(skeleton);
+        skeletons.set(key, skeleton);
+      }
+      if (options.renderScrollPlaceholder && skeletonItems.get(key) !== item) {
+        let content: HTMLElement | undefined;
+        host(() => {
+          content = options.renderScrollPlaceholder?.(
+            item,
+            (skeleton.firstElementChild as HTMLElement | null) ?? undefined,
+          );
+        });
+        if (disposed) return;
+        if (content) {
+          if (content !== skeleton.firstElementChild)
+            skeleton.replaceChildren(content);
+          skeletonItems.set(key, item);
+        }
+      }
+      if (!skeleton.firstElementChild) {
+        const content = document.createElement("div");
+        const shade =
+          "var(--virtual-list-placeholder-color,rgba(127,127,127,.16))";
+        const shape = encodeURIComponent(
+          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 160" preserveAspectRatio="none"><rect x="20" y="18" width="96" height="10" rx="5"/><rect x="20" y="52" width="530" height="12" rx="6"/><rect x="20" y="80" width="560" height="12" rx="6"/><rect x="20" y="108" width="360" height="12" rx="6"/></svg>',
+        );
+        content.style.cssText = `width:100%;height:100%;background:${shade};mask:url("data:image/svg+xml,${shape}") 0 0/100% 160px repeat-y`;
+        skeleton.append(content);
+      }
+      const top = `${geometry.offsetOf(key)}px`;
+      const height = `${geometry.heightOf(key)}px`;
+      const width = row?.width ? `${row.width}px` : "48rem";
+      if (skeleton.style.top !== top) skeleton.style.top = top;
+      if (skeleton.style.height !== height) skeleton.style.height = height;
+      if (skeleton.style.maxWidth !== width) skeleton.style.maxWidth = width;
+    }
+    for (const [key, skeleton] of skeletons) {
+      if (keep.has(key)) continue;
+      skeleton.remove();
+      skeletons.delete(key);
+      skeletonItems.delete(key);
+    }
+  }
+
+  function showScrollPlaceholders(active: boolean): void {
+    const changed = fastScrolling !== active;
+    fastScrolling = active;
+    viewport.toggleAttribute("data-scroll-placeholders-active", active);
+    if (skeletonSurface) {
+      skeletonSurface.style.visibility = active ? "visible" : "hidden";
+      skeletonSurface.toggleAttribute("data-active", active);
+    }
+    placeholderSlowSince = null;
+    if (active) schedulePlaceholderIdle();
+    else {
+      clearTimeout(placeholderIdleTimer);
+      placeholderIdleTimer = 0;
+    }
+    if (!active || !placeholdersEnabled) {
+      for (const row of placeholderRows.keys()) clearRowPlaceholder(row);
+    } else {
+      for (const row of mountedRows) showRowPlaceholder(row);
+    }
+    if (changed)
+      viewport.dispatchEvent(new Event("virtual-list:scroll-placeholders"));
+  }
+
+  function setScrollPlaceholders(enabled: boolean): void {
+    if (disposed) return;
+    if (defer(() => setScrollPlaceholders(enabled))) return;
+    pass(() => {
+      placeholdersEnabled = enabled;
+      if (enabled) syncSkeletonSurface();
+      else {
+        skeletonSurface?.remove();
+        skeletonSurface = null;
+        skeletons.clear();
+        skeletonItems.clear();
+        skeletonEpoch = -1;
+      }
+      placeholderSample = null;
+      showScrollPlaceholders(enabled && fastScrolling);
+    });
+  }
+
   let committedKeys: readonly string[] = [];
   let committedPinOffset = 0;
   let positionedNow = false;
@@ -338,6 +540,7 @@ export function createVirtualList<T>(
    * anchor node suppresses anchoring for that layout.
    */
   function syncCanvasHeight(totalSize: number, floor: boolean): void {
+    syncSkeletonSurface();
     // A native canvas takes its height from its flow, for the same reason.
     if (!native) canvas.style.height = `${totalSize}px`;
     if (!floor) return;
@@ -478,6 +681,7 @@ export function createVirtualList<T>(
       element,
       slot,
       height: quantize(height),
+      width: 0,
       followStart: 0,
       offset: Number.NaN,
       place: "detached",
@@ -599,6 +803,7 @@ export function createVirtualList<T>(
     else if (!hidden) canvas.insertBefore(row.slot, committedPoint(row.key));
     row.place = "mounted";
     mountedRows.add(row);
+    showRowPlaceholder(row);
     observeRow(row);
     if (!row.spec) hook(() => options.onMount?.(row.element, row.item));
   }
@@ -690,6 +895,7 @@ export function createVirtualList<T>(
   }
 
   function unmountRow(row: Row<T>): void {
+    clearRowPlaceholder(row);
     row.place = "detached";
     mountedRows.delete(row);
     rowObserver.unobserve(row.element);
@@ -764,6 +970,7 @@ export function createVirtualList<T>(
         if (declared) return declaredHeight(row.item);
         const rect = row.element.getBoundingClientRect();
         const height = rect.height;
+        row.width = rect.width;
         if (!row.spec && options.followStart) {
           const start = options.followStart(row.item, row.element);
           row.followStart =
@@ -1713,6 +1920,10 @@ export function createVirtualList<T>(
     const atStart = vp.scrollTop <= AT_EDGE_PX;
     const atEnd = maxTop - vp.scrollTop <= AT_EDGE_PX;
     const totalSize = geometry.totalSize;
+    const followingEnd =
+      follow.armed &&
+      (follow.followingEnd ||
+        maxTop - follow.target(vp.scrollTop, maxTop) <= AT_EDGE_PX);
     const held = pending !== null || dirtyRows.size > 0 || windowJobs.size > 0;
     const state = lastState;
     // Most scroll events keep every field; a commit can still move positions.
@@ -1725,6 +1936,7 @@ export function createVirtualList<T>(
       state.atStart !== atStart ||
       state.atEnd !== atEnd ||
       state.following !== follow.armed ||
+      state.followingEnd !== followingEnd ||
       state.totalSize !== totalSize ||
       state.held !== held
     ) {
@@ -1737,6 +1949,7 @@ export function createVirtualList<T>(
         atStart,
         atEnd,
         following: follow.armed,
+        followingEnd,
         totalSize,
         held,
       };
@@ -1762,6 +1975,31 @@ export function createVirtualList<T>(
 
   function onScrolled(): void {
     const vp = viewportState();
+    if (placeholdersEnabled) {
+      const now = performance.now();
+      const previous = placeholderSample;
+      if (!previous || vp.scrollTop !== previous.top) {
+        placeholderLastMovement = now;
+        if (!previous) placeholderSample = { top: vp.scrollTop, time: now };
+        else if (now - previous.time >= 8) {
+          // Coalesce closely spaced events instead of treating a tiny delta
+          // during touchpad handoff as a sudden drop to reading speed.
+          const elapsed = now - previous.time;
+          const velocity = Math.abs(vp.scrollTop - previous.top) / elapsed;
+          placeholderSample = { top: vp.scrollTop, time: now };
+          if (!fastScrolling) {
+            if (!followGlide && elapsed < 200 && velocity >= 12)
+              showScrollPlaceholders(true);
+          } else if (elapsed < 200 && velocity >= 6) {
+            placeholderSlowSince = null;
+          } else {
+            placeholderSlowSince ??= now;
+            if (now - placeholderSlowSince >= placeholderSlowMs)
+              showScrollPlaceholders(false);
+          }
+        }
+      }
+    }
     // Genuine input leaving the pin drops a held pin stance; the engine's
     // own moves (a clamp onto the end, a bounce past it) keep it.
     if (resizeHeld === "pin" && glide === null) {
@@ -1867,7 +2105,9 @@ export function createVirtualList<T>(
       }),
     // Only the glide's own completion ends its phase.
     noSmoothScrollInFlight: () => glide === null,
-    onGestureStarted: () => {},
+    onGestureStarted: () => {
+      placeholderSample ??= { top: lastObservedTop, time: performance.now() };
+    },
     onGestureSettled: () => {
       holdLanding = false;
       for (const run of [...windowJobs]) run();
@@ -1881,6 +2121,8 @@ export function createVirtualList<T>(
         }
       });
     },
+    // Gesture boundaries are not velocity boundaries: a fresh touchpad
+    // contact can start while the preceding momentum is still fast.
     onGestureReset: () => {},
     onScrollEventObserved: () => {
       if (disposed || scope !== null) return;
@@ -2649,6 +2891,7 @@ export function createVirtualList<T>(
       pass(() => {
         glide = null;
         glideToPin = false;
+        if (completed) showScrollPlaceholders(false);
         if (!completed || disposed) {
           done(false);
           if (!disposed) controller.markSettlePending();
@@ -2775,6 +3018,7 @@ export function createVirtualList<T>(
   function dispose(): void {
     if (disposed) return;
     disposed = true;
+    showScrollPlaceholders(false);
     const mark = failures.length;
     cancelRepaint?.();
     for (const cancel of [...cancelJobs]) cancel();
@@ -2784,12 +3028,19 @@ export function createVirtualList<T>(
     settleParked(false);
     reach.dispose();
     controller.dispose();
+    viewport.removeEventListener("wheel", placeholderInput);
+    viewport.removeEventListener("touchstart", placeholderTouchStart);
+    viewport.removeEventListener("touchend", placeholderTouchEnd);
+    viewport.removeEventListener("touchcancel", placeholderTouchEnd);
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (observeFrame !== 0) cancelAnimationFrame(observeFrame);
     if (remeasureFrame !== 0) cancelAnimationFrame(remeasureFrame);
     remeasureRequests.clear();
     rowObserver.disconnect();
     viewportObserver.disconnect();
+    skeletons.clear();
+    skeletonItems.clear();
+    skeletonSurface = null;
     canvas.remove();
     if (viewportAnchor !== null) viewport.style.overflowAnchor = viewportAnchor;
     if (!booting) disposedViewports.add(viewport);
@@ -2852,6 +3103,7 @@ export function createVirtualList<T>(
     remeasure,
     setEdgeSlot,
     setFollowMode,
+    setScrollPlaceholders,
     positionOf(key) {
       if (geometry.indexOf(key) < 0) return null;
       return { top: geometry.offsetOf(key), height: geometry.heightOf(key) };
