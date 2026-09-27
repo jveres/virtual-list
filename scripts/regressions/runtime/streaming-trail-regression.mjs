@@ -418,15 +418,31 @@ for (const engine of [firefox, chromium, webkit]) {
       () => document.querySelectorAll("[data-trail-group] > div").length > 0,
     );
     assert.equal(await page.locator("[data-trail-blend]").count(), 1);
-    await page.waitForFunction(() =>
-      document
-        .getAnimations()
-        .some(
-          (animation) =>
-            animation.effect?.pseudoElement === "::marker" &&
-            animation.effect.target.closest("article.message.assistant"),
-        ),
-    );
+    await page.waitForFunction(() => {
+      const rects = [
+        ...document.querySelectorAll("[data-trail-group] > div"),
+      ].map((element) => element.getBoundingClientRect());
+      return [
+        ...document.querySelectorAll("article.message.assistant li"),
+      ].some((item) => {
+        const first = item.querySelector("[data-md-source]");
+        if (!first) return false;
+        const range = document.createRange();
+        range.selectNodeContents(first);
+        const text = range.getClientRects()[0];
+        const box = item.getBoundingClientRect();
+        return (
+          text &&
+          rects.some(
+            (rect) =>
+              rect.top <= text.top + 1 &&
+              rect.bottom >= text.bottom - 1 &&
+              rect.left < box.left - 3 &&
+              rect.right >= text.right - 1,
+          )
+        );
+      });
+    });
     await page.screenshot({ path: `${output}/${engine.name()}-demo.png` });
     await page.evaluate(() => {
       const select = document.querySelector("#trail-mode");
@@ -435,15 +451,6 @@ for (const engine of [firefox, chromium, webkit]) {
     });
     await page.waitForFunction(
       () => !document.querySelector("[data-streaming-trail]"),
-    );
-    assert.equal(
-      await page.evaluate(() =>
-        document
-          .getAnimations()
-          .some((animation) => animation.effect?.pseudoElement === "::marker"),
-      ),
-      false,
-      "turning the trail off also clears native list-marker animations",
     );
     assert.deepEqual(errors, []);
     console.log(
