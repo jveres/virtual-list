@@ -1,15 +1,17 @@
 # Gallery momentum investigation, September 27, 2026
 
 The reported regression is a small jitter during trackpad momentum deceleration
-in both gallery layouts on the LU28R55 display. It is **not yet reproduced or
-confirmed fixed** by these measurements. The automated native-input workload
-has no momentum tail. A real trackpad capture is the next required comparison.
+in both gallery layouts on the LU28R55 display. After the preparation change
+in `5ceb9d4`, the user tested real trackpad momentum in both layouts in Firefox
+and reported smooth deceleration. The Rows capture also has complete profiling
+data. There is no matched real-input capture of the original jitter, so these
+results establish the observed current behavior, not a proven original cause.
 
 ## Environment and workload
 
 Installed Firefox 156.0.1, build 20260921121718, ran with a fresh temporary
 profile and closed DevTools. The LU28R55 was 1920 × 1080 logical pixels at 2×
-scaling and 60 Hz. The browser content viewport was 1900 × 965. Each capture
+scaling and 60 Hz. The browser content viewport was 1900 × 965. Each scripted capture
 used a five-second warmup, six downward gestures, and four upward gestures.
 Each gesture delivered 90 native 24-pixel events at 16.667 ms intervals, then
 waited 700 ms. No performance patch preceded the baseline captures.
@@ -39,7 +41,7 @@ Regular animation-frame callbacks do not establish smooth physical display
 presentation. The rendering increase with fades does not by itself identify
 the cause of momentum jitter.
 
-## Local candidate
+## Preparation change
 
 Images decode when their source arrives in mounted overscan. A retained image
 re-entering the viewport reuses that decode instead of starting another
@@ -48,8 +50,8 @@ Removed images and replaced sources cannot reveal stale pixels.
 
 The opacity surface is prepared with `will-change: opacity` while mounted.
 The virtual list bounds its lifetime; reduced-motion mode removes the hint.
-This is still a candidate: its memory/compositor tradeoff and the reported
-momentum behavior need real-input validation. Initial viewport arrivals stay
+The user validated momentum behavior in Firefox; the memory/compositor tradeoff
+has not been independently quantified. Initial viewport arrivals stay
 immediate; cached and first-time arrivals during scrolling still fade.
 
 The browser regression covers both layouts at mobile and desktop widths in
@@ -62,6 +64,27 @@ images do not restart their fade during reflow. Its corrected rerun passed
 both layouts. Fade stylesheet ordering and reduced motion also pass in all
 three browser engines.
 
+## Real trackpad follow-up
+
+The user reported "No, it felt smooth" for masonry and "Smooth" for Rows on
+the same external display. Both tests used isolated Firefox profiles at the
+geometry above, with DevTools closed.
+
+The 25-second Rows capture recorded 247 scroll events and six scroll-end
+events. Its 247 moving-frame intervals had a median of 16.66 ms, p95 of
+17.30 ms, and maximum of 17.68 ms. There were no sampled intervals above
+25 ms and no programmatic scrollTop writes. Moving intervals cover about
+4.12 seconds; idle time in the capture is not scrolling evidence. The longest
+scroll handler took 2.43 ms. These measurements support the user's observation
+without independently measuring physical-screen presentation.
+
+The initial 60-second masonry capture recorded input, but Firefox's ring
+buffer overwrote the start marker. Full CPU analysis therefore failed. It is
+excluded from profiling conclusions; the user's smoothness observation is
+retained separately. Use shorter manual captures with the current buffer.
+No raw data from either run remains, and both temporary browser profiles were
+removed. This follow-up did not repeat the real-input test in Chrome or Safari.
+
 ## Reproduction and artifacts
 
 Start the demo server, then run:
@@ -72,7 +95,7 @@ pnpm run profile:firefox -- --url http://127.0.0.1:5173/demos/gallery/ \
 ```
 
 Use `--layout rows` for the second layout. For real trackpad deceleration, add
-`--manual-seconds 45` and flick the isolated test window only after the runner
+`--manual-seconds 25` and flick the isolated test window only after the runner
 announces recording. Let momentum finish between gestures. A stationary or
 interrupted capture is invalid.
 
@@ -83,3 +106,6 @@ Compact summaries and source hashes/patches are under ignored
 on port 5175; its reproduction metadata identifies the application revision
 separately from the profiling runner. Raw captures and temporary browser
 profiles were removed automatically.
+
+The real-input follow-up is `run-9mpGS9` (valid Rows capture) and `run-pDv3Bn`
+(invalid full masonry CPU capture, user observation retained in `run.json`).

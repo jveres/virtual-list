@@ -11,8 +11,9 @@ Use the [consumer guide](../streaming-consumer.md) and
 
 The [gallery investigation](gallery-momentum-investigation-2026-09-27.md)
 compares the fade feature with its predecessor and an overscan preparation
-candidate. Real trackpad deceleration remains unverified; scripted native
-gestures do not reproduce the reported momentum tail.
+change. The user subsequently reported smooth real trackpad deceleration in
+both Firefox layouts; the valid Rows capture recorded no long sampled frame
+gaps or programmatic scroll-position writes.
 
 ## September 27 clean code audit
 
