@@ -259,8 +259,7 @@ async function jump(
         () => ({
           items: nextRows,
           // Stage within the fetched page, without materializing the gap.
-          // Endpoint navigation needs several viewports of travel so the
-          // shared glide includes its approach, not just its landing leg.
+          // Endpoint navigation reserves several viewports of native travel.
           // Indexed jumps retain their shorter, one-viewport approach.
           anchor: {
             key,

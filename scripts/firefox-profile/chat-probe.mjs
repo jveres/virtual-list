@@ -94,7 +94,6 @@ export function installChatProbe(config) {
   const tasks = [];
   const rafWork = [];
   const trailChanges = [];
-  const glides = [];
   const navigation = [];
   const scrollWrites = [];
   const coverage = [];
@@ -539,39 +538,6 @@ export function installChatProbe(config) {
   window.addEventListener("unhandledrejection", onError);
   const api = {
     seedHistory,
-    glideFrame(
-      host,
-      timestamp,
-      current,
-      target,
-      written,
-      elapsed,
-      previous,
-      began,
-    ) {
-      if (!active || !config.diagnostic) return;
-      append("glides", glides, {
-        time: now(),
-        timestamp: timestamp - startTime,
-        id: entityId(host),
-        phase,
-        current,
-        target,
-        written,
-        elapsed,
-        previousWrite: previous[0],
-        previousTarget: previous[1],
-        rebased: previous[2] !== began,
-      });
-    },
-    glideDone(host, completed) {
-      if (active && config.diagnostic)
-        append("glides", glides, {
-          time: now(),
-          id: entityId(host),
-          completed,
-        });
-    },
     enter(name, entity, text) {
       if (!active || !config.diagnostic) return null;
       const duplicate =
@@ -823,7 +789,6 @@ export function installChatProbe(config) {
         navigation,
         scrollWrites: config.diagnostic ? scrollWrites : null,
         coverage: config.diagnostic ? coverage : null,
-        glides: config.diagnostic ? glides : null,
         entries,
         operations: [...operations.values()],
         access: [...access].map(([key, count]) => ({ key, count })),

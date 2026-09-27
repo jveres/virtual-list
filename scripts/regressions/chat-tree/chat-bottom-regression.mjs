@@ -60,6 +60,22 @@ for (const engine of [firefox, webkit, chromium]) {
         },
         [prompt, reply],
       );
+    // A tail restore can briefly reach the old window's bottom before the
+    // final window commits and its native animation starts.
+    const waitForBottom = () =>
+      page.waitForFunction(() => {
+        const viewport = document.querySelector("#viewport");
+        const status = document.querySelector("#window-status").textContent;
+        const range = /loaded [\d,]+-([\d,]+)\/([\d,]+)/.exec(status);
+        return (
+          range &&
+          range[1] === range[2] &&
+          !status.includes("loading") &&
+          Math.abs(
+            viewport.scrollHeight - viewport.clientHeight - viewport.scrollTop,
+          ) <= 2
+        );
+      });
     const matches = (actual, baseline, label) => {
       assert.ok(
         Math.abs(actual.endGap) <= 2,
@@ -120,10 +136,7 @@ for (const engine of [firefox, webkit, chromium]) {
     assert.ok(Math.abs(reloaded.prompt.top - 40) <= 2);
     await jump(1);
     await page.locator("#scroll-bottom-btn").click();
-    await page.waitForFunction(() => {
-      const v = document.querySelector("#viewport");
-      return Math.abs(v.scrollHeight - v.clientHeight - v.scrollTop) <= 2;
-    });
+    await waitForBottom();
     matches(await geometry(107, 108), reloaded, "bottom arrow vs reload");
     for (const sticky of [false, true]) {
       await page.locator("#ai-settings-btn").click();
@@ -199,10 +212,7 @@ for (const engine of [firefox, webkit, chromium]) {
       else matches(selected, imported, `${label} clamped return vs load`);
       await jump(1);
       await page.locator("#scroll-bottom-btn").click();
-      await page.waitForFunction(() => {
-        const v = document.querySelector("#viewport");
-        return Math.abs(v.scrollHeight - v.clientHeight - v.scrollTop) <= 2;
-      });
+      await waitForBottom();
       matches(await geometry(3, 4), imported, `${label} bottom arrow vs load`);
       if (long)
         assert.ok(

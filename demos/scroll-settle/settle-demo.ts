@@ -1,5 +1,4 @@
-import type { Glide } from "../../src/glide.js";
-import { startNativeGlide } from "../../src/native-glide.js";
+import { type Glide, startNativeGlide } from "../../src/native-glide.js";
 import {
   createScrollSettleController,
   detectScrollSettleStrategy,

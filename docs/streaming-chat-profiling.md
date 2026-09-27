@@ -305,10 +305,8 @@ direction after that request. Existing momentum and layout changes can also
 move the viewport, so interpret the latter with the write log and workload.
 Both fields are `null` when the required observation is unavailable. Request
 submission alone does not prove that scrolling has started on the display.
-`glides` adds custom
-animation intervals, endpoint rebases, direction changes, and the difference
-between a requested position and the next observed position. Native animations
-appear as `scrollTo` requests; they do not generate custom-glide frame records.
+Native animations appear as `scrollTo` requests; custom-animation frame records
+are no longer collected.
 These measurements do not prove that the browser displayed the content.
 
 `coverage` checks the union of mounted, connected rows against the visible

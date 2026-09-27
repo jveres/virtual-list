@@ -1,4 +1,7 @@
-import type { Glide } from "./glide";
+export interface Glide {
+  readonly active: boolean;
+  cancel(): void;
+}
 
 const ARRIVAL_PX = 1;
 const QUIET_MS = 120;
@@ -96,9 +99,6 @@ export function startNativeGlide(
   });
   return {
     get active() {
-      return !finished;
-    },
-    get landing() {
       return !finished;
     },
     cancel: () => finish(false),

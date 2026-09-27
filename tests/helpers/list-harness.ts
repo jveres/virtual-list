@@ -197,6 +197,31 @@ export function mount(items: Msg[], hooks: MountHooks = {}): Harness {
       },
     },
   });
+  // jsdom has no native scrolling. Model asynchronous browser motion and its
+  // events, without exercising a second production animation implementation.
+  let scrollFrame = 0;
+  viewport.scrollTo = (optionsOrX?: ScrollToOptions | number, y?: number) => {
+    cancelAnimationFrame(scrollFrame);
+    const options = typeof optionsOrX === "number" ? { top: y } : optionsOrX;
+    const target = options?.top ?? viewport.scrollTop;
+    if (options?.behavior !== "smooth") {
+      viewport.scrollTop = target;
+      return;
+    }
+    let remaining = 20;
+    const advance = () => {
+      scrollFrame = 0;
+      const destination = Math.max(0, Math.min(maxScrollTop(), target));
+      scrollTop =
+        viewport.scrollTop + (destination - viewport.scrollTop) / remaining;
+      remaining -= 1;
+      // Browser motion is not a script scrollTop write.
+      if (remaining > 0) scrollFrame = requestAnimationFrame(advance);
+      viewport.dispatchEvent(new Event("scroll"));
+      if (remaining === 0) viewport.dispatchEvent(new Event("scrollend"));
+    };
+    scrollFrame = requestAnimationFrame(advance);
+  };
   document.body.appendChild(viewport);
 
   const heights = new Map<number, number>();
@@ -294,6 +319,7 @@ export function mount(items: Msg[], hooks: MountHooks = {}): Harness {
       viewport.dispatchEvent(new Event("scroll"));
     },
     settle: () => {
+      advanceFramesUntil(() => scrollFrame === 0);
       viewport.dispatchEvent(new Event("scrollend"));
       vi.advanceTimersByTime(200);
     },

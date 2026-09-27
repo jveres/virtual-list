@@ -131,68 +131,6 @@ function analyzeScheduling(recording, intervals) {
   };
 }
 
-function analyzeGlides(recording) {
-  if (!recording.glides) return { available: false };
-  const groups = new Map();
-  for (const frame of recording.glides) {
-    if (!groups.has(frame.id)) groups.set(frame.id, []);
-    groups.get(frame.id).push(frame);
-  }
-  return {
-    available: true,
-    navigation: recording.navigation ?? [],
-    trips: [...groups].map(([id, entries]) => {
-      const frames = entries.filter((entry) => entry.timestamp !== undefined);
-      const steps = frames.slice(1).map((frame, index) => {
-        const before = frames[index];
-        const dt = frame.timestamp - before.timestamp;
-        return {
-          time: frame.time,
-          dt,
-          actualStep: frame.current - before.current,
-          requestedStep: frame.written - before.written,
-          writeError: frame.current - before.written,
-          targetDelta: frame.target - before.target,
-          rebased: frame.rebased,
-          velocity: dt > 0 ? (frame.current - before.current) / dt : 0,
-        };
-      });
-      const reversals = steps.filter(
-        (step, index) =>
-          index > 0 &&
-          Math.abs(step.actualStep) > 1 &&
-          Math.abs(steps[index - 1].actualStep) > 1 &&
-          Math.sign(step.actualStep) !== Math.sign(steps[index - 1].actualStep),
-      );
-      return {
-        id,
-        phase: frames[0]?.phase ?? null,
-        start: frames[0]?.time ?? null,
-        end: entries.at(-1)?.time ?? null,
-        completed: entries.at(-1)?.completed ?? null,
-        distance: frames.length ? frames.at(-1).current - frames[0].current : 0,
-        frameMs: distribution(steps.map((step) => step.dt)),
-        writeErrorPx: distribution(
-          steps.map((step) => Math.abs(step.writeError)),
-        ),
-        rebases: steps.filter((step) => step.rebased).length,
-        targetChanges: steps.filter((step) => Math.abs(step.targetDelta) > 2)
-          .length,
-        reversals: reversals.length,
-        stalledFrames: steps.filter(
-          (step) =>
-            Math.abs(step.actualStep) < 0.5 && Math.abs(step.writeError) > 1,
-        ).length,
-        worstWriteErrors: steps
-          .toSorted((a, b) => Math.abs(b.writeError) - Math.abs(a.writeError))
-          .slice(0, 5),
-        slowestFrames: steps.toSorted((a, b) => b.dt - a.dt).slice(0, 5),
-      };
-    }),
-    note: "Glide values come from existing runtime reads and writes; no extra layout reads. Current position is the next callback's observation, not physical presentation. Replanning and paging can legitimately change velocity.",
-  };
-}
-
 export function analyzeChat(
   recording,
   { refreshHz = 60, native = false, metadata = null } = {},
@@ -408,7 +346,6 @@ export function analyzeChat(
     phases,
     slowFrames,
     scheduling: analyzeScheduling(recording, intervals),
-    glides: analyzeGlides(recording),
     coverage: {
       available: Array.isArray(recording.coverage),
       samples: recording.coverage?.length ?? 0,

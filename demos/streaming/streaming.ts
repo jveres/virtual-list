@@ -196,9 +196,6 @@ const DEFAULT_THINKING_DELAY_MS = 1200;
 const DEFAULT_TOKEN_DELAY_MS = { min: 18, max: 54 };
 const FAST_THINKING_DELAY_MS = 240;
 const FAST_TOKEN_DELAY_MS = { min: 4, max: 12 };
-// Landing duration for pinning a new message.
-// Longer trips add an approach of at most the chosen landing duration.
-const NEW_MESSAGE_SCROLL_DURATION_MS = 450;
 // Synthetic days over the transcript: one separator per this many messages.
 const MESSAGES_PER_DAY = 12;
 // The in-flow scrollback slot's fixed height.
@@ -2295,7 +2292,7 @@ function buildStaticRow(message: Message): HTMLElement {
 // first streaming row treats its text as new, so the trail fades it.
 const freshStreams = new Set<Message["id"]>();
 
-function buildStreamingRow(message: Message): HTMLElement {
+function buildLiveRow(message: Message): HTMLElement {
   const { row, content } = buildChatRow(message);
   const handle = createMessageContent(
     content,
@@ -2303,7 +2300,11 @@ function buildStreamingRow(message: Message): HTMLElement {
     trailMode,
     freshStreams.delete(message.id),
   );
-  handle.update(message, streamingDisplayText(message), true);
+  handle.update(
+    message,
+    streamingDisplayText(message),
+    message.status === "streaming",
+  );
   streamingViewers.set(row, handle);
   return row;
 }
@@ -2312,8 +2313,9 @@ const MESSAGE_DELETE_PATH = "M3 5h14M8 2.5h4M5 5l.8 12h8.4L15 5M8 8v6M12 8v6";
 
 function buildRow(message: Message): HTMLElement {
   const row =
-    message.status === "streaming"
-      ? buildStreamingRow(message)
+    message.status === "streaming" ||
+    (message.status === "thinking" && Boolean(message.toolCalls?.length))
+      ? buildLiveRow(message)
       : buildStaticRow(message);
   if (message.role === "user") {
     const button = document.createElement("button");
@@ -2584,13 +2586,15 @@ function updateRow(element: HTMLElement, message: Message): HTMLElement | null {
   if (element.dataset.toolsig !== signature) {
     // A tool call changed on a live row: refresh its panel in place — a
     // rebuild would replace the viewer and its streaming cursor. Without a
-    // live viewer (a "thinking" row, a static one) rebuilding is cheap.
+    // live viewer, a static row must be rebuilt.
     if (!handle) return null;
     element.dataset.toolsig = signature;
   }
   if (message.status === "streaming") {
-    // A row that was mounted as "thinking" has no live viewer yet: rebuild.
+    // Static rows need a live viewer. Thinking rows with tool calls already
+    // have one, so their visible panels survive the first streamed token.
     if (!handle) return null;
+    freshStreams.delete(message.id);
     syncRoleLabel(element, message);
     handle.update(message, streamingDisplayText(message), true);
     syncGeneratedFiles(
@@ -3261,7 +3265,6 @@ async function sendMessage(action?: SendAction): Promise<void> {
       const landed = await virtualList?.scrollTo(String(originalPrompt.id), {
         align: "start",
         behavior: "smooth",
-        duration: NEW_MESSAGE_SCROLL_DURATION_MS,
         offset: promptInset,
       });
       if (!landed || abort.cancelled || sendEpoch !== conversationEpoch) return;
@@ -3364,7 +3367,6 @@ async function sendMessage(action?: SendAction): Promise<void> {
       : (virtualList?.scrollTo(String(userMessage.id), {
           align: "start",
           behavior: pinInstantly ? "auto" : "smooth",
-          duration: NEW_MESSAGE_SCROLL_DURATION_MS,
           // Under the floating day pill, not behind it.
           offset: promptInset,
         }) ?? Promise.resolve(false));

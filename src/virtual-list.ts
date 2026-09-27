@@ -6,8 +6,7 @@ import {
   Geometry,
   type GeometryViewport,
 } from "./geometry";
-import { type Glide, type GlideHost, glidePace, startGlide } from "./glide";
-import { startNativeGlide } from "./native-glide";
+import { type Glide, startNativeGlide } from "./native-glide";
 import {
   type GeometryWindow,
   PositionedGeometry,
@@ -61,7 +60,6 @@ const HEIGHT_NOISE = 1e-6;
 const EPSILON_PX = 0.5;
 const AT_EDGE_PX = 1;
 const MIN_OVERSCAN_PX = 300;
-const FOLLOW_LANDING_MS = 320;
 const IDLE_SLICE_MIN_MS = 4;
 /** A window update adding more fresh rows prepares them across frames. */
 const JOB_MIN_ROWS = 8;
@@ -1530,13 +1528,13 @@ export function createVirtualList<T>(
 
   let lastReconcile = { top: Number.NaN, height: Number.NaN, epoch: -1 };
   let lastRange: GeometryWindow = { start: 0, end: 0 };
-  /** A command's landing keeps departing rows until the settle (Safari). */
+  /** Native commands keep departing rows until settle (Safari paint stability). */
   let holdLanding = false;
   let heldRetirements = false;
 
   function reconcileWindow(vp: GeometryViewport): GeometryWindow {
     if (glide !== null)
-      holdLanding = !native && !declared && !followGlide && glide.landing;
+      holdLanding = !native && !declared && !followGlide && glide.active;
     if (
       !heldRetirements &&
       !sweep &&
@@ -2551,11 +2549,9 @@ export function createVirtualList<T>(
     }
     const finite = (value: number | undefined): number | undefined =>
       value !== undefined && Number.isFinite(value) ? value : undefined;
-    const duration = finite(o.duration);
     const owned: ScrollOptions = {
       align: o.align,
       behavior: o.behavior,
-      duration: duration !== undefined && duration > 0 ? duration : undefined,
       offset: finite(o.offset),
       pin: pin && { key: pin.key, offset: finite(pin.offset) ?? 0 },
     };
@@ -2611,6 +2607,9 @@ export function createVirtualList<T>(
     // A newer command supersedes the last; then it takes the viewport over,
     // so held work commits first and the command sees final geometry.
     takeover();
+    // Intermediate navigation can consume a reach while its host is busy.
+    // A fresh edge command is new intent even without crossing the exit zone.
+    if (target === "start" || target === "end") reach.request(target);
     const keyed = target !== "start" && target !== "end";
     const below = o.offset ?? 0;
     const pin = pinning && !pinPolicy ? o.pin : undefined;
@@ -2662,32 +2661,12 @@ export function createVirtualList<T>(
         };
         controller.markSettlePending();
       });
-    glide =
-      o.duration === undefined && typeof viewport.scrollTo === "function"
-        ? startNativeGlide(viewport, destination, complete)
-        : startGlide(
-            glideHost(destination),
-            glidePace(viewport.clientHeight, o.duration),
-            complete,
-          );
+    glide = startNativeGlide(viewport, destination, complete);
     glideToPin =
       pinning &&
       keyed &&
       o.align === "start" &&
       (!pinPolicy || target === geometry.pinned);
-  }
-
-  /** Each glide write is pre-announced and reconciled before paint. */
-  function glideHost(target: () => number): GlideHost {
-    return {
-      read: () => viewport.scrollTop,
-      write: (top) =>
-        pass(() => {
-          writeScrollTop(top);
-          onScrolled();
-        }),
-      target,
-    };
   }
 
   function followIfBehindEnd(motion: "smooth" | "instant" = "smooth"): void {
@@ -2707,16 +2686,15 @@ export function createVirtualList<T>(
   function startFollowGlide(): void {
     if (disposed || glide !== null) return;
     controller.beginProgrammaticGesture();
-    glide = startGlide(
-      glideHost(() => Math.ceil(follow.target(viewport.scrollTop))),
-      glidePace(viewport.clientHeight, FOLLOW_LANDING_MS),
-      () =>
-        pass(() => {
-          glide = null;
-          followGlide = false;
-          if (!disposed) controller.markSettlePending();
-        }),
-    );
+    const destination = (): number =>
+      Math.ceil(follow.target(viewport.scrollTop));
+    const complete = (): void =>
+      pass(() => {
+        glide = null;
+        followGlide = false;
+        if (!disposed) controller.markSettlePending();
+      });
+    glide = startNativeGlide(viewport, destination, complete);
     followGlide = true;
   }
 

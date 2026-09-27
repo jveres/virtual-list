@@ -111,6 +111,7 @@ export function createMessageContent(
                 preserveStreamingHeight: true,
                 cursor,
                 unfocusedCursorStyle: "block",
+                focusOnStreamingStart: false,
               }),
             };
           }

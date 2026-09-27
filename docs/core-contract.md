@@ -253,7 +253,8 @@ interaction; the [README](../README.md) lists the public options.
   (capture → mutate → resolve transactions, anchor policies, pin-to-top
   reserve I5) with its oracle/property tests. Heights fed to it are measured
   or declared, not estimated-then-corrected.
-- `src/native-glide.ts`: the default for `behavior: "smooth"` commands.
+- `src/native-glide.ts`: all `behavior: "smooth"` commands and automatic
+  smooth following.
   The browser owns animation timing; the runtime owns destination, input
   cancellation, and completion. A `scrollend` only completes a command after
   the position reaches its live target within one pixel. A 120 ms quiet check
@@ -264,21 +265,6 @@ interaction; the [README](../README.md) lists the public options.
   an instant request at the current position. Its replacement does not toggle
   overflow or rebuild the scrolling layer. Scroll keys cancel ownership too;
   typing in an editable control does not.
-- `src/glide.ts`: automatic smooth follow and commands with an explicit
-  `duration` (exact landing, ≥1px/frame on
-  floored engines, endpoint rebase). Two legs: the LANDING — the last
-  viewport of travel, or the whole trip when shorter — always takes the
-  same time on the same ease-out, so a one-viewport hop and a jump across
-  the list arrive identically; the APPROACH covers the rest, braking at a
-  constant rate — the landing's own initial braking — down to the
-  landing's entry speed, so the hand-off is continuous in speed and in
-  deceleration (an asymptotic decay held a constant speed for its last
-  third and then braked hard: a stutter one viewport before the end); its
-  duration follows from the distance and is capped. A `scrollTo` `duration`
-  selects this implementation and sets both landing time and approach cap
-  (a trip from the far end takes at most twice it). Its fallback pace, used
-  where the native API is absent, lands in 280 ms and bounds a trip by
-  1080 ms; follow legs land in 320 ms.
 - Runtime policy boundaries: `follow.ts` owns follow intent, destination
   limits, and visibility catch-up; `reach.ts` owns edge-load hysteresis and
   cancellation. Neither writes DOM or starts a glide. `wheel-policy.ts`
@@ -321,7 +307,7 @@ interaction; the [README](../README.md) lists the public options.
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a
   missing key falls back to the captured anchor) —, `scrollTo(target, { align?, behavior?,
-  duration?, offset?, pin? })`, `updateItem(key, item, { anchor? })`,
+  offset?, pin? })`, `updateItem(key, item, { anchor? })`,
   `remeasure(key, { anchor? })`,
   `setEdgeSlot(edge, slot | null)`, `positionOf(key)`, `elementOf(key)`,
   `state`, `dispose()`; options add `edgeSlots`. An
@@ -432,12 +418,10 @@ interaction; the [README](../README.md) lists the public options.
   Late resources still need stable dimensions or a host update. The runtime
   observes the row again when it mounts and commits detected size changes
   under the one commit rule.
-  Under runtime anchoring, during an explicit measured-row glide's final
-  landing leg, departing rows stay mounted until settle to avoid a Safari
-  paint hitch from removing slots just before arrival. A custom glide holds
-  only landing departures; interruption or a rebased approach releases them.
-  A native animation retains departures for its whole trip because the browser
-  does not expose its landing phase. Arrival or cancellation releases that hold.
+  Under runtime anchoring, an explicit measured-row native animation retains
+  departing rows until settle to avoid a Safari paint hitch from removing
+  slots before arrival. The browser does not expose its landing phase, so this
+  hold covers the whole trip. Arrival or cancellation releases it.
   Automatic follow, native anchoring, and declared-height windows don't use it.
   `render(item, existing)` may mutate `existing` in place or return a
   replacement. The runtime offers the committed element as `existing` for

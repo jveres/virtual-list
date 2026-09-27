@@ -3,7 +3,6 @@ import { parseSync } from "vite";
 
 // Parse function boundaries; never edit production files or silently skip a target.
 export const chatTargets = {
-  "src/glide.ts": ["tick", "advance", "land"],
   "src/virtual-list.ts": [
     "commit",
     "liveCommit",
@@ -131,20 +130,6 @@ export function instrumentChat(source, path, diagnostic) {
     );
     source = source.replace(needle, replacement);
   };
-  if (path === "src/glide.ts" && diagnostic) {
-    replace(
-      "const current = host.read();",
-      "const current = host.read();\n    const __glidePrevious = [lastWritten, lastTarget, startTime];",
-    );
-    replace(
-      "host.write(current + step);",
-      "globalThis.__chatProfile?.glideFrame(host, now, current, target, current + step, elapsed, __glidePrevious, startTime);\n    host.write(current + step);",
-    );
-    replace(
-      "onDone(completed);",
-      "globalThis.__chatProfile?.glideDone(host, completed);\n    onDone(completed);",
-    );
-  }
   if (path === "demos/streaming/openai.ts") {
     replace(
       'const RESPONSES_URL = "https://api.openai.com/v1/responses";',

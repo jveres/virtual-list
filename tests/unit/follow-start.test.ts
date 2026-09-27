@@ -10,6 +10,12 @@ type Item = { id: string; height: number; start: number | null };
 function setup() {
   const viewport = document.createElement("div");
   document.body.append(viewport);
+  viewport.scrollTo = (optionsOrX?: ScrollToOptions | number, y?: number) => {
+    const top = typeof optionsOrX === "number" ? y : optionsOrX?.top;
+    viewport.scrollTop = top ?? viewport.scrollTop;
+    viewport.dispatchEvent(new Event("scroll"));
+    viewport.dispatchEvent(new Event("scrollend"));
+  };
   Object.defineProperties(viewport, {
     clientHeight: { value: 600 },
     clientWidth: { value: 800 },

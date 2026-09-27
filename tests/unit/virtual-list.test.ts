@@ -437,21 +437,13 @@ describe("settle-time window updates", () => {
     h.list.dispose();
   });
   it("should settle a failed glide and release its queued window update", async () => {
-    let fail = false;
-    const h = mount(range(0, 40), {
-      boot: "start",
-      onViewport: () => {
-        if (fail) {
-          fail = false;
-          throw new Error("scroll observer failed");
-        }
-      },
+    const h = mount(range(0, 40), { boot: "start" });
+    vi.spyOn(h.viewport, "scrollTo").mockImplementationOnce(() => {
+      throw new Error("native scroll failed");
     });
     const moving = h.list.scrollTo("m20", { behavior: "smooth" });
     const update = h.list.updateWindow(() => ({ items: range(0, 60) }));
-    fail = true;
-
-    expect(() => vi.advanceTimersByTime(16)).toThrow("scroll observer failed");
+    expect(() => vi.advanceTimersByTime(16)).toThrow("native scroll failed");
     await vi.advanceTimersByTimeAsync(500);
 
     await expect(moving).resolves.toBe(false);
@@ -4519,16 +4511,19 @@ describe("runtime — commits and slots", () => {
     expect(h.viewport.scrollTop).toBe(50 * ROW_H + 1_400 - VIEWPORT_H);
   });
 
-  it("an explicit smooth duration sets the glide's pace", () => {
+  it("uses native scrolling even with a legacy duration option", () => {
     const h = mount(range(0, 50));
-    void h.list.scrollTo("m40"); // 400px short of the end: one landing leg.
-    const start = h.viewport.scrollTop;
+    void h.list.scrollTo("m40");
+    const nativeScroll = vi.spyOn(h.viewport, "scrollTo");
     void h.list.scrollTo("end", { behavior: "smooth", duration: 1_000 });
-    vi.advanceTimersByTime(500);
-    expect(h.viewport.scrollTop).toBeGreaterThan(start);
-    expect(h.viewport.scrollTop).toBeLessThan(50 * ROW_H - VIEWPORT_H); // Still gliding.
-    vi.advanceTimersByTime(800);
+    vi.advanceTimersByTime(16);
+    expect(nativeScroll).toHaveBeenCalledExactlyOnceWith({
+      top: 50 * ROW_H - VIEWPORT_H,
+      behavior: "smooth",
+    });
+    vi.advanceTimersByTime(2_000);
     expect(h.viewport.scrollTop).toBe(50 * ROW_H - VIEWPORT_H);
+    h.list.dispose();
   });
 
   it("falls back safely for invalid optional command numbers", async () => {
@@ -6144,7 +6139,7 @@ describe("runtime — commands", () => {
     await expect(command).resolves.toBe(true);
   });
 
-  it("should retain only landing departures until the measured glide settles", async () => {
+  it("should retain measured-row departures until native navigation settles", async () => {
     const unmounted: HTMLElement[] = [];
     const h = mount(range(0, 100), {
       overscanPx: 0,
@@ -6153,20 +6148,22 @@ describe("runtime — commands", () => {
     const command = h.list.scrollTo("start", { behavior: "smooth" });
     advanceFramesUntil(() => h.viewport.scrollTop <= 500);
     const departing = h.rowElement("msg 9");
-    expect(h.list.elementOf("m99")).toBe(null);
+    const firstDeparture = h.list.elementOf("m99");
+    expect(firstDeparture?.isConnected).toBe(true);
 
     advanceFramesUntil(() => h.viewport.scrollTop === 0);
 
     expect(h.viewport.scrollTop).toBe(0);
     expect(departing.isConnected).toBe(true);
     expect(unmounted).not.toContain(departing);
-    expect(h.canvas().childElementCount).toBeLessThanOrEqual(13);
+    expect(h.canvas().childElementCount).toBeLessThanOrEqual(100);
     h.settle();
     await expect(command).resolves.toBe(true);
     expect(departing.isConnected).toBe(false);
     expect(unmounted.filter((element) => element === departing)).toHaveLength(
       1,
     );
+    expect(firstDeparture?.isConnected).toBe(false);
     expect(h.canvas().childElementCount).toBe(6);
   });
 

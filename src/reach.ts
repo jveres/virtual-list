@@ -42,6 +42,11 @@ export class ReachController {
     return this.callbacks[edge] !== undefined;
   }
 
+  /** A fresh edge command may retry a consumed reach, but never overlap a load. */
+  request(edge: Edge): void {
+    if (!this.disposed && this.aborts[edge].size === 0) this.armed[edge] = true;
+  }
+
   dispose(): void {
     this.disposed = true;
     this.abort("start");

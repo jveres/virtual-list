@@ -7,6 +7,13 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 27 Safari paging follow-up
+
+The [consumed-edge investigation](safari-consumed-reach-2026-09-27.md) captures
+the stuck controller in the user's open Safari tab and reproduces a navigation
+handoff that consumes a top reach without loading. Explicit edge commands now
+permit a retry while preserving the pending-load and ordinary-scroll rules.
+
 ## September 26 iOS follow-up
 
 The [iOS scroll handoff investigation](ios-scroll-handoff-2026-09-26.md) records

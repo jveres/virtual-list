@@ -2,6 +2,45 @@ import { describe, expect, it } from "vitest";
 import { type ReachContext, ReachController } from "../../src/reach";
 
 describe("edge reach policy", () => {
+  it.each(["start", "end"] as const)(
+    "retries a consumed %s reach on explicit intent without leaving the zone",
+    (edge) => {
+      const contexts: ReachContext[] = [];
+      const reach = new ReachController({
+        [edge]: (context: ReachContext) => {
+          contexts.push(context);
+        },
+      });
+      const top = edge === "start" ? 0 : 5000;
+      reach.update(top, 5000);
+      contexts[0]?.complete();
+      reach.update(top, 5000);
+      expect(contexts).toHaveLength(1);
+      reach.request(edge);
+      expect(contexts).toHaveLength(1);
+      reach.update(top, 5000);
+      expect(contexts).toHaveLength(2);
+      // Repeated commands cannot overlap a still-pending load.
+      reach.request(edge);
+      reach.update(top, 5000);
+      expect(contexts).toHaveLength(2);
+      reach.dispose();
+    },
+  );
+
+  it("does not revive disposed reach callbacks", () => {
+    const contexts: ReachContext[] = [];
+    const reach = new ReachController({
+      start: (context) => {
+        contexts.push(context);
+      },
+    });
+    reach.dispose();
+    reach.request("start");
+    reach.update(0, 5000);
+    expect(contexts).toHaveLength(0);
+  });
+
   it.each([0, 400, 800])(
     "should not cancel a start load when both reach zones overlap at %s px",
     (maxScrollTop) => {

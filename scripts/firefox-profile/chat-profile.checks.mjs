@@ -444,7 +444,7 @@ test("navigation distinguishes a smooth request from observed directional moveme
   assert.equal(analyzeChat(r).navigation[0].firstSmoothRequestMs, null);
 });
 
-test("button captures require every destination and report glide stalls and replanning", () => {
+test("button captures require every destination and bound scroll-write records", () => {
   const r = recording();
   r.scenario = "buttons";
   r.scroll.ends = 4;
@@ -453,46 +453,6 @@ test("button captures require every destination and report glide stalls and repl
     direction,
     reached: true,
   }));
-  r.glides = [
-    {
-      id: 1,
-      time: 0,
-      timestamp: 0,
-      current: 0,
-      written: 10,
-      target: 100,
-      rebased: false,
-      phase: "button-bottom",
-    },
-    {
-      id: 1,
-      time: 16,
-      timestamp: 16,
-      current: 10,
-      written: 20,
-      target: 100,
-      rebased: false,
-    },
-    {
-      id: 1,
-      time: 32,
-      timestamp: 32,
-      current: 10,
-      written: 11,
-      target: 150,
-      rebased: true,
-    },
-    {
-      id: 1,
-      time: 64,
-      timestamp: 64,
-      current: 11,
-      written: 30,
-      target: 150,
-      rebased: false,
-    },
-    { id: 1, time: 80, completed: true },
-  ];
   const summary = analyzeChat(r);
   assert.equal(summary.valid, true);
   assert.equal(summary.navigation[0].writesAvailable, false);
@@ -506,13 +466,6 @@ test("button captures require every destination and report glide stalls and repl
   assert.equal(writes.writeCount, 141);
   assert.equal(writes.omittedWrites, 21);
   assert.equal(writes.writes.length, 120);
-  const trip = summary.glides.trips[0];
-  assert.equal(trip.completed, true);
-  assert.equal(trip.rebases, 1);
-  assert.equal(trip.targetChanges, 1);
-  assert.equal(trip.stalledFrames, 1);
-  assert.equal(trip.writeErrorPx.max, 10);
-  assert.equal(trip.frameMs.max, 32);
   assert.equal(summary.navigation.length, 4);
   r.navigation[0].reached = false;
   assert.deepEqual(analyzeChat(r).invalidReasons, [

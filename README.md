@@ -136,7 +136,8 @@ The runtime lives under `src/`:
   after visibility changes. It reads geometry through a small host interface;
   the runtime owns glides and scroll writes.
 - `reach.ts` — edge-load hysteresis and cancellation. Disposal during a reach
-  or abort callback prevents further loads from starting.
+  or abort callback prevents further loads from starting. A fresh explicit
+  edge command can retry a consumed reach when no load remains pending.
 - `paging.ts` — bounded source pages, opaque edge cursors, deduplication,
   cancellation, and protected-window trimming through `updateWindow`.
 - `scroll-settle.ts` — the settle controller: gesture classification,
@@ -146,14 +147,9 @@ The runtime lives under `src/`:
 - `wheel-policy.ts` — Firefox release classification and Chromium wheel
   suppression state. Only the selected engine's policy is instantiated;
   shared input listeners and settle scheduling remain in the controller.
-- `native-glide.ts` — browser-owned smooth navigation, with target-confirmed
-  completion, a fallback for missing `scrollend`, and input cancellation.
-- `glide.ts` — automatic smooth follow and commands with an explicit duration:
-  a fixed landing leg (the last
-  viewport of travel, always the same time and ease-out) after a distance-
-  derived approach, so a one-viewport hop and a jump across the list arrive
-  identically; exact landing, at least a pixel per frame, live target,
-  endpoint rebase.
+- `native-glide.ts` — browser-owned smooth navigation and following, with
+  target-confirmed completion, a fallback for missing `scrollend`, and input
+  cancellation.
 - `viewport-repaint.ts` — one-shot WebKit scrolling-layer recovery after a
   disposed list is replaced on the same viewport.
 - `companions/` — optional helpers built on the public API: sticky headers
@@ -194,7 +190,7 @@ const list = createVirtualList(viewport, {
 
 list.setItems(items, { anchor: "auto" }); // | "viewport" | "end" | "none"
 list.updateItem(key, nextItem); // same key, same anchor options as setItems
-await list.scrollTo(key, { align: "start", behavior: "smooth", duration, offset });
+await list.scrollTo(key, { align: "start", behavior: "smooth", offset });
 await list.scrollTo("end", { behavior: "smooth" });
 await list.scrollTo("end", { pin: { key, offset: 44 } });
 list.remeasure(key, { anchor: "viewport" });
@@ -303,11 +299,13 @@ Explicit bottom navigation still follows the end for the current reply.
   after landing, without shortening the scroll range during the glide.
   A smooth command is interrupted by genuine user input and resolves `false`;
   a command to `"end"` re-engages end-follow.
-- `behavior: "smooth"` uses the browser's native animation unless you specify
-  `duration`. The browser chooses its timing. Completion requires arrival at
+- `behavior: "smooth"` and automatic smooth following use the browser's native
+  animation. The browser chooses its timing. Completion requires arrival at
   the live target; an early `scrollend` alone cannot complete the command.
-  A quiet fallback handles missing events and no-op commands. Supplying
-  `duration` selects the custom glide and controls its landing time.
+  A quiet fallback handles missing events and no-op commands. The deprecated
+  `duration` option is ignored; there is no custom animation fallback.
+  Explicit start/end commands permit another edge-load attempt without leaving
+  the proximity zone, but do not overlap a pending load.
 - `scrollTo("end", { pin: { key, offset? } })` establishes a persistent pin
   and lands at the end in one command, without first scrolling to the pinned
   row. A short tail leaves that row at its inset; a long tail lands at the
@@ -373,8 +371,8 @@ Benchmarks and native Firefox profiling remain separate from correctness tests.
 The unit suite drives the real settle controller and the real runtime
 against a controllable jsdom harness (a scripted `ResizeObserver`, fake
 timers, an engine-like scroll clamp), plus oracle and property tests for the
-geometry kernel and characterization tests for the glide. The browser matrix
-runs the dynamic-height lab in the three real engines and fails on any
+geometry kernel and native scroll ownership/completion tests. The browser
+matrix runs the dynamic-height lab in the three real engines and fails on any
 contract violation the lab reports, then the streaming chat's product-level
 invariants (`scripts/chat-invariants.mjs`: across a scrollback load, on an
 undated and on dated single-day conversations, the row under a fixed
