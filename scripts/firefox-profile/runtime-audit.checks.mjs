@@ -5,8 +5,38 @@ import { runInNewContext } from "node:vm";
 import {
   installRuntimeAudit,
   instrumentDemo,
+  instrumentRetainedRows,
+  instrumentRowLayers,
   instrumentRuntime,
 } from "./runtime-audit.mjs";
+
+test("recycling and native row layer controls still match the runtime", async () => {
+  const source = await readFile(
+    new URL("../../src/virtual-list.ts", import.meta.url),
+    "utf8",
+  );
+  assert.ok(
+    instrumentRetainedRows(source).includes(
+      "const retire = (row: Row<T>): void => {\n return;",
+    ),
+  );
+  for (const enabled of [true, false]) {
+    const changed = instrumentRowLayers(source, enabled);
+    assert.ok(
+      changed.includes(
+        `const nativeLayerHint = ${JSON.stringify(enabled ? "will-change:transform;" : "")};`,
+      ),
+    );
+    assert.throws(
+      () => instrumentRowLayers(changed, enabled),
+      /Native row style changed/,
+    );
+  }
+  assert.throws(
+    () => instrumentRetainedRows("changed source"),
+    /Row retirement changed/,
+  );
+});
 
 test("demo overlay measures separate rendering and URL-assignment boundaries", async () => {
   for (const [path, event] of [

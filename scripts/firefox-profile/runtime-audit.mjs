@@ -1,7 +1,27 @@
 // Diagnostic-only source overlay. No production runtime/API changes.
 import assert from "node:assert/strict";
 
+export function instrumentRowLayers(source, enabled = true) {
+  const needle =
+    'const nativeLayerHint = webkitCompositing ? "will-change:transform;" : "";';
+  assert.equal(source.split(needle).length, 2, "Native row style changed");
+  return source.replace(
+    needle,
+    `const nativeLayerHint = ${JSON.stringify(enabled ? "will-change:transform;" : "")};`,
+  );
+}
+
+export function instrumentRetainedRows(source) {
+  const needle = "const retire = (row: Row<T>): void => {";
+  assert.equal(source.split(needle).length, 2, "Row retirement changed");
+  return source.replace(needle, `${needle}\n return;`);
+}
+
 export function instrumentRuntime(source) {
+  assert.ok(
+    !source.includes("globalThis.__runtimeAudit"),
+    "Audit target changed: already instrumented",
+  );
   const replacements = [
     [
       "function syncCanvasHeight(totalSize: number, floor: boolean): void {",
@@ -24,8 +44,8 @@ export function instrumentRuntime(source) {
       'row.place = "mounted";\n    globalThis.__runtimeAudit?.event("mount", row.height);',
     ],
     [
-      'function unmountRow(row: Row<T>): void {\n    row.place = "detached";',
-      'function unmountRow(row: Row<T>): void {\n    globalThis.__runtimeAudit?.event("unmount", row.height);\n    row.place = "detached";',
+      "function unmountRow(row: Row<T>): void {",
+      'function unmountRow(row: Row<T>): void {\n    globalThis.__runtimeAudit?.event("unmount", row.height);',
     ],
     [
       "if (vp.scrollTop >= previousTop) break;",

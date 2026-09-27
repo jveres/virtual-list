@@ -33,6 +33,41 @@ function flowIds(canvas: HTMLElement): number[] {
 }
 
 describe("native anchoring surface", () => {
+  it.each([true, false])(
+    "preserves bounded flow-row layers across recycling (WebKit: %s)",
+    (webkit) => {
+      vi.stubGlobal("CSS", {
+        supports: (property: string) =>
+          property === "overflow-anchor" ||
+          (webkit && property === "-webkit-nbsp-mode"),
+      });
+      const h = mount(range(0, 80), { boot: "start" });
+      try {
+        const first = h.list.elementOf("m0");
+        for (const top of [0, 3000, 0]) {
+          h.userScroll(top);
+          const slots = Array.from(h.canvas().children) as HTMLElement[];
+          const rows = slots.filter(
+            (slot) => slot.style.position === "relative",
+          );
+          expect(rows.length).toBeGreaterThan(0);
+          expect(rows.length).toBeLessThan(80);
+          for (const slot of rows) {
+            expect(slot.style.willChange).toBe(webkit ? "transform" : "");
+            expect(slot.style.transform).toBe("");
+          }
+          expect(slots[0]?.style.willChange).toBe("");
+          expect(slots.at(-1)?.style.willChange).toBe("");
+          expect(flowHeight(h.canvas())).toBe(h.list.state.totalSize);
+          expect(first?.isConnected).toBe(top === 0);
+        }
+        expect(h.list.elementOf("m0")).toBe(first);
+      } finally {
+        h.list.dispose();
+      }
+    },
+  );
+
   it("restores the flow before follow reads layout after replacing the tail", () => {
     let checking = false;
     const h = mount(range(0, 50), {

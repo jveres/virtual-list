@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 27 Safari chat momentum correction
+
+The [chat momentum investigation](safari-chat-momentum-2026-09-27.md)
+compares real trackpad captures with ordinary recycling, retained rows, and
+native row compositing hints. The user reports no shifts with the hint and
+normal recycling. The report distinguishes this visual result from geometry
+checks and animation-frame timing.
+
 ## September 27 Safari gallery fade follow-up
 
 The [Safari fade follow-up](safari-gallery-fade-follow-up-2026-09-27.md)

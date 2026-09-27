@@ -13,6 +13,8 @@ import {
 import {
   installRuntimeAudit,
   instrumentDemo,
+  instrumentRetainedRows,
+  instrumentRowLayers,
   instrumentRuntime,
 } from "./runtime-audit.mjs";
 import {
@@ -31,6 +33,9 @@ if (process.argv.includes("--help")) {
   );
   console.log(
     "RECYCLING=normal|retain|all controls diagnostic row recycling. FIXED_ITEMS=1 disables gallery paging; ROUNDS=1..10 changes the number of gestures in each direction. Retain/all are unbounded diagnostic controls, never production settings.",
+  );
+  console.log(
+    "COMPOSITING=row-layers|flat-rows forces native flow-row compositing hints on or off while preserving canvas layers. Current uses the runtime default. These controls isolate momentum presentation from row recycling.",
   );
   console.log(
     "PILL=current|no-paint (default current) controls date-pill painting. No-paint hides inline pills without changing their layout and hides the sticky overlay; it does not disable sticky-header updates.",
@@ -80,7 +85,14 @@ assert.ok(
 assert.ok(["s", "m", "l"].includes(gallerySize), "Invalid GALLERY_SIZE");
 const compositing = process.env.COMPOSITING || "current";
 assert.ok(
-  ["current", "rows", "viewport", "isolated"].includes(compositing),
+  [
+    "current",
+    "rows",
+    "viewport",
+    "isolated",
+    "row-layers",
+    "flat-rows",
+  ].includes(compositing),
   "Invalid COMPOSITING",
 );
 const recycling = process.env.RECYCLING || "normal";
@@ -413,7 +425,7 @@ async function browserProbe(compositing, richChat, pill, chat) {
   }
   const v = document.querySelector("#viewport");
   if (compositing === "isolated") v.style.isolation = "isolate";
-  else if (compositing !== "current") {
+  else if (!["current", "row-layers", "flat-rows"].includes(compositing)) {
     v.firstElementChild.style.transform = "none";
     v.firstElementChild.style.transformStyle = "flat";
     if (compositing === "viewport") v.style.transform = "translateZ(0)";
@@ -429,8 +441,12 @@ async function browserProbe(compositing, richChat, pill, chat) {
     };
   };
   const layers = {
+    anchoring: v.firstElementChild.dataset.anchoring,
     viewport: layerStyles(v),
     canvas: layerStyles(v.firstElementChild),
+    row: v.querySelector(".message")
+      ? layerStyles(v.querySelector(".message").parentElement)
+      : null,
   };
   await delay(1000);
   const shield = document.createElement("div");
@@ -748,14 +764,14 @@ try {
           .update(code)
           .digest("hex");
         if (report.runtimeAudit) code = instrumentRuntime(code);
+        if (["row-layers", "flat-rows"].includes(compositing))
+          code = instrumentRowLayers(code, compositing === "row-layers");
         if (recycling === "all") {
           const needle = "const requestedOverscan = options.overscanPx;";
           assert.equal(code.split(needle).length, 2, "Overscan setup changed");
           code = code.replace(needle, "const requestedOverscan = 1e9;");
         } else if (recycling === "retain") {
-          const needle = "function retire(row: Row<T>): void {";
-          assert.equal(code.split(needle).length, 2, "Row retirement changed");
-          code = code.replace(needle, `${needle}\n return;`);
+          code = instrumentRetainedRows(code);
         }
       }
       if (id.endsWith("/src/virtual-list.ts") && process.env.GEOMETRY === "1") {
