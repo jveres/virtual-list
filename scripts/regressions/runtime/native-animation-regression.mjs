@@ -60,6 +60,18 @@ for (const engine of [firefox, chromium, webkit]) {
       };
       const outcomes = [];
       try {
+        // A recent unmanaged scroll still has a live settle phase. Rebuilding
+        // its scrolling layer used to strand the next WebKit smooth command.
+        viewport.scrollTop = 60000;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        outcomes.push({
+          target: "recent-native-takeover",
+          completed: await deadline(
+            list.scrollTo("start", { behavior: "smooth" }),
+          ),
+          position: viewport.scrollTop,
+          expected: 0,
+        });
         for (const [target, expected] of [
           ["end", 99400],
           ["start", 0],

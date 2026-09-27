@@ -210,3 +210,40 @@ it("uses optional host skeletons, reuses them while scrolling, and updates chang
     h.list.dispose();
   }
 });
+
+it.each([0, 9400])(
+  "restores real rows at boundary %s before momentum or touch settles",
+  (boundary) => {
+    const h = mount(range(0, 100), { boot: "start" });
+    h.list.setScrollPlaceholders(true);
+    try {
+      h.userScroll(400);
+      vi.advanceTimersByTime(16);
+      h.userScroll(700);
+      expect(h.viewport.hasAttribute("data-scroll-placeholders-active")).toBe(
+        true,
+      );
+      h.viewport.dispatchEvent(new Event("touchstart"));
+      vi.advanceTimersByTime(16);
+      h.userScroll(boundary);
+      expect(h.viewport.hasAttribute("data-scroll-placeholders-active")).toBe(
+        false,
+      );
+      expect(
+        h.list.elementOf(boundary === 0 ? "m0" : "m99")?.style.opacity,
+      ).toBe("");
+      for (let i = 0; i < 5; i++) {
+        h.viewport.dispatchEvent(
+          new WheelEvent("wheel", { deltaY: boundary === 0 ? -200 : 200 }),
+        );
+        h.userScroll(boundary);
+        vi.advanceTimersByTime(16);
+        expect(h.viewport.hasAttribute("data-scroll-placeholders-active")).toBe(
+          false,
+        );
+      }
+    } finally {
+      h.list.dispose();
+    }
+  },
+);

@@ -2790,6 +2790,33 @@ describe("runtime — commits and slots", () => {
     },
   );
 
+  it.each(["start", "end"] as const)(
+    "takes over recent native movement toward %s without rebuilding the scrolling layer",
+    async (target) => {
+      const h = mount(range(0, 50));
+      h.userScroll(4200);
+      const overflow = vi.spyOn(h.viewport.style, "overflowY", "set");
+      const scroll = vi.spyOn(h.viewport, "scrollTo");
+
+      const landing = h.list.scrollTo(target, { behavior: "smooth" });
+
+      expect(overflow).not.toHaveBeenCalled();
+      expect(scroll).toHaveBeenNthCalledWith(1, {
+        top: 4199,
+        behavior: "instant",
+      });
+      expect(scroll).toHaveBeenNthCalledWith(2, {
+        top: 4200,
+        behavior: "instant",
+      });
+      expect(h.viewport.scrollTop).toBe(4200);
+      vi.advanceTimersByTime(1000);
+      await expect(landing).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(target === "start" ? 0 : 4400);
+      h.list.dispose();
+    },
+  );
+
   it("smoothly follows end-compatible growth when configured", () => {
     const initial = range(0, 50);
     const h = mount(initial, { followBehavior: "smooth" });

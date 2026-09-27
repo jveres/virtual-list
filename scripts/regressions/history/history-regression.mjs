@@ -141,10 +141,6 @@ for (const engine of [firefox, chromium, webkit]) {
         animation.positions.length >= 5,
         `smooth ${index}/${align} needs intermediate frames: ${JSON.stringify(animation)}`,
       );
-      assert.ok(
-        animation.elapsed >= 200,
-        `smooth ${index}/${align} completed instantly`,
-      );
       assert.ok(animation.fetched <= 1);
       await aligned(index, align);
     }
@@ -164,60 +160,71 @@ for (const engine of [firefox, chromium, webkit]) {
     const pillTiming = await page.evaluate(async () => {
       const h = window.chatHistory;
       const v = document.querySelector("#viewport");
-      const descriptor = Object.getOwnPropertyDescriptor(
-        Element.prototype,
-        "scrollTop",
-      );
+      const boundary = h.rows
+        .filter((row) => row.kind === "header")
+        .map((row) => ({ key: row.key, ...h.virtualList.positionOf(row.key) }))
+        .find((row) => row.top > v.scrollTop + 100);
+      if (!boundary) throw new Error("No retained header boundary to test");
+      // Keep the native animation short enough to sample the header handoff;
+      // a multi-screen native jump can legitimately cross it between frames.
+      const offset = boundary.height * 2;
+      await h.virtualList.scrollTo(boundary.key, {
+        offset,
+        behavior: "instant",
+      });
+      await new Promise((resolve) => setTimeout(resolve, 200));
       const errors = [];
       let handoffFrames = 0;
-      Object.defineProperty(v, "scrollTop", {
-        configurable: true,
-        get() {
-          return descriptor.get.call(this);
-        },
-        set(top) {
-          descriptor.set.call(this, top);
-          // The engine can round across a header boundary. The companion
-          // follows the accepted position, not the requested fractional one.
-          const actualTop = descriptor.get.call(this);
-          // The entire glide write/reconcile finishes before this sample.
-          // Query committed geometry and inline styles, never frame layout.
-          queueMicrotask(() => {
-            const headers = h.rows
-              .filter((row) => row.kind === "header")
-              .map((row) => h.virtualList.positionOf(row.key));
-            const next = headers.find(
-              (position) => position && position.top > actualTop,
-            );
-            const active = headers.findLast(
-              (position) => position && position.top <= actualTop,
-            );
-            const expected =
-              next && active
-                ? Math.min(0, next.top - actualTop - active.height)
-                : 0;
-            const slot = document.querySelector(
-              ".vl-sticky-header .sticky-group",
-            );
-            const actual = Number(
-              slot.style.transform.match(/translateY\(([-\d.]+)px\)/)?.[1] ?? 0,
-            );
-            if (expected < 0) handoffFrames++;
-            if (Math.abs(actual - expected) > 1)
-              errors.push({ top, actualTop, expected, actual });
-          });
-        },
-      });
+      const sample = () => {
+        // Native smooth scrolling does not invoke a JavaScript scrollTop
+        // setter. Sample its accepted position after the runtime's listeners.
+        queueMicrotask(() => {
+          const actualTop = v.scrollTop;
+          const headers = h.rows
+            .filter((row) => row.kind === "header")
+            .map((row) => h.virtualList.positionOf(row.key));
+          const next = headers.find(
+            (position) => position && position.top > actualTop,
+          );
+          const active = headers.findLast(
+            (position) => position && position.top <= actualTop,
+          );
+          const expected =
+            next && active
+              ? Math.min(0, next.top - actualTop - active.height)
+              : 0;
+          const slot = document.querySelector(
+            ".vl-sticky-header .sticky-group",
+          );
+          const actual = Number(
+            slot.style.transform.match(/translateY\(([-\d.]+)px\)/)?.[1] ?? 0,
+          );
+          if (expected < 0) handoffFrames++;
+          if (Math.abs(actual - expected) > 1)
+            errors.push({ actualTop, expected, actual });
+        });
+      };
+      v.addEventListener("scroll", sample);
       try {
-        await h.jump(856, { behavior: "smooth" });
-        await h.jump(853, { behavior: "smooth" });
+        await h.virtualList.scrollTo(boundary.key, {
+          offset: boundary.height / 2,
+          behavior: "smooth",
+        });
+        await h.virtualList.scrollTo(boundary.key, {
+          offset: -boundary.height,
+          behavior: "smooth",
+        });
+        await h.virtualList.scrollTo(boundary.key, {
+          offset,
+          behavior: "smooth",
+        });
       } finally {
-        delete v.scrollTop;
+        v.removeEventListener("scroll", sample);
       }
       return { errors, handoffFrames };
     });
-    assert.ok(pillTiming.handoffFrames >= 3, "sampled the pill handoff");
-    assert.deepEqual(pillTiming.errors, [], "pill tracks each glide write");
+    assert.ok(pillTiming.handoffFrames >= 1, "sampled the pill handoff");
+    assert.deepEqual(pillTiming.errors, [], "pill tracks native scroll events");
 
     for (const behavior of ["instant", "smooth"]) {
       await jump(9999, "top", behavior);
@@ -393,7 +400,7 @@ for (const engine of [firefox, chromium, webkit]) {
     await page.waitForTimeout(150);
 
     // Unretained endpoints still travel across several screens of the one
-    // fetched page. Exercise the actual buttons and sample writes, not layout
+    // fetched page. Exercise the actual buttons and sample scroll events, not layout
     // reads in animation frames. Mounted endpoints keep their natural travel.
     for (const edge of ["start", "end"]) {
       await jump(853);
@@ -405,23 +412,11 @@ for (const engine of [firefox, chromium, webkit]) {
         const pagesBefore = h.stats.pageLoads;
         const height = v.clientHeight;
         const samples = [];
-        const descriptor = Object.getOwnPropertyDescriptor(
-          Element.prototype,
-          "scrollTop",
-        );
-        Object.defineProperty(v, "scrollTop", {
-          configurable: true,
-          get() {
-            return descriptor.get.call(this);
-          },
-          set(top) {
-            descriptor.set.call(this, top);
-            queueMicrotask(() => {
-              if (h.virtualList.positionOf(key))
-                samples.push({ top, time: performance.now() });
-            });
-          },
-        });
+        const sample = () => {
+          if (h.virtualList.positionOf(key))
+            samples.push({ top: v.scrollTop, time: performance.now() });
+        };
+        v.addEventListener("scroll", sample);
         try {
           document
             .querySelector(edge === "start" ? "#top-btn" : "#bottom-btn")
@@ -439,7 +434,7 @@ for (const engine of [firefox, chromium, webkit]) {
                 : h.virtualList.state.atEnd,
           };
         } finally {
-          delete v.scrollTop;
+          v.removeEventListener("scroll", sample);
         }
       }, edge);
       assert.equal(motion.missing, true);
@@ -457,14 +452,10 @@ for (const engine of [firefox, chromium, webkit]) {
         distance <= motion.height * 6,
         `${edge} approach is bounded: ${distance}px`,
       );
+      // Native duration belongs to the browser. Require actual intermediate
+      // positions across the bounded approach, not the old custom easing time.
       assert.ok(
-        // The shared default landing is 280 ms. This staged endpoint trip
-        // must include an approach too, without requiring the old 600 ms pace.
-        last.time - first.time >= 350,
-        `${edge} includes travel before landing (${last.time - first.time} ms)`,
-      );
-      assert.ok(
-        motion.samples.length >= 25,
+        new Set(motion.samples.map((sample) => sample.top)).size >= 5,
         `${edge} has intermediate positions`,
       );
       for (let i = 1; i < motion.samples.length; i++) {

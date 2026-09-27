@@ -1,13 +1,8 @@
-/** Initial viewport arrivals are immediate; later scroll entrances fade after decoding. */
+/** Fade each visible image entrance after decoding, including initial load. */
 export function createImageReveal(viewport: HTMLElement) {
-  let hasScrolled = false;
-  const onScroll = () => {
-    hasScrolled = true;
-  };
-  viewport.addEventListener("scroll", onScroll, { passive: true });
   const watched = new Map<
     HTMLImageElement,
-    { visible: boolean; fade: boolean; ready: () => void }
+    { visible: boolean; ready: () => void }
   >();
   const observer = new IntersectionObserver(
     (entries) => {
@@ -18,10 +13,8 @@ export function createImageReveal(viewport: HTMLElement) {
         const visible = entry.isIntersecting && entry.intersectionRatio > 0;
         if (state.visible === visible) continue;
         state.visible = visible;
-        if (visible) {
-          state.fade = hasScrolled;
-          state.ready();
-        } else image.classList.remove("revealed", "fade-in");
+        if (visible) state.ready();
+        else image.classList.remove("revealed", "fade-in");
       }
     },
     { root: viewport, threshold: [0, 0.01] },
@@ -41,7 +34,6 @@ export function createImageReveal(viewport: HTMLElement) {
       if (watched.has(image)) return;
       const state = {
         visible: false,
-        fade: false,
         decodedSource: "",
         decodingSource: "",
         ready: () => {
@@ -49,8 +41,7 @@ export function createImageReveal(viewport: HTMLElement) {
           const src = image.currentSrc || image.src;
           const reveal = () => {
             if (!state.visible) return;
-            image.classList.toggle("fade-in", state.fade);
-            image.classList.add("revealed");
+            image.classList.add("fade-in", "revealed");
           };
           if (state.decodedSource === src) {
             reveal();
@@ -83,7 +74,6 @@ export function createImageReveal(viewport: HTMLElement) {
     },
     remove,
     dispose(): void {
-      viewport.removeEventListener("scroll", onScroll);
       for (const image of watched.keys()) remove(image);
       observer.disconnect();
     },

@@ -21,6 +21,13 @@ for (const engine of [firefox, chromium, webkit]) {
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.addInitScript(() => {
+        window.galleryInitialFades = [];
+        document.addEventListener("animationstart", (event) => {
+          if (event.animationName === "gallery-photo-appear")
+            window.galleryInitialFades.push(
+              event.target.closest(".tile")?.dataset.id,
+            );
+        });
         const decode = HTMLImageElement.prototype.decode;
         window.galleryDecodeCalls = new WeakMap();
         HTMLImageElement.prototype.decode = function () {
@@ -41,6 +48,9 @@ for (const engine of [firefox, chromium, webkit]) {
         });
       });
       await page.goto(`${base}/demos/gallery/`);
+      await page.waitForFunction(() =>
+        window.galleryInitialFades.includes("0"),
+      );
       await page.locator(`[data-layout="${layout}"]`).click();
       const image = page.locator('.tile[data-id="0"] img.photo');
       await page.waitForFunction(() =>
@@ -49,9 +59,9 @@ for (const engine of [firefox, chromium, webkit]) {
           ?.classList.contains("revealed"),
       );
       assert.equal(
-        await image.evaluate((img) => img.getAnimations().length),
-        0,
-        "initial load appears immediately",
+        await image.evaluate((img) => img.classList.contains("fade-in")),
+        true,
+        "initial load uses the same fade as scroll entrances",
       );
       assert.equal(
         await image.evaluate((img) => window.galleryDecodeCalls.get(img)),

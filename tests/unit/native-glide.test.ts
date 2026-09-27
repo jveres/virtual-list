@@ -5,13 +5,15 @@ import { startNativeGlide } from "../../src/native-glide";
 beforeEach(() => vi.useFakeTimers());
 afterEach(() => vi.useRealTimers());
 
-function setup(start = 0, destination = 1000) {
+function setup(start = 0, destination = 1000, trackTarget = false) {
   const viewport = document.createElement("div");
   viewport.scrollTop = start;
   viewport.scrollTo = vi.fn();
   const complete = vi.fn();
   let target = destination;
-  const glide = startNativeGlide(viewport, () => target, complete);
+  const glide = startNativeGlide(viewport, () => target, complete, {
+    trackTarget,
+  });
   return {
     viewport,
     complete,
@@ -109,6 +111,39 @@ describe("native glide completion", () => {
     h.move(1000);
     vi.advanceTimersByTime(120);
     expect(h.complete).toHaveBeenCalledExactlyOnceWith(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("should retarget streaming growth during motion without waiting for scrollend", () => {
+    const h = setup(0, 1000, true);
+    h.start();
+    h.target(1500);
+    for (let i = 1; i <= 5; i++) {
+      h.move(i * 100);
+      vi.advanceTimersByTime(20);
+    }
+    expect(h.viewport.scrollTo).toHaveBeenCalledTimes(2);
+    expect(h.viewport.scrollTo).toHaveBeenLastCalledWith({
+      top: 1500,
+      behavior: "smooth",
+    });
+    expect(h.complete).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(100);
+    expect(h.viewport.scrollTo).toHaveBeenCalledTimes(2);
+    h.move(1500);
+    h.end();
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("should not let repeated target growth hide a stalled animation", () => {
+    const h = setup(0, 1000, true);
+    h.start();
+    for (let i = 1; i <= 20; i++) {
+      h.target(1000 + i * 100);
+      vi.advanceTimersByTime(100);
+    }
+    expect(h.complete).toHaveBeenCalledExactlyOnceWith(false);
     expect(vi.getTimerCount()).toBe(0);
   });
 

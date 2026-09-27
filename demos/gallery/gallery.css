@@ -73,6 +73,13 @@ header .ua {
   will-change: opacity;
 }
 
+/* Keep WebKit's image surface stable across the opacity animation endpoints. */
+@supports (-webkit-nbsp-mode: space) {
+  .photo {
+    transform: translateZ(0);
+  }
+}
+
 /* Compose load and press feedback regardless of stylesheet load order. */
 .photo.photo-preview-image {
   transition: filter 150ms ease;

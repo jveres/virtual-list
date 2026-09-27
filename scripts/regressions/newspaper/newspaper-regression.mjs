@@ -4,6 +4,11 @@ import { waitForBoot } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://127.0.0.1:4193";
 for (const engine of [firefox, webkit]) {
+  if (
+    process.env.BROWSER_ENGINE &&
+    process.env.BROWSER_ENGINE !== engine.name()
+  )
+    continue;
   const browser = await engine.launch();
   try {
     const page = await browser.newPage();
@@ -72,9 +77,19 @@ for (const engine of [firefox, webkit]) {
           );
         }
         await page.click("#top-btn");
-        await page.waitForFunction(
-          () => document.querySelector("#viewport").scrollTop < 1,
-        );
+        await page
+          .waitForFunction(
+            () => document.querySelector("#viewport").scrollTop < 1,
+          )
+          .catch(async (error) => {
+            console.error({
+              engine: engine.name(),
+              width,
+              variant,
+              top: await page.locator("#viewport").evaluate((v) => v.scrollTop),
+            });
+            throw error;
+          });
         await page.click("#bottom-btn");
         await page.waitForFunction(() => {
           const v = document.querySelector("#viewport");

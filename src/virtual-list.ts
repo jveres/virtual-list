@@ -6,7 +6,7 @@ import {
   Geometry,
   type GeometryViewport,
 } from "./geometry";
-import { type Glide, startNativeGlide } from "./native-glide";
+import { type Glide, startNativeGlide, stopNativeScroll } from "./native-glide";
 import {
   type GeometryWindow,
   PositionedGeometry,
@@ -552,8 +552,16 @@ export function createVirtualList<T>(
         : `calc(100% + ${Math.ceil(pinTop)}px)`;
   }
 
-  function writeScrollTop(top: number): void {
+  function recordScrollAdjustment(top: number): void {
     controller.recordProgrammaticScrollTop(top);
+    // Anchor compensation moves the coordinate system, not the content on
+    // screen. Do not classify a prepend correction as fast user motion.
+    if (placeholdersEnabled)
+      placeholderSample = { top, time: performance.now() };
+  }
+
+  function writeScrollTop(top: number): void {
+    recordScrollAdjustment(top);
     viewport.scrollTop = top;
   }
 
@@ -1661,7 +1669,7 @@ export function createVirtualList<T>(
         if (o.write !== false) writeScrollTop(target);
         // Mid-phase, the engine moves the viewport: expect it, so the settle
         // sensor never reads the adjustment as user input.
-        else if (native) controller.recordProgrammaticScrollTop(target);
+        else if (native) recordScrollAdjustment(target);
       }
     });
     if (disposed) return;
@@ -1706,7 +1714,7 @@ export function createVirtualList<T>(
           if (native) {
             const expected = toDevicePixel(result.scrollTop);
             if (Math.abs(expected - vp.scrollTop) > EPSILON_PX)
-              controller.recordProgrammaticScrollTop(expected);
+              recordScrollAdjustment(expected);
           }
           committed = true;
           // A shrink can clamp the engine upward onto another dirty row.
@@ -1978,7 +1986,15 @@ export function createVirtualList<T>(
     if (placeholdersEnabled) {
       const now = performance.now();
       const previous = placeholderSample;
-      if (!previous || vp.scrollTop !== previous.top) {
+      const atBoundary =
+        vp.scrollTop <= AT_EDGE_PX ||
+        geometry.maxScrollTop(vp.height) - vp.scrollTop <= AT_EDGE_PX;
+      if (atBoundary) {
+        // Momentum input can continue after the viewport hits its boundary.
+        // There is no motion left to conceal, even while a touch is held.
+        placeholderSample = { top: vp.scrollTop, time: now };
+        if (fastScrolling) showScrollPlaceholders(false);
+      } else if (!previous || vp.scrollTop !== previous.top) {
         placeholderLastMovement = now;
         if (!previous) placeholderSample = { top: vp.scrollTop, time: now };
         else if (now - previous.time >= 8) {
@@ -2180,9 +2196,8 @@ export function createVirtualList<T>(
   }
 
   /**
-   * An explicit command stops the browser's animation (a write plus an
-   * overflow toggle through a forced reflow), then settles the phase so held
-   * work commits before the command.
+   * Stop browser motion without rebuilding its scrolling layer, then settle
+   * the phase so held work commits before the command.
    */
   function interruptNativeScroll(
     reason: "command" | "resize" = "command",
@@ -2191,12 +2206,9 @@ export function createVirtualList<T>(
     if (!controller.isScrollPhaseActive()) return;
     if (nativeMotion) {
       const top = viewport.scrollTop;
-      writeScrollTop(top);
-      const overflow = viewport.style.overflowY;
-      viewport.style.overflowY = "hidden";
-      void viewport.offsetHeight;
-      viewport.style.overflowY = overflow;
-      writeScrollTop(top);
+      recordScrollAdjustment(top > 0 ? top - 1 : top + 1);
+      recordScrollAdjustment(top);
+      stopNativeScroll(viewport);
     }
     takingOver = reason;
     try {
@@ -2937,7 +2949,9 @@ export function createVirtualList<T>(
         followGlide = false;
         if (!disposed) controller.markSettlePending();
       });
-    glide = startNativeGlide(viewport, destination, complete);
+    glide = startNativeGlide(viewport, destination, complete, {
+      trackTarget: true,
+    });
     followGlide = true;
   }
 

@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 27 Safari gallery fade follow-up
+
+The [Safari fade follow-up](safari-gallery-fade-follow-up-2026-09-27.md)
+records initial-load fades, the retained WebKit compositing hint, and the
+remaining user-observed jitter. The scripted captures used different scroll
+distances and do not establish a performance improvement. The user accepted
+this known limitation for `v0.4.1`.
+
 ## September 27 gallery momentum investigation
 
 The [gallery investigation](gallery-momentum-investigation-2026-09-27.md)

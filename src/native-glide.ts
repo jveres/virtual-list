@@ -5,7 +5,23 @@ export interface Glide {
 
 const ARRIVAL_PX = 1;
 const QUIET_MS = 120;
+const RETARGET_MS = 100;
 const STALL_MS = 2000;
+
+/** Cancel compositor motion without rebuilding the viewport's scrolling layer. */
+export function stopNativeScroll(viewport: HTMLElement): void {
+  const current = viewport.scrollTop;
+  // Firefox can ignore a no-op instant request. Nudge and restore in one task,
+  // before painting, so cancellation also works at a stationary endpoint.
+  try {
+    viewport.scrollTo({
+      top: current > 0 ? current - 1 : current + 1,
+      behavior: "instant",
+    });
+  } finally {
+    viewport.scrollTo({ top: current, behavior: "instant" });
+  }
+}
 
 /**
  * One browser-owned animation at a time. A scrollend is only a completion
@@ -17,11 +33,13 @@ export function startNativeGlide(
   viewport: HTMLElement,
   target: () => number,
   onDone: (completed: boolean) => void,
+  options: { trackTarget?: boolean } = {},
 ): Glide {
   let finished = false;
   let frame = 0;
   let timer = 0;
   let requested: number | null = null;
+  let lastRequest = 0;
   let lastMovement = performance.now();
   let lastPosition = viewport.scrollTop;
 
@@ -40,17 +58,7 @@ export function startNativeGlide(
         requested !== null &&
         (!completed || Math.abs(current - requested) > ARRIVAL_PX)
       ) {
-        // Firefox can discard an instant request to its current position
-        // without cancelling compositor motion. Change the position by one
-        // pixel and restore it in the same task, before the browser paints.
-        try {
-          viewport.scrollTo({
-            top: current > 0 ? current - 1 : current + 1,
-            behavior: "instant",
-          });
-        } finally {
-          viewport.scrollTo({ top: current, behavior: "instant" });
-        }
+        stopNativeScroll(viewport);
       }
     } finally {
       onDone(completed);
@@ -58,13 +66,23 @@ export function startNativeGlide(
   }
 
   function scheduleCheck(): void {
+    // Streaming must check growth during motion, rather than postponing the
+    // check on every scroll event until the old animation has stopped.
+    if (options.trackTarget && timer) return;
     clearTimeout(timer);
-    timer = window.setTimeout(() => check(false), QUIET_MS);
+    timer = window.setTimeout(
+      () => {
+        timer = 0;
+        check(false);
+      },
+      options.trackTarget ? RETARGET_MS : QUIET_MS,
+    );
   }
 
   function request(destination: number): void {
+    lastRequest = performance.now();
+    if (requested === null || !options.trackTarget) lastMovement = lastRequest;
     requested = destination;
-    lastMovement = performance.now();
     viewport.scrollTo({ top: destination, behavior: "smooth" });
     if (!finished) scheduleCheck();
   }
@@ -77,12 +95,20 @@ export function startNativeGlide(
       if (Math.abs(current - destination) <= ARRIVAL_PX) {
         finish(true);
       } else if (
+        options.trackTarget &&
+        performance.now() - lastMovement >= STALL_MS
+      ) {
+        finish(false);
+      } else if (
         requested === null ||
+        (options.trackTarget &&
+          performance.now() - lastRequest >= RETARGET_MS &&
+          Math.abs(destination - requested) > ARRIVAL_PX) ||
         Math.abs(current - requested) <= ARRIVAL_PX ||
         (ended && Math.abs(destination - requested) > ARRIVAL_PX)
       ) {
-        // Finish the current leg before following streaming growth. Issuing
-        // a new smooth scroll on every frame would restart native easing.
+        // Explicit navigation finishes each leg. Streaming can retarget at a
+        // bounded cadence while the browser continues to own the animation.
         request(destination);
       } else if (performance.now() - lastMovement >= STALL_MS) {
         finish(false);
