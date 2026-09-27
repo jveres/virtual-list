@@ -15,6 +15,7 @@ import {
 } from "../shared/photo-preview.js";
 import { mustGet, setTextIfChanged } from "../shared/utils.js";
 import { createImageLoader, type LoaderMetrics } from "./image-loader.js";
+import { createImageReveal } from "./image-reveal.js";
 import {
   type Card,
   createGalleryLayouts,
@@ -207,6 +208,10 @@ const images = createImageLoader({
   onMetrics: showMetrics,
   distance: imageDistance,
 });
+const imageReveal = createImageReveal(viewport);
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted) imageReveal.dispose();
+});
 const pendingImages = new Set<HTMLImageElement>();
 const retiredImages = new Set<HTMLImageElement>();
 let imageFlushQueued = false;
@@ -267,6 +272,8 @@ function flushImages(): void {
   if (batch.length || removed.length)
     images.update({ add: batch, remove: removed });
   else images.reprioritize();
+  for (const image of removed) imageReveal.remove(image);
+  for (const { img } of batch) imageReveal.add(img);
 }
 
 // --- Rendering ---------------------------------------------------------------

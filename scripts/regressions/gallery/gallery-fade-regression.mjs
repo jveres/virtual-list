@@ -27,12 +27,14 @@ async function checkFade(page, label) {
         tile.style.cssText =
           "position:fixed;top:0;left:0;width:80px;height:80px";
         const image = document.createElement("img");
-        image.className = `photo photo-preview-image${cached ? " cached" : ""}`;
+        image.className = "photo photo-preview-image revealed";
         const canvas = document.createElement("canvas");
         canvas.width = canvas.height = 1;
         canvas.getContext("2d").fillRect(0, 0, 1, 1);
         image.src = canvas.toDataURL();
         await image.decode();
+        // Cached readiness can precede insertion and the first style update.
+        if (cached) image.classList.add("loaded", "fade-in");
         tile.append(image);
         document.body.append(tile);
         try {
@@ -40,7 +42,7 @@ async function checkFade(page, label) {
           image.classList.add("loaded");
           const animations = image.getAnimations();
           const fade = animations.find(
-            (animation) => animation.transitionProperty === "opacity",
+            (animation) => animation.animationName === "gallery-photo-appear",
           );
           let midpoint = null;
           let duration = null;
@@ -64,9 +66,9 @@ async function checkFade(page, label) {
         }
       }, cached);
       const context = `${label}, motion=${reducedMotion}, cached=${cached}`;
-      assert.equal(result.before, 0, `${context}: starts hidden`);
+      if (!cached) assert.equal(result.before, 0, `${context}: starts hidden`);
       assert.equal(result.after, 1, `${context}: finishes visible`);
-      if (cached || reducedMotion === "reduce") {
+      if (!cached || reducedMotion === "reduce") {
         assert.equal(result.animations, 0, `${context}: must not fade`);
       } else {
         assert.equal(result.duration, 240, `${context}: entrance duration`);
@@ -76,7 +78,7 @@ async function checkFade(page, label) {
         );
         assert.deepEqual(
           result.properties.split(", "),
-          ["opacity", "filter"],
+          ["filter"],
           `${context}: preserve preview press feedback`,
         );
       }

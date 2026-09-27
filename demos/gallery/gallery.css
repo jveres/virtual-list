@@ -69,28 +69,35 @@ header .ua {
   height: 100%;
   object-fit: cover;
   opacity: 0;
-  transition: opacity 240ms ease-out;
 }
 
 /* Compose load and press feedback regardless of stylesheet load order. */
 .photo.photo-preview-image {
-  transition:
-    opacity 240ms ease-out,
-    filter 150ms ease;
+  transition: filter 150ms ease;
 }
 
-.photo.loaded {
+/* Cached images wait through overscan and decoding before their entrance. */
+.photo.loaded.revealed {
   opacity: 1;
 }
 
-/* Remounted photos are already present to the user, not new arrivals. */
-.photo.cached {
-  transition: none;
+.photo.fade-in {
+  animation: gallery-photo-appear 240ms ease-out;
+}
+
+@keyframes gallery-photo-appear {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .photo,
   .photo.photo-preview-image {
+    animation: none;
     transition: none;
   }
 }

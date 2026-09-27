@@ -23,7 +23,7 @@ export interface LoaderMetrics {
 }
 
 export interface ImageLoader {
-  /** Queue an image for its source; one already fetched shows at once. */
+  /** Queue an image for its source; an already fetched source needs no download. */
   add(img: HTMLImageElement, src: string): void;
   /** Apply subscription changes together, then measure priorities and start downloads once. */
   update(changes: {
@@ -71,7 +71,7 @@ export function createImageLoader(options: {
   const requests = new Map<string, ImageRequest>();
   const subscriptions = new WeakMap<HTMLImageElement, ImageRequest>();
   const inFlight = new Map<string, () => void>();
-  /** Sources that have arrived: a later image of the same source shows at once. */
+  /** Sources that have arrived: later drawings reuse the fetched source. */
   const fetched = new Set<string>();
   let metricsFrame = 0;
   let publishedMetrics: LoaderMetrics | undefined;
@@ -135,16 +135,9 @@ export function createImageLoader(options: {
     const previous = subscriptions.get(img);
     if (previous?.src === src) return;
     if (previous) unsubscribe(img);
-    if (
-      ["loaded", "failed", "cached"].some((name) =>
-        img.classList.contains(name),
-      )
-    )
-      img.classList.remove("loaded", "failed", "cached");
+    if (["loaded", "failed"].some((name) => img.classList.contains(name)))
+      img.classList.remove("loaded", "failed");
     if (fetched.has(src)) {
-      // Reflow creates new drawings of photos already seen. Do not replay
-      // their entrance transition as they move between rows or bands.
-      img.classList.add("cached");
       show(img, src);
       publish();
       return;

@@ -322,7 +322,7 @@ describe("image loader", () => {
     });
   });
 
-  it("should skip the entrance fade only for already fetched sources", () => {
+  it("should make cached sources ready without disabling their entrance animation", () => {
     const loader = createImageLoader({
       viewport: viewportAt(0, 600),
       concurrency: 1,
@@ -335,7 +335,7 @@ describe("image loader", () => {
     loader.add(remounted, "u-photo");
 
     expect(first.classList.contains("cached")).toBe(false);
-    expect(remounted.classList.contains("cached")).toBe(true);
+    expect(remounted.classList.contains("cached")).toBe(false);
     expect(remounted.classList.contains("loaded")).toBe(true);
     expect(remounted.getAttribute("src")).toBe("u-photo");
 
