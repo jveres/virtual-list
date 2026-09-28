@@ -1483,8 +1483,17 @@ function shouldMountBottomEdgeSlot(): boolean {
   );
 }
 
+/** Slot spinners take their angle from the wrapper while a load runs. */
+function syncEdgeLoading(): void {
+  viewportWrap.toggleAttribute(
+    "data-edge-loading",
+    edgeState === "loading" || loadingBottom,
+  );
+}
+
 function setBottomLoading(loading: boolean): void {
   loadingBottom = loading;
+  syncEdgeLoading();
   if (bottomEdgeSlotElement) applyBottomSlotState(bottomEdgeSlotElement);
   bottomEdgeOverlay.dataset.state =
     loading && edgeLoaderMode === "pill" ? "loading" : "hidden";
@@ -1539,6 +1548,7 @@ function setEdgeState(state: EdgeState): void {
   window.clearTimeout(edgeHideTimer);
   edgeHideTimer = 0;
   edgeState = state;
+  syncEdgeLoading();
   if (edgeLoaderMode === "slot") {
     // In place, at the slot's fixed height: no structural change.
     if (edgeSlotElement) applyEdgeSlotState(edgeSlotElement, state);

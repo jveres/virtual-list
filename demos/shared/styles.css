@@ -466,6 +466,31 @@ p.ai-settings-note {
   display: none;
 }
 
+/* The list unmounts a slot scrolled out of range and remounts it on the
+   way back, which restarts an animation on the slot's own spinner. The
+   angle turns on the wrapper, which stays mounted, only while a load
+   runs; a remounted spinner inherits the current angle. */
+@property --boundary-spin {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 0deg;
+}
+
+@keyframes boundary-spin-angle {
+  to {
+    --boundary-spin: 360deg;
+  }
+}
+
+.viewport-wrap[data-edge-loading] {
+  animation: boundary-spin-angle 0.8s linear infinite;
+}
+
+.boundary-slot .boundary-spinner {
+  animation: none;
+  transform: rotate(var(--boundary-spin));
+}
+
 @keyframes boundary-spin {
   to {
     transform: rotate(360deg);
