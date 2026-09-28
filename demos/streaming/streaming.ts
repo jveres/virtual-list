@@ -247,7 +247,6 @@ interface ChatOptions {
   landing: LandingMode;
   cursor: CursorMode;
   trail: TrailMode;
-  scrollPlaceholders: boolean;
 }
 function loadChatOptions(): ChatOptions {
   const stored: { [K in keyof ChatOptions]?: unknown } = (() => {
@@ -272,7 +271,6 @@ function loadChatOptions(): ChatOptions {
     landing: parseLanding(stored.landing),
     cursor: parseCursor(stored.cursor),
     trail: parseTrail(trail),
-    scrollPlaceholders: stored.scrollPlaceholders !== false,
   };
 }
 function saveChatOptions(): void {
@@ -286,7 +284,6 @@ function saveChatOptions(): void {
         landing: landingMode,
         cursor: cursorMode,
         trail: trailMode,
-        scrollPlaceholders: scrollPlaceholdersEnabled,
       }),
     );
   } catch {
@@ -302,7 +299,6 @@ let followMode: FollowMode = chatOptions.follow;
 let landingMode: LandingMode = chatOptions.landing;
 let cursorMode: CursorMode = chatOptions.cursor;
 let trailMode = chatOptions.trail;
-let scrollPlaceholdersEnabled = chatOptions.scrollPlaceholders;
 const instantReplies =
   demoParams.has("instant") || demoParams.get("stream") === "instant";
 const forceFastLongReply =
@@ -3915,7 +3911,6 @@ function mountConversation(): void {
   virtualList = createVirtualList<ChatRow>(viewport, {
     items: rowsForRuntime(),
     key: rowKey,
-    scrollPlaceholders: scrollPlaceholdersEnabled,
     // Reserve is a runtime invariant, independent of how a row is reached.
     pinning:
       landingMode === "prompt"
@@ -4201,17 +4196,6 @@ viewportWrap.addEventListener("drop", (event) => {
   const file = transcriptFile(event);
   if (file) void importTranscript(file);
   else window.alert("Drop a Markdown transcript (.md) to import it.");
-});
-
-const scrollPlaceholdersToggle = mustGet(
-  "scroll-placeholders-toggle",
-  HTMLInputElement,
-);
-scrollPlaceholdersToggle.checked = scrollPlaceholdersEnabled;
-scrollPlaceholdersToggle.addEventListener("change", () => {
-  scrollPlaceholdersEnabled = scrollPlaceholdersToggle.checked;
-  virtualList?.setScrollPlaceholders(scrollPlaceholdersEnabled);
-  saveChatOptions();
 });
 
 const stickyToggle = mustGet("sticky-toggle", HTMLInputElement);

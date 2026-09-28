@@ -51,14 +51,6 @@ export interface VirtualListOptions<T> {
   /** Command pins (true, default), none (false), or a declarative pin. */
   pinning?: boolean | { match: (item: T) => boolean; offset?: number };
   overscanPx?: number;
-  /** Replace fast-scrolling stacked rows with same-height skeletons; restore as motion slows. */
-  scrollPlaceholders?: boolean;
-  /**
-   * Optional lightweight skeleton content; the runtime owns its row-sized wrapper.
-   * Called when a loaded item changes, ahead of scrolling. Return `existing` to
-   * reuse content. Omit to use the built-in skeleton. The content is inert.
-   */
-  renderScrollPlaceholder?: (item: T, existing?: HTMLElement) => HTMLElement;
   /** Whether an item may be the reading anchor (separators say no). */
   anchorable?: (item: T) => boolean;
   edgeSlots?: { start?: EdgeSlot | null; end?: EdgeSlot | null };
@@ -154,7 +146,6 @@ export interface VirtualList<T> {
   remeasure(key: string, options?: RemeasureOptions): void;
   setEdgeSlot(edge: Edge, slot: EdgeSlot | null): void;
   setFollowMode(mode: FollowMode, inset?: number): void;
-  setScrollPlaceholders(enabled: boolean): void;
   positionOf(key: string): { top: number; height: number } | null;
   elementOf(key: string): HTMLElement | null;
   readonly state: VirtualListState;

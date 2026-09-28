@@ -74,11 +74,6 @@ const PARKED_TRANSLATE = "0 -100000px";
 /** How far a mounting slot looks ahead for a connected successor. */
 const INSERTION_SCAN = 64;
 
-/** The built-in skeleton: text lines cut out of the placeholder color. */
-const SKELETON_STYLE = `width:100%;height:100%;background:var(--virtual-list-placeholder-color,rgba(127,127,127,.16));mask:url("data:image/svg+xml,${encodeURIComponent(
-  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 160" preserveAspectRatio="none"><rect x="20" y="18" width="96" height="10" rx="5"/><rect x="20" y="52" width="530" height="12" rx="6"/><rect x="20" y="80" width="560" height="12" rx="6"/><rect x="20" y="108" width="360" height="12" rx="6"/></svg>',
-)}") 0 0/100% 160px repeat-y`;
-
 const slotKey = (edge: Edge, key: string): string =>
   `${SLOT_PREFIX}${edge}:${key}`;
 const isSlotKey = (key: string): boolean => key.startsWith(SLOT_PREFIX);
@@ -152,8 +147,6 @@ interface Row<T> {
   /** Clip box; the element itself for positioned cards. */
   slot: HTMLElement;
   height: number;
-  /** Last measured content width, reused by the optional skeleton. */
-  width: number;
   /** Measured follow limit within this row; null means no limit yet. */
   followStart: number | null;
   /** The offset last written to the slot (NaN: none). */
@@ -170,16 +163,6 @@ interface Row<T> {
 interface Declared<T> {
   item: T;
   height: number;
-}
-
-interface Skeleton<T> {
-  element: HTMLElement;
-  /** The item its host content reflects. */
-  shown?: T;
-  /** The box last written to the element (NaN: none). */
-  top: number;
-  height: number;
-  width: number;
 }
 
 /** The desired state: what the next commit makes true. */
@@ -284,266 +267,6 @@ export function createVirtualList<T>(
   let staleTimer = 0;
   /** A stale row joined the window: the next reconciliation commits it. */
   let staleMounted = false;
-  let placeholdersEnabled = options.scrollPlaceholders === true;
-  let fastScrolling = false;
-  let placeholderSample: { top: number; time: number } | null = null;
-  const placeholderRows = new Map<Row<T>, () => void>();
-  const skeletons = new Map<string, Skeleton<T>>();
-  let skeletonSurface: HTMLElement | null = null;
-  let skeletonSize = Number.NaN;
-  /** Built-in content is cloned from one element: one parsed declaration. */
-  let skeletonShape: HTMLElement | null = null;
-  // What the next commit syncs: every key after a structural change, else
-  // the keys whose row changed and the rows a height change moved.
-  let skeletonStructure = true;
-  const skeletonStale = new Set<string>();
-  /** The lowest index whose committed height changed. */
-  let skeletonFrom = Number.POSITIVE_INFINITY;
-  let placeholderIdleTimer = 0;
-  let placeholderLastMovement = 0;
-  const placeholderIdleMs = 120;
-  const placeholderSlowMs = 80;
-  let placeholderSlowSince: number | null = null;
-  let placeholderLastInput = 0;
-  let placeholderTouchActive = false;
-
-  function placeholderInput(): void {
-    if (!placeholdersEnabled || !fastScrolling) return;
-    placeholderLastInput = performance.now();
-    schedulePlaceholderIdle();
-  }
-  function placeholderTouchStart(): void {
-    placeholderTouchActive = true;
-    placeholderSlowSince = null;
-    placeholderInput();
-  }
-  function placeholderTouchEnd(event: TouchEvent): void {
-    placeholderTouchActive = event.touches.length > 0;
-    placeholderInput();
-  }
-  viewport.addEventListener("wheel", placeholderInput, { passive: true });
-  viewport.addEventListener("touchstart", placeholderTouchStart, {
-    passive: true,
-  });
-  viewport.addEventListener("touchend", placeholderTouchEnd, { passive: true });
-  viewport.addEventListener("touchcancel", placeholderTouchEnd, {
-    passive: true,
-  });
-
-  function schedulePlaceholderIdle(): void {
-    if (placeholderIdleTimer || !fastScrolling) return;
-    placeholderIdleTimer = window.setTimeout(
-      () => {
-        placeholderIdleTimer = 0;
-        if (disposed || !fastScrolling || placeholderTouchActive) return;
-        if (
-          performance.now() -
-            Math.max(placeholderLastMovement, placeholderLastInput) >=
-          placeholderIdleMs
-        ) {
-          placeholderSample = null;
-          showScrollPlaceholders(false);
-        } else schedulePlaceholderIdle();
-      },
-      Math.max(
-        1,
-        placeholderIdleMs -
-          (performance.now() -
-            Math.max(placeholderLastMovement, placeholderLastInput)),
-      ),
-    );
-  }
-
-  function clearRowPlaceholder(row: Row<T>): void {
-    placeholderRows.get(row)?.();
-    placeholderRows.delete(row);
-  }
-
-  function showRowPlaceholder(row: Row<T>): void {
-    if (
-      !placeholdersEnabled ||
-      !fastScrolling ||
-      row.spec ||
-      row.slot === row.element ||
-      placeholderRows.has(row)
-    )
-      return;
-    const opacity = row.element.style.getPropertyValue("opacity");
-    const priority = row.element.style.getPropertyPriority("opacity");
-    const inert = row.element.inert;
-    row.element.style.setProperty("opacity", "0", "important");
-    row.element.inert = true;
-    placeholderRows.set(row, () => {
-      if (opacity) row.element.style.setProperty("opacity", opacity, priority);
-      else row.element.style.removeProperty("opacity");
-      row.element.inert = inert;
-    });
-  }
-
-  /** Create, refresh, or drop the skeleton of one key. */
-  function syncSkeleton(surface: HTMLElement, key: string): void {
-    const row = rows.get(key);
-    const item = row?.item ?? declaredItems.get(key)?.item;
-    const top = geometry.offsetOf(key);
-    let skeleton = skeletons.get(key);
-    if (
-      top < 0 ||
-      isSlotKey(key) ||
-      item === undefined ||
-      (anchorable && !anchorable(item))
-    ) {
-      skeleton?.element.remove();
-      skeletons.delete(key);
-      return;
-    }
-    if (!skeleton) {
-      const element = document.createElement("div");
-      element.dataset.scrollPlaceholder = key;
-      element.style.cssText =
-        "position:absolute;left:0;right:0;margin-inline:auto;overflow:hidden";
-      surface.append(element);
-      skeleton = {
-        element,
-        top: Number.NaN,
-        height: Number.NaN,
-        width: Number.NaN,
-      };
-      skeletons.set(key, skeleton);
-    }
-    const element = skeleton.element;
-    if (options.renderScrollPlaceholder && skeleton.shown !== item) {
-      let content: HTMLElement | undefined;
-      host(() => {
-        content = options.renderScrollPlaceholder?.(
-          item,
-          (element.firstElementChild as HTMLElement | null) ?? undefined,
-        );
-      });
-      if (disposed) return;
-      if (content) {
-        if (content !== element.firstElementChild)
-          element.replaceChildren(content);
-        skeleton.shown = item;
-      } else skeletonStale.add(key); // Asked again at the next commit.
-    }
-    if (!element.firstElementChild) {
-      if (!skeletonShape) {
-        skeletonShape = document.createElement("div");
-        skeletonShape.style.cssText = SKELETON_STYLE;
-      }
-      element.append(skeletonShape.cloneNode());
-    }
-    placeSkeleton(skeleton, top, geometry.heightOf(key));
-    const width = row?.width || 0;
-    if (skeleton.width !== width) {
-      skeleton.width = width;
-      element.style.maxWidth = width ? `${width}px` : "48rem";
-    }
-  }
-
-  function placeSkeleton(
-    skeleton: Skeleton<T>,
-    top: number,
-    height: number,
-  ): void {
-    if (skeleton.top !== top) {
-      skeleton.top = top;
-      skeleton.element.style.top = `${top}px`;
-    }
-    if (skeleton.height !== height) {
-      skeleton.height = height;
-      skeleton.element.style.height = `${height}px`;
-    }
-  }
-
-  function syncSkeletonSurface(): void {
-    if (!placeholdersEnabled || place) return;
-    const all = skeletonStructure;
-    const from = skeletonFrom;
-    if (!all && from === Number.POSITIVE_INFINITY && skeletonStale.size === 0)
-      return;
-    if (!skeletonSurface) {
-      skeletonSurface = document.createElement("div");
-      skeletonSurface.dataset.scrollSkeletons = "";
-      skeletonSurface.setAttribute("aria-hidden", "true");
-      skeletonSurface.inert = true;
-      skeletonSurface.style.cssText =
-        "position:absolute;top:0;left:0;width:100%;pointer-events:none;overflow-anchor:none;visibility:hidden;z-index:1";
-      canvas.prepend(skeletonSurface);
-    }
-    const surface = skeletonSurface;
-    const size = geometry.contentSize;
-    if (skeletonSize !== size) {
-      skeletonSize = size;
-      surface.style.height = `${size}px`;
-    }
-    const stale = all ? committedKeys : [...skeletonStale];
-    skeletonStructure = false;
-    skeletonStale.clear();
-    skeletonFrom = Number.POSITIVE_INFINITY;
-    for (const key of stale) {
-      syncSkeleton(surface, key);
-      if (disposed) return;
-    }
-    if (all) {
-      for (const [key, skeleton] of skeletons) {
-        if (geometry.indexOf(key) >= 0) continue;
-        skeleton.element.remove();
-        skeletons.delete(key);
-      }
-      return;
-    }
-    // A height change moves every later row.
-    for (let index = from; index < committedKeys.length; index++) {
-      const key = committedKeys[index] as string;
-      const skeleton = skeletons.get(key);
-      if (skeleton)
-        placeSkeleton(skeleton, geometry.offsetOf(key), geometry.heightOf(key));
-    }
-  }
-
-  function showScrollPlaceholders(active: boolean): void {
-    const changed = fastScrolling !== active;
-    fastScrolling = active;
-    viewport.toggleAttribute("data-scroll-placeholders-active", active);
-    if (skeletonSurface) {
-      skeletonSurface.style.visibility = active ? "visible" : "hidden";
-      skeletonSurface.toggleAttribute("data-active", active);
-    }
-    placeholderSlowSince = null;
-    if (active) schedulePlaceholderIdle();
-    else {
-      clearTimeout(placeholderIdleTimer);
-      placeholderIdleTimer = 0;
-    }
-    if (!active || !placeholdersEnabled) {
-      for (const row of placeholderRows.keys()) clearRowPlaceholder(row);
-    } else {
-      for (const row of mountedRows) showRowPlaceholder(row);
-    }
-    if (changed)
-      viewport.dispatchEvent(new Event("virtual-list:scroll-placeholders"));
-  }
-
-  function setScrollPlaceholders(enabled: boolean): void {
-    if (disposed) return;
-    if (defer(() => setScrollPlaceholders(enabled))) return;
-    pass(() => {
-      placeholdersEnabled = enabled;
-      if (enabled) syncSkeletonSurface();
-      else {
-        skeletonSurface?.remove();
-        skeletonSurface = null;
-        skeletonSize = Number.NaN;
-        skeletons.clear();
-        skeletonStale.clear();
-        skeletonStructure = true;
-      }
-      placeholderSample = null;
-      showScrollPlaceholders(enabled && fastScrolling);
-    });
-  }
-
   let committedKeys: readonly string[] = [];
   let committedPinOffset = 0;
   let positionedNow = false;
@@ -626,7 +349,6 @@ export function createVirtualList<T>(
    * anchor node suppresses anchoring for that layout.
    */
   function syncCanvasHeight(totalSize: number, floor: boolean): void {
-    syncSkeletonSurface();
     // A native canvas takes its height from its flow, for the same reason.
     if (!native) canvas.style.height = `${totalSize}px`;
     if (!floor) return;
@@ -640,10 +362,6 @@ export function createVirtualList<T>(
 
   function recordScrollAdjustment(top: number): void {
     controller.recordProgrammaticScrollTop(top);
-    // Anchor compensation moves the coordinate system, not the content on
-    // screen. Do not classify a prepend correction as fast user motion.
-    if (placeholdersEnabled)
-      placeholderSample = { top, time: performance.now() };
   }
 
   function writeScrollTop(top: number): void {
@@ -775,7 +493,6 @@ export function createVirtualList<T>(
       element,
       slot,
       height: quantize(height),
-      width: 0,
       followStart: 0,
       offset: Number.NaN,
       place: "detached",
@@ -902,7 +619,6 @@ export function createVirtualList<T>(
       markDirty(row);
       staleMounted = true;
     }
-    showRowPlaceholder(row);
     observeRow(row);
     if (!row.spec) hook(() => options.onMount?.(row.element, row.item));
   }
@@ -994,7 +710,6 @@ export function createVirtualList<T>(
   }
 
   function unmountRow(row: Row<T>): void {
-    clearRowPlaceholder(row);
     row.place = "detached";
     mountedRows.delete(row);
     rowObserver.unobserve(row.element);
@@ -1083,16 +798,6 @@ export function createVirtualList<T>(
     dirtyRows.delete(row);
     staleRows.delete(row);
     row.height = height;
-    if (skeletonSurface && !skeletonStructure) {
-      skeletonStale.add(row.key);
-      const index = geometry.indexOf(row.key);
-      if (
-        index >= 0 &&
-        index < skeletonFrom &&
-        geometry.heightOf(row.key) !== height
-      )
-        skeletonFrom = index;
-    }
     if (row.place === "mounted" || row.slot === row.element)
       row.slot.style.height = `${height}px`;
     geometry.measure(row.key, height);
@@ -1121,7 +826,6 @@ export function createVirtualList<T>(
         if (declared) return declaredHeight(row.item);
         const rect = row.element.getBoundingClientRect();
         const height = rect.height;
-        row.width = rect.width;
         if (!row.spec && options.followStart) {
           const start = options.followStart(row.item, row.element);
           row.followStart =
@@ -1558,7 +1262,6 @@ export function createVirtualList<T>(
     }
     for (const [row, item] of inPlace) {
       row.item = item;
-      if (skeletonSurface) skeletonStale.add(row.key);
       // A declared height lands with the snapshot; a measured one is re-read.
       if (!declared) markDirty(row);
     }
@@ -1795,14 +1498,12 @@ export function createVirtualList<T>(
         if (keysChanged) {
           geometry.setKeys(p.keys, p.target);
           committedKeys = p.keys;
-          skeletonStructure = true;
         }
         if (pinPolicy) {
           committedPinOffset = p.pinOffset ?? 0;
           geometry.pin(p.pinKey ?? null, committedPinOffset);
         }
         if (p.declared) {
-          skeletonStructure = true;
           for (const [key, entry] of p.declared) {
             const row = rows.get(key);
             if (row && row.item === entry.item) commitHeight(row, entry.height);
@@ -2179,39 +1880,6 @@ export function createVirtualList<T>(
 
   function onScrolled(): void {
     const vp = viewportState();
-    if (placeholdersEnabled) {
-      const now = performance.now();
-      const previous = placeholderSample;
-      const atBoundary =
-        vp.scrollTop <= AT_EDGE_PX ||
-        geometry.maxScrollTop(vp.height) - vp.scrollTop <= AT_EDGE_PX;
-      if (atBoundary) {
-        // Momentum input can continue after the viewport hits its boundary.
-        // There is no motion left to conceal, even while a touch is held.
-        placeholderSample = { top: vp.scrollTop, time: now };
-        if (fastScrolling) showScrollPlaceholders(false);
-      } else if (!previous || vp.scrollTop !== previous.top) {
-        placeholderLastMovement = now;
-        if (!previous) placeholderSample = { top: vp.scrollTop, time: now };
-        else if (now - previous.time >= 8) {
-          // Coalesce closely spaced events instead of treating a tiny delta
-          // during touchpad handoff as a sudden drop to reading speed.
-          const elapsed = now - previous.time;
-          const velocity = Math.abs(vp.scrollTop - previous.top) / elapsed;
-          placeholderSample = { top: vp.scrollTop, time: now };
-          if (!fastScrolling) {
-            if (!followGlide && elapsed < 200 && velocity >= 12)
-              showScrollPlaceholders(true);
-          } else if (elapsed < 200 && velocity >= 6) {
-            placeholderSlowSince = null;
-          } else {
-            placeholderSlowSince ??= now;
-            if (now - placeholderSlowSince >= placeholderSlowMs)
-              showScrollPlaceholders(false);
-          }
-        }
-      }
-    }
     // Genuine input leaving the pin drops a held pin stance; the engine's
     // own moves (a clamp onto the end, a bounce past it) keep it.
     if (resizeHeld === "pin" && glide === null) {
@@ -2317,9 +1985,7 @@ export function createVirtualList<T>(
       }),
     // Only the glide's own completion ends its phase.
     noSmoothScrollInFlight: () => glide === null,
-    onGestureStarted: () => {
-      placeholderSample ??= { top: lastObservedTop, time: performance.now() };
-    },
+    onGestureStarted: () => {},
     onGestureSettled: () => {
       holdLanding = false;
       for (const run of [...windowJobs]) run();
@@ -3105,7 +2771,6 @@ export function createVirtualList<T>(
       pass(() => {
         glide = null;
         glideToPin = false;
-        if (completed) showScrollPlaceholders(false);
         if (!completed || disposed) {
           done(false);
           if (!disposed) controller.markSettlePending();
@@ -3234,7 +2899,6 @@ export function createVirtualList<T>(
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    showScrollPlaceholders(false);
     const mark = failures.length;
     cancelRepaint?.();
     for (const cancel of [...cancelJobs]) cancel();
@@ -3244,10 +2908,6 @@ export function createVirtualList<T>(
     settleParked(false);
     reach.dispose();
     controller.dispose();
-    viewport.removeEventListener("wheel", placeholderInput);
-    viewport.removeEventListener("touchstart", placeholderTouchStart);
-    viewport.removeEventListener("touchend", placeholderTouchEnd);
-    viewport.removeEventListener("touchcancel", placeholderTouchEnd);
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (observeFrame !== 0) cancelAnimationFrame(observeFrame);
     if (remeasureFrame !== 0) cancelAnimationFrame(remeasureFrame);
@@ -3257,8 +2917,6 @@ export function createVirtualList<T>(
     rowObserver.disconnect();
     viewportObserver.disconnect();
     ratioQuery?.removeEventListener("change", onPixelRatioChange);
-    skeletons.clear();
-    skeletonSurface = null;
     canvas.remove();
     if (viewportAnchor !== null) viewport.style.overflowAnchor = viewportAnchor;
     if (!booting) disposedViewports.add(viewport);
@@ -3321,7 +2979,6 @@ export function createVirtualList<T>(
     remeasure,
     setEdgeSlot,
     setFollowMode,
-    setScrollPlaceholders,
     positionOf(key) {
       if (geometry.indexOf(key) < 0) return null;
       return { top: geometry.offsetOf(key), height: geometry.heightOf(key) };

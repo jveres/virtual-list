@@ -68,15 +68,6 @@ for (const engine of [firefox, chromium, webkit]) {
             if (!row) throw new Error("No visible reading row");
             window.prependAnchor = row;
             window.prependAnchorY = row.getBoundingClientRect().top;
-            window.prependFastActivations = 0;
-            window.prependObserver = new MutationObserver(() => {
-              if (viewport.hasAttribute("data-scroll-placeholders-active"))
-                window.prependFastActivations++;
-            });
-            window.prependObserver.observe(viewport, {
-              attributes: true,
-              attributeFilter: ["data-scroll-placeholders-active"],
-            });
             viewport.removeEventListener("scroll", capture);
           };
           if (demo === "streaming")
@@ -106,20 +97,11 @@ for (const engine of [firefox, chromium, webkit]) {
           { demo, first: before.first },
         );
         await page.waitForTimeout(400);
-        const after = await page.evaluate(() => {
-          window.prependObserver.disconnect();
-          return {
-            connected: window.prependAnchor.isConnected,
-            y: window.prependAnchor.getBoundingClientRect().top,
-            beforeY: window.prependAnchorY,
-            fastActivations: window.prependFastActivations,
-          };
-        });
-        assert.equal(
-          after.fastActivations,
-          0,
-          "anchor correction must not activate skeletons",
-        );
+        const after = await page.evaluate(() => ({
+          connected: window.prependAnchor.isConnected,
+          y: window.prependAnchor.getBoundingClientRect().top,
+          beforeY: window.prependAnchorY,
+        }));
         assert.equal(after.connected, true, "reading row survives the prepend");
         shifts.push(after.y - after.beforeY);
       }

@@ -136,7 +136,6 @@ export interface MountHooks {
   followMode?: VirtualListOptions<Msg>["followMode"];
   followInset?: number;
   overscanPx?: number;
-  renderScrollPlaceholder?: VirtualListOptions<Msg>["renderScrollPlaceholder"];
   itemHeight?: (m: Msg) => number;
   position?: VirtualListOptions<Msg>["position"];
   boot?: "start" | "end";
@@ -257,7 +256,6 @@ export function mount(items: Msg[], hooks: MountHooks = {}): Harness {
     followMode: hooks.followMode,
     followInset: hooks.followInset,
     overscanPx: hooks.overscanPx,
-    renderScrollPlaceholder: hooks.renderScrollPlaceholder,
     height: hooks.itemHeight,
     position: hooks.position,
     boot: hooks.boot,

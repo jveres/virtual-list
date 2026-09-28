@@ -15,25 +15,6 @@ for (const engine of [firefox, chromium, webkit]) {
     continue;
   const browser = await engine.launch();
   try {
-    const page = await browser.newPage();
-    await page.goto(`${base}/demos/streaming/`);
-    await waitForBoot(page);
-    const toggle = page.locator("#scroll-placeholders-toggle");
-    assert.equal(await toggle.isChecked(), true, "skeletons default on");
-    await page.locator("#ai-settings-btn").click();
-    await toggle.uncheck();
-    assert.equal(await page.locator("[data-scroll-skeletons]").count(), 0);
-    await page.reload();
-    await waitForBoot(page);
-    assert.equal(await toggle.isChecked(), false, "setting survives reload");
-    await page.locator("#ai-settings-btn").click();
-    await toggle.check();
-    assert.equal(await page.locator("[data-scroll-skeletons]").count(), 1);
-    await page.reload();
-    await waitForBoot(page);
-    assert.equal(await toggle.isChecked(), true);
-    await page.close();
-
     for (const follow of ["end", "keep-start", "keep-content"]) {
       const page = await browser.newPage();
       await page.addInitScript(
@@ -83,7 +64,7 @@ for (const engine of [firefox, chromium, webkit]) {
       await page.close();
     }
     console.log(
-      `${engine.name()}: skeleton settings persist; following keeps the bottom button hidden; manual scrolling reveals it`,
+      `${engine.name()}: following keeps the bottom button hidden; manual scrolling reveals it`,
     );
   } finally {
     await browser.close();
