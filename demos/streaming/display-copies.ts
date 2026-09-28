@@ -15,6 +15,8 @@ const sources = new WeakMap<
   HTMLImageElement,
   { display: string; source: string }
 >();
+// A decoded copy held from the swap until the row's image has loaded it.
+const probes = new WeakMap<HTMLImageElement, HTMLImageElement>();
 let worker: Worker | null | undefined;
 let nextId = 1;
 
@@ -73,15 +75,31 @@ export function useDisplayCopy(image: HTMLImageElement, url: string): void {
     return;
   const width = image.naturalWidth;
   const height = image.naturalHeight;
-  void displayCopy(url).then((display) => {
+  void displayCopy(url).then(async (display) => {
     // The renderer may have replaced the source meanwhile.
     if (!display || sources.has(image) || image.currentSrc !== url) return;
+    // The swap lands on a visible row. Chrome and WebKit decode a large
+    // image asynchronously, so a swap to an undecoded copy can paint one
+    // empty frame. Decode the copy first, and keep that decode alive until
+    // the row's own image has loaded from the shared resource.
+    const probe = new Image();
+    probe.src = display;
+    try {
+      await probe.decode();
+    } catch {
+      return;
+    }
+    if (sources.has(image) || image.currentSrc !== url) return;
     // The attributes keep the box at the original size and aspect ratio.
     if (!image.hasAttribute("width") || !image.hasAttribute("height")) {
       image.width = width;
       image.height = height;
     }
     sources.set(image, { display, source: url });
+    probes.set(image, probe);
+    image.addEventListener("load", () => probes.delete(image), {
+      once: true,
+    });
     image.src = display;
   });
 }
