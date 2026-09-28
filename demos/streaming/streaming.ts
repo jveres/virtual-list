@@ -68,6 +68,7 @@ import {
   type TranscriptTree,
 } from "./branching-transcript.js";
 import { createConversationTree } from "./conversation-tree.js";
+import { adoptDisplayCopies } from "./display-copies.js";
 import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
 import { createChatImagePreview } from "./image-preview.js";
 import {
@@ -3894,7 +3895,7 @@ function mountConversation(): void {
         const updated = updateRow(existing, row);
         if (updated) return updated;
       }
-      return buildRow(row);
+      return adoptDisplayCopies(buildRow(row));
     },
     edgeSlots: {
       start: edgeSlotRequested ? edgeSlotSpec : null,

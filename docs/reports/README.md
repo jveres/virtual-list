@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 28 Safari HDR chat images
+
+The [HDR chat image report](safari-hdr-chat-images-2026-09-28.md) traces
+image-heavy chat lag to HDR gain-map photos in Safari. Inline chat images now
+render in standard range, and large data-URL images use display copies made
+in a worker. The user reports smooth scrolling on both displays; the traces
+are single real-input observations, not a controlled benchmark.
+
 ## September 27 Safari chat momentum correction
 
 The [chat momentum investigation](safari-chat-momentum-2026-09-27.md)

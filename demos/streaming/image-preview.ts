@@ -8,6 +8,7 @@ import {
   type ChatAttachment,
   imageObjectUrl,
 } from "./attachments.js";
+import { displaySource, useDisplayCopy } from "./display-copies.js";
 
 /** Object URLs kept for recently viewed data-URL images. */
 const DISPLAY_URL_LIMIT = 8;
@@ -241,7 +242,11 @@ export function createChatImagePreview(
       return;
     }
     const selectedUrl = image.currentSrc;
-    const url = attachmentImageSource(image, selectedUrl || image.src);
+    const url = displaySource(
+      image,
+      attachmentImageSource(image, selectedUrl || image.src),
+    );
+    useDisplayCopy(image, url);
     const previous = photos.get(image);
     const row = image.closest<HTMLElement>("[data-key]");
     const entries = row ? rowImages(row) : undefined;

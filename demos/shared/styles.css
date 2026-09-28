@@ -668,6 +668,13 @@ p.ai-settings-note {
   width: 100%;
 }
 
+/* HDR photos (gain-map JPEGs) make Safari render scrolling rows in extended
+   range on an HDR display: rows stall and paint late. Inline images stay
+   standard range; the full-screen viewer keeps HDR. */
+.message-content img {
+  dynamic-range-limit: standard;
+}
+
 .message.assistant {
   flex-direction: column;
   --message-action-height: 24px;
