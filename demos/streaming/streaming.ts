@@ -366,6 +366,8 @@ const expandedUserMessages = new Set<number>();
 // list the virtualizer renders. `messages` is the loaded window over its tail.
 const transcript: Message[] = [];
 let messages: Message[] = [];
+// Bumped by in-place writes to `messages`; replacing the array needs none.
+let messagesVersion = 0;
 const transcriptIndexById = new Map<number, number>();
 
 // Branching messages. Each turn is a tree node; a node's `childrenIds` are the
@@ -1101,6 +1103,7 @@ function resetPaging(): void {
         const current = tree.get(message.id)?.message;
         if (current && current !== message) {
           messages[index] = current;
+          messagesVersion++;
           void paging
             ?.updateItemLive(String(message.id), () => current)
             .catch(reportPagingError);
@@ -1352,12 +1355,43 @@ function rowsForTreeNavigation(
   return rows;
 }
 
+// The sticky header asks for these on every mounted-range change while
+// scrolling. Rebuild them only when the loaded messages, the dating mode, or
+// the label day change, not per message on every ask.
+let dayHeaderCache: {
+  source: Message[];
+  version: number;
+  basis: string;
+  rows: DayHeader[];
+  keys: string[];
+} | null = null;
+
+function cachedDayHeaders(): { rows: DayHeader[]; keys: string[] } {
+  const basis = `${lastDay()}:${localMidnight(Date.now())}:${transcriptHasDates}:${getAISettings().provider}`;
+  const cache = dayHeaderCache;
+  if (
+    cache?.source === messages &&
+    cache.version === messagesVersion &&
+    cache.basis === basis
+  )
+    return cache;
+  const rows = rowsForRuntime().filter(isDayHeader);
+  dayHeaderCache = {
+    source: messages,
+    version: messagesVersion,
+    basis,
+    rows,
+    keys: rows.map(rowKey),
+  };
+  return dayHeaderCache;
+}
+
 function dayHeaderRows(): DayHeader[] {
-  return rowsForRuntime().filter(isDayHeader);
+  return cachedDayHeaders().rows;
 }
 
 function dayHeaderKeys(): string[] {
-  return dayHeaderRows().map(rowKey);
+  return cachedDayHeaders().keys;
 }
 
 /** Submit a snapshot for conversation changes; scrollback uses updateWindow.
@@ -1390,6 +1424,7 @@ function updateMessage(id: number, mutate: (message: Message) => void): void {
     pushItems();
   } else if (index !== undefined && index >= loadedStart && index < loadedEnd) {
     messages[index - loadedStart] = next;
+    messagesVersion++;
     void paging
       ?.updateItemLive(rowKey(next), () => next)
       .catch(reportPagingError);
