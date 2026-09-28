@@ -1230,13 +1230,7 @@ export function createVirtualList<T>(
       // connected rows are read now: the engine has laid them out already.
       // Detached rows wait until the width is quiet, or until they mount.
       if (widthChanged) {
-        if (!declared) {
-          for (const row of rows.values()) {
-            if (row.place === "detached" && !row.spec) staleRows.add(row);
-            else markDirty(row);
-          }
-          if (staleRows.size > 0) awaitQuietWidth();
-        }
+        if (!declared) invalidateHeights();
         settleParked(false);
         glide?.cancel();
         interruptNativeScroll("resize");
@@ -1263,6 +1257,46 @@ export function createVirtualList<T>(
     });
   });
   viewportObserver.observe(viewport);
+
+  /** Connected rows are read by the next commit; detached rows wait until
+   * the change is quiet, or until they mount. */
+  function invalidateHeights(): void {
+    for (const row of rows.values()) {
+      if (row.place === "detached" && !row.spec) staleRows.add(row);
+      else markDirty(row);
+    }
+    if (staleRows.size > 0) awaitQuietWidth();
+  }
+
+  // Heights sit on the device grid (I0). A pixel-ratio change (the window
+  // moved to a display with another scale) keeps every layout size, so no
+  // observer reports it, and the heights stay on the old grid.
+  let ratioQuery: MediaQueryList | null = null;
+  function watchPixelRatio(): void {
+    ratioQuery?.removeEventListener("change", onPixelRatioChange);
+    ratioQuery =
+      typeof matchMedia === "function"
+        ? matchMedia(`(resolution: ${pixelRatio()}dppx)`)
+        : null;
+    ratioQuery?.addEventListener("change", onPixelRatioChange);
+  }
+  function onPixelRatioChange(): void {
+    watchPixelRatio();
+    // A zoom also changes the width: the viewport observer re-reads then.
+    if (
+      disposed ||
+      declared ||
+      Math.abs(viewport.clientWidth - viewportWidth) > EPSILON_PX
+    )
+      return;
+    pass(() => {
+      invalidateHeights();
+      if (idle())
+        commit(null, { policy: "viewport", keepFollow: true, instant: true });
+      else if (!liveCommit()) publish();
+    });
+  }
+  watchPixelRatio();
 
   // A hidden document follows by write; the return cancels a leftover glide.
   const onVisibilityChange = (): void => {
@@ -3222,6 +3256,7 @@ export function createVirtualList<T>(
     remeasureRequests.clear();
     rowObserver.disconnect();
     viewportObserver.disconnect();
+    ratioQuery?.removeEventListener("change", onPixelRatioChange);
     skeletons.clear();
     skeletonSurface = null;
     canvas.remove();
