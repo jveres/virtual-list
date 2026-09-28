@@ -1306,7 +1306,14 @@ export function createConversationTree(options: TreeOptions): {
     "pointerleave",
     () => {
       closeTimer = window.setTimeout(() => {
-        if (!pinned && !root.contains(document.activeElement)) close();
+        if (pinned) return;
+        // A clicked node keeps focus; only keyboard focus holds the panel.
+        const focused = document.activeElement;
+        if (!root.contains(focused)) close();
+        else if (root.dataset.pointerFocus !== undefined) {
+          if (focused instanceof HTMLElement) focused.blur();
+          close();
+        }
       }, 180);
     },
     { signal },
