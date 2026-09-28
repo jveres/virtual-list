@@ -8,7 +8,11 @@ import {
   type ChatAttachment,
   imageObjectUrl,
 } from "./attachments.js";
-import { displaySource, useDisplayCopy } from "./display-copies.js";
+import {
+  displaySource,
+  readyDisplayCopy,
+  useDisplayCopy,
+} from "./display-copies.js";
 
 /** Object URLs kept for recently viewed data-URL images. */
 const DISPLAY_URL_LIMIT = 8;
@@ -61,7 +65,9 @@ export function createChatImagePreview(
   };
   const preview = createPhotoPreview<ChatImage>({
     viewport,
-    thumbnailUrl: (photo) => displayUrl(photo.url),
+    // Open from the copy the row already shows; the original fades in over it.
+    thumbnailUrl: (photo) =>
+      readyDisplayCopy(photo.url) ?? displayUrl(photo.url),
     previewUrl: (photo) => displayUrl(photo.url),
     detailsText: (photo) => photo.label,
     nativeImageMenu: "preview-on-ios",

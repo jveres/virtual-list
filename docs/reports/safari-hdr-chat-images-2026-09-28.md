@@ -91,6 +91,21 @@ The standard-range-only row excludes a 247 ms page-load gap. Its longest
 scrolling gap was 122 ms. The user reported that this control felt less smooth
 than using both changes, so both changes remain.
 
+## Preview opening flash
+
+Opening the image viewer from a chat image produced a visible flash during
+the zoom. Chat images bind the `<img>` itself, so the viewer opened from a
+separate object URL. It hid the source before that asynchronously decoded
+image was ready, leaving neither image on screen for a few frames.
+
+The viewer now waits up to 200 ms for the opening image's `decode()` before
+hiding the source. Chat previews open from a finished display copy when one
+exists, and that image is already decoded. The user reports that the flash is
+gone. Limiting the viewer to standard range was tested and was not needed.
+The viewer therefore keeps HDR, and the user saw no brightening as the
+full-size image fades in. These changes had only `pnpm run check`; the
+browser regression run was stopped before completion.
+
 ## Checks
 
 The new `chat-image-display-copy` browser regression uses a synthetic

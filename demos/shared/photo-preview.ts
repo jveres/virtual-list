@@ -18,6 +18,8 @@ const PHOTO_VIEW_MAX_WIDTH = 1280;
 const PHOTO_VIEW_MAX_SOURCE_WIDTH = 1800;
 const PHOTO_VIEW_DURATION_MS = 420;
 const PHOTO_NAV_INITIAL_HIDE_MS = 1500;
+/** Longest wait for the opening image to decode before the zoom starts. */
+const OPENING_DECODE_WAIT_MS = 200;
 const PHOTO_NAV_AFTER_NAVIGATION_HIDE_MS = 3000;
 const PHOTO_VIEW_IOS_DURATION_MS = 520;
 const PHOTO_VIEW_GEOMETRY_EASING = "cubic-bezier(0.18, 1.28, 0.32, 1)";
@@ -1304,6 +1306,13 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     window.visualViewport?.addEventListener("scroll", onViewportChange);
     closeButton.addEventListener("click", () => void closePhotoView());
 
+    // Hiding the source before the async-decoded opening image is ready
+    // leaves neither on screen for a few frames: a flash. A source without a
+    // preview image (a bound <img>) opens from a different URL.
+    await Promise.race([
+      image.decode().catch(() => {}),
+      new Promise((resolve) => setTimeout(resolve, OPENING_DECODE_WAIT_MS)),
+    ]);
     await nextFrame();
     if (activePhotoView !== view || view.closing) return;
     hidePhotoSource(sourceElement);

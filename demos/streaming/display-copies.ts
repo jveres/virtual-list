@@ -104,6 +104,11 @@ export function adoptDisplayCopies<E extends ParentNode>(root: E): E {
   return root;
 }
 
+/** The finished copy of a data URL, if any: already decoded where shown. */
+export function readyDisplayCopy(url: string): string | undefined {
+  return ready.get(url);
+}
+
 /** The data URL behind a displayed copy, or `displayed` itself. */
 export function displaySource(
   image: HTMLImageElement,
