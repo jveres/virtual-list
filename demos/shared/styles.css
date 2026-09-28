@@ -995,7 +995,7 @@ p.ai-settings-note {
 }
 
 .tool-call {
-  overflow: hidden;
+  overflow: clip;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-surface);
@@ -1062,9 +1062,9 @@ p.ai-settings-note {
 }
 
 .tool-call-code {
-  /* Wrapped text never overflows sideways; a scroller would only cost WebKit
-     a compositing layer (see integrations/markdown.css). */
-  overflow-x: hidden;
+  /* Clip without creating a nested scroll container. Hidden overflow still
+     creates one, even when the wrapped content fits. */
+  overflow: clip;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg-code-block);
