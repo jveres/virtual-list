@@ -94,6 +94,7 @@ export function createChatImagePreview(
     return objectUrl;
   };
   const preview = createPhotoPreview<ChatImage>({
+    closeFocusTarget: viewport,
     viewport,
     // Open from the copy the row already shows; the original fades in over it.
     thumbnailUrl: (photo) =>

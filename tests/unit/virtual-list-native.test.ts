@@ -33,8 +33,18 @@ function flowIds(canvas: HTMLElement): number[] {
 }
 
 describe("native anchoring surface", () => {
+  it("keeps the mounted rows during top bounce without writing the scroll position", () => {
+    const h = mount(range(0, 80), { boot: "start", overscroll: true });
+    const initial = flowIds(h.canvas());
+    for (const top of [-1, -150, -300, -150, -1, 0]) {
+      h.userScroll(top);
+      expect(flowIds(h.canvas())).toEqual(initial);
+      expect(h.viewport.scrollTop).toBe(top);
+    }
+  });
+
   it.each([true, false])(
-    "preserves bounded flow-row layers across recycling (WebKit: %s)",
+    "recycles native flow rows without whole-row promotion (WebKit: %s)",
     (webkit) => {
       vi.stubGlobal("CSS", {
         supports: (property: string) =>
@@ -53,7 +63,7 @@ describe("native anchoring surface", () => {
           expect(rows.length).toBeGreaterThan(0);
           expect(rows.length).toBeLessThan(80);
           for (const slot of rows) {
-            expect(slot.style.willChange).toBe(webkit ? "transform" : "");
+            expect(slot.style.willChange).toBe("");
             expect(slot.style.transform).toBe("");
           }
           expect(slots[0]?.style.willChange).toBe("");

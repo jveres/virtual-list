@@ -636,6 +636,21 @@ describe("I5 — pin-to-top reserve", () => {
 });
 
 describe("window planning", () => {
+  it.each([0, 4400])(
+    "keeps the edge window stable through a bounce at %s",
+    (edge) => {
+      const geometry = new Geometry(100);
+      seed(geometry, keysRange(0, 50));
+      const settled = geometry.window(viewport(edge), 200);
+      const direction = edge === 0 ? -1 : 1;
+      for (const distance of [1, 75, 150, 250, 150, 75, 1, 0]) {
+        expect(
+          geometry.window(viewport(edge + direction * distance), 200),
+        ).toEqual(settled);
+      }
+    },
+  );
+
   it("covers the viewport plus overscan and stays in bounds", () => {
     const geometry = new Geometry(100);
     seed(geometry, keysRange(0, 50));

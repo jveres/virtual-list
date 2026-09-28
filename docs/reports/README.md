@@ -7,6 +7,13 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 28 Safari chat image layers
+
+The [image-layer report](safari-image-layers-2026-09-28.md) records repeated
+user-confirmed smooth scrolling after moving compositing hints from entire
+native-flow rows to individual chat images. It supersedes the September 27
+whole-row promotion decision and distinguishes visual evidence from timings.
+
 ## September 28 Safari momentum tail
 
 The [momentum tail report](safari-momentum-tail-2026-09-28.md) traces 1–2 px

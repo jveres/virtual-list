@@ -51,6 +51,8 @@ export interface PhotoPreviewOptions<T extends PhotoPreviewItem> {
   nativeImageMenu?: boolean | "preview-on-ios";
   /** Set false to keep square image corners, including the hero animation. */
   roundedCorners?: boolean;
+  /** Optional host focus destination after closing, without scrolling it. */
+  closeFocusTarget?: HTMLElement;
 }
 
 export interface PhotoPreviewController<T extends PhotoPreviewItem> {
@@ -960,7 +962,11 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     for (const entry of view.background) entry.element.inert = entry.inert;
     document.documentElement.classList.remove("photo-view-open");
     if (activePhotoView === view) activePhotoView = null;
-    const focus = source?.isConnected ? source : view.previousFocus;
+    const focus = options.closeFocusTarget?.isConnected
+      ? options.closeFocusTarget
+      : source?.isConnected
+        ? source
+        : view.previousFocus;
     if (!disposed && focus?.isConnected) focus.focus({ preventScroll: true });
   }
 

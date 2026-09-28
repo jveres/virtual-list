@@ -2,13 +2,23 @@
 import assert from "node:assert/strict";
 
 export function instrumentRowLayers(source, enabled = true) {
-  const needle =
-    'const nativeLayerHint = webkitCompositing ? "will-change:transform;" : "";';
+  const needle = "function mountRow(row: Row<T>): void {";
   assert.equal(source.split(needle).length, 2, "Native row style changed");
-  return source.replace(
-    needle,
-    `const nativeLayerHint = ${JSON.stringify(enabled ? "will-change:transform;" : "")};`,
+  assert.ok(
+    !source.includes("const nativeLayerHint"),
+    "Native row style changed",
   );
+  return source
+    .replace(
+      needle,
+      `const nativeLayerHint = ${JSON.stringify(enabled ? "will-change:transform;" : "")};\n${needle}`,
+    )
+    .replace(
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal source overlay
+      "? `position:relative;overflow:${clip};height:${row.height}px",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: literal source overlay
+      "? `${nativeLayerHint}position:relative;overflow:${clip};height:${row.height}px",
+    );
 }
 
 export function instrumentRetainedRows(source) {

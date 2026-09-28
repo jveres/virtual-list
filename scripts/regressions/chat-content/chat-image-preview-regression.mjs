@@ -141,6 +141,10 @@ for (const engine of [firefox, webkit]) {
     await page.locator(".photo-viewer:not(.is-preparing)").waitFor();
     await page.keyboard.press("Escape");
     await page.locator(".photo-viewer").waitFor({ state: "detached" });
+    assert.equal(
+      await page.evaluate(() => document.activeElement?.id),
+      "viewport",
+    );
     // Exercise the browser-generated touch/click sequence too.
     await photo.tap();
     await page.locator(".photo-viewer:not(.is-preparing)").waitFor();
@@ -200,8 +204,8 @@ for (const engine of [firefox, webkit]) {
       ) <= 1,
     );
     assert.equal(
-      await photo.evaluate((image) => image === document.activeElement),
-      true,
+      await page.evaluate(() => document.activeElement?.id),
+      "viewport",
     );
 
     // Keyboard access uses the same gallery binding.

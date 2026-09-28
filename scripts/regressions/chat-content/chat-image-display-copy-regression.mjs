@@ -66,6 +66,7 @@ for (const engine of [chromium, firefox, webkit]) {
         rangeLimit: CSS.supports("dynamic-range-limit", "standard")
           ? getComputedStyle(image).getPropertyValue("dynamic-range-limit")
           : "standard",
+        imageLayer: getComputedStyle(image).willChange,
       };
     });
     assert.equal(result.copied, true, JSON.stringify(result));
@@ -76,6 +77,7 @@ for (const engine of [chromium, firefox, webkit]) {
     assert.equal(result.adopted, true);
     assert.equal(result.adoptedIdentity, true);
     assert.equal(result.rangeLimit, "standard");
+    assert.equal(result.imageLayer, "transform");
     console.log(
       `${engine.name()}: display copies keep row boxes and identity; inline images standard range`,
     );

@@ -595,9 +595,6 @@ export function createVirtualList<T>(
   const webkitCompositing =
     globalThis.CSS?.supports?.("-webkit-nbsp-mode", "space") === true;
   if (webkitCompositing) canvas.style.transformStyle = "preserve-3d";
-  // Flow rows need the same stable layer as positioned slots during Safari
-  // momentum. Only mounted slots carry the hint; hidden probes reset it.
-  const nativeLayerHint = webkitCompositing ? "will-change:transform;" : "";
   const spacer = (): HTMLElement => {
     const element = document.createElement("div");
     element.style.cssText = "overflow-anchor:none;height:0px";
@@ -889,7 +886,7 @@ export function createVirtualList<T>(
     const hidden = row.place === "hidden";
     if (row.slot !== row.element) {
       row.slot.style.cssText = native
-        ? `${nativeLayerHint}position:relative;overflow:${clip};height:${row.height}px${anchors(row) ? "" : ";overflow-anchor:none"}`
+        ? `position:relative;overflow:${clip};height:${row.height}px${anchors(row) ? "" : ";overflow-anchor:none"}`
         : `${SLOT_BASE}overflow:${clip};will-change:transform;height:${row.height}px`;
       row.offset = Number.NaN;
     }

@@ -236,10 +236,17 @@ export class Geometry {
   /** Mounted index range covering the viewport plus overscan. */
   window(viewport: GeometryViewport, overscanPx: number): GeometryWindow {
     if (this.keys.length === 0) return { start: 0, end: 0 };
-    const top = Math.max(0, viewport.scrollTop - overscanPx);
+    // Rubber-banding reveals no new content. Keep the edge window mounted
+    // instead of retiring and restoring rows as the elastic offset changes.
+    // This only clamps the query; the native scroller keeps its real offset.
+    const scrollTop = Math.max(
+      0,
+      Math.min(viewport.scrollTop, this.maxScrollTop(viewport.height)),
+    );
+    const top = Math.max(0, scrollTop - overscanPx);
     const bottom = Math.min(
       this.contentSize,
-      viewport.scrollTop + viewport.height + overscanPx,
+      scrollTop + viewport.height + overscanPx,
     );
     if (this.positioned) {
       // Reuse an overscanned set across small scrolls. Whole cards still mount

@@ -698,6 +698,8 @@ p.ai-settings-note {
    standard range; the full-screen viewer keeps HDR. */
 .message-content img {
   dynamic-range-limit: standard;
+  /* Promote the image, not the entire potentially tall message row. */
+  will-change: transform;
 }
 
 .message.assistant {

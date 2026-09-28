@@ -90,7 +90,7 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
             label: element.textContent,
             intersects: rect.bottom > vp.top && rect.top < vp.bottom,
             opacity: getComputedStyle(element).opacity,
-            animation: getComputedStyle(spinner).animationName,
+            transform: getComputedStyle(spinner).transform,
             spinner: getComputedStyle(spinner).display,
           };
         });
@@ -98,8 +98,16 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
         assert.match(visible.label, /Loading newer messages/);
         assert.equal(visible.intersects, true);
         assert.equal(visible.opacity, "1");
-        assert.equal(visible.animation, "boundary-spin");
         assert.notEqual(visible.spinner, "none");
+        await page.waitForFunction(
+          ([selector, transform]) => {
+            const spinner = document.querySelector(
+              `${selector} .boundary-spinner`,
+            );
+            return spinner && getComputedStyle(spinner).transform !== transform;
+          },
+          [selector, visible.transform],
+        );
         await page.evaluate(() =>
           window.dispatchEvent(
             new PointerEvent("pointerup", {

@@ -45,6 +45,11 @@ loading, and the other lost foreground to another application.
 
 ## Runtime change
 
+This decision was superseded by the
+[September 28 image-layer comparison](safari-image-layers-2026-09-28.md).
+Whole-row promotion did not remain smooth in subsequent user testing.
+The following describes the historical change, not the current default.
+
 Positioned slots already use `will-change: transform`; the native anchoring
 path omitted it. Safari's mounted native slots now receive the same hint,
 using the existing WebKit capability guard. The canvas keeps its existing

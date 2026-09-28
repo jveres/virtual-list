@@ -66,10 +66,7 @@ for (const engine of [firefox, chromium, webkit]) {
             ),
             layers: rows.every(
               (row) =>
-                getComputedStyle(row.parentElement).willChange ===
-                (CSS.supports("-webkit-nbsp-mode", "space")
-                  ? "transform"
-                  : "auto"),
+                getComputedStyle(row.parentElement).willChange === "auto",
             ),
           });
         }
