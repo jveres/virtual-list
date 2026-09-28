@@ -29,7 +29,9 @@ The runtime combines browser-aware settling with known item geometry:
    with no second layout and no re-parenting. Heights are measured, not
    estimated, before the row shows. Hosts can instead supply declared
    heights. Mounting and unmounting known rows continues during scrolling
-   without changing their committed geometry.
+   without changing their committed geometry. After a viewport width
+   change, rows out of the window are read again later; see
+   [Viewport width changes](#viewport-width-changes).
 
 ## The core contract (normative)
 
@@ -222,8 +224,10 @@ The definition of correct, referenced by number throughout the code:
   reserve is sized to the new height. A viewport WIDTH change ends a scroll
   phase in flight (a rotation mid-fling): the layout the gesture was
   scrolling no longer exists, so the takeover settles it — held work
-  commits with its anchor, rows measured at the new width — and the scroll
-  goes on in a new phase. A staged `updateWindow` discards its old-width
+  commits with its anchor, every row measured at the new width — and the
+  scroll goes on in a new phase. An idle width change reads the rows in two
+  tiers; see [Viewport width changes](#viewport-width-changes). A staged
+  `updateWindow` discards its old-width
   preparation, evaluates its updater again, and rebuilds the page without
   ending the request. Abort, disposal, and a superseding key order still
   cancel it. The engine clamps the position and
@@ -244,6 +248,54 @@ The definition of correct, referenced by number throughout the code:
   between the canvas write and the slot moves froze a stale range (a blank
   gap below the last row after an iPad rotation).
 
+## Viewport width changes
+
+A viewport width change re-wraps every measured row. The runtime reads the
+new heights in two tiers, so the work of one ResizeObserver delivery follows
+the size of the mounted window, not the number of loaded rows. Declared
+heights don't depend on the width and aren't read.
+
+- **Connected rows, in the delivery.** Rows connected to the canvas (the
+  mounted window and a hidden resident) are read in the delivery that
+  reports the new width. The browser has already laid them out. They commit
+  at once, on the pin the viewport stands on or else on the viewport's
+  anchor (I5).
+- **Detached rows, later.** A row that is detached at that moment keeps the
+  height measured at the old width until the runtime reads it again.
+  `state.held` is `true` while such rows wait.
+
+The first of these events reads the waiting rows:
+
+- **The width stays unchanged for 150 ms.** One pass reads every waiting row
+  and commits on the viewport's anchor, so nothing on screen moves. A newer
+  width change restarts the wait. A scroll phase or a pending `remeasure`
+  postpones the pass.
+- **The row mounts.** Its height commits under the one commit rule (rule 4):
+  at once when the list is idle, when the row sits at or below the anchor,
+  or under native anchoring away from the edges and outside a glide;
+  otherwise at the settle.
+- **A scroll phase settles.** This includes the phase that a width change
+  ends, so a width change during a gesture still reads every row in its
+  delivery.
+- **A command takes over.** `scrollTo`, and `setItems` or `updateWindow` with
+  `interrupt`, resolve against heights read at the current width.
+- **A window job commits.** Its page lands in geometry read at the current
+  width.
+
+While rows wait, `positionOf`, `state.totalSize`, the scroll range, and the
+pin reserve (I5) include the old-width heights of those rows. Rows that are
+mounted when the width changes are exact in that delivery, and a waiting row
+is read before it paints when it mounts while the list is idle. Under
+runtime anchoring, a waiting row that mounts above the anchor during a
+gesture keeps its old-width box until the settle, like any other height
+change above the reader (rule 1). No correction writes the scroll position
+during a gesture.
+
+This rule relaxes two statements for rows out of the window, for the length
+of the wait: that a width change commits with every row measured at the new
+width, and that heights in live scroll space are never provisional (see
+[Lessons carried as law](#lessons-carried-as-law)).
+
 ## Runtime components and API
 
 These components implement the contract. The API summary below explains their
@@ -252,7 +304,8 @@ interaction; the [README](../README.md) lists the public options.
 - `src/fenwick.ts` + `src/geometry.ts`: the pure keyed geometry kernel
   (capture → mutate → resolve transactions, anchor policies, pin-to-top
   reserve I5) with its oracle/property tests. Heights fed to it are measured
-  or declared, not estimated-then-corrected.
+  or declared, not estimated-then-corrected. The one provisional value is a
+  detached row's old-width measurement after a viewport width change.
 - `src/native-glide.ts`: all `behavior: "smooth"` commands and automatic
   smooth following.
   The browser owns animation timing; the runtime owns destination, input
@@ -402,7 +455,10 @@ interaction; the [README](../README.md) lists the public options.
   missing or unmounted key is a no-op, and the later ResizeObserver delivery
   sees the committed height and does not duplicate the commit.
   `scrollTo` returns `Promise<boolean>`; `state` adds `held` (work is
-  waiting for settle). Heights are measured or declared, never estimated.
+  waiting for settle, or rows are waiting to be read after a viewport width
+  change). Heights are measured or declared, never estimated. After a
+  viewport width change, a detached row keeps its old-width measurement
+  until it's read again.
   Hosts window their data; the chat demo hands the runtime a modest loaded
   window. Measured rows keep their rendered element and their clip slot for
   their whole life, including while unmounted; element-local state
@@ -444,8 +500,11 @@ interaction; the [README](../README.md) lists the public options.
   `updateItem` prepares one unchanged key without rebuilding the key order;
   when work is already held, successful preparation patches only the
   touched key in the desired state, preserving untouched rows, order, and
-  the inherited anchor. It does not copy the full item array or rebuild the
-  key index. Unknown keys are ignored. The commit-rule checks and the
+  the inherited anchor. It does not copy the full item array or the declared
+  entries, and it does not rebuild the key index. On a declared-height list,
+  the commit writes only the touched entries into the committed state. With
+  no snapshot held, the work of one update does not grow with the list.
+  Unknown keys are ignored. The commit-rule checks and the
   eventual structural commit can still inspect multiple rows; the targeted
   preparation is not a constant-time guarantee for the entire update call.
   In a positioned layout, `updateItem` re-places every item.

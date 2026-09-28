@@ -97,7 +97,10 @@ prove by index that a change stays below the anchor, so their structural
 changes always wait for the settle. Mid-phase, a positioned card, or a
 declared row whose height changes, re-renders inside the settle commit, so
 it never shows new content in its old box.
-`updateItem` patches the desired state in place in O(1). There is no
+`updateItem` patches the desired state in place in O(1). On a declared-height
+list it carries only the touched entry: a held snapshot takes that entry into
+its own map, and otherwise the commit writes it into the committed entries.
+A positioned layout re-places every item instead. There is no
 snapshot merge, promotion, or `partial` flag. Window jobs (`updateWindow`,
 which the paging companion uses) keep their `main` semantics: they prepare
 during a gesture and commit only when the list is idle. Native anchoring
@@ -118,6 +121,13 @@ inside the window, the runtime reveals the same slot in place: no second
 layout and no re-parenting. When it commits outside the window, the slot
 detaches, as offscreen rows always did. A lone row updated offscreen, such as
 a streaming reply the user scrolled away from, stays laid out between tokens.
+
+A viewport width change reads the rows connected to the canvas in its
+delivery. Detached rows keep their old-width height until the width has been
+unchanged for 150 ms, or until they mount, a scroll phase settles, a command
+takes over, or a window job commits. Connecting every loaded row on each
+delivery made a window drag cost a first layout of the whole list per frame.
+The [core contract](core-contract.md#viewport-width-changes) has the rule.
 
 This removes `premeasure.ts`, the `measurementContainer` option, width
 syncing, and the resident special case. Row wrappers now stay with their row
@@ -266,8 +276,10 @@ post-commit sweep, DOM order, the one commit rule, the pass, and a page
 landing while a reply streams. `tests/unit/virtual-list-native.test.ts`
 covers the native surface: spacers that reproduce committed geometry, a
 mid-gesture prepend without a scroll write, the settle rule at an edge and
-during a glide, and the host's opt-out. All three suites share
-`tests/helpers/list-harness.ts`.
+during a glide, and the host's opt-out.
+`tests/unit/virtual-list-width.test.ts` covers the two tiers of a viewport
+width change: what the delivery reads, and every event that reads the
+waiting rows. All four suites share `tests/helpers/list-harness.ts`.
 
 jsdom reports `overflow-anchor` as supported but lays nothing out, so the
 unit suites run with `anchoring: "runtime"`, except the native-surface

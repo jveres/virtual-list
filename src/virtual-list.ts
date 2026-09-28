@@ -61,6 +61,8 @@ const EPSILON_PX = 0.5;
 const AT_EDGE_PX = 1;
 const MIN_OVERSCAN_PX = 300;
 const IDLE_SLICE_MIN_MS = 4;
+/** A width this long unchanged is settled: rows it left detached are read. */
+const WIDTH_QUIET_MS = 150;
 /** A window update adding more fresh rows prepares them across frames. */
 const JOB_MIN_ROWS = 8;
 const SLOT_PREFIX = "\u0000edge:";
@@ -71,6 +73,11 @@ const PARKED_TOP = "-100000px";
 const PARKED_TRANSLATE = "0 -100000px";
 /** How far a mounting slot looks ahead for a connected successor. */
 const INSERTION_SCAN = 64;
+
+/** The built-in skeleton: text lines cut out of the placeholder color. */
+const SKELETON_STYLE = `width:100%;height:100%;background:var(--virtual-list-placeholder-color,rgba(127,127,127,.16));mask:url("data:image/svg+xml,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 160" preserveAspectRatio="none"><rect x="20" y="18" width="96" height="10" rx="5"/><rect x="20" y="52" width="530" height="12" rx="6"/><rect x="20" y="80" width="560" height="12" rx="6"/><rect x="20" y="108" width="360" height="12" rx="6"/></svg>',
+)}") 0 0/100% 160px repeat-y`;
 
 const slotKey = (edge: Edge, key: string): string =>
   `${SLOT_PREFIX}${edge}:${key}`;
@@ -165,6 +172,16 @@ interface Declared<T> {
   height: number;
 }
 
+interface Skeleton<T> {
+  element: HTMLElement;
+  /** The item its host content reflects. */
+  shown?: T;
+  /** The box last written to the element (NaN: none). */
+  top: number;
+  height: number;
+  width: number;
+}
+
 /** The desired state: what the next commit makes true. */
 interface Pending<T> {
   keys: readonly string[];
@@ -173,6 +190,8 @@ interface Pending<T> {
   /** Declared rows re-rendered inside the commit that changes their height. */
   deferred: Map<string, T>;
   declared: Map<string, Declared<T>> | null;
+  /** `declared` holds only updated keys, over the committed entries. */
+  patch: boolean;
   positioned: PositionedGeometry | null;
   anchor: AnchorPolicy;
   target: ExplicitAnchor | null;
@@ -260,14 +279,26 @@ export function createVirtualList<T>(
   const mountedRows = new Set<Row<T>>();
   const hiddenRows = new Set<Row<T>>();
   const dirtyRows = new Set<Row<T>>();
+  /** Detached at a width change: their heights are of the old width. */
+  const staleRows = new Set<Row<T>>();
+  let staleTimer = 0;
+  /** A stale row joined the window: the next reconciliation commits it. */
+  let staleMounted = false;
   let placeholdersEnabled = options.scrollPlaceholders === true;
   let fastScrolling = false;
   let placeholderSample: { top: number; time: number } | null = null;
   const placeholderRows = new Map<Row<T>, () => void>();
-  const skeletons = new Map<string, HTMLElement>();
-  const skeletonItems = new Map<string, T>();
+  const skeletons = new Map<string, Skeleton<T>>();
   let skeletonSurface: HTMLElement | null = null;
-  let skeletonEpoch = -1;
+  let skeletonSize = Number.NaN;
+  /** Built-in content is cloned from one element: one parsed declaration. */
+  let skeletonShape: HTMLElement | null = null;
+  // What the next commit syncs: every key after a structural change, else
+  // the keys whose row changed and the rows a height change moved.
+  let skeletonStructure = true;
+  const skeletonStale = new Set<string>();
+  /** The lowest index whose committed height changed. */
+  let skeletonFrom = Number.POSITIVE_INFINITY;
   let placeholderIdleTimer = 0;
   let placeholderLastMovement = 0;
   const placeholderIdleMs = 120;
@@ -349,9 +380,88 @@ export function createVirtualList<T>(
     });
   }
 
+  /** Create, refresh, or drop the skeleton of one key. */
+  function syncSkeleton(surface: HTMLElement, key: string): void {
+    const row = rows.get(key);
+    const item = row?.item ?? declaredItems.get(key)?.item;
+    const top = geometry.offsetOf(key);
+    let skeleton = skeletons.get(key);
+    if (
+      top < 0 ||
+      isSlotKey(key) ||
+      item === undefined ||
+      (anchorable && !anchorable(item))
+    ) {
+      skeleton?.element.remove();
+      skeletons.delete(key);
+      return;
+    }
+    if (!skeleton) {
+      const element = document.createElement("div");
+      element.dataset.scrollPlaceholder = key;
+      element.style.cssText =
+        "position:absolute;left:0;right:0;margin-inline:auto;overflow:hidden";
+      surface.append(element);
+      skeleton = {
+        element,
+        top: Number.NaN,
+        height: Number.NaN,
+        width: Number.NaN,
+      };
+      skeletons.set(key, skeleton);
+    }
+    const element = skeleton.element;
+    if (options.renderScrollPlaceholder && skeleton.shown !== item) {
+      let content: HTMLElement | undefined;
+      host(() => {
+        content = options.renderScrollPlaceholder?.(
+          item,
+          (element.firstElementChild as HTMLElement | null) ?? undefined,
+        );
+      });
+      if (disposed) return;
+      if (content) {
+        if (content !== element.firstElementChild)
+          element.replaceChildren(content);
+        skeleton.shown = item;
+      } else skeletonStale.add(key); // Asked again at the next commit.
+    }
+    if (!element.firstElementChild) {
+      if (!skeletonShape) {
+        skeletonShape = document.createElement("div");
+        skeletonShape.style.cssText = SKELETON_STYLE;
+      }
+      element.append(skeletonShape.cloneNode());
+    }
+    placeSkeleton(skeleton, top, geometry.heightOf(key));
+    const width = row?.width || 0;
+    if (skeleton.width !== width) {
+      skeleton.width = width;
+      element.style.maxWidth = width ? `${width}px` : "48rem";
+    }
+  }
+
+  function placeSkeleton(
+    skeleton: Skeleton<T>,
+    top: number,
+    height: number,
+  ): void {
+    if (skeleton.top !== top) {
+      skeleton.top = top;
+      skeleton.element.style.top = `${top}px`;
+    }
+    if (skeleton.height !== height) {
+      skeleton.height = height;
+      skeleton.element.style.height = `${height}px`;
+    }
+  }
+
   function syncSkeletonSurface(): void {
-    if (!placeholdersEnabled || place || skeletonEpoch === epoch) return;
-    skeletonEpoch = epoch;
+    if (!placeholdersEnabled || place) return;
+    const all = skeletonStructure;
+    const from = skeletonFrom;
+    if (!all && from === Number.POSITIVE_INFINITY && skeletonStale.size === 0)
+      return;
     if (!skeletonSurface) {
       skeletonSurface = document.createElement("div");
       skeletonSurface.dataset.scrollSkeletons = "";
@@ -361,60 +471,34 @@ export function createVirtualList<T>(
         "position:absolute;top:0;left:0;width:100%;pointer-events:none;overflow-anchor:none;visibility:hidden;z-index:1";
       canvas.prepend(skeletonSurface);
     }
-    skeletonSurface.style.height = `${geometry.contentSize}px`;
-    const keep = new Set<string>();
-    for (const key of committedKeys) {
-      if (isSlotKey(key)) continue;
-      const row = rows.get(key);
-      const item = row?.item ?? declaredItems.get(key)?.item;
-      if (item === undefined || (anchorable && !anchorable(item))) continue;
-      keep.add(key);
-      let skeleton = skeletons.get(key);
-      if (!skeleton) {
-        skeleton = document.createElement("div");
-        skeleton.dataset.scrollPlaceholder = key;
-        skeleton.style.cssText =
-          "position:absolute;left:0;right:0;margin-inline:auto;overflow:hidden";
-        skeletonSurface.append(skeleton);
-        skeletons.set(key, skeleton);
-      }
-      if (options.renderScrollPlaceholder && skeletonItems.get(key) !== item) {
-        let content: HTMLElement | undefined;
-        host(() => {
-          content = options.renderScrollPlaceholder?.(
-            item,
-            (skeleton.firstElementChild as HTMLElement | null) ?? undefined,
-          );
-        });
-        if (disposed) return;
-        if (content) {
-          if (content !== skeleton.firstElementChild)
-            skeleton.replaceChildren(content);
-          skeletonItems.set(key, item);
-        }
-      }
-      if (!skeleton.firstElementChild) {
-        const content = document.createElement("div");
-        const shade =
-          "var(--virtual-list-placeholder-color,rgba(127,127,127,.16))";
-        const shape = encodeURIComponent(
-          '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 160" preserveAspectRatio="none"><rect x="20" y="18" width="96" height="10" rx="5"/><rect x="20" y="52" width="530" height="12" rx="6"/><rect x="20" y="80" width="560" height="12" rx="6"/><rect x="20" y="108" width="360" height="12" rx="6"/></svg>',
-        );
-        content.style.cssText = `width:100%;height:100%;background:${shade};mask:url("data:image/svg+xml,${shape}") 0 0/100% 160px repeat-y`;
-        skeleton.append(content);
-      }
-      const top = `${geometry.offsetOf(key)}px`;
-      const height = `${geometry.heightOf(key)}px`;
-      const width = row?.width ? `${row.width}px` : "48rem";
-      if (skeleton.style.top !== top) skeleton.style.top = top;
-      if (skeleton.style.height !== height) skeleton.style.height = height;
-      if (skeleton.style.maxWidth !== width) skeleton.style.maxWidth = width;
+    const surface = skeletonSurface;
+    const size = geometry.contentSize;
+    if (skeletonSize !== size) {
+      skeletonSize = size;
+      surface.style.height = `${size}px`;
     }
-    for (const [key, skeleton] of skeletons) {
-      if (keep.has(key)) continue;
-      skeleton.remove();
-      skeletons.delete(key);
-      skeletonItems.delete(key);
+    const stale = all ? committedKeys : [...skeletonStale];
+    skeletonStructure = false;
+    skeletonStale.clear();
+    skeletonFrom = Number.POSITIVE_INFINITY;
+    for (const key of stale) {
+      syncSkeleton(surface, key);
+      if (disposed) return;
+    }
+    if (all) {
+      for (const [key, skeleton] of skeletons) {
+        if (geometry.indexOf(key) >= 0) continue;
+        skeleton.element.remove();
+        skeletons.delete(key);
+      }
+      return;
+    }
+    // A height change moves every later row.
+    for (let index = from; index < committedKeys.length; index++) {
+      const key = committedKeys[index] as string;
+      const skeleton = skeletons.get(key);
+      if (skeleton)
+        placeSkeleton(skeleton, geometry.offsetOf(key), geometry.heightOf(key));
     }
   }
 
@@ -450,9 +534,10 @@ export function createVirtualList<T>(
       else {
         skeletonSurface?.remove();
         skeletonSurface = null;
+        skeletonSize = Number.NaN;
         skeletons.clear();
-        skeletonItems.clear();
-        skeletonEpoch = -1;
+        skeletonStale.clear();
+        skeletonStructure = true;
       }
       placeholderSample = null;
       showScrollPlaceholders(enabled && fastScrolling);
@@ -815,6 +900,11 @@ export function createVirtualList<T>(
     else if (!hidden) canvas.insertBefore(row.slot, committedPoint(row.key));
     row.place = "mounted";
     mountedRows.add(row);
+    // The viewport never keeps a height of the old width.
+    if (staleRows.delete(row)) {
+      markDirty(row);
+      staleMounted = true;
+    }
     showRowPlaceholder(row);
     observeRow(row);
     if (!row.spec) hook(() => options.onMount?.(row.element, row.item));
@@ -923,6 +1013,7 @@ export function createVirtualList<T>(
     if (row.place === "mounted") unmountRow(row);
     detachRow(row);
     dirtyRows.delete(row);
+    staleRows.delete(row);
     row.slot.remove();
     row.element.remove();
     if (!row.spec) hook(() => options.onDestroy?.(row.element, row.item));
@@ -932,6 +1023,46 @@ export function createVirtualList<T>(
     if (row.spec) return;
     row.dirty = true;
     if (rows.get(row.key) === row) dirtyRows.add(row);
+  }
+
+  /** The next commit reads the rows a width change left detached. */
+  function flushStale(): void {
+    for (const row of staleRows) markDirty(row);
+    staleRows.clear();
+  }
+
+  /**
+   * Read the stale rows in one pass. They are out of the window, so the
+   * viewport's anchor keeps everything on screen where it is.
+   */
+  function drainStale(): void {
+    clearTimeout(staleTimer);
+    staleTimer = 0;
+    flushStale();
+    if (dirtyRows.size > 0 && idle())
+      commit(null, { policy: "viewport", keepFollow: true, instant: true });
+  }
+
+  /** Drain once the width has been quiet; a newer change restarts the wait. */
+  function awaitQuietWidth(): void {
+    clearTimeout(staleTimer);
+    staleTimer = window.setTimeout(() => {
+      staleTimer = 0;
+      if (disposed) return;
+      // A phase or a remeasure owns the next commit: look again after it.
+      if (!idle() || remeasurePolicy !== undefined) awaitQuietWidth();
+      else pass(drainStale);
+    }, WIDTH_QUIET_MS);
+  }
+
+  /** A row the window took in stale commits under the one commit rule. */
+  function commitMounted(): boolean {
+    if (!staleMounted || remeasurePolicy !== undefined) return false;
+    staleMounted = false;
+    if (dirtyRows.size === 0) return false;
+    if (!idle()) return liveCommit();
+    commit(null, { policy: "viewport", keepFollow: true, instant: true });
+    return true;
   }
 
   /** Render into the row; a replacement element leaves `shown` as it was. */
@@ -953,7 +1084,18 @@ export function createVirtualList<T>(
     const height = quantize(measured);
     row.dirty = false;
     dirtyRows.delete(row);
+    staleRows.delete(row);
     row.height = height;
+    if (skeletonSurface && !skeletonStructure) {
+      skeletonStale.add(row.key);
+      const index = geometry.indexOf(row.key);
+      if (
+        index >= 0 &&
+        index < skeletonFrom &&
+        geometry.heightOf(row.key) !== height
+      )
+        skeletonFrom = index;
+    }
     if (row.place === "mounted" || row.slot === row.element)
       row.slot.style.height = `${height}px`;
     geometry.measure(row.key, height);
@@ -1087,9 +1229,17 @@ export function createVirtualList<T>(
     if (!widthChanged && !heightChanged) return;
     pass(() => {
       // The layout a gesture was scrolling no longer exists: a width change
-      // ends the phase, and held work commits at the new width.
+      // ends the phase, and held work commits at the new width. Idle, only
+      // connected rows are read now: the engine has laid them out already.
+      // Detached rows wait until the width is quiet, or until they mount.
       if (widthChanged) {
-        if (!declared) for (const row of rows.values()) markDirty(row);
+        if (!declared) {
+          for (const row of rows.values()) {
+            if (row.place === "detached" && !row.spec) staleRows.add(row);
+            else markDirty(row);
+          }
+          if (staleRows.size > 0) awaitQuietWidth();
+        }
         settleParked(false);
         glide?.cancel();
         interruptNativeScroll("resize");
@@ -1157,6 +1307,7 @@ export function createVirtualList<T>(
       staged: new Map(),
       deferred: new Map(),
       declared: null,
+      patch: false,
       positioned: null,
       anchor:
         typeof requested === "string"
@@ -1376,6 +1527,7 @@ export function createVirtualList<T>(
     }
     for (const [row, item] of inPlace) {
       row.item = item;
+      if (skeletonSurface) skeletonStale.add(row.key);
       // A declared height lands with the snapshot; a measured one is re-read.
       if (!declared) markDirty(row);
     }
@@ -1612,19 +1764,23 @@ export function createVirtualList<T>(
         if (keysChanged) {
           geometry.setKeys(p.keys, p.target);
           committedKeys = p.keys;
+          skeletonStructure = true;
         }
         if (pinPolicy) {
           committedPinOffset = p.pinOffset ?? 0;
           geometry.pin(p.pinKey ?? null, committedPinOffset);
         }
         if (p.declared) {
+          skeletonStructure = true;
           for (const [key, entry] of p.declared) {
             const row = rows.get(key);
             if (row && row.item === entry.item) commitHeight(row, entry.height);
             else if (declaredItems.get(key)?.height !== entry.height)
               geometry.measure(key, entry.height);
+            if (p.patch) declaredItems.set(key, entry);
           }
-          declaredItems = p.declared;
+          // A snapshot replaces the map: its removed keys drop out.
+          if (!p.patch) declaredItems = p.declared;
         }
         for (const row of p.staged.values()) {
           if (!toMeasure.has(row)) commitHeight(row, row.height);
@@ -1936,7 +2092,11 @@ export function createVirtualList<T>(
       follow.armed &&
       (follow.followingEnd ||
         maxTop - follow.target(vp.scrollTop, maxTop) <= AT_EDGE_PX);
-    const held = pending !== null || dirtyRows.size > 0 || windowJobs.size > 0;
+    const held =
+      pending !== null ||
+      dirtyRows.size > 0 ||
+      staleRows.size > 0 ||
+      windowJobs.size > 0;
     const state = lastState;
     // Most scroll events keep every field; a commit can still move positions.
     if (
@@ -1982,7 +2142,8 @@ export function createVirtualList<T>(
 
   function reconcileAndPublish(): void {
     const vp = viewportState();
-    publish(vp, reconcileWindow(vp));
+    const range = reconcileWindow(vp);
+    if (!commitMounted()) publish(vp, range);
   }
 
   function onScrolled(): void {
@@ -2031,7 +2192,7 @@ export function createVirtualList<T>(
       if (!beyond && !clamped) resizeHeld = "viewport";
     }
     const range = reconcileWindow(vp);
-    if (!liveCommit()) publish(vp, range);
+    if (!commitMounted() && !liveCommit()) publish(vp, range);
   }
 
   /** An old pin's offscreen tail drains only after the scroll has landed. */
@@ -2152,6 +2313,7 @@ export function createVirtualList<T>(
 
   /** The phase reached idle: everything held lands, once. */
   function settleGesture(): void {
+    flushStale();
     const explicit = remeasurePolicy;
     if (remeasureRequests.size === 0) remeasurePolicy = undefined;
     if (pending !== null || dirtyRows.size > 0) {
@@ -2230,6 +2392,8 @@ export function createVirtualList<T>(
     // Cancelling an owned glide already stops it. Rebuilding the scrolling
     // layer here can strand the next native Safari animation.
     interruptNativeScroll("command", !wasGliding);
+    // The command resolves against geometry read at the current width.
+    if (staleRows.size > 0) drainStale();
   }
 
   // --- Data -----------------------------------------------------------------
@@ -2316,9 +2480,11 @@ export function createVirtualList<T>(
       // Only this key is prepared; a held snapshot is patched in place.
       const previous = pending;
       const p = newPending(previous?.keys ?? committedKeys, anchor, previous);
-      if (declared) {
-        p.declared = new Map(previous?.declared ?? declaredItems);
-        p.declared.set(key, { item, height: declaredHeight(item) });
+      const entry = declared ? { item, height: declaredHeight(item) } : null;
+      // The touched entry alone: no copy of the declared entries.
+      if (entry) {
+        p.declared = new Map([[key, entry]]);
+        p.patch = true;
       }
       selectPin(p, (other) =>
         other === key ? item : lastItems[indexByKey.get(other) ?? -1],
@@ -2333,10 +2499,10 @@ export function createVirtualList<T>(
         if (row) previous.staged.set(key, row);
         const deferred = p.deferred.get(key);
         if (deferred !== undefined) previous.deferred.set(key, deferred);
+        if (entry) previous.declared?.set(key, entry);
         apply(
           {
             ...previous,
-            declared: p.declared,
             anchor: p.anchor,
             target: p.target,
             pinKey: p.pinKey,
@@ -2734,6 +2900,7 @@ export function createVirtualList<T>(
               takeover();
               if (ended()) return;
             }
+            flushStale();
             applyItems(
               snapshot,
               ownAnchor(next.anchor ?? "viewport"),
@@ -3053,11 +3220,12 @@ export function createVirtualList<T>(
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (observeFrame !== 0) cancelAnimationFrame(observeFrame);
     if (remeasureFrame !== 0) cancelAnimationFrame(remeasureFrame);
+    clearTimeout(staleTimer);
+    staleRows.clear();
     remeasureRequests.clear();
     rowObserver.disconnect();
     viewportObserver.disconnect();
     skeletons.clear();
-    skeletonItems.clear();
     skeletonSurface = null;
     canvas.remove();
     if (viewportAnchor !== null) viewport.style.overflowAnchor = viewportAnchor;

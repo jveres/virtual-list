@@ -66,7 +66,7 @@ covers interactions with another feature.
 | `gallery` | Controls, headers, paging, reloads, and resizing. |
 | `photo-preview` | Loading, navigation, zoom, cleanup, and overlay behavior. |
 | `history` | Paged history, edge styles, and tail behavior. |
-| `runtime` | Dynamic resizing, follow landing, pin replacement, streaming heights, hidden streaming rows, native anchoring and glides, paging during a stream, and lab logging. |
+| `runtime` | Dynamic resizing, width bursts, follow landing, pin replacement, streaming heights, hidden streaming rows, native anchoring and glides, paging during a stream, fast-scroll skeletons, and lab logging. |
 | `shared` | Sticky headers, theme persistence, and thinking Markdown. |
 | `feed` | Feed demo behavior. |
 | `newspaper` | Newspaper demo behavior. |

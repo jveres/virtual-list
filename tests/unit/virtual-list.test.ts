@@ -4730,7 +4730,11 @@ describe("runtime — commits and slots", () => {
     const h = mount(initial, { width: () => width });
     for (let id = 0; id < 50; id++) h.heights.set(id, 100.308); // Ceil: 101 each.
     width = 280;
-    fireResize(1, h.viewport, VIEWPORT_H); // Re-measures everything (width path).
+    fireResize(1, h.viewport, VIEWPORT_H); // Re-measures the window (width path).
+    // Rows out of the window follow once the width has been quiet.
+    expect(h.list.state.held).toBe(true);
+    vi.advanceTimersByTime(150);
+    expect(h.list.state.held).toBe(false);
     expect(h.list.state.totalSize).toBe(50 * 101); // Integral geometry.
 
     h.userScroll(3005);
@@ -4798,6 +4802,13 @@ describe("runtime — commits and slots", () => {
     width = 200;
     for (let id = 0; id < 50; id++) h.heights.set(id, 150);
     fireResize(1, h.viewport, VIEWPORT_H);
+    // The window is read in the delivery; m20 stays under the viewport top.
+    expect(h.slotOf(h.rowElement("msg 20")).style.height).toBe("150px");
+    expect(h.viewport.scrollTop).toBe(h.list.positionOf("m20")?.top);
+    // Detached rows are read once the width has been quiet for 150ms.
+    expect(h.list.state.held).toBe(true);
+    vi.advanceTimersByTime(150);
+    expect(h.list.state.held).toBe(false);
     expect(h.list.state.totalSize).toBe(50 * 150);
     expect(h.slotOf(h.rowElement("msg 20")).style.height).toBe("150px");
     // Anchor preserved: m20 stays under the viewport top.

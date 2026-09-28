@@ -101,7 +101,10 @@ export interface VirtualListState {
   /** The current follow destination reaches the live end, including bounded follow before its limit. */
   followingEnd: boolean;
   totalSize: number;
-  /** Work is waiting for the scroll phase to settle. */
+  /**
+   * Work is waiting for the scroll phase to settle, or rows out of the
+   * window are waiting to be read after a viewport width change.
+   */
   held: boolean;
 }
 
