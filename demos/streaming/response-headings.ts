@@ -14,7 +14,9 @@ export function responseHeadings(message: OrderedMessage): ResponseHeading[] {
   const headings: ResponseHeading[] = [];
   for (const part of messageParts(message)) {
     if (part.kind !== "text" || !part.text.trim()) continue;
-    renderToHtml(part.text, {
+    // Headings never live in an image's data URL. Parsing a multi-megabyte
+    // photo payload cost seconds on iPhone when the tree first opened.
+    renderToHtml(part.text.replace(/\]\(data:[^)\s]*/g, "](data:"), {
       hooks: {
         onCodeBlock: () => "",
         onImage: () => "",

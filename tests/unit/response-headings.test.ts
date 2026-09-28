@@ -54,6 +54,14 @@ describe("response heading outline", () => {
       ],
     },
     {
+      name: "data-URL image payloads skipped",
+      markdown: `## Before\n\n![photo](data:image/png;base64,${"A".repeat(100_000)})\n\n## After ![icon](data:image/png;base64,AAAA)`,
+      expected: [
+        { index: 0, level: 2, label: "Before" },
+        { index: 1, level: 2, label: "After" },
+      ],
+    },
+    {
       name: "HTML-like text",
       markdown: "## &lt;img src=x onerror=alert(1)&gt;",
       expected: [{ index: 0, level: 2, label: "<img src=x onerror=alert(1)>" }],
