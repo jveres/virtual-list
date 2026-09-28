@@ -325,27 +325,6 @@ for (const engine of [firefox, webkit, chromium]) {
     await closeButton.screenshot({
       path: `browser-artifacts/conversation-tree/${engine.name()}-close.png`,
     });
-    const badgeSpacing = await panel.evaluate((element) => {
-      const canvasTop = element
-        .querySelector(".conversation-tree-canvas")
-        .getBoundingClientRect().top;
-      return [...element.querySelectorAll(".conversation-tree-count")].flatMap(
-        (badge) => {
-          const row = Number(badge.closest("[data-row]").dataset.row);
-          const next = element.querySelector(`[data-row="${row + 1}"]`);
-          return next
-            ? [
-                Number.parseFloat(next.style.top) +
-                  8 -
-                  (badge.getBoundingClientRect().bottom - canvasTop),
-              ]
-            : [];
-        },
-      );
-    });
-    assert.ok(badgeSpacing.length > 0);
-    for (const gap of badgeSpacing)
-      assert.ok(gap >= 8, `badge-to-connector gap: ${gap}`);
     const scrollbar = await panel
       .locator(".conversation-tree-scroll")
       .evaluate((element) => {
@@ -447,10 +426,9 @@ for (const engine of [firefox, webkit, chromium]) {
       }
       await page.setViewportSize({ width: 1200, height: 820 });
     };
-    assert.equal(
-      await node(201).locator(".conversation-tree-count").textContent(),
-      "2 more messages",
-    );
+    // Unselected branches stay expanded: their descendants render muted.
+    for (const id of [201, 202, 203])
+      assert.equal(await node(id).getAttribute("data-active"), "false");
     const geometry = await page.evaluate(() => {
       const box = (selector) =>
         document.querySelector(selector).getBoundingClientRect().toJSON();
@@ -600,10 +578,9 @@ for (const engine of [firefox, webkit, chromium]) {
       })),
       versionPosition,
     );
-    assert.equal(
-      await node(2).locator(".conversation-tree-count").textContent(),
-      "118 more messages",
-    );
+    // The branch just left stays visible, now off the selected path.
+    for (const id of [2, 119])
+      assert.equal(await node(id).getAttribute("data-active"), "false");
     assert.equal(
       await page
         .locator('#viewport [data-key="201"] .version-nav-count')

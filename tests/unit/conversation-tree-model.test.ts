@@ -30,30 +30,31 @@ function fixture(): Map<number, ConversationNode> {
 }
 
 describe("conversation tree layout", () => {
-  it("should align sibling versions and fold every inactive descendant", () => {
+  it("should list every branch depth-first and mark the selected path", () => {
     const tree = fixture();
 
     const entries = conversationEntries(tree);
 
     expect(
-      entries.map(({ id, row, column, active, hiddenCount }) => ({
+      entries.map(({ id, parentId, row, active }) => ({
         id,
+        parentId,
         row,
-        column,
         active,
-        hiddenCount,
       })),
     ).toEqual([
-      { id: 1, row: 0, column: 0, active: true, hiddenCount: 0 },
-      { id: 2, row: 1, column: 0, active: false, hiddenCount: 2 },
-      { id: 4, row: 1, column: 1, active: true, hiddenCount: 0 },
-      { id: 5, row: 2, column: 1, active: true, hiddenCount: 0 },
+      { id: 1, parentId: 0, row: 0, active: true },
+      { id: 2, parentId: 1, row: 1, active: false },
+      { id: 3, parentId: 2, row: 2, active: false },
+      { id: 6, parentId: 2, row: 2, active: false },
+      { id: 4, parentId: 1, row: 1, active: true },
+      { id: 5, parentId: 4, row: 2, active: true },
     ]);
     expect(tree.get(1)?.childrenIds).toEqual([2, 4]);
     expect(tree.get(1)?.selectedChildIndex).toBe(1);
   });
 
-  it("should expose the newly selected branch and its own alternatives", () => {
+  it("should move the selected path without reordering branches", () => {
     const tree = fixture();
     const parent = tree.get(1);
     if (!parent) throw new Error("Missing fixture parent");
@@ -64,29 +65,11 @@ describe("conversation tree layout", () => {
     expect(
       entries.filter((entry) => entry.active).map((entry) => entry.id),
     ).toEqual([1, 2, 3]);
-    expect(entries.find((entry) => entry.id === 4)?.hiddenCount).toBe(1);
-    expect(entries.find((entry) => entry.id === 6)?.row).toBe(2);
+    expect(entries.map((entry) => entry.id)).toEqual([1, 2, 3, 6, 4, 5]);
   });
 
   it("should handle an empty conversation", () => {
     expect(conversationEntries(new Map())).toEqual([]);
-  });
-
-  it("should retain descendant counts when switching the selected version", () => {
-    const tree = fixture();
-    const parent = tree.get(1);
-    if (!parent) throw new Error("Missing fixture parent");
-    const before = conversationEntries(tree);
-
-    parent.selectedChildIndex = 0;
-    const after = conversationEntries(tree);
-
-    for (const entries of [before, after]) {
-      expect(entries.find((entry) => entry.id === 2)?.descendantCount).toBe(2);
-      expect(entries.find((entry) => entry.id === 4)?.descendantCount).toBe(1);
-    }
-    expect(before.find((entry) => entry.id === 2)?.hiddenCount).toBe(2);
-    expect(after.find((entry) => entry.id === 2)?.hiddenCount).toBe(0);
   });
 
   it.each(["thinking", "streaming"] as const)(
@@ -262,7 +245,7 @@ describe("conversation tree layout", () => {
     const positions = () =>
       conversationEntries(tree)
         .filter((entry) => entry.parentId === 1)
-        .map(({ id, row, column }) => ({ id, row, column }));
+        .map(({ id, row }) => ({ id, row }));
     const before = positions();
     const parent = tree.get(1);
     if (!parent) throw new Error("Missing fixture parent");
@@ -337,6 +320,6 @@ describe("conversation tree layout", () => {
     const entries = conversationEntries(tree);
 
     expect(entries).toHaveLength(12000);
-    expect(entries.at(-1)).toMatchObject({ id: 12000, row: 11999, column: 0 });
+    expect(entries.at(-1)).toMatchObject({ id: 12000, row: 11999 });
   });
 });

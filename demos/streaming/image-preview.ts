@@ -35,6 +35,36 @@ interface RowImages {
   ordinals: Map<HTMLImageElement, number>;
 }
 
+/** A message's displayable image URLs in reading order: Markdown, then attachments. */
+export function messageImageSources(
+  message: Pick<ImageMessage, "markdown" | "attachments">,
+): { url: string; label: string; ordinal: number }[] {
+  const template = document.createElement("template");
+  template.innerHTML = renderMarkdown(message.markdown);
+  const entries = Array.from(template.content.querySelectorAll("img")).map(
+    (image) => ({
+      url: image.getAttribute("src") ?? "",
+      label: image.alt || "Chat image",
+    }),
+  );
+  for (const attachment of message.attachments ?? []) {
+    if (attachment.mimeType.startsWith("image/"))
+      entries.push({ url: attachment.dataUrl, label: attachment.name });
+  }
+  // The ordinal counts every rendered image, matching mounted row order.
+  return entries.flatMap((entry, ordinal) => {
+    let url: URL;
+    try {
+      url = new URL(entry.url, document.baseURI);
+    } catch {
+      return [];
+    }
+    return ["https:", "http:", "blob:", "data:"].includes(url.protocol)
+      ? [{ url: url.href, label: entry.label, ordinal }]
+      : [];
+  });
+}
+
 /** Adapt mounted chat images to the gallery viewer without changing Markdown. */
 export function createChatImagePreview(
   viewport: HTMLElement,
@@ -167,40 +197,18 @@ export function createChatImagePreview(
       cached.attachments === message.attachments
     )
       return cached.images;
-    const template = document.createElement("template");
-    template.innerHTML = renderMarkdown(message.markdown);
-    const entries = Array.from(template.content.querySelectorAll("img")).map(
-      (image) => ({
-        url: image.getAttribute("src") ?? "",
-        label: image.alt || "Chat image",
+    const images = messageImageSources(message).map(
+      ({ url, label, ordinal }) => ({
+        id: imageId(message, ordinal, url),
+        url,
+        label,
+        messageId: message.id,
+        ordinal,
+        width: 0,
+        height: 0,
+        aspectRatio: 1,
       }),
     );
-    for (const attachment of message.attachments ?? []) {
-      if (attachment.mimeType.startsWith("image/"))
-        entries.push({ url: attachment.dataUrl, label: attachment.name });
-    }
-    const images = entries.flatMap((entry, ordinal) => {
-      let url: URL;
-      try {
-        url = new URL(entry.url, document.baseURI);
-      } catch {
-        return [];
-      }
-      if (!["https:", "http:", "blob:", "data:"].includes(url.protocol))
-        return [];
-      return [
-        {
-          id: imageId(message, ordinal, url.href),
-          url: url.href,
-          label: entry.label,
-          messageId: message.id,
-          ordinal,
-          width: 0,
-          height: 0,
-          aspectRatio: 1,
-        },
-      ];
-    });
     cache.set(message, {
       markdown: message.markdown,
       attachments: message.attachments,

@@ -327,30 +327,6 @@
   padding-top: 5px;
   min-width: 0;
 }
-.conversation-tree-count {
-  display: flex;
-  align-items: center;
-  width: max-content;
-  max-width: 100%;
-  height: 16px;
-  overflow: hidden;
-  margin-top: 3px;
-  padding: 0 6px;
-  border-radius: 20px;
-  background: var(--bg-surface);
-  border: 1px solid var(--border);
-  color: var(--fg-muted);
-  font-size: 10px;
-  line-height: 12px;
-}
-.conversation-tree-count > span {
-  position: relative;
-  top: -1px;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
 .conversation-tree-toc {
   position: absolute;
   width: max-content;
@@ -415,6 +391,68 @@
   :is(.conversation-tree-node, .conversation-tree-heading):focus-visible {
   /* Restoring focus after a rebuild must not give mouse clicks a keyboard ring. */
   outline: none;
+}
+.conversation-tree-image-card {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* The 38px-wide tree root would otherwise shrink-wrap the card. */
+  width: max-content;
+  max-width: 220px;
+  margin: 0;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--conversation-tree-bg);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 16%);
+  pointer-events: none;
+  animation: conversation-tree-image-card-in 120ms ease-out;
+}
+.conversation-tree-image-card[hidden] {
+  display: none;
+}
+.conversation-tree-image-card img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 206px;
+  max-height: 160px;
+  min-width: 48px;
+  align-self: center;
+  border-radius: 6px;
+  object-fit: contain;
+  /* Match inline chat images: HDR stays in the full-screen viewer. */
+  dynamic-range-limit: standard;
+}
+.conversation-tree-image-card figcaption {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  padding: 0 2px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 14px;
+}
+.conversation-tree-image-card figcaption > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.conversation-tree-image-count:empty {
+  display: none;
+}
+@keyframes conversation-tree-image-card-in {
+  from {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .conversation-tree-image-card {
+    animation: none;
+  }
 }
 .conversation-tree-status {
   position: absolute;

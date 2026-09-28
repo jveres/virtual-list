@@ -15,6 +15,8 @@ interface TreeOptions {
   currentHeading?: (id: number) => number | undefined;
   headings: (id: number) => readonly ResponseHeading[];
   navigate: (id: number, headingIndex?: number) => Promise<boolean>;
+  /** Image sources of a message, resolved only when its node is hovered. */
+  images?: (id: number) => readonly { src: string; label: string }[];
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
@@ -168,7 +170,21 @@ export function createConversationTree(options: TreeOptions): {
   notchFill.setAttribute("fill", "var(--conversation-tree-bg)");
   notchFill.setAttribute("stroke", "none");
   notch.prepend(notchFill);
-  root.append(toggle, panel, notch);
+  // Hovering an image node previews its first image beside the panel.
+  const imageCard = document.createElement("figure");
+  imageCard.className = "conversation-tree-image-card";
+  imageCard.setAttribute("aria-hidden", "true");
+  imageCard.hidden = true;
+  const cardImage = document.createElement("img");
+  cardImage.alt = "";
+  cardImage.decoding = "async";
+  const cardCaption = document.createElement("figcaption");
+  const cardLabel = document.createElement("span");
+  const cardCount = document.createElement("span");
+  cardCount.className = "conversation-tree-image-count";
+  cardCaption.append(cardLabel, cardCount);
+  imageCard.append(cardImage, cardCaption);
+  root.append(toggle, panel, notch, imageCard);
   options.host.append(root);
   let dirty = true;
   let pinned = false;
@@ -176,6 +192,8 @@ export function createConversationTree(options: TreeOptions): {
   let navigationEpoch = 0;
   let replacingNodes = false;
   let closeTimer = 0;
+  let imageTimer = 0;
+  let imageNode: HTMLElement | null = null;
   // Retain the scroll extent while alternative branches fold.
   let stableHalfWidth = 0;
   let stableLeft = 0;
@@ -565,6 +583,125 @@ export function createConversationTree(options: TreeOptions): {
     { signal },
   );
 
+  function hideImageCard(): void {
+    window.clearTimeout(imageTimer);
+    imageNode = null;
+    imageCard.hidden = true;
+    cardImage.removeAttribute("src");
+  }
+
+  function placeImageCard(node: HTMLElement): void {
+    const margin = 8;
+    const origin = root.getBoundingClientRect();
+    const bounds = panel.getBoundingClientRect();
+    const item = node.getBoundingClientRect();
+    const width = imageCard.offsetWidth;
+    const height = imageCard.offsetHeight;
+    const viewWidth = document.documentElement.clientWidth;
+    const viewHeight = document.documentElement.clientHeight;
+    const clamp = (value: number, low: number, high: number): number =>
+      Math.max(low, Math.min(value, high));
+    let left: number;
+    let top: number;
+    // Beside the panel keeps the tree readable; a full-width panel falls
+    // back to below (or above) the hovered node.
+    if (bounds.right + margin + width <= viewWidth - margin)
+      left = bounds.right + margin;
+    else if (bounds.left - margin - width >= margin)
+      left = bounds.left - margin - width;
+    else left = Number.NaN;
+    if (Number.isNaN(left)) {
+      left = clamp(item.left, margin, viewWidth - margin - width);
+      top =
+        item.bottom + 4 + height <= viewHeight - margin
+          ? item.bottom + 4
+          : item.top - 4 - height;
+    } else top = item.top + item.height / 2 - height / 2;
+    top = clamp(top, margin, viewHeight - margin - height);
+    imageCard.style.left = `${left - origin.left}px`;
+    imageCard.style.top = `${top - origin.top}px`;
+  }
+
+  function showImageCard(node: HTMLElement): void {
+    const images = options.images?.(Number(node.dataset.messageId)) ?? [];
+    const first = images[0];
+    if (!first) return;
+    imageNode = node;
+    cardLabel.textContent = first.label;
+    cardCount.textContent = images.length > 1 ? `+${images.length - 1}` : "";
+    cardImage.src = first.src;
+    // Reveal only a decoded image, so the card never flashes empty.
+    cardImage
+      .decode()
+      .then(() => {
+        if (imageNode !== node || panel.hidden) return;
+        imageCard.hidden = false;
+        placeImageCard(node);
+      })
+      .catch(() => {
+        if (imageNode === node) hideImageCard();
+      });
+  }
+
+  // A pressed node stays without a card, also after navigation rebuilds it
+  // under the resting pointer, until the pointer leaves that node.
+  let suppressedImageId: string | undefined;
+  // Phones have neither hover nor room beside the panel for a preview.
+  const canHover = window.matchMedia("(hover: hover) and (pointer: fine)");
+  const treeNode = (target: EventTarget | null): HTMLElement | null =>
+    target instanceof Element
+      ? target.closest<HTMLElement>(".conversation-tree-node")
+      : null;
+  // Movement, not pointerover: a rebuild fires pointerover on the new node
+  // beneath a pointer that never moved.
+  canvas.addEventListener(
+    "pointermove",
+    (event) => {
+      if (
+        event.pointerType !== "mouse" ||
+        pointers.size > 0 ||
+        !canHover.matches
+      )
+        return;
+      const node = treeNode(event.target);
+      if (
+        !node ||
+        node === imageNode ||
+        node.dataset.images === undefined ||
+        node.dataset.messageId === suppressedImageId
+      )
+        return;
+      hideImageCard();
+      imageNode = node;
+      imageTimer = window.setTimeout(() => showImageCard(node), 250);
+    },
+    { signal },
+  );
+  canvas.addEventListener(
+    "pointerout",
+    (event) => {
+      const next = treeNode(event.relatedTarget);
+      if (imageNode && next !== imageNode) hideImageCard();
+      // A node removed by a rebuild reports no destination; that isn't leaving.
+      const left = next ?? (event.target as Node).isConnected;
+      if (left && next?.dataset.messageId !== suppressedImageId)
+        suppressedImageId = undefined;
+    },
+    { signal },
+  );
+  scroller.addEventListener("scroll", hideImageCard, {
+    passive: true,
+    signal,
+  });
+  scroller.addEventListener(
+    "pointerdown",
+    (event) => {
+      suppressedImageId = treeNode(event.target)?.dataset.messageId;
+      hideImageCard();
+    },
+    { signal },
+  );
+
   function placePanel(): void {
     if (signal.aborted || panel.hidden) return;
     const origin = root.getBoundingClientRect();
@@ -733,20 +870,18 @@ export function createConversationTree(options: TreeOptions): {
       siblings.push(entry);
       entriesByRow.set(entry.row, siblings);
     }
-    // Siblings share one depth row; selection changes the blue path, not
-    // the position of a version within its parent's fork.
+    // Depth-first order inserts rows by depth, each listed left to right.
+    // Selection changes the blue path, not where a branch sits.
     const displayRows = Array.from(entriesByRow.values());
-    // Allow a compact badge line for branches that can be folded. Measure
-    // it with its own title, so switching versions doesn't move later rows.
-    const badgeEntries = new Set(
-      entries
-        .filter(
-          (entry) =>
-            entry.hiddenCount > 0 ||
-            ((entriesByRow.get(entry.row)?.length ?? 0) > 1 &&
-              (options.tree.get(entry.id)?.childrenIds.length ?? 0) > 0),
-        )
-        .map((entry) => entry.id),
+    const childEntries = new Map<number, typeof entries>();
+    for (const entry of entries) {
+      const siblings = childEntries.get(entry.parentId) ?? [];
+      siblings.push(entry);
+      childEntries.set(entry.parentId, siblings);
+    }
+    const lastActiveRow = entries.reduce(
+      (row, entry) => (entry.active ? Math.max(row, entry.row) : row),
+      0,
     );
     const edges = document.createElementNS(SVG_NS, "svg");
     edges.classList.add("conversation-tree-edges");
@@ -770,6 +905,7 @@ export function createConversationTree(options: TreeOptions): {
       button.dataset.row = String(entry.row);
       button.dataset.active = String(entry.active);
       button.dataset.role = entry.role;
+      if (entry.hasImages) button.dataset.images = String(entry.imageCount);
       const glyph = document.createElement("span");
       glyph.className = "conversation-tree-glyph";
       const imageIcon = entry.imageCount > 1 ? ICONS.images : ICONS.image;
@@ -811,19 +947,6 @@ export function createConversationTree(options: TreeOptions): {
       label.className = "conversation-tree-label";
       label.textContent = entry.label;
       text.append(label);
-      if (badgeEntries.has(entry.id)) {
-        const count = document.createElement("span");
-        count.className = "conversation-tree-count";
-        const countLabel = document.createElement("span");
-        countLabel.textContent = `${entry.descendantCount} more ${entry.descendantCount === 1 ? "message" : "messages"}`;
-        count.append(countLabel);
-        // Reserve the folded badge's intrinsic width even on the active branch.
-        if (!entry.hiddenCount) {
-          count.style.visibility = "hidden";
-          count.setAttribute("aria-hidden", "true");
-        }
-        text.append(count);
-      }
       button.append(glyph, text);
       buttons.set(entry.id, button);
       content.append(button);
@@ -856,6 +979,7 @@ export function createConversationTree(options: TreeOptions): {
         content.append(toc);
       }
     }
+    hideImageCard();
     // Chromium emits focusout when a focused node is removed. This is an
     // internal replacement, not the reader leaving an unpinned panel.
     replacingNodes = true;
@@ -877,14 +1001,20 @@ export function createConversationTree(options: TreeOptions): {
         const toc = tocs.get(entry.id);
         if (toc) toc.style.maxWidth = `${Math.max(0, maxWidth - 20)}px`;
       }
+      // Read every measurement before the first position write, so a large
+      // tree costs one layout rather than one per node.
+      const labelHeights = new Map<number, number>();
       for (const entry of entries) {
         const toc = tocs.get(entry.id);
+        const button = buttons.get(entry.id);
         bandWidths.set(
           entry.id,
-          Math.max(
-            buttons.get(entry.id)?.offsetWidth ?? 0,
-            toc ? toc.offsetWidth + 20 : 0,
-          ),
+          Math.max(button?.offsetWidth ?? 0, toc ? toc.offsetWidth + 20 : 0),
+        );
+        labelHeights.set(
+          entry.id,
+          button?.querySelector<HTMLElement>(".conversation-tree-label")
+            ?.offsetHeight ?? 0,
         );
       }
       // Keep extents stable for branch switches, but refit on real resizes.
@@ -894,22 +1024,79 @@ export function createConversationTree(options: TreeOptions): {
       }
       if (fitting) stableCanvasHeight = 0;
       layoutWidth = availableWidth;
-      const bands = new Map<number, number>([[0, 0]]);
-      for (const siblings of displayRows) {
-        let offset = 0;
-        const offsets = siblings.map((entry) => {
-          const left = offset;
-          offset += (bandWidths.get(entry.id) ?? 0) + BAND_GAP;
-          return left;
+      // Each subtree records its occupied extent per row, relative to its
+      // own spine. Siblings pack against those contours with one gutter and
+      // center under their parent; a single child keeps the parent's spine
+      // and shares its contour, so linear chats stay linear time.
+      const contours = new Map<number, { left: number[]; right: number[] }>();
+      const shifts = new Map<number, number>();
+      const pack = (parentId: number): { left: number[]; right: number[] } => {
+        const children = childEntries.get(parentId) ?? [];
+        const only = children.length === 1 ? children[0] : undefined;
+        const onlyContour = only && contours.get(only.id);
+        if (only && onlyContour) {
+          shifts.set(only.id, 0);
+          return onlyContour;
+        }
+        const merged: { left: number[]; right: number[] } = {
+          left: [],
+          right: [],
+        };
+        const placed = children.map((child) => {
+          const contour = contours.get(child.id);
+          if (!contour) return 0;
+          let shift = 0;
+          for (let row = child.row; row < contour.left.length; row++) {
+            const right = merged.right[row];
+            const left = contour.left[row];
+            if (right !== undefined && left !== undefined)
+              shift = Math.max(shift, right + BAND_GAP - left);
+          }
+          for (let row = child.row; row < contour.left.length; row++) {
+            const left = contour.left[row];
+            const right = contour.right[row];
+            if (left === undefined || right === undefined) continue;
+            merged.left[row] = Math.min(
+              merged.left[row] ?? left + shift,
+              left + shift,
+            );
+            merged.right[row] = Math.max(
+              merged.right[row] ?? right + shift,
+              right + shift,
+            );
+          }
+          return shift;
         });
         const center =
-          offsets.reduce((sum, left) => sum + left, 0) / siblings.length;
-        siblings.forEach((entry, index) => {
-          const parent = bands.get(entry.parentId) ?? 0;
-          // Pack actual occupied widths, leaving only the gutter between
-          // siblings. A single child keeps its parent's spine.
-          bands.set(entry.id, parent + (offsets[index] ?? 0) - center);
+          placed.reduce((sum, shift) => sum + shift, 0) / (placed.length || 1);
+        children.forEach((child, index) => {
+          shifts.set(child.id, (placed[index] ?? 0) - center);
         });
+        for (let row = 0; row < merged.left.length; row++) {
+          const left = merged.left[row];
+          const right = merged.right[row];
+          if (left === undefined || right === undefined) continue;
+          merged.left[row] = left - center;
+          merged.right[row] = right - center;
+        }
+        return merged;
+      };
+      // Reverse depth-first order visits every child before its parent.
+      for (let index = entries.length - 1; index >= 0; index--) {
+        const entry = entries[index];
+        if (!entry) continue;
+        const contour = pack(entry.id);
+        contour.left[entry.row] = -26;
+        contour.right[entry.row] = -26 + (bandWidths.get(entry.id) ?? 0);
+        contours.set(entry.id, contour);
+      }
+      pack(0);
+      const bands = new Map<number, number>([[0, 0]]);
+      for (const entry of entries) {
+        bands.set(
+          entry.id,
+          (bands.get(entry.parentId) ?? 0) + (shifts.get(entry.id) ?? 0),
+        );
       }
       for (const entry of entries) {
         const left = (bands.get(entry.id) ?? 0) - 26;
@@ -947,15 +1134,7 @@ export function createConversationTree(options: TreeOptions): {
         let headingCount = 0;
         for (const entry of row) {
           const button = buttons.get(entry.id);
-          const label = button?.querySelector<HTMLElement>(
-            ".conversation-tree-label",
-          );
-          const bottom = Math.max(
-            36,
-            13 +
-              (label?.offsetHeight ?? 0) +
-              (badgeEntries.has(entry.id) ? 20 : 0),
-          );
+          const bottom = Math.max(36, 13 + (labelHeights.get(entry.id) ?? 0));
           contentBottom = Math.max(contentBottom, bottom);
           headingCount = Math.max(
             headingCount,
@@ -970,8 +1149,9 @@ export function createConversationTree(options: TreeOptions): {
         }
         const tocOffset = contentBottom > 36 ? contentBottom + 4 : 36;
         for (const entry of row) tocOffsets.set(entry.id, tocOffset);
+        // Fork connectors turn sideways between rows and need the room.
         const nextRowBranches = displayRows[rowIndex + 1]?.some(
-          (entry) => !entry.active,
+          (entry) => (childEntries.get(entry.parentId)?.length ?? 0) > 1,
         );
         const gap = nextRowBranches ? 24 : 8;
         canvasHeight += headingCount
@@ -991,8 +1171,7 @@ export function createConversationTree(options: TreeOptions): {
         const { x, y } = position;
         // Bridge the glyph as well as the connectors for one continuous stream.
         if (entry.active) {
-          const terminal =
-            entry.row === displayRows.length - 1 && !tocs.has(entry.id);
+          const terminal = entry.row === lastActiveRow && !tocs.has(entry.id);
           const start = entry.row === 0 ? 22 : 8;
           ribbonPaths.push(`M${x} ${y + start}V${y + (terminal ? 22 : 36)}`);
         }
@@ -1109,6 +1288,8 @@ export function createConversationTree(options: TreeOptions): {
     window.clearTimeout(closeTimer);
     pinned = false;
     clearGesture();
+    hideImageCard();
+    suppressedImageId = undefined;
     if (restoreFocus) toggle.focus({ preventScroll: true });
     panel.hidden = true;
     toggle.setAttribute("aria-expanded", "false");
@@ -1317,6 +1498,7 @@ export function createConversationTree(options: TreeOptions): {
       placementObserver.disconnect();
       stopFade();
       window.clearTimeout(closeTimer);
+      window.clearTimeout(imageTimer);
       root.remove();
     },
   };

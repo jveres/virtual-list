@@ -403,11 +403,6 @@ for (const engine of [firefox, webkit, chromium]) {
         }),
       );
     const initialCards = await cardGeometry();
-    const badge = panel.locator(
-      '.conversation-tree-node[data-message-id="2"] .conversation-tree-count',
-    );
-    assert.equal(await badge.textContent(), "4 more messages");
-    assert.equal(await badge.isVisible(), false);
     for (const id of [7, 2, 7, 2]) {
       await panel
         .locator(`.conversation-tree-node[data-message-id="${id}"]`)

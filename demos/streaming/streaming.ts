@@ -68,9 +68,12 @@ import {
   type TranscriptTree,
 } from "./branching-transcript.js";
 import { createConversationTree } from "./conversation-tree.js";
-import { adoptDisplayCopies } from "./display-copies.js";
+import { adoptDisplayCopies, readyDisplayCopy } from "./display-copies.js";
 import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
-import { createChatImagePreview } from "./image-preview.js";
+import {
+  createChatImagePreview,
+  messageImageSources,
+} from "./image-preview.js";
 import {
   appendStaticMessageContent,
   type CursorMode,
@@ -4297,6 +4300,14 @@ performance.mark("chat:visible");
 
 const imagePreview = createChatImagePreview(viewport, () => transcript);
 const headingCache = new WeakMap<Message, readonly ResponseHeading[]>();
+const treeImageCache = new WeakMap<
+  Message,
+  {
+    markdown: string;
+    attachments: Message["attachments"];
+    sources: ReturnType<typeof messageImageSources>;
+  }
+>();
 conversationTree = createConversationTree({
   host: mustGet("scroll-jump-layer"),
   viewport,
@@ -4318,6 +4329,28 @@ conversationTree = createConversationTree({
     return headings;
   },
   navigate: navigateTreeMessage,
+  images: (id) => {
+    const message = tree.get(id)?.message;
+    if (!message) return [];
+    let cached = treeImageCache.get(message);
+    // A streaming reply keeps its object while its Markdown grows.
+    if (
+      cached?.markdown !== message.markdown ||
+      cached.attachments !== message.attachments
+    ) {
+      cached = {
+        markdown: message.markdown,
+        attachments: message.attachments,
+        sources: messageImageSources(message),
+      };
+      treeImageCache.set(message, cached);
+    }
+    // Prefer the display copy the chat row already decoded.
+    return cached.sources.map(({ url, label }) => ({
+      src: readyDisplayCopy(url) ?? url,
+      label,
+    }));
+  },
 });
 window.addEventListener("pagehide", () => {
   disposeAttachmentChips(pendingAttachmentList);

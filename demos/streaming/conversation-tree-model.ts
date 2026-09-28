@@ -18,10 +18,7 @@ export interface TreeEntry {
   id: number;
   parentId: number;
   row: number;
-  column: number;
   active: boolean;
-  descendantCount: number;
-  hiddenCount: number;
   role: "user" | "assistant";
   label: string;
   image: boolean;
@@ -97,68 +94,51 @@ function messageContent(
   };
 }
 
-/** Active messages form the spine; alternatives share their sibling's row.
- * Inactive descendants stay folded until that branch is selected. */
+/** Every message in depth-first order; a row is a depth. The selected path
+ * is active; alternatives and their descendants stay visible. */
 export function conversationEntries(
   tree: ReadonlyMap<number, ConversationNode>,
 ): TreeEntry[] {
-  const sizes = new Map<number, number>();
-  const pending = [0];
-  const order: number[] = [];
-  const seen = new Set<number>();
-  while (pending.length) {
-    const id = pending.pop();
-    if (id === undefined || seen.has(id)) continue;
-    seen.add(id);
-    order.push(id);
-    pending.push(...(tree.get(id)?.childrenIds ?? []));
-  }
-  for (const id of order.reverse()) {
-    sizes.set(
-      id,
-      1 +
-        (tree.get(id)?.childrenIds ?? []).reduce(
-          (sum, child) => sum + (sizes.get(child) ?? 0),
-          0,
-        ),
-    );
+  const selected = new Set<number>();
+  let selectedId: number | undefined = 0;
+  while (selectedId !== undefined && !selected.has(selectedId)) {
+    selected.add(selectedId);
+    const node = tree.get(selectedId);
+    selectedId = node?.childrenIds[node.selectedChildIndex];
   }
   const entries: TreeEntry[] = [];
-  let parentId = 0;
-  let row = 0;
-  let parentColumn = 0;
-  const visited = new Set<number>();
-  while (!visited.has(parentId)) {
-    visited.add(parentId);
-    const parent = tree.get(parentId);
-    if (!parent) break;
-    const activeId = parent.childrenIds[parent.selectedChildIndex];
-    if (activeId === undefined) break;
-    parent.childrenIds.forEach((id, versionIndex) => {
-      const message = tree.get(id)?.message;
-      if (!message) return;
-      const content = messageContent(message.markdown, message.attachments);
-      if (
-        message.role === "assistant" &&
-        (message.status === "thinking" || message.status === "streaming") &&
-        content.label === "Untitled message"
-      )
-        content.label = "Response in progress…";
-      entries.push({
-        id,
-        parentId,
-        row,
-        column: parentColumn + versionIndex,
-        active: id === activeId,
-        descendantCount: (sizes.get(id) ?? 1) - 1,
-        hiddenCount: id === activeId ? 0 : (sizes.get(id) ?? 1) - 1,
-        role: message.role,
-        ...content,
-      });
+  const seen = new Set<number>([0]);
+  const pending: { id: number; parentId: number; row: number }[] = [];
+  const queueChildren = (parentId: number, row: number): void => {
+    const children = tree.get(parentId)?.childrenIds ?? [];
+    for (let index = children.length - 1; index >= 0; index--) {
+      const id = children[index];
+      if (id !== undefined) pending.push({ id, parentId, row });
+    }
+  };
+  queueChildren(0, 0);
+  for (let item = pending.pop(); item; item = pending.pop()) {
+    const { id, parentId, row } = item;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const message = tree.get(id)?.message;
+    if (!message) continue;
+    const content = messageContent(message.markdown, message.attachments);
+    if (
+      message.role === "assistant" &&
+      (message.status === "thinking" || message.status === "streaming") &&
+      content.label === "Untitled message"
+    )
+      content.label = "Response in progress…";
+    entries.push({
+      id,
+      parentId,
+      row,
+      active: selected.has(id),
+      role: message.role,
+      ...content,
     });
-    parentColumn += parent.selectedChildIndex;
-    row++;
-    parentId = activeId;
+    queueChildren(id, row + 1);
   }
   return entries;
 }
