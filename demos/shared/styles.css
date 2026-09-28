@@ -1035,7 +1035,9 @@ p.ai-settings-note {
 }
 
 .tool-call-code {
-  overflow-x: auto;
+  /* Wrapped text never overflows sideways; a scroller would only cost WebKit
+     a compositing layer (see integrations/markdown.css). */
+  overflow-x: hidden;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--bg-code-block);

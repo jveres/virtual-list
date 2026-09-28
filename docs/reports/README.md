@@ -7,6 +7,31 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 28 Safari momentum tail
+
+The [momentum tail report](safari-momentum-tail-2026-09-28.md) traces 1–2 px
+shifts at the end of a Safari momentum scroll to WebKit's compositing of
+nested scrollers. A WebKit-only CSS rule makes code blocks and tables wrap
+instead of scrolling sideways. A static control page reproduces the
+behavior without the runtime.
+
+## September 28 runtime architecture performance round
+
+The [architecture round](runtime-architecture-performance-2026-09-28.md)
+applies three runtime changes: incremental skeleton sync, one-key declared
+updates, and two-tier width re-measurement. The width change relaxes a
+documented rule. Headless measurements show the gains at 1,000 and 10,000
+rows. One native Firefox pair shows unchanged frame timing in the streaming
+demo.
+
+## September 28 runtime performance audit
+
+The [runtime audit](runtime-performance-audit-2026-09-28.md) profiles
+10,000 declared rows, gallery masonry, and imported-chat paging in Firefox.
+It finds no runtime bottleneck worth a change. Chat long frames come from
+host row rendering. A timer-coalescing candidate changed settle ordering and
+was reverted.
+
 ## September 28 Safari HDR chat images
 
 The [HDR chat image report](safari-hdr-chat-images-2026-09-28.md) traces

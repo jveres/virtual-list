@@ -71,3 +71,31 @@
 .markdown-viewer .markdown table {
   overflow-y: hidden;
 }
+
+/* WebKit composites every nested scroller as its own layer and snaps each
+   layer to the pixel grid on its own: in the slow tail of a momentum scroll,
+   code blocks and tables hop 1–2 px against the text around them, while a
+   page without nested scrollers stays smooth. On WebKit, code wraps and
+   tables lay out inside the column instead of scrolling sideways. */
+@supports (-webkit-nbsp-mode: space) {
+  .markdown-viewer .markdown pre {
+    overflow: clip;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .markdown-viewer .markdown pre > code {
+    white-space: inherit;
+  }
+
+  .markdown-viewer .markdown table {
+    display: table;
+    width: auto;
+    overflow: clip;
+  }
+
+  .markdown-viewer .markdown table th,
+  .markdown-viewer .markdown table td {
+    overflow-wrap: anywhere;
+  }
+}

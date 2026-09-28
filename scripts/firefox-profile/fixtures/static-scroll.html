@@ -1,0 +1,185 @@
+<!doctype html>
+<!--
+  Momentum control: static content, no virtual list, no listeners. Compare
+  the end of a trackpad momentum scroll here with a demo in the same browser
+  window. ?scroller=page scrolls the document; the default is an
+  overflow:auto element like the demos use. ?layer=1 adds the canvas
+  compositing hint the runtime sets.
+
+  Chat-page differences, each behind a switch, so one run can bisect them:
+  ?slots=1 wraps each row in a fixed-height clipping slot with the content
+  absolutely positioned inside, like the runtime's slots. ?contain=1 adds
+  contain:layout style to each row. ?overscroll=1 sets
+  overscroll-behavior-y:contain on the scroller. ?smoothing=1 antialiases
+  text. ?overlay=1 floats a translucent pill over the scroller like the
+  sticky date header. ?offset=1 puts a 53.4px header above the scroller so
+  it starts on a fractional pixel. ?all=1 turns all six on. ?code=1 adds a
+  scrollable code block to every third row and ?img=1 a decoded image, the
+  row contents WebKit composites separately.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Static momentum control</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        font: 16px/1.5 system-ui, sans-serif;
+        color: #222;
+        background: #fff;
+      }
+      body.div {
+        height: 100vh;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      body.div #header {
+        flex: none;
+        height: 53.4px;
+        border-bottom: 1px solid #ccc;
+      }
+      body.div #wrap {
+        position: relative;
+        flex: 1;
+        min-height: 0;
+      }
+      body.div #scroller {
+        height: 100%;
+        overflow: auto;
+      }
+      body.overscroll #scroller {
+        overscroll-behavior-y: contain;
+      }
+      body.smoothing {
+        -webkit-font-smoothing: antialiased;
+      }
+      #content {
+        max-width: 48rem;
+        margin: 0 auto;
+        padding: 0 16px;
+      }
+      #content.layer {
+        transform: translateZ(0);
+      }
+      article {
+        padding: 12px 0;
+        border-bottom: 1px solid #999;
+      }
+      .slot {
+        position: relative;
+        overflow: clip;
+      }
+      .slot > article {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+      }
+      body.contain article {
+        contain: layout style;
+      }
+      .block {
+        height: 120px;
+        margin: 8px 0;
+        border: 1px solid #333;
+        background: repeating-linear-gradient(
+          #e8eef7 0 1px,
+          #fff 1px 8px
+        );
+      }
+      #overlay {
+        position: absolute;
+        top: 12px;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: center;
+        pointer-events: none;
+      }
+      #overlay span {
+        padding: 4px 12px;
+        border: 1px solid #ccc;
+        border-radius: 999px;
+        background: color-mix(in srgb, #f7f8fa 70%, transparent);
+        box-shadow: 0 1px 3px rgb(0 0 0 / 8%);
+        font-size: 12px;
+        font-weight: 600;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="header" hidden></div>
+    <div id="wrap">
+      <div id="scroller"><div id="content"></div></div>
+      <div id="overlay" hidden><span>Monday, September 28</span></div>
+    </div>
+    <script>
+      // Built once at load. Nothing runs while you scroll.
+      const params = new URLSearchParams(location.search);
+      const on = (name) => params.get("all") === "1" || params.get(name) === "1";
+      const classes = [];
+      if (params.get("scroller") !== "page") classes.push("div");
+      for (const name of ["overscroll", "smoothing", "contain"])
+        if (on(name)) classes.push(name);
+      document.body.className = classes.join(" ");
+      document.getElementById("header").hidden = !on("offset");
+      document.getElementById("overlay").hidden = !on("overlay");
+      const content = document.getElementById("content");
+      if (params.get("layer") === "1") content.className = "layer";
+      const sentence =
+        "Static rows let you judge the browser's own momentum scrolling. ";
+      for (let index = 0; index < 400; index++) {
+        const row = document.createElement("article");
+        const text = document.createElement("p");
+        text.textContent = `Row ${index}. ${sentence.repeat(1 + (index % 5))}`;
+        row.append(text);
+        if (index % 4 === 0) {
+          const block = document.createElement("div");
+          block.className = "block";
+          row.append(block);
+        }
+        // ?code=1: a scrollable code block per row, its own layer in WebKit.
+        if (params.get("code") === "1" && index % 3 === 1) {
+          const code = document.createElement("pre");
+          code.style.cssText =
+            "overflow:auto;padding:8px;border:1px solid #ccc;background:#fafbfc";
+          code.textContent = `const row = ${index};\n${"x".repeat(160)}`;
+          row.append(code);
+        }
+        // ?img=1: a decoded image per row.
+        if (params.get("img") === "1" && index % 3 === 2) {
+          const canvas = document.createElement("canvas");
+          canvas.width = 640;
+          canvas.height = 240;
+          const context = canvas.getContext("2d");
+          context.fillStyle = `hsl(${(index * 37) % 360} 60% 70%)`;
+          context.fillRect(0, 0, 640, 240);
+          context.fillStyle = "#333";
+          for (let y = 4; y < 240; y += 8) context.fillRect(0, y, 640, 1);
+          const image = new Image();
+          image.src = canvas.toDataURL();
+          image.style.cssText = "display:block;max-width:100%;height:auto";
+          row.append(image);
+        }
+        content.append(row);
+      }
+      if (on("slots")) {
+        // Measure once, then fix each slot's height like the runtime does.
+        const rows = Array.from(content.children);
+        const heights = rows.map(
+          (row) => `${Math.ceil(row.getBoundingClientRect().height)}px`,
+        );
+        rows.forEach((row, index) => {
+          const slot = document.createElement("div");
+          slot.className = "slot";
+          slot.style.height = heights[index];
+          row.replaceWith(slot);
+          slot.append(row);
+        });
+      }
+    </script>
+  </body>
+</html>
