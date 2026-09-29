@@ -18,6 +18,7 @@ test("compiles the tracked setup files in the profiler wrapper", async () => {
     "streaming-chat",
     "idle-chat-scroll",
     "canvas-compositing",
+    "memory-chat",
   ]) {
     const source = await readFile(
       new URL(`./fixtures/${name}.js`, import.meta.url),

@@ -1,7 +1,6 @@
-// Native anchoring (F5): an older page lands mid-gesture, away from the edge,
-// and the engine's own scroll anchoring keeps the row under the reader
-// still. Synthetic input holds the gesture: motionless wheel
-// events keep the settle sensor's phase open while the page commits.
+// Native anchoring (F5): Firefox/Chromium can land an older page mid-gesture.
+// WebKit holds the prepend until release and preserves the reader explicitly.
+// Synthetic input checks geometry, not physical momentum presentation.
 import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 import { openTranscript } from "../shared/transcript.mjs";
@@ -15,7 +14,7 @@ for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
       viewport: { width: 1200, height: 820 },
     });
     const errors = await openTranscript(page, base, 34, /loaded 13-34\/34/);
-    const result = await page.evaluate(async () => {
+    const result = await page.evaluate(async (name) => {
       const frame = () => new Promise((done) => requestAnimationFrame(done));
       const viewport = document.getElementById("viewport");
       const canvas = viewport.firstElementChild;
@@ -52,11 +51,21 @@ for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
         },
       });
       const tops = [];
-      const deadline = performance.now() + 5_000;
+      const deadline = performance.now() + (name === "webkit" ? 800 : 5_000);
       while (/loaded 13-/.test(status()) && performance.now() < deadline) {
         hold();
         await new Promise((done) => setTimeout(done, 60));
         tops.push(top());
+      }
+      const beforeRelease = { status: status(), writes };
+      if (name === "webkit") {
+        viewport.dispatchEvent(new Event("scrollend"));
+        const releaseDeadline = performance.now() + 5_000;
+        while (
+          /loaded 13-/.test(status()) &&
+          performance.now() < releaseDeadline
+        )
+          await new Promise((done) => setTimeout(done, 30));
       }
       await frame();
       await frame();
@@ -64,6 +73,7 @@ for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
         anchoring: canvas.dataset.anchoring,
         status: status(),
         before,
+        beforeRelease,
         after: { top: top(), scrollTop: viewport.scrollTop },
         connected: reading.isConnected,
         writes,
@@ -72,14 +82,26 @@ for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
           0,
         ),
       };
-    });
+    }, name);
     assert.equal(result.anchoring, "native", `${name}: native anchoring`);
     assert.match(result.status, /loaded 1-34\/34/, `${name}: the page landed`);
     assert.ok(result.connected, `${name}: the reading row survives`);
-    assert.equal(result.writes, 0, `${name}: no script scroll write`);
+    if (name === "webkit") {
+      assert.match(result.beforeRelease.status, /loaded 13-34\/34/);
+      assert.equal(
+        result.beforeRelease.writes,
+        0,
+        "no write during the gesture",
+      );
+      assert.equal(
+        result.writes,
+        1,
+        "one preserved-anchor write after release",
+      );
+    } else assert.equal(result.writes, 0, `${name}: no script scroll write`);
     assert.ok(
       result.after.scrollTop > result.before.scrollTop + 1000,
-      `${name}: the engine moved the viewport by the page (${JSON.stringify(result)})`,
+      `${name}: the viewport moved by the page (${JSON.stringify(result)})`,
     );
     assert.ok(
       result.drift <= 1 && Math.abs(result.after.top - result.before.top) <= 1,
@@ -87,7 +109,7 @@ for (const [name, engine] of Object.entries({ firefox, chromium, webkit })) {
     );
     assert.deepEqual(errors, []);
     console.log(
-      `${name}: a mid-gesture page kept its reader still (scrollTop ${Math.round(result.before.scrollTop)} → ${Math.round(result.after.scrollTop)})`,
+      `${name}: a ${name === "webkit" ? "released" : "mid-gesture"} page kept its reader still (scrollTop ${Math.round(result.before.scrollTop)} → ${Math.round(result.after.scrollTop)})`,
     );
   } finally {
     await browser.close();

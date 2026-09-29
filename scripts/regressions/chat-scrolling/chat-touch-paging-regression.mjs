@@ -1,4 +1,4 @@
-// Paging geometry under synthetic touch/release events, not native iOS momentum.
+// Paging geometry under synthetic touch/wheel events, not native presentation.
 import assert from "node:assert/strict";
 import { webkit } from "playwright";
 import { openStreamingDemo } from "../shared/transcript.mjs";
@@ -6,7 +6,7 @@ import { openStreamingDemo } from "../shared/transcript.mjs";
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 const browser = await webkit.launch();
 try {
-  for (const { viewport, triggerTop, suppressAnchoring } of [
+  for (const { viewport, triggerTop, suppressAnchoring, input = "touch" } of [
     { viewport: { width: 390, height: 844 }, triggerTop: 0 },
     { viewport: { width: 1024, height: 1366 }, triggerTop: 0 },
     { viewport: { width: 390, height: 844 }, triggerTop: 30 },
@@ -15,11 +15,18 @@ try {
       triggerTop: 30,
       suppressAnchoring: true,
     },
+    { viewport: { width: 1920, height: 998 }, triggerTop: 30, input: "wheel" },
+    {
+      viewport: { width: 1920, height: 998 },
+      triggerTop: 30,
+      input: "wheel",
+      suppressAnchoring: true,
+    },
   ]) {
     const page = await browser.newPage({
       viewport,
-      isMobile: true,
-      hasTouch: true,
+      isMobile: input === "touch",
+      hasTouch: input === "touch",
       deviceScaleFactor: 2,
     });
     const errors = await openStreamingDemo(page, base);
@@ -45,15 +52,31 @@ try {
     const windows = [await page.evaluate(() => window.firstLoaded())];
     while (windows.at(-1) > 1 && windows.length < 5) {
       const before = windows.at(-1);
-      await page.evaluate((triggerTop) => {
-        const viewport = document.querySelector("#viewport");
-        viewport.dispatchEvent(new Event("touchstart"));
-        viewport.scrollTop = triggerTop;
-      }, triggerTop);
+      await page.evaluate(
+        ({ triggerTop, input }) => {
+          const viewport = document.querySelector("#viewport");
+          if (input === "touch")
+            viewport.dispatchEvent(new Event("touchstart"));
+          else {
+            const wheel = () =>
+              viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -2 }));
+            wheel();
+            window.heldPagingWheel = setInterval(wheel, 50);
+          }
+          viewport.scrollTop = triggerTop;
+        },
+        { triggerTop, input },
+      );
       // Fetch while held at the boundary or with the loading slot partly
       // visible. Near the edge, native anchoring may commit before release.
       await page.waitForTimeout(triggerTop === 0 ? 250 : 1200);
+      assert.equal(
+        await page.evaluate(() => window.firstLoaded()),
+        before,
+        "prepend waits for input release",
+      );
       await page.evaluate(() => {
+        clearInterval(window.heldPagingWheel);
         const viewport = document.querySelector("#viewport");
         const end = new Event("touchend");
         Object.defineProperty(end, "touches", { value: [] });
@@ -99,7 +122,7 @@ try {
     assert.equal(windows.at(-1), 1, "default chat reaches its first page");
     assert.deepEqual(errors, []);
     console.log(
-      `webkit ${viewport.width}x${viewport.height} top=${triggerTop}${suppressAnchoring ? " anchoring suppressed" : ""}: reachable pages ${windows.join(" -> ")}`,
+      `webkit ${input} ${viewport.width}x${viewport.height} top=${triggerTop}${suppressAnchoring ? " anchoring suppressed" : ""}: reachable pages ${windows.join(" -> ")}`,
     );
     await page.close();
   }

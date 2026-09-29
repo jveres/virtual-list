@@ -5504,6 +5504,32 @@ describe("runtime — edge slots", () => {
 });
 
 describe("runtime — commands", () => {
+  it("keeps a Firefox edge page held when a wheel takes over a parked command", async () => {
+    const h = mount(range(0, 40), {
+      settleStrategy: "firefox-wheel",
+      reach: true,
+    });
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 8 }));
+    h.viewport.dispatchEvent(new Event("scrollend"));
+    vi.advanceTimersByTime(500);
+    const command = h.list.scrollTo("end", { behavior: "smooth" });
+    vi.advanceTimersByTime(16); // Landed, waiting for the command's cooldown.
+    h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 8 }));
+    const update = h.list.updateWindow(() => ({ items: range(0, 60) }));
+
+    vi.advanceTimersByTime(2000);
+    await expect(command).resolves.toBe(false);
+    expect(h.list.state.count).toBe(40);
+    expect(h.list.state.held).toBe(true);
+
+    h.viewport.dispatchEvent(new Event("scrollend"));
+    vi.advanceTimersByTime(500);
+    await expect(update).resolves.toBe(true);
+    expect(h.list.state.count).toBe(60);
+    expect(h.list.state.held).toBe(false);
+    h.list.dispose();
+  });
+
   it.each([
     "default",
     "firefox-wheel",

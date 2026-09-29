@@ -13,6 +13,14 @@ let args = CommandLine.arguments
 guard args.count >= 2 else { fail("Expected displays, place, focus, scroll, or quit") }
 
 switch args[1] {
+case "session":
+    let session = CGSessionCopyCurrentDictionary() as? [String: Any]
+    let state: [String: Bool] = [
+        "locked": session == nil || (session?["CGSSessionScreenIsLocked"] as? Bool ?? false),
+        "onConsole": session?["kCGSSessionOnConsoleKey"] as? Bool ?? false,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: state)
+    print(String(data: data, encoding: .utf8)!)
 case "image-metrics":
     guard args.count == 7, let x = Double(args[3]), let y = Double(args[4]),
           let width = Double(args[5]), let height = Double(args[6]),
@@ -113,10 +121,11 @@ case "focus":
     app.activate(options: [])
     for _ in 0..<100 {
         if NSWorkspace.shared.frontmostApplication?.processIdentifier == pid { break }
-        usleep(10000)
+        // NSWorkspace's activation state updates when the run loop runs.
+        RunLoop.current.run(until: Date(timeIntervalSinceNow: 0.01))
     }
     guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid else {
-        fail("Could not activate the test Firefox for document focus")
+        fail("Could not activate the test browser for document focus")
     }
     let point = CGPoint(x: x, y: y)
     let original = CGEvent(source: nil)?.location
@@ -126,7 +135,7 @@ case "focus":
         guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid,
               let event = CGEvent(mouseEventSource: source, mouseType: kind,
                                   mouseCursorPosition: point, mouseButton: .left) else {
-            fail("Test Firefox lost foreground during document focus")
+            fail("Test browser lost foreground during document focus")
         }
         event.post(tap: .cghidEventTap)
         usleep(50000)

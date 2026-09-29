@@ -138,16 +138,19 @@ function mount(
  * expired and a scrollend delivered (an EDGE release, pending uncontested).
  * Timeline: last wheel at t+32, scrollend at t+182.
  */
-function firefoxEdgeReleasePreamble(harness: Harness): void {
-  harness.scrollTo(600);
-  harness.wheel(-50);
-  harness.scrollTo(400);
+function firefoxEdgeReleasePreamble(harness: Harness, bottom = false): void {
+  const top = (gap: number): number =>
+    bottom ? CONTENT_HEIGHT - VIEWPORT_HEIGHT - gap : gap;
+  const direction = bottom ? 1 : -1;
+  harness.scrollTo(top(600));
+  harness.wheel(direction * 50);
+  harness.scrollTo(top(400));
   vi.advanceTimersByTime(16);
-  harness.wheel(-50);
-  harness.scrollTo(200);
+  harness.wheel(direction * 50);
+  harness.scrollTo(top(200));
   vi.advanceTimersByTime(16);
-  harness.wheel(-8);
-  harness.scrollTo(0); // Pinned at the loadable top: protected edge.
+  harness.wheel(direction * 8);
+  harness.scrollTo(top(0)); // Pinned at the loadable edge.
   vi.advanceTimersByTime(150); // Wheel-idle expires; no timer backstop fires.
   harness.scrollEnd(); // The (possible) release.
 }
@@ -359,6 +362,61 @@ describe("default strategy", () => {
 });
 
 describe("firefox edge sequences (trace replay)", () => {
+  it.each([false, true])(
+    "keeps release confirmation for the first wheel of a stationary gesture (bottom: %s)",
+    (bottom) => {
+      const harness = mount("firefox-wheel", { canLoadBottom: true });
+      harness.viewport.scrollTop = bottom
+        ? CONTENT_HEIGHT - VIEWPORT_HEIGHT
+        : 0;
+      harness.wheel(bottom ? 8 : -8);
+      vi.advanceTimersByTime(10);
+      harness.scrollEnd();
+
+      vi.advanceTimersByTime(300);
+      expect(harness.settled()).toBe(0);
+      vi.advanceTimersByTime(200);
+      expect(harness.settled()).toBe(1);
+    },
+  );
+
+  it.each([false, true])(
+    "postpones a queued edge commit for a decaying tail without losing its release (bottom: %s)",
+    (bottom) => {
+      const harness = mount("firefox-wheel", { canLoadBottom: true });
+      firefoxEdgeReleasePreamble(harness, bottom);
+      // The confirmation timer fires at t+482; its commit frame has not run.
+      vi.advanceTimersByTime(301);
+      harness.wheel(bottom ? 1 : -1);
+
+      vi.advanceTimersByTime(400);
+      expect(harness.settled()).toBe(0);
+      vi.advanceTimersByTime(100);
+      expect(harness.settled()).toBe(1);
+      expect(harness.controller.isScrollPhaseActive()).toBe(false);
+    },
+  );
+
+  it.each([
+    [-20, WheelEvent.DOM_DELTA_PIXEL],
+    [1, WheelEvent.DOM_DELTA_PIXEL],
+    [-1, WheelEvent.DOM_DELTA_LINE],
+  ])(
+    "cancels a queued edge commit on renewed input (%s, mode %s)",
+    (delta, mode) => {
+      const harness = mount("firefox-wheel");
+      firefoxEdgeReleasePreamble(harness);
+      vi.advanceTimersByTime(301);
+      harness.wheel(delta, mode);
+
+      vi.advanceTimersByTime(2000);
+      expect(harness.settled()).toBe(0);
+      harness.scrollEnd();
+      vi.advanceTimersByTime(500);
+      expect(harness.settled()).toBe(1);
+    },
+  );
+
   it("does not commit an old release after renewed input is held still", () => {
     const harness = mount("firefox-wheel");
     firefoxEdgeReleasePreamble(harness);

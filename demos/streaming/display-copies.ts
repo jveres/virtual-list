@@ -68,6 +68,9 @@ function displayCopy(url: string): Promise<string | null> {
 /** Swap a loaded, oversized data-URL image to its display copy once ready. */
 export function useDisplayCopy(image: HTMLImageElement, url: string): void {
   if (
+    // Firefox downsamples originals to their displayed size. Pre-decoding a
+    // copy makes it retain an additional full-size surface for the same photo.
+    !CSS.supports("-webkit-nbsp-mode", "space") ||
     sources.has(image) ||
     !url.startsWith("data:image/") ||
     Math.max(image.naturalWidth, image.naturalHeight) <= MAX_EDGE

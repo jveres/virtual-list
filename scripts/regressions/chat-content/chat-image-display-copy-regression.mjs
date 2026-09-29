@@ -41,8 +41,13 @@ for (const engine of [chromium, firefox, webkit]) {
       const { image } = await mount(large);
       const before = image.getBoundingClientRect().height;
       useDisplayCopy(image, large);
+      const copyRequired = CSS.supports("-webkit-nbsp-mode", "space");
       const deadline = performance.now() + 10000;
-      while (image.currentSrc === large && performance.now() < deadline)
+      while (
+        copyRequired &&
+        image.currentSrc === large &&
+        performance.now() < deadline
+      )
         await new Promise((done) => setTimeout(done, 50));
       await image.decode();
       const small = photo(1000, 750);
@@ -55,6 +60,7 @@ for (const engine of [chromium, firefox, webkit]) {
       rebuilt.firstChild.setAttribute("src", large);
       adoptDisplayCopies(rebuilt);
       return {
+        copyRequired,
         copied: image.currentSrc.startsWith("blob:"),
         natural: [image.naturalWidth, image.naturalHeight],
         box: [before, image.getBoundingClientRect().height],
@@ -69,12 +75,14 @@ for (const engine of [chromium, firefox, webkit]) {
         imageLayer: getComputedStyle(image).willChange,
       };
     });
-    assert.equal(result.copied, true, JSON.stringify(result));
-    assert.deepEqual(result.natural, [2048, 1536]);
+    const expectCopy = engine.name() === "webkit";
+    assert.equal(result.copyRequired, expectCopy);
+    assert.equal(result.copied, expectCopy, JSON.stringify(result));
+    assert.deepEqual(result.natural, expectCopy ? [2048, 1536] : [4000, 3000]);
     assert.ok(Math.abs(result.box[0] - result.box[1]) <= 0.5, result.box);
     assert.equal(result.identity, true);
     assert.equal(result.smallKept, true);
-    assert.equal(result.adopted, true);
+    assert.equal(result.adopted, expectCopy);
     assert.equal(result.adoptedIdentity, true);
     assert.equal(result.rangeLimit, "standard");
     assert.equal(result.imageLayer, "transform");

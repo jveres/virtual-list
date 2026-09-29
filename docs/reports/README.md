@@ -7,6 +7,25 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 29 streaming chat memory
+
+The [memory investigation](chat-memory-2026-09-29.md) attributes excess Firefox
+image memory to duplicate decodes and retired-row image resources, and Safari
+peaks to oversized composited surfaces and temporary display-copy pixels. It
+records the measured worker cleanup, browser baselines, passing Firefox/Safari
+memory gates, and the unresolved Chrome stress-budget result.
+
+The [scroll regression follow-up](scroll-regressions-2026-09-29.md) records the
+subsequent Safari shift/navigation and Firefox bottom-loader reports, corrected
+Firefox release cases, and user-confirmed Safari paging recovery. Live captures
+also exposed a stale canvas floor and image-row height changes. It records their
+candidate fixes, rejected compositing controls, and the DevTools-free diagnostic.
+
+The [compositing comparison](compositing-memory-2026-09-29.md) separates canvas
+and message hints, corrects Safari process ownership, and records a greater
+than twofold transient memory increase when Safari's canvas hints are removed.
+It supersedes the older process-selection method for this decision.
+
 ## September 28 Safari chat image layers
 
 The [image-layer report](safari-image-layers-2026-09-28.md) records repeated

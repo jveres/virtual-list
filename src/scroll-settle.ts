@@ -311,13 +311,6 @@ export function createScrollSettleController(
     return firefox?.cancelCommit() ?? false;
   }
 
-  function cancelFirefoxEdgeCommitForInput(): void {
-    if (!cancelFirefoxEdgeCommitFrame()) return;
-    // Input after the confirmation window is a new gesture, not a trailing
-    // momentum marker. Require this gesture's own scrollend before growth.
-    cancelPendingScrollPhaseEnd();
-  }
-
   /** Touch and scrollbar input is deliberate; it is never a wheel tail. */
   function cancelPendingReleaseForDirectInput(): void {
     cancelFirefoxEdgeCommitFrame();
@@ -707,12 +700,15 @@ export function createScrollSettleController(
       cancelChromiumQuietSettleTimer();
       host.onGestureStarted();
       if (host.isDisposed()) return false;
-    } else if (strategy !== "firefox-wheel") {
+    } else if (
+      strategy !== "firefox-wheel" ||
+      !hasPendingFirefoxEdgeRelease()
+    ) {
       // Fresh input invalidates an earlier release. Safari can deliver the
       // reversing wheel/touch input before its first scroll event; keeping
-      // the old scrollend would let it settle in that gap. Firefox alone
-      // retains an edge release because its renewed-input/decaying-tail state
-      // machine classifies post-scrollend wheels explicitly.
+      // the old scrollend would let it settle in that gap. Firefox retains
+      // only an edge release, classified by the wheel policy below. A
+      // command's pending landing is never the new wheel gesture's release.
       cancelPendingScrollPhaseEnd();
     }
     return true;
@@ -807,6 +803,9 @@ export function createScrollSettleController(
     if (host.isDisposed()) return;
     observeInitialInput();
     if (usesWheelScrollEndFallback()) {
+      // Starting a phase (or cancelling an owned glide) resets its state.
+      // Record this wheel only afterward so the first tick belongs to it.
+      if (!handleScrollPhaseStart()) return;
       firefox?.recordInput(performance.now());
       const outwardBoundary = boundaryForOutwardWheel(event);
       if (
@@ -816,7 +815,11 @@ export function createScrollSettleController(
       ) {
         firefox.protect(outwardBoundary);
       }
-      if (event.deltaY !== 0) cancelFirefoxEdgeCommitForInput();
+      // A late decaying marker can arrive between confirmation and the
+      // commit frame. Postpone that frame, but let the same delta policy
+      // decide whether this invalidates the release or only extends it.
+      // Clearing the release here stranded held pages without another end.
+      if (event.deltaY !== 0) cancelFirefoxEdgeCommitFrame();
       if (
         firefox?.observeDelta(
           event.deltaY,
@@ -827,7 +830,6 @@ export function createScrollSettleController(
         // all its scheduled checks as well as the policy's candidate.
         cancelPendingScrollPhaseEnd();
       }
-      if (!handleScrollPhaseStart()) return;
       // An outward wheel at a loadable edge moves nothing, yet it is a
       // gesture in intent: its phase must settle like one that moved.
       if (outwardBoundary) scrollPhaseMoved = true;

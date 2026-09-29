@@ -375,6 +375,20 @@ p.ai-settings-note {
   overscroll-behavior-y: contain;
 }
 
+/* The scroll surface includes the gutters; its composited content need not.
+   Large empty backing surfaces otherwise dominate Safari's scroll memory. */
+.streaming-viewport > [data-anchoring] {
+  max-width: var(--chat-width);
+  margin-inline: auto;
+}
+
+.streaming-viewport[data-debug-compositing~="no-canvas-layer"]
+  > [data-anchoring] {
+  /* Diagnostic override of the runtime's inline canvas hints. */
+  transform: none !important;
+  transform-style: flat !important;
+}
+
 /* The pill loader (settings: "Scrollback loader: Floating pill"): an overlay that is never scroll geometry, a
    floating pill over the viewport's top edge, shown while older messages
    load and briefly when scrollback exhausts. The default loader is the
@@ -507,6 +521,16 @@ p.ai-settings-note {
      (blank rows above the last two until any layout read), and the slot
      already clips. */
   contain: layout style;
+}
+
+@supports (-webkit-nbsp-mode: space) {
+  .streaming-viewport .message {
+    will-change: transform;
+  }
+}
+
+.streaming-viewport[data-debug-compositing~="no-message-layers"] .message {
+  will-change: auto;
 }
 
 @keyframes fly-in {
@@ -693,12 +717,18 @@ p.ai-settings-note {
   width: 100%;
 }
 
+/* Unloaded inline images need their own ratio box in Firefox. Keep this
+   fallback below every renderer/host selector so block images stay blocks. */
+:where(img[data-image-suspended]:not([hidden])) {
+  display: inline-block;
+}
+
 /* HDR photos (gain-map JPEGs) make Safari render scrolling rows in extended
    range on an HDR display: rows stall and paint late. Inline images stay
    standard range; the full-screen viewer keeps HDR. */
 .message-content img {
   dynamic-range-limit: standard;
-  /* Promote the image, not the entire potentially tall message row. */
+  /* Keep photo backing separate from the text when rows are recycled. */
   will-change: transform;
 }
 

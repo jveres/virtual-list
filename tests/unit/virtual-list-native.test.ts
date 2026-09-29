@@ -160,13 +160,50 @@ describe("native anchoring surface", () => {
     h.list.dispose();
   });
 
-  it.each(["setItems", "updateWindow"] as const)(
-    "preserves a near-top reading position after WebKit touch momentum using %s",
-    async (method) => {
+  it("refreshes the native pin floor after a mid-gesture removal", () => {
+    const items = range(0, 20);
+    const h = mount(items, {
+      boot: "start",
+      settleStrategy: "safari-wheel",
+      pinning: { match: (item) => item.id === 18, offset: 40 },
+    });
+    try {
+      expect(h.canvas().style.minHeight).toBe("calc(100% + 1760px)");
+      h.userScroll(100);
+      h.userScroll(0);
+      h.list.setItems(items.slice(1), { anchor: "viewport" });
+      expect(h.list.state.count).toBe(19);
+      expect(h.list.state.held).toBe(false);
+      // Changing an anchor ancestor's size mid-gesture suppresses native
+      // anchoring. Its deferred floor still has to catch up at settlement.
+      expect(h.canvas().style.minHeight).toBe("calc(100% + 1760px)");
+
+      h.settle();
+      vi.advanceTimersByTime(200); // WebKit's 350 ms edge-quiet guard.
+
+      expect(h.list.state.totalSize).toBe(2260);
+      expect(h.canvas().style.minHeight).toBe("calc(100% + 1660px)");
+      expect(h.viewport.scrollTop).toBe(0);
+    } finally {
+      h.list.dispose();
+    }
+  });
+
+  it.each(
+    (["setItems", "updateWindow"] as const).flatMap((method) =>
+      (["touch", "wheel"] as const).map((input) => ({ method, input })),
+    ),
+  )(
+    "preserves a near-top reading position after WebKit $input momentum using $method",
+    async ({ method, input }) => {
       const items = range(24, 50);
       const h = mount(items, { boot: "end", settleStrategy: "safari-wheel" });
       try {
-        h.viewport.dispatchEvent(new Event("touchstart"));
+        h.viewport.dispatchEvent(
+          input === "touch"
+            ? new Event("touchstart")
+            : new WheelEvent("wheel", { deltaY: -8 }),
+        );
         h.userScroll(30);
         const next = [...range(0, 24), ...items];
         const update =
@@ -177,11 +214,15 @@ describe("native anchoring surface", () => {
         expect(h.list.state.count).toBe(items.length);
         expect(h.viewport.scrollTop).toBe(30);
 
-        const release = new Event("touchend");
-        Object.defineProperty(release, "touches", { value: [] });
-        h.viewport.dispatchEvent(release);
+        if (input === "touch") {
+          const release = new Event("touchend");
+          Object.defineProperty(release, "touches", { value: [] });
+          h.viewport.dispatchEvent(release);
+        }
         // A lifted finger is not a settled gesture: momentum still owns it.
         for (const top of [28, 26, 24, 22, 20]) {
+          if (input === "wheel")
+            h.viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: -2 }));
           h.userScroll(top);
           vi.advanceTimersByTime(50);
           expect(h.list.state.count).toBe(items.length);

@@ -10,6 +10,15 @@ For a repeatable complex stream through the full chat demo, use the
 SSE replay, bounded operation attribution, validity checks, and comparison
 reports while retaining this native Firefox capture as the primary baseline.
 
+For growing memory or suspected graphics allocation, add the
+[streaming chat memory regression](memory-profiling.md). It checks physical
+footprint, transient process peaks, and repeated-scroll plateaus with synthetic
+text and image workloads.
+
+For an intermittent stuck loader or ignored jump button, use the
+[scroll-state diagnostic](reports/scroll-regressions-2026-09-29.md#capture-the-unresolved-failure).
+It records internal paging and gesture transitions with DevTools closed.
+
 ## Requirements
 
 The capture runner requires macOS, Node.js 22 or later, the Swift compiler

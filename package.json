@@ -19,7 +19,8 @@
     "profile:boot": "node scripts/boot-timing.mjs",
     "profile:chat": "node scripts/profile-chat.mjs",
     "test:firefox-profile": "node --test scripts/firefox-profile/*.checks.mjs",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:memory": "node scripts/profile-memory.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.14",

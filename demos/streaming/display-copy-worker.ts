@@ -14,18 +14,21 @@ self.onmessage = ({ data }: MessageEvent<CopyRequest>) => {
 };
 
 async function copy({ id, url, maxEdge }: CopyRequest): Promise<void> {
+  let bitmap: ImageBitmap | undefined;
+  let canvas: OffscreenCanvas | undefined;
   try {
     const source = await (await fetch(url)).blob();
-    const bitmap = await createImageBitmap(source);
+    bitmap = await createImageBitmap(source);
     const scale = maxEdge / Math.max(bitmap.width, bitmap.height);
     const width = Math.max(1, Math.round(bitmap.width * scale));
     const height = Math.max(1, Math.round(bitmap.height * scale));
-    const canvas = new OffscreenCanvas(width, height);
+    canvas = new OffscreenCanvas(width, height);
     const context = canvas.getContext("2d");
     if (!context) throw new Error("No 2D context");
     context.imageSmoothingQuality = "high";
     context.drawImage(bitmap, 0, 0, width, height);
     bitmap.close();
+    bitmap = undefined;
     // PNG keeps transparency; photos re-encode as JPEG.
     const blob = await canvas.convertToBlob(
       source.type === "image/png"
@@ -35,5 +38,10 @@ async function copy({ id, url, maxEdge }: CopyRequest): Promise<void> {
     self.postMessage({ id, blob });
   } catch {
     self.postMessage({ id, blob: null });
+  } finally {
+    bitmap?.close();
+    // The encoded blob owns its bytes; release the temporary pixel backing
+    // without waiting for the worker's next garbage collection.
+    if (canvas) canvas.width = canvas.height = 1;
   }
 }

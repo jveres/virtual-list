@@ -70,6 +70,7 @@ import {
 import { createConversationTree } from "./conversation-tree.js";
 import { adoptDisplayCopies, readyDisplayCopy } from "./display-copies.js";
 import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
+import { resumeRowImages, suspendRowImages } from "./image-lifecycle.js";
 import {
   createChatImagePreview,
   messageImageSources,
@@ -304,6 +305,12 @@ const instantReplies =
 const forceFastLongReply =
   demoParams.has("fast-long") || demoParams.get("stream") === "fast-long";
 const viewport = mustGet("viewport");
+const debugCompositing = demoParams
+  .get("debug-compositing")
+  ?.split(",")
+  .filter((value) => ["no-message-layers", "no-canvas-layer"].includes(value));
+if (debugCompositing?.length)
+  viewport.dataset.debugCompositing = debugCompositing.join(" ");
 const viewportWrap = viewport.parentElement as HTMLElement;
 const promptInput = mustGet("prompt", HTMLTextAreaElement);
 const largePasteDialog = mustGet("large-paste-dialog", HTMLDialogElement);
@@ -3938,7 +3945,9 @@ function mountConversation(): void {
         const updated = updateRow(existing, row);
         if (updated) return updated;
       }
-      return adoptDisplayCopies(buildRow(row));
+      const element = adoptDisplayCopies(buildRow(row));
+      suspendRowImages(element);
+      return element;
     },
     edgeSlots: {
       start: edgeSlotRequested ? edgeSlotSpec : null,
@@ -3980,6 +3989,8 @@ function mountConversation(): void {
     onReachStart: loadOlderMessages,
     onReachEnd: loadNewerMessages,
     onMount: (element, row) => {
+      resumeRowImages(element);
+      adoptDisplayCopies(element);
       // Retained/prepared rows can miss setStreamingUI while offscreen.
       // Refresh only action state; mounting must not rebuild their content.
       if (!isDayHeader(row)) syncMessageActionState(element, row);
@@ -3987,6 +3998,7 @@ function mountConversation(): void {
       streamingViewers.get(element)?.setMounted(true);
     },
     onUnmount: (element) => {
+      suspendRowImages(element);
       streamingViewers.get(element)?.setMounted(false);
       unmountUserMessageCollapse(element);
     },

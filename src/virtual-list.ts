@@ -336,6 +336,8 @@ export function createVirtualList<T>(
   let viewportHeight = viewport.clientHeight;
   /** Where the viewport stood before a resize the engine may have clamped. */
   let lastObservedTop = viewport.scrollTop;
+  /** Native commits defer ancestor sizing until the gesture has settled. */
+  let canvasFloorPending = false;
   /** A resize during a phase commits at the settle with this stance (I5). */
   let resizeHeld: "pin" | "viewport" | null = null;
 
@@ -351,13 +353,16 @@ export function createVirtualList<T>(
   function syncCanvasHeight(totalSize: number, floor: boolean): void {
     // A native canvas takes its height from its flow, for the same reason.
     if (!native) canvas.style.height = `${totalSize}px`;
-    if (!floor) return;
     // The pin's shortfall grows in the same layout as its viewport.
     const pinTop = geometry.pinTop;
-    canvas.style.minHeight =
+    const minHeight =
       pinTop === null || pinTop === 0
         ? ""
         : `calc(100% + ${Math.ceil(pinTop)}px)`;
+    canvasFloorPending = canvas.style.minHeight !== minHeight;
+    if (!floor) return;
+    if (canvasFloorPending) canvas.style.minHeight = minHeight;
+    canvasFloorPending = false;
   }
 
   function recordScrollAdjustment(top: number): void {
@@ -1932,14 +1937,14 @@ export function createVirtualList<T>(
    * mid-gesture. Edges keep the settle: a bounce, Firefox's scroll limit,
    * and an early scrollend all live there. So does a glide: it heads for a
    * target in the committed snapshot, and held work waits for its landing.
-   * WebKit touch phases also wait through momentum: CSS anchoring support
+   * WebKit gestures also wait through momentum: CSS anchoring support
    * does not guarantee that a prepend adjusts the native scroller. The
    * settle commit preserves the reading position with an explicit write.
    */
   const nativeFree = (): boolean =>
     native &&
     glide === null &&
-    !(settleStrategy === "safari-wheel" && controller.isTouchScrollPhase()) &&
+    settleStrategy !== "safari-wheel" &&
     !controller.isNearScrollEdge();
 
   const follow = new FollowController(
@@ -2013,7 +2018,7 @@ export function createVirtualList<T>(
     flushStale();
     const explicit = remeasurePolicy;
     if (remeasureRequests.size === 0) remeasurePolicy = undefined;
-    if (pending !== null || dirtyRows.size > 0) {
+    if (pending !== null || dirtyRows.size > 0 || canvasFloorPending) {
       // Rows grown under a pinned landing commit on the pin's stance.
       const pinned = geometry.pinned;
       const onPin =
