@@ -212,7 +212,14 @@ The definition of correct, referenced by number throughout the code:
   observed; a failed transaction discards only what it queued.
 - **I5** — a pinned key can always be scrolled to the viewport top: the
   reserve makes up the shortfall, is consumed by growth, regrown by
-  shrinkage, and never collapses out from under the viewport. A pinned row
+  shrinkage, and never collapses out from under the viewport. An explicit
+  viewport-preservation request may also create trailing space when shrinkage
+  would clamp a surviving reading anchor. That extra space drains after the
+  reader moves away; it does not create or move a pin. If the reader is at
+  the end and a clipped pinned row shrinks enough that its tail fits below
+  the pin, an explicit viewport request restores that pin instead of keeping
+  the row's top offscreen. Internal width reflow does not create this extra
+  reading reserve; it clamps to the available range. A pinned row
   replaced in place (a version switch, an edit: a new key at its index,
   everything before it unchanged) passes the pin to its replacement; a
   removal of the pinned key drops the pin. A surviving key that reaches
@@ -362,7 +369,12 @@ interaction; the [README](../README.md) lists the public options.
   `setItems(items, { anchor? })` — a policy, or a host-named anchor
   `{ key, offset }`: after the commit the key's top sits `offset` pixels
   below the viewport top (a re-flow names where the old point went; a
-  missing key falls back to the captured anchor) —, `scrollTo(target, { align?, behavior?,
+  missing key falls back to the captured anchor). An optional nonnegative
+  `visibilityInset` preserves that offset while the measured row intersects
+  the viewport below the inset. If it would be fully hidden, the runtime
+  reveals its top at the inset, capped below the viewport's bottom. Omitting
+  this option preserves exact-offset behavior. Other operations include
+  `scrollTo(target, { align?, behavior?,
   offset?, pin? })`, `updateItem(key, item, { anchor? })`,
   `remeasure(key, { anchor? })`,
   `setEdgeSlot(edge, slot | null)`, `positionOf(key)`, `elementOf(key)`,
@@ -380,7 +392,9 @@ interaction; the [README](../README.md) lists the public options.
   `scrollTo("end", { pin: { key, offset? } })` establishes that reserve
   without an intermediate scroll to the pin. Its destination is the greater
   of the pinned position and the content's natural end, excluding an older
-  pin's temporarily retained reserve. That old reserve drains after landing,
+  pin's temporarily retained reserve. Plain `scrollTo("end")` also excludes
+  temporary reading reserve and uses the current pin or natural content end.
+  That old reserve drains after landing,
   never underneath the glide. The command resolves `false` if the pin key
   is missing after takeover commits held work. `pin` is valid only with an
   end target; its offset defaults to zero, including non-finite input.

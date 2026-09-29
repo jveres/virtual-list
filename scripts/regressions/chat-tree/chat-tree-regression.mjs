@@ -232,7 +232,7 @@ for (const engine of [firefox, webkit, chromium]) {
         .count(),
       0,
     );
-    assert.equal(await panel.locator(".conversation-tree-node").count(), 122);
+    assert.equal(await panel.locator(".conversation-tree-node").count(), 125);
     assert.equal(await panel.locator('[aria-current="location"]').count(), 1);
     const marker = await panel
       .locator('[aria-current="location"]')

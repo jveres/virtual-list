@@ -4,7 +4,7 @@ export function installChatProbe(config) {
   localStorage.setItem(
     "virtual-list:ai-settings",
     JSON.stringify({
-      provider: "openai",
+      provider: config.provider ?? "openai",
       apiKey: "local-profile-only",
       model: "profile-model",
       contextTurns: 8,
@@ -50,7 +50,7 @@ export function installChatProbe(config) {
     "virtual-list:chat-options",
     JSON.stringify({
       sticky: true,
-      landing: "end",
+      landing: config.landing ?? "end",
       follow: "end",
       trail: config.trail,
     }),
@@ -682,7 +682,7 @@ export function installChatProbe(config) {
         performance.getEntriesByName("chat:visible").length > 0
       );
     },
-    start() {
+    start({ submit = true } = {}) {
       if (started || !api.ready())
         throw new Error("Chat profiling is not ready or already started");
       if (!document.hasFocus() || document.visibilityState === "hidden")
@@ -719,10 +719,12 @@ export function installChatProbe(config) {
       if (config.scheduler) observeScheduling();
       performance.mark("chat-profile-start");
       frame = nativeRaf.call(window, sample);
-      const prompt = document.querySelector("#prompt");
-      prompt.value = "Produce the deterministic complex profiling reply.";
-      prompt.dispatchEvent(new Event("input", { bubbles: true }));
-      document.querySelector("#send-btn").click();
+      if (submit) {
+        const prompt = document.querySelector("#prompt");
+        prompt.value = "Produce the deterministic complex profiling reply.";
+        prompt.dispatchEvent(new Event("input", { bubbles: true }));
+        document.querySelector("#send-btn").click();
+      }
       if (config.scenario === "buttons") {
         for (const [at, direction] of [
           [config.workload.durationMs / 4, "top"],

@@ -18,6 +18,8 @@ export async function createChatProfileServer(options = {}) {
     scheduler: options.scheduler ?? false,
     scenario: options.scenario ?? "follow",
     trail: options.trail ?? "long",
+    landing: options.landing ?? "end",
+    provider: options.provider ?? "openai",
     limit: options.limit ?? 100000,
   };
   const sources = {};

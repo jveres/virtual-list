@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 29 clean-code and anchor audit
+
+The [audit and anchor report](clean-code-anchor-audit-2026-09-29.md) records
+Safari process-ownership and display-copy failure fixes, the user-confirmed
+Chrome version-switch reserve correction, collapse/reflow and bottom-navigation
+fixes, 4,464 geometry combinations, 252 browser combinations, and matched
+Enter-to-send captures.
+
 ## September 29 streaming chat memory
 
 The [memory investigation](chat-memory-2026-09-29.md) attributes excess Firefox

@@ -260,15 +260,21 @@ export async function launchSafari(counter) {
       1,
       "Expected one owned Safari automation process",
     );
-    pid = candidates[0].pid;
-    const args = execFileSync("/bin/ps", ["-p", String(pid), "-o", "args="], {
-      encoding: "utf8",
-    });
+    const candidatePid = candidates[0].pid;
+    const args = execFileSync(
+      "/bin/ps",
+      ["-p", String(candidatePid), "-o", "args="],
+      {
+        encoding: "utf8",
+      },
+    );
     assert.match(
       args,
       /(?:^|\s)--automation(?:\s|$)/,
       "Safari must be isolated",
     );
+    // Cleanup may terminate only a process whose isolation was verified.
+    pid = candidatePid;
     const evaluate = async (expression) =>
       JSON.parse(
         await client.tool("evaluate_javascript", {

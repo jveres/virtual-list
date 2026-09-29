@@ -145,24 +145,12 @@ try {
           const before = await state();
           const oldTop = before.rows.find((r) => r.key === String(key)).top;
           let expected = Math.max(inset, oldTop);
-          const visibleReply = before.rows.find(
-            (r) => r.key === String(key + 1),
-          );
           let currentKey = key;
-          let firstSwitch = true;
           for (const nextKey of [key + 2, key + 4, key + 2, key, key + 2]) {
             const direction = nextKey > currentKey ? "Next" : "Previous";
-            // The first footer click replaces a clipped user prompt while
-            // its reply is visible: preserve that reply, not the hidden top.
-            const readingReply =
-              firstSwitch &&
-              role === "user" &&
-              placement === "footer" &&
-              visibleReply?.top >= inset &&
-              visibleReply.top < before.height &&
-              oldTop < 0;
-            const anchorKey = readingReply ? nextKey + 1 : nextKey;
-            const anchorOffset = readingReply ? visibleReply.top : expected;
+            // A replacement that becomes fully hidden must reveal its own top.
+            const anchorKey = nextKey;
+            const anchorOffset = expected;
             // Direct activation isolates anchoring from automation's auto-scroll.
             await page
               .locator(`.message[data-key="${currentKey}"]`)
@@ -182,7 +170,6 @@ try {
             assert.ok(after.total - after.height >= after.scrollTop - 1);
             expected = after.rows.find((r) => r.key === String(nextKey)).top;
             currentKey = nextKey;
-            firstSwitch = false;
           }
           console.log(
             JSON.stringify({

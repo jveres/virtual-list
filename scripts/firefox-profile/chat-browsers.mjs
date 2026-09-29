@@ -36,7 +36,7 @@ async function waitFor(test, signal, timeout = 30000) {
   throw new Error("Browser readiness deadline exceeded");
 }
 
-async function nativeTools(directory, requested) {
+export async function nativeTools(directory, requested) {
   assert.equal(process.platform, "darwin", "Native input requires macOS");
   const cache = join(directory, "../.swift-cache");
   await mkdir(cache, { recursive: true });
@@ -235,8 +235,17 @@ export async function capturePlaywright(server, directory, options, signal) {
         transferMode: "ReturnAsStream",
       });
     }
+    if (options.submit === "enter")
+      await page
+        .locator("#prompt")
+        .fill("Produce the deterministic complex profiling reply.");
     const metricsBefore = cdp ? await cdp.send("Performance.getMetrics") : null;
-    await page.evaluate(() => globalThis.__chatProfile.start());
+    await page.evaluate(
+      (submit) => globalThis.__chatProfile.start({ submit }),
+      options.submit !== "enter",
+    );
+    if (options.submit === "enter")
+      await page.locator("#prompt").press("Enter");
     const end = Date.now() + options.seconds * 1000;
     if (options.scenario === "manual")
       console.log("Scroll the foreground test Chrome now.");

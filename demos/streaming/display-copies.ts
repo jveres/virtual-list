@@ -20,6 +20,17 @@ const probes = new WeakMap<HTMLImageElement, HTMLImageElement>();
 let worker: Worker | null | undefined;
 let nextId = 1;
 
+function disableWorker(target: Worker): void {
+  if (worker !== target) return;
+  worker = null;
+  target.onmessage = null;
+  target.onerror = null;
+  target.onmessageerror = null;
+  target.terminate();
+  for (const resolve of pending.values()) resolve(null);
+  pending.clear();
+}
+
 function copyWorker(): Worker | null {
   if (worker !== undefined) return worker;
   if (
@@ -31,10 +42,19 @@ function copyWorker(): Worker | null {
     return worker;
   }
   try {
-    worker = new Worker(new URL("./display-copy-worker.ts", import.meta.url), {
-      type: "module",
-    });
-    worker.onmessage = ({
+    const target = new Worker(
+      new URL("./display-copy-worker.ts", import.meta.url),
+      {
+        type: "module",
+      },
+    );
+    worker = target;
+    target.onerror = (event) => {
+      event.preventDefault();
+      disableWorker(target);
+    };
+    target.onmessageerror = () => disableWorker(target);
+    target.onmessage = ({
       data,
     }: MessageEvent<{ id: number; blob: Blob | null }>) => {
       pending.get(data.id)?.(data.blob);
@@ -54,12 +74,23 @@ function displayCopy(url: string): Promise<string | null> {
   const id = nextId++;
   copy = new Promise<Blob | null>((resolve) => {
     pending.set(id, resolve);
-    target.postMessage({ id, url, maxEdge: MAX_EDGE });
+    try {
+      target.postMessage({ id, url, maxEdge: MAX_EDGE });
+    } catch {
+      disableWorker(target);
+    }
   }).then((blob) => {
-    if (!blob) return null;
-    const display = URL.createObjectURL(blob);
-    ready.set(url, display);
-    return display;
+    if (blob) {
+      try {
+        const display = URL.createObjectURL(blob);
+        ready.set(url, display);
+        return display;
+      } catch {
+        // A display copy is optional; retain the original on allocation failure.
+      }
+    }
+    copies.delete(url);
+    return null;
   });
   copies.set(url, copy);
   return copy;

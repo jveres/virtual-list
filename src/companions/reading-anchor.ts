@@ -1,6 +1,12 @@
-import type { ExplicitAnchor, VirtualList } from "../virtual-list";
+import type {
+  ExplicitAnchor,
+  VirtualList,
+  VirtualListState,
+} from "../virtual-list";
 
-type PositionedList = Pick<VirtualList<unknown>, "positionOf">;
+type PositionedList = Pick<VirtualList<unknown>, "positionOf"> & {
+  readonly state?: Pick<VirtualListState, "totalSize">;
+};
 type Viewport = { readonly scrollTop: number; readonly clientHeight: number };
 export interface KeyReplacement {
   from: string;
@@ -22,7 +28,14 @@ export function captureItemPlacement(
 ): ItemPlacement | null {
   const position = list.positionOf(key);
   if (!position) return null;
-  const offset = position.top - viewport.scrollTop;
+  // The browser's physical end can exceed the modeled range by a fraction
+  // (clientHeight rounds, CSS percentage heights do not). Capturing that
+  // extra distance as a reading offset would grow reserve on each swap.
+  const maxTop = list.state
+    ? Math.max(0, list.state.totalSize - viewport.clientHeight)
+    : Number.POSITIVE_INFINITY;
+  const scrollTop = Math.max(0, Math.min(viewport.scrollTop, maxTop));
+  const offset = position.top - scrollTop;
   return {
     offset,
     above: offset + position.height <= 0,
@@ -31,14 +44,13 @@ export function captureItemPlacement(
   };
 }
 
-/** Prefer a fully visible replacement; otherwise keep the first clipped row at the inset. */
+/** Preserve the first visible replacement; reveal it if its new height hides it. */
 export function replacementAnchor(
   list: PositionedList,
   viewport: Viewport,
   replacements: readonly KeyReplacement[],
   inset = 0,
 ): ExplicitAnchor | undefined {
-  let clipped: ExplicitAnchor | undefined;
   // Snapshot once so every candidate is compared against the same viewport.
   const snapshot = {
     scrollTop: viewport.scrollTop,
@@ -47,8 +59,13 @@ export function replacementAnchor(
   for (const { from, to } of replacements) {
     const placement = captureItemPlacement(list, snapshot, from, inset);
     if (!placement?.visible) continue;
-    if (placement.offset >= inset) return { key: to, offset: placement.offset };
-    clipped ??= { key: to, offset: inset };
+    // Visibility, not the top crossing an inset or zero, determines ownership.
+    // Resolve a shorter replacement's visibility after its height is measured.
+    return {
+      key: to,
+      offset: placement.pinned ? inset : placement.offset,
+      visibilityInset: Math.max(0, inset),
+    };
   }
-  return clipped;
+  return undefined;
 }

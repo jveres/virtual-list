@@ -3105,14 +3105,14 @@ describe("runtime — commits and slots", () => {
     h.userScroll(4400);
     h.settle();
     expect(h.list.state.following).toBe(true);
-    // The user collapses the tail: the viewport anchor is asked for and the
-    // engine clamps the viewport to the shorter end — standing there is
-    // not follow intent.
+    // A collapse explicitly preserves the viewport. New trailing space keeps
+    // the reading position at the shorter end without re-engaging follow.
     const published = h.states.length;
     h.heights.set(49, 50);
     h.list.remeasure("m49", { anchor: "viewport" });
     vi.advanceTimersByTime(20);
-    expect(h.viewport.scrollTop).toBe(4350);
+    expect(h.viewport.scrollTop).toBe(4400);
+    expect(h.list.state.totalSize).toBe(5000);
     expect(h.list.state.following).toBe(false);
     expect(h.states.slice(published).map((s) => s.following)).not.toContain(
       true,
@@ -5951,6 +5951,58 @@ describe("runtime — commands", () => {
     h.list.dispose();
   });
 
+  it.each(["auto", "smooth"] as const)(
+    "should exclude retained reading space from a %s end command",
+    async (behavior) => {
+      const h = mount(range(0, 20), {
+        pinning: { match: (item) => item.id === 18, offset: 40 },
+      });
+      h.heights.set(18, 500);
+      h.list.remeasure("m18", { anchor: "viewport" });
+      vi.advanceTimersByTime(20);
+      h.userScroll(1800);
+      h.settle();
+      h.heights.set(18, 100);
+      h.list.remeasure("m18", { anchor: "viewport" });
+      vi.advanceTimersByTime(20);
+      expect(h.viewport.scrollTop).toBe(1800);
+      expect(h.list.state.totalSize).toBe(2400);
+
+      const command = h.list.scrollTo("end", { behavior });
+      if (behavior === "smooth") {
+        advanceFramesUntil(() => h.viewport.scrollTop === 1760);
+        h.settle();
+      }
+      await expect(command).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe(1760);
+      expect(h.list.state.totalSize).toBe(2360);
+      h.list.dispose();
+    },
+  );
+
+  it("should release unused reading space before a gesture reverses back to the end", () => {
+    const h = mount(range(0, 20), {
+      pinning: { match: (item) => item.id === 18, offset: 40 },
+    });
+    h.heights.set(18, 500);
+    h.list.remeasure("m18", { anchor: "viewport" });
+    vi.advanceTimersByTime(20);
+    h.userScroll(1800);
+    h.settle();
+    h.heights.set(18, 100);
+    h.list.remeasure("m18", { anchor: "viewport" });
+    vi.advanceTimersByTime(20);
+    expect(h.list.state.totalSize).toBe(2400);
+
+    h.userScroll(1400);
+    expect(h.viewport.scrollTop).toBe(1400);
+    expect(h.list.state.totalSize).toBe(2360);
+    h.userScroll(2000); // Reverse before a scroll-end boundary.
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(1760);
+    h.list.dispose();
+  });
+
   it.each(["start", "end"] as const)(
     "should reserve the last matching item at %s boot without a scroll command",
     (boot) => {
@@ -6668,10 +6720,11 @@ describe("host-named anchor", () => {
         onState: () => {
           if (!current || queued) return;
           queued = true;
-          const anchor = { key: "m20", offset: 25 };
+          const anchor = { key: "m20", offset: 25, visibilityInset: 0 };
           queueUpdate[method](current.list, anchor);
           anchor.key = "m30";
           anchor.offset = 900;
+          anchor.visibilityInset = 900;
         },
       });
       current = h;
@@ -6699,6 +6752,20 @@ describe("host-named anchor", () => {
 
       expect(h.list.state.count).toBe(55);
       expect(h.viewport.scrollTop).toBe(2500);
+      h.list.dispose();
+    },
+  );
+
+  it.each([Number.NaN, Number.POSITIVE_INFINITY, -1])(
+    "should reject an invalid anchor visibility inset (%s)",
+    (visibilityInset) => {
+      const h = mount(range(0, 50));
+      expect(() =>
+        h.list.setItems([], {
+          anchor: { key: "m20", offset: -24, visibilityInset },
+        }),
+      ).toThrow("anchor visibilityInset must be finite and nonnegative");
+      expect(h.list.state.count).toBe(50);
       h.list.dispose();
     },
   );

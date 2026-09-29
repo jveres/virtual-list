@@ -57,3 +57,19 @@ test("send evidence requires loaded history, movement, landing and stable captur
     false,
   );
 });
+
+test("sending from the bottom requires the physical end, without a history load", () => {
+  const atBottom = {
+    ...setup,
+    position: "bottom",
+    afterStart: 25,
+    distanceFromEnd: 0,
+  };
+  const result = analyzeSend(recording(), atBottom);
+  assert.equal(result.valid, true);
+  assert.equal(result.scope, "send-from-bottom");
+  assert.equal(
+    analyzeSend(recording(), { ...atBottom, distanceFromEnd: 100 }).valid,
+    false,
+  );
+});

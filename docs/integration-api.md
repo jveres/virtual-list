@@ -165,15 +165,19 @@ not in a scroll sampler or before an asynchronous fetch.
 ### `replacementAnchor`
 
 `replacementAnchor(list, viewport, replacements, inset = 0)` returns an
-`ExplicitAnchor` (`{ key, offset }`) or `undefined`. Supply an ordered
+`ExplicitAnchor` (`{ key, offset, visibilityInset }`) or `undefined`. Supply an ordered
 `readonly KeyReplacement[]`, with each pair `{ from: string, to: string }`.
 You own the semantic mapping and must include the destination in the new rows.
 
-The function chooses the first intersecting source row whose top is at or
-below `inset`, preserving its offset. If none qualifies, it places the first
-row clipped by the inset at that inset. Missing and offscreen source rows
-are ignored; no visible candidate returns `undefined`. Array order determines
-priority, not an inferred branch relationship or a geometry sort.
+The function chooses the first source row that intersects the viewport below
+`inset`, preserving its offset even when its top is clipped. It normalizes a
+near-pinned offset to `inset` and excludes browser overscroll from the capture.
+The returned `visibilityInset` lets the runtime check the measured replacement:
+if it would be entirely hidden, its top lands at that inset instead. This keeps
+a shorter version reachable without switching the anchor to another message.
+Missing and offscreen source rows are ignored; no visible candidate returns
+`undefined`. Array order determines priority, not an inferred branch relationship
+or a geometry sort.
 
 Pass the result as the replacement snapshot's `anchor`. If queued work must
 be interrupted first, capture inside `updateWindow`'s synchronous updater

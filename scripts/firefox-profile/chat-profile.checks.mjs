@@ -240,13 +240,25 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
   w.Node.prototype.insertBefore = measuredInsert;
   try {
     w.eval(
-      `(${installChatProbe.toString()})(${JSON.stringify({ turns: [], workload: { characters: 10, chunks: 1 }, diagnostic: true, limit: 2, scenario: "follow", trail: "off" })})`,
+      `(${installChatProbe.toString()})(${JSON.stringify({ turns: [], workload: { characters: 10, chunks: 1 }, diagnostic: true, limit: 2, scenario: "follow", trail: "off", landing: "prompt" })})`,
     );
     const api = w.__chatProfile;
     w.document.hasFocus = () => false;
     assert.throws(() => api.start(), /focused, visible/);
     w.document.hasFocus = () => true;
-    api.start();
+    let sends = 0;
+    w.document
+      .querySelector("#send-btn")
+      .addEventListener("click", () => sends++);
+    const prompt = w.document.querySelector("#prompt");
+    prompt.value = "User-prepared input";
+    api.start({ submit: false });
+    assert.equal(sends, 0, "external keyboard input must own submission");
+    assert.equal(prompt.value, "User-prepared input");
+    assert.equal(
+      JSON.parse(w.localStorage.getItem("virtual-list:chat-options")).landing,
+      "prompt",
+    );
     const outer = api.enter("outer", null);
     time += 2;
     const inner = api.enter("inner", null);

@@ -36,6 +36,8 @@ export type AnchorPolicy = "auto" | "viewport" | "end" | "none";
 export interface ExplicitAnchor {
   key: string;
   offset: number;
+  /** If the measured replacement would be hidden, reveal its top at this inset. */
+  visibilityInset?: number;
 }
 /**
  * The runtime's own resolution intents on top of the host policies: "pin"
@@ -64,6 +66,7 @@ interface Capture {
   readonly viewport: GeometryViewport;
   readonly policy: CapturePolicy;
   readonly target: ExplicitAnchor | null;
+  readonly retainViewportReserve: boolean;
   readonly atEnd: boolean;
   readonly oldKeys: readonly string[];
   readonly anchor: {
@@ -263,11 +266,16 @@ export class Geometry {
     return { start, end };
   }
 
-  /** Open a transaction: resolve anchor intent on the current geometry. */
+  /**
+   * Open a transaction against current geometry. Internal reflow can disable
+   * new viewport reserve so the natural range wins over an out-of-range anchor.
+   * A host-named target retains its explicit placement guarantee.
+   */
   capture(
     viewport: GeometryViewport,
     policy: CapturePolicy = "auto",
     target: ExplicitAnchor | null = null,
+    retainViewportReserve = true,
   ): Capture {
     // Elastic overscroll is browser presentation, not a reading position.
     // Capture the old legal range before measurements change it; otherwise
@@ -285,6 +293,7 @@ export class Geometry {
       viewport: { ...viewport },
       policy,
       target,
+      retainViewportReserve,
       atEnd:
         this.maxScrollTop(viewport.height) - viewport.scrollTop <=
         AT_END_EPSILON,
@@ -423,14 +432,19 @@ export class Geometry {
       target = this.pinTop ?? viewport.scrollTop;
     }
     this.recomputeReserve(viewport.height, target);
-    // An explicit replacement is a host-named reading position. A shorter
-    // tail may need more reserve than the existing pin supplies (for example
-    // an assistant at the top while its prompt remains pinned above it).
+    // A host-preserved reading position can need new reserve when content
+    // shrinks, even if the old content filled the viewport without reserve.
+    // This applies to named replacements and explicit viewport preservation
+    // of a surviving row (for example a disclosure collapse beyond the pin).
     // Keep the pin independent; this extra reserve drains once out of view.
     if (
       mode === "anchor" &&
-      capture.target !== null &&
-      this.indexByKey.has(capture.target.key)
+      target > this.maxScrollTop(viewport.height) &&
+      ((capture.target !== null && this.indexByKey.has(capture.target.key)) ||
+        (capture.policy === "viewport" &&
+          capture.retainViewportReserve &&
+          capture.anchor !== null &&
+          this.indexByKey.has(capture.anchor.key)))
     ) {
       this.reservePx = Math.max(
         this.reservePx,
@@ -468,7 +482,19 @@ export class Geometry {
     // A host-named anchor, when its key exists.
     const target = capture.target;
     if (target !== null && this.indexByKey.has(target.key)) {
-      return this.offsetOf(target.key) - target.offset;
+      let offset = target.offset;
+      if (target.visibilityInset !== undefined) {
+        const inset = Math.min(
+          target.visibilityInset,
+          Math.max(0, capture.viewport.height - 1),
+        );
+        if (
+          offset + this.heightOf(target.key) <= inset ||
+          offset >= capture.viewport.height
+        )
+          offset = inset;
+      }
+      return this.offsetOf(target.key) - offset;
     }
     const anchor = capture.anchor;
     if (anchor === null) return null;
@@ -480,6 +506,22 @@ export class Geometry {
       // so the rows below hold their place (the row's own top moves, as it
       // must: the content that was above the viewport is gone).
       const height = this.heightOf(anchor.key);
+      const pinTop = this.pinTop;
+      // At the end, collapsing the clipped pinned row can make the whole
+      // tail fit below its pin again. Keeping an offset inside the expanded
+      // row would manufacture blank reserve and leave its controls offscreen.
+      // Away from the end, explicit reading-position preservation still wins.
+      if (
+        capture.policy === "viewport" &&
+        capture.retainViewportReserve &&
+        capture.atEnd &&
+        anchor.key === this.pinnedKey &&
+        anchor.offset > 0 &&
+        height < anchor.height &&
+        pinTop !== null &&
+        this.contentSize - capture.viewport.height <= pinTop
+      )
+        return pinTop;
       const offset =
         anchor.offset <= height
           ? anchor.offset

@@ -7,11 +7,14 @@ export function analyzeSend(recording, setup) {
   const glide = recording.phases.find((p) => p.name === "send-glide");
   const landed = recording.phases.find((p) => p.name === "send-landed");
   const reasons = [];
+  const fromBottom = setup.position === "bottom";
   if (!glide || !landed || landed.time <= glide.time)
     reasons.push("Send did not reach its landing");
-  if (!(setup.beforeStart > setup.afterStart))
+  if (fromBottom && !(Math.abs(setup.distanceFromEnd) <= 2))
+    reasons.push("Send did not start at bottom");
+  if (!fromBottom && !(setup.beforeStart > setup.afterStart))
     reasons.push("No older history was loaded");
-  if (!(setup.distanceFromEnd > setup.viewportHeight))
+  if (!fromBottom && !(setup.distanceFromEnd > setup.viewportHeight))
     reasons.push("Send did not start in scrollback");
   if (recording.errors.length) reasons.push("Page errors occurred");
   if (recording.invalidations.length)
@@ -29,13 +32,17 @@ export function analyzeSend(recording, setup) {
     reasons.push("Insufficient glide movement");
   const firstMovement = frames.find((f) => f[1] > recording.initial.top + 2);
   return {
-    scope: "send-after-history-load",
+    scope: fromBottom ? "send-from-bottom" : "send-after-history-load",
     valid: reasons.length === 0,
     invalidReasons: reasons,
     setup,
     prepareMs: glide?.time ?? null,
     landedMs: landed?.time ?? null,
     firstMovementMs: firstMovement?.[0] ?? null,
+    scrollWrites:
+      recording.scrollWrites?.filter(
+        (write) => write.time <= (landed?.time ?? 0),
+      ) ?? null,
     frameIntervalsMs: distribution(intervals),
     stepsPx: distribution(steps),
     longIntervals: intervals.filter((n) => n > 1500 / setup.refreshHz).length,

@@ -120,7 +120,20 @@ function ownAnchor(
     throw new TypeError("anchor key must be a string");
   if (!Number.isFinite(anchor.offset))
     throw new RangeError("anchor offset must be finite");
-  return { key: anchor.key, offset: anchor.offset };
+  if (
+    anchor.visibilityInset !== undefined &&
+    (!Number.isFinite(anchor.visibilityInset) || anchor.visibilityInset < 0)
+  )
+    throw new RangeError(
+      "anchor visibilityInset must be finite and nonnegative",
+    );
+  return {
+    key: anchor.key,
+    offset: anchor.offset,
+    ...(anchor.visibilityInset === undefined
+      ? {}
+      : { visibilityInset: anchor.visibilityInset }),
+  };
 }
 
 function flatten(error: unknown): unknown[] {
@@ -184,6 +197,8 @@ interface Pending<T> {
 
 interface CommitOptions {
   policy?: CapturePolicy;
+  /** Internal reflow preserves reading position only within the natural range. */
+  retainViewportReserve?: boolean;
   /** False: never write the scroll position (a mid-phase commit). */
   write?: boolean;
   /** Leave follow intent as found instead of deriving it. */
@@ -757,7 +772,12 @@ export function createVirtualList<T>(
     staleTimer = 0;
     flushStale();
     if (dirtyRows.size > 0 && idle())
-      commit(null, { policy: "viewport", keepFollow: true, instant: true });
+      commit(null, {
+        policy: "viewport",
+        keepFollow: true,
+        instant: true,
+        retainViewportReserve: false,
+      });
   }
 
   /** Drain once the width has been quiet; a newer change restarts the wait. */
@@ -778,7 +798,12 @@ export function createVirtualList<T>(
     staleMounted = false;
     if (dirtyRows.size === 0) return false;
     if (!idle()) return liveCommit();
-    commit(null, { policy: "viewport", keepFollow: true, instant: true });
+    commit(null, {
+      policy: "viewport",
+      keepFollow: true,
+      instant: true,
+      retainViewportReserve: false,
+    });
     return true;
   }
 
@@ -953,6 +978,7 @@ export function createVirtualList<T>(
       if (idle()) {
         commit(null, {
           policy: stoodOnPin ? "pin" : "viewport",
+          retainViewportReserve: false,
           keepFollow: true,
           instant: true,
         });
@@ -1001,7 +1027,12 @@ export function createVirtualList<T>(
     pass(() => {
       invalidateHeights();
       if (idle())
-        commit(null, { policy: "viewport", keepFollow: true, instant: true });
+        commit(null, {
+          policy: "viewport",
+          keepFollow: true,
+          instant: true,
+          retainViewportReserve: false,
+        });
       else if (!liveCommit()) publish();
     });
   }
@@ -1463,6 +1494,7 @@ export function createVirtualList<T>(
         ? "end"
         : policy,
       policy === "viewport" ? (p?.target ?? null) : null,
+      o.retainViewportReserve ?? true,
     );
     // Adopt the staged rows; a key removed or replaced dies after it left
     // the map, so a host disposing from onDestroy cannot destroy it twice.
@@ -1602,7 +1634,12 @@ export function createVirtualList<T>(
               ready.push(row);
           }
           if (ready.length === 0) break;
-          const capture = geometry.capture(vp, native ? "viewport" : "none");
+          const capture = geometry.capture(
+            vp,
+            native ? "viewport" : "none",
+            null,
+            false,
+          );
           measureRows(ready);
           epoch += 1;
           const result = geometry.resolve(capture);
@@ -1896,13 +1933,33 @@ export function createVirtualList<T>(
       if (!beyond && !clamped) resizeHeld = "viewport";
     }
     const range = reconcileWindow(vp);
-    if (!commitMounted() && !liveCommit()) publish(vp, range);
+    if (commitMounted() || liveCommit()) return;
+    publish(vp, range);
+    // Retired reading space must not become a new end when input reverses
+    // before settling. Drop it only once it is wholly beyond the viewport;
+    // no measurement or pending transaction may be forced by this cleanup.
+    if (
+      geometry.reserve > 0 &&
+      glide === null &&
+      pending === null &&
+      remeasurePolicy === undefined &&
+      dirtyRows.size === 0 &&
+      staleRows.size === 0 &&
+      vp.scrollTop >= 0 &&
+      vp.scrollTop <= contentEnd(vp.height)
+    )
+      trimUnusedReserve(vp);
   }
 
-  /** An old pin's offscreen tail drains only after the scroll has landed. */
-  function trimUnusedReserve(): void {
+  /** Content and pin define end intent; retained reading space does not. */
+  function contentEnd(height: number): number {
+    return Math.max(0, geometry.contentSize - height, geometry.pinTop ?? 0);
+  }
+
+  /** Release trailing space that no longer supports the reading position. */
+  function trimUnusedReserve(position?: GeometryViewport): void {
     if (disposed || geometry.reserve === 0) return;
-    const vp = viewportState();
+    const vp = position ?? viewportState();
     const needed = Math.max(
       0,
       Math.max(vp.scrollTop, geometry.pinTop ?? 0) +
@@ -2031,7 +2088,12 @@ export function createVirtualList<T>(
         commit(null, { policy: "pin", keepFollow: true, instant: true });
       else commit(null, { policy: explicit });
     } else if (resizeHeld !== null) {
-      commit(null, { policy: resizeHeld, keepFollow: true, instant: true });
+      commit(null, {
+        policy: resizeHeld,
+        keepFollow: true,
+        instant: true,
+        retainViewportReserve: false,
+      });
     } else if (heldRetirements) reconcileAndPublish();
     else publish();
     resizeHeld = null;
@@ -2692,27 +2754,16 @@ export function createVirtualList<T>(
   }
 
   /** The command's destination under current geometry; null once gone. */
-  function targetTop(
-    target: ScrollTarget,
-    below = 0,
-    pinnedEnd = false,
-  ): number | null {
+  function targetTop(target: ScrollTarget, below = 0): number | null {
     // Without pinning, commands target content, not retained reserve.
     const maxTop = pinning
       ? geometry.maxScrollTop(viewport.clientHeight)
       : Math.max(0, geometry.contentSize - viewport.clientHeight);
     if (target === "start") return 0;
     if (target === "end") {
-      // A retargeted pin's old reserve drains after landing, never before.
-      return Math.ceil(
-        pinnedEnd
-          ? Math.max(
-              0,
-              geometry.contentSize - viewport.clientHeight,
-              geometry.pinTop ?? 0,
-            )
-          : maxTop,
-      );
+      // End intent targets content or the current pin, never temporary space
+      // retained for a prior reading anchor. That space drains after landing.
+      return Math.ceil(contentEnd(viewport.clientHeight));
     }
     const offset = geometry.offsetOf(target);
     // Land past a fractional boundary: engines can floor the write.
@@ -2721,8 +2772,8 @@ export function createVirtualList<T>(
       : Math.ceil(Math.max(0, Math.min(offset - below, maxTop)));
   }
 
-  function landedOn(target: ScrollTarget, below = 0, pinnedEnd = false) {
-    const top = targetTop(target, below, pinnedEnd);
+  function landedOn(target: ScrollTarget, below = 0) {
+    const top = targetTop(target, below);
     return top !== null && Math.abs(viewport.scrollTop - top) <= AT_EDGE_PX;
   }
 
@@ -2757,9 +2808,8 @@ export function createVirtualList<T>(
       geometry.pin(pin?.key ?? target, pin?.offset ?? below);
       commit(null, { policy: "none" });
     }
-    const pinnedEnd = pin !== undefined;
     const destination = (): number =>
-      targetTop(target, below, pinnedEnd) ?? viewport.scrollTop;
+      targetTop(target, below) ?? viewport.scrollTop;
     if (o.behavior !== "smooth") {
       const top = Math.round(destination());
       if (Math.abs(top - viewport.scrollTop) > EPSILON_PX) writeScrollTop(top);
@@ -2767,7 +2817,7 @@ export function createVirtualList<T>(
       if (target === "end" && smoothFollow) follow.start();
       reconcileAndPublish();
       trimUnusedReserve();
-      done(!disposed && landedOn(target, below, pinnedEnd));
+      done(!disposed && landedOn(target, below));
       return;
     }
     // A glide is a phase of its own: held work waits for its landing.
@@ -2783,7 +2833,7 @@ export function createVirtualList<T>(
         }
         parked = {
           done,
-          landed: () => landedOn(target, below, pinnedEnd),
+          landed: () => landedOn(target, below),
           followsEnd: target === "end",
         };
         controller.markSettlePending();

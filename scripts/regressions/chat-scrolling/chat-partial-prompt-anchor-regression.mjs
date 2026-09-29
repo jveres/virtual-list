@@ -84,8 +84,14 @@ try {
         "fixture user prompt is partly scrolled out",
       );
       assert.ok(
-        samples.every((sample) => Math.abs(sample.top - samples[0].top) < 1),
-        "assistant anchor must remain stationary throughout replacement",
+        samples.every(
+          (sample) =>
+            Math.abs(
+              (branch === "user" ? sample.promptTop : sample.top) -
+                (branch === "user" ? samples[0].promptTop : samples[0].top),
+            ) < 1,
+        ),
+        "the selected message must remain stationary throughout replacement",
       );
       assert.notEqual(
         samples.at(-1).key,

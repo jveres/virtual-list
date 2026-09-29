@@ -737,6 +737,104 @@ describe("randomized against the oracle", () => {
 });
 
 describe("host-named anchor", () => {
+  it.each([
+    { pinned: true, atEnd: true, expected: 960 },
+    { pinned: true, atEnd: false, expected: 1093 },
+    { pinned: false, atEnd: true, expected: 1113 },
+  ])(
+    "should restore a clipped collapsed pin only at end: %j",
+    ({ pinned, atEnd, expected }) => {
+      const geometry = new Geometry(100);
+      seed(geometry, [...keysRange(0, 10), "prompt", "reply"]);
+      geometry.measure("prompt", 540);
+      geometry.measure("reply", 386);
+      if (pinned) geometry.pin("prompt", 40);
+      const capture = geometry.capture(
+        { scrollTop: atEnd ? 1113 : 1093, height: 813 },
+        "viewport",
+      );
+
+      geometry.measure("prompt", 220);
+      const result = geometry.resolve(capture);
+
+      expect(result.scrollTop).toBe(expected);
+      expect(geometry.offsetOf("prompt") - result.scrollTop).toBe(
+        1000 - expected,
+      );
+    },
+  );
+  it("should clamp internal viewport reflow without creating reading reserve", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 10));
+    const capture = geometry.capture(
+      { scrollTop: 500, height: 500 },
+      "viewport",
+      null,
+      false,
+    );
+
+    geometry.measure("m9", 20);
+    const result = geometry.resolve(capture);
+
+    expect(result.scrollTop).toBe(420);
+    expect(result.totalSize).toBe(920);
+    expect(geometry.reserve).toBe(0);
+  });
+  it("should create reserve for a viewport-preserving collapse beyond the pin", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, [...keysRange(0, 10), "prompt", "reply"]);
+    geometry.measure("prompt", 540);
+    geometry.measure("reply", 268);
+    geometry.pin("prompt", 40);
+    const before = { scrollTop: 995, height: 813 };
+    geometry.resolve(geometry.capture(before, "none"));
+    expect(geometry.reserve).toBe(0);
+    const capture = geometry.capture(before, "viewport");
+
+    geometry.measure("prompt", 220);
+    const result = geometry.resolve(capture);
+
+    expect(result.scrollTop).toBe(995);
+    expect(geometry.reserve).toBe(320);
+    expect(
+      geometry.resolve(geometry.capture(before, "viewport")).scrollTop,
+    ).toBe(995);
+    // The extra reading space drains after the reader moves away; the pin remains.
+    geometry.resolve(geometry.capture({ ...before, scrollTop: 0 }, "viewport"));
+    expect(geometry.reserve).toBe(285);
+  });
+  it.each([
+    { offset: -24, height: 148, expected: -24 },
+    { offset: -24, height: 64, expected: 40 },
+    { offset: -500, height: 100, expected: 40 },
+    { offset: 30, height: 10, expected: 40 },
+    { offset: 30, height: 100, expected: 30 },
+    { offset: 650, height: 100, expected: 40 },
+  ])(
+    "should retain or reveal a measured replacement: $offset / $height",
+    ({ offset, height, expected }) => {
+      const geometry = new Geometry(100);
+      seed(geometry, [...keysRange(0, 20), "old", "reply"]);
+      geometry.measure("old", 1000);
+      const anchor = { key: "new", offset, visibilityInset: 40 };
+      const captured = geometry.capture(
+        viewport(2000 - offset),
+        "viewport",
+        anchor,
+      );
+      geometry.setKeys([...keysRange(0, 20), "new", "reply"], anchor);
+      geometry.measure("new", height);
+
+      const result = geometry.resolve(captured);
+
+      expect(geometry.offsetOf("new") - result.scrollTop).toBe(expected);
+      expect(
+        geometry.resolve(
+          geometry.capture(viewport(result.scrollTop), "viewport"),
+        ).scrollTop,
+      ).toBe(result.scrollTop);
+    },
+  );
   it.each([0, 44, 144])(
     "should preserve a replacement at offset %i when a long tail becomes short",
     (offset) => {

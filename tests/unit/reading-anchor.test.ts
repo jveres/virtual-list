@@ -17,7 +17,37 @@ const list = {
 };
 
 describe("reading anchors", () => {
-  it("should prefer the visible reply when its prompt is clipped", () => {
+  it.each([0, 15, 30, 39])(
+    "should retain a replacement whose top is at %s px under the sticky inset",
+    (offset) => {
+      expect(
+        replacementAnchor(
+          list,
+          { ...viewport, scrollTop: 140 - offset },
+          [
+            { from: "pinned", to: "new-prompt" },
+            { from: "reply", to: "new-reply" },
+          ],
+          40,
+        ),
+      ).toEqual({ key: "new-prompt", offset, visibilityInset: 40 });
+    },
+  );
+  it.each([0.5, 1, 20])(
+    "should exclude %s px of boundary overscroll when replacing the reply",
+    (overscroll) => {
+      const bounded = { ...list, state: { totalSize: 700 } };
+      expect(
+        replacementAnchor(
+          bounded,
+          { ...viewport, scrollTop: viewport.scrollTop + overscroll },
+          [{ from: "reply", to: "new-reply" }],
+          40,
+        ),
+      ).toEqual({ key: "new-reply", offset: 150, visibilityInset: 40 });
+    },
+  );
+  it("should preserve a partially clipped prompt rather than its reply", () => {
     expect(
       replacementAnchor(
         list,
@@ -28,12 +58,12 @@ describe("reading anchors", () => {
         ],
         40,
       ),
-    ).toEqual({ key: "new-reply", offset: 150 });
+    ).toEqual({ key: "new-prompt", offset: -50, visibilityInset: 40 });
   });
-  it("should place a clipped replacement below the inset", () => {
+  it("should defer revealing a clipped replacement until its new height is known", () => {
     expect(
       replacementAnchor(list, viewport, [{ from: "prompt", to: "new" }], 40),
-    ).toEqual({ key: "new", offset: 40 });
+    ).toEqual({ key: "new", offset: -50, visibilityInset: 40 });
   });
   it("should retain the first fully visible candidate", () => {
     expect(
@@ -46,8 +76,24 @@ describe("reading anchors", () => {
         ],
         40,
       ),
-    ).toEqual({ key: "new", offset: 40 });
+    ).toEqual({ key: "new", offset: 40, visibilityInset: 40 });
   });
+  it.each([0.25, 0.5, 0.75])(
+    "should retain a pinned prompt after a fractional boundary landing of %s px",
+    (rounding) => {
+      expect(
+        replacementAnchor(
+          list,
+          { ...viewport, scrollTop: viewport.scrollTop + rounding },
+          [
+            { from: "pinned", to: "new-prompt" },
+            { from: "reply", to: "new-reply" },
+          ],
+          40,
+        ),
+      ).toEqual({ key: "new-prompt", offset: 40, visibilityInset: 40 });
+    },
+  );
   it("should not invent an anchor for missing or offscreen rows", () => {
     expect(
       replacementAnchor(list, viewport, [

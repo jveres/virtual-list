@@ -135,8 +135,9 @@ for (const engine of [firefox, webkit, chromium]) {
       });
     assert.ok(
       siblingGaps.length > 0 &&
-        siblingGaps.every((gap) => Math.abs(gap - 12) <= 1),
-      `full-width siblings pack their actual widths (${siblingGaps.join(", ")})`,
+        siblingGaps.every((gap) => gap >= 11) &&
+        siblingGaps.some((gap) => Math.abs(gap - 12) <= 1),
+      `full-width branches keep nonoverlapping contours and a packed gutter (${siblingGaps.join(", ")})`,
     );
     assert.equal(
       await page
