@@ -147,10 +147,12 @@ export async function writeReproduction(
       : undefined,
     display: o.display,
     "refresh-hz": o.refreshHz,
+    "pointer-x": o.pointerX,
     seconds: o.seconds,
     "stream-ms": o.durationMs,
     sections: o.sections,
     history: o.history,
+    "history-content": o.historyContent,
     content: o.content,
     trail: o.trail,
   }))

@@ -40,6 +40,7 @@ const { values: options } = parseArgs({
     up: { type: "string", default: "4" },
     ticks: { type: "string", default: "90" },
     delta: { type: "string", default: "24" },
+    "pointer-x": { type: "string" },
     "interval-ms": { type: "string", default: "16.667" },
     "settle-ms": { type: "string", default: "700" },
     "warmup-ms": { type: "string", default: "2000" },
@@ -62,6 +63,7 @@ if (options.help) {
   --output DIRECTORY     Parent of a NEW unique run directory
   --down N --up N        Gesture bursts (default: 6 down, 4 up)
   --ticks N --delta N    Events per gesture and pixel delta (default: 90, 24)
+  --pointer-x F          Scripted gesture pointer fraction across viewport (0.01..0.99; default 0.5)
   --interval-ms N        Native event interval (default: 16.667)
   --settle-ms N          Pause after each gesture (default: 700)
   --warmup-ms N          Pause after load and optional setup (default: 2000)
@@ -94,12 +96,16 @@ const down = number("down", 0, 100, true);
 const up = number("up", 0, 100, true);
 const ticks = number("ticks", 1, 600, true);
 const delta = number("delta", 1, 1000, true);
+const pointerX =
+  options["pointer-x"] === undefined ? 0.5 : number("pointer-x", 0.01, 0.99);
 const interval = number("interval-ms", 1, 100);
 const settle = number("settle-ms", 0, 10000);
 const warmup = number("warmup-ms", 0, 60000);
 const manual = number("manual-seconds", 0, 600);
 const automatic = number("idle-seconds", 0, 600);
 if (manual && automatic) throw new Error("Choose manual or idle capture");
+if ((manual || automatic) && options["pointer-x"] !== undefined)
+  throw new Error("--pointer-x requires scripted gestures");
 if (!manual && !automatic && down + up === 0)
   throw new Error("Specify at least one gesture burst");
 if (!["masonry", "rows", "none"].includes(options.layout))
@@ -502,7 +508,9 @@ try {
       const point = await evaluate(`(() => {
       const v=document.querySelector(${JSON.stringify(options.viewport)}),r=v.getBoundingClientRect();
       window.__ffProfile.phase=${JSON.stringify(phase)};performance.mark(${JSON.stringify(`ff-${phase}`)});
-      return {x:screenX+r.x+r.width/2,y:screenY+(outerHeight-innerHeight)+r.y+r.height/2,visible:r.width>0&&r.height>0};
+      const clientX=r.x+r.width*${pointerX},clientY=r.y+r.height/2;
+      const hit=document.elementFromPoint(clientX,clientY);
+      return {x:screenX+clientX,y:screenY+(outerHeight-innerHeight)+clientY,clientX,clientY,pointerX:${pointerX},overMessage:!!hit?.closest('.message'),visible:r.width>0&&r.height>0};
     })()`);
       if (
         !point.visible ||
@@ -513,6 +521,8 @@ try {
       ) {
         throw new Error("Scroll target is outside the selected monitor");
       }
+      metadata.gesturePoints ??= [];
+      metadata.gesturePoints.push({ phase, ...point });
       execFileSync(
         helper,
         [

@@ -10,6 +10,13 @@ For a repeatable complex stream through the full chat demo, use the
 SSE replay, bounded operation attribution, validity checks, and comparison
 reports while retaining this native Firefox capture as the primary baseline.
 
+For image-heavy scrolling without paging or streaming, use the
+[steady inline-image workload](streaming-chat-profiling.md#exercise-inline-raster-images).
+It loads 20 turns containing 10 known-size 960×360 PNGs, then runs the fixed
+native gesture plan. The source and storage budgets, generator versions, and
+image-readiness checks are retained with the capture. Those readiness checks
+do not establish GPU decode completion or smooth physical presentation.
+
 For growing memory or suspected graphics allocation, add the
 [streaming chat memory regression](memory-profiling.md). It checks physical
 footprint, transient process peaks, and repeated-scroll plateaus with synthetic
@@ -21,7 +28,7 @@ It records internal paging and gesture transitions with DevTools closed.
 
 ## Requirements
 
-The capture runner requires macOS, Node.js 22 or later, the Swift compiler
+The capture runner requires macOS, Node.js 22.12 or later, the Swift compiler
 from Xcode Command Line Tools, and an installed Firefox. The invoking app
 needs macOS Accessibility permission for window placement and native input.
 The profile analyzer and its unit checks do not require macOS.
@@ -149,6 +156,13 @@ speed, or a particular interaction:
 ```sh
 pnpm run profile:firefox -- --display=LU28R55 --manual-seconds=30
 ```
+
+For scripted gestures, `--pointer-x=0.02` moves native input to 2% of the scroll
+viewport's width instead of its center. Use this to compare message-hover work
+with an empty gutter on a wide chat layout. The accepted range is `0.01..0.99`;
+manual and idle captures reject this option. Retained `gesturePoints` metadata
+records each point and whether it starts over a message. This changes input
+location only; it does not disable application hover behavior.
 
 Wait for the terminal's manual-capture message, then scroll the test window.
 The script records your input without injecting gestures and closes its

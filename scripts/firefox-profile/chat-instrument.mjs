@@ -19,6 +19,9 @@ export const chatTargets = {
     "mountRow",
     "unmountRow",
     "destroyRow",
+    "flowInsert",
+    "layoutFlow",
+    "observeRow",
     "syncCanvasHeight",
     "commitHeight",
     "updateItem",
@@ -41,15 +44,27 @@ export const chatTargets = {
     "syncMetrics",
     "syncScrollButtons",
     "rowsForRuntime",
+    "syncMessageActionState",
+    "handleRowDestroy",
     "persistOpenAIConversation",
     "persistSimulatedConversation",
   ],
   "demos/streaming/message-content.ts": [
     "update",
     "appendStaticMessageContent",
+    "setMounted",
+  ],
+  "demos/streaming/image-lifecycle.ts": ["suspendRowImages", "resumeRowImages"],
+  "demos/streaming/display-copies.ts": ["adoptDisplayCopies"],
+  "integrations/measured-text.ts": [
+    "mountMeasuredText",
+    "unmountMeasuredText",
+    "prepareMeasuredText",
+    "run",
   ],
   "demos/streaming/image-preview.ts": ["bind", "collect"],
   "demos/shared/markdown.ts": ["renderMarkdown"],
+  "demos/shared/chat-ui.ts": ["buildToolCall"],
   "demos/streaming/openai.ts": ["chunksFromEvent", "saveOpenAIHistory"],
 };
 
@@ -176,7 +191,7 @@ export function instrumentChat(source, path, diagnostic) {
     );
     replace(
       "syncScrollButtons(state);",
-      "globalThis.__chatProfile?.state(state, snapshot, { latestLoaded: loadedEnd >= transcript.length, pending: windowNavigation !== null });\n      syncScrollButtons(state);",
+      "globalThis.__chatProfile?.state(state, snapshot, { latestLoaded: loadedEnd >= transcript.length, pending: windowNavigation !== null, loadedStart, loadedEnd, loading: loadingTop || loadingBottom });\n      syncScrollButtons(state);",
     );
   }
   return source;

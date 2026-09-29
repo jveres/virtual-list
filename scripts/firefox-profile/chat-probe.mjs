@@ -98,6 +98,7 @@ export function installChatProbe(config) {
   const scrollWrites = [];
   const coverage = [];
   const domOperations = new Map();
+  const domConnections = new Map();
   const slowDomOperations = [];
   const domBursts = [];
   let omittedDomOperations = 0;
@@ -139,6 +140,7 @@ export function installChatProbe(config) {
       complete: img.complete,
       width: img.naturalWidth,
       height: img.naturalHeight,
+      sourceKind: img.getAttribute("src")?.split(":", 1)[0] ?? "none",
     })),
     heapBytes: performance.memory?.usedJSHeapSize ?? null,
     window: {
@@ -154,6 +156,7 @@ export function installChatProbe(config) {
       globalThis.matchMedia?.("(prefers-reduced-motion: reduce)").matches ??
       null,
     status: document.querySelector("#window-status")?.textContent ?? null,
+    state: config.scenario === "steady" ? currentState : undefined,
   });
   const countAccess = (name) => {
     if (!active) return;
@@ -251,9 +254,33 @@ export function installChatProbe(config) {
           if (!active) return descriptor.value.apply(this, args);
           const parent = name === "remove" ? this?.parentNode : this;
           const subject = name === "remove" ? this : args[0];
+          // Classify from pre-call tree state, without layout or subtree reads.
+          // A move out of the document removes connected content even when its
+          // destination is detached. Same-position inserts still count as moves:
+          // their native call can remove/reinsert and invalidate browser state.
+          const subjectConnected = subject?.isConnected === true;
+          const effect =
+            name === "insertBefore"
+              ? subject?.nodeType === 11 && subject.firstChild === null
+                ? "no-op"
+                : parent?.isConnected
+                  ? subjectConnected
+                    ? "connected-move"
+                    : "connected-insert"
+                  : subjectConnected
+                    ? "connected-remove"
+                    : "detached-insert"
+              : name === "remove" && parent === null
+                ? "no-op"
+                : subjectConnected
+                  ? "connected-remove"
+                  : "detached-remove";
+          let completed = false;
           const begin = now();
           try {
-            return descriptor.value.apply(this, args);
+            const result = descriptor.value.apply(this, args);
+            completed = true;
+            return result;
           } finally {
             const durationMs = now() - begin;
             const total = domOperations.get(name) ?? {
@@ -266,6 +293,19 @@ export function installChatProbe(config) {
             total.inclusiveMs += durationMs;
             total.maxMs = Math.max(total.maxMs, durationMs);
             domOperations.set(name, total);
+            const connection = completed ? effect : "failed";
+            const connectionKey = `${name}:${connection}`;
+            const classified = domConnections.get(connectionKey) ?? {
+              name,
+              connection,
+              count: 0,
+              inclusiveMs: 0,
+              maxMs: 0,
+            };
+            classified.count++;
+            classified.inclusiveMs += durationMs;
+            classified.maxMs = Math.max(classified.maxMs, durationMs);
+            domConnections.set(connectionKey, classified);
             const owner = stack.at(-1);
             if (owner) {
               const parentTag = parent instanceof Node ? parent.nodeName : null;
@@ -531,7 +571,7 @@ export function installChatProbe(config) {
       // rAF's supplied timestamp can precede event delivery in this frame.
       // Use callback-entry time for input delay, not the animation timeline.
       lastInput === null ? null : entered - lastInput,
-      !streamDone,
+      config.scenario !== "steady" && !streamDone,
       entered,
     ]);
     lastInput = null;
@@ -651,6 +691,11 @@ export function installChatProbe(config) {
         latestLoaded: navigationState?.latestLoaded ?? null,
         navigationPending: navigationState?.pending ?? null,
       };
+      if (config.scenario === "steady") {
+        currentState.loadedStart = navigationState?.loadedStart ?? null;
+        currentState.loadedEnd = navigationState?.loadedEnd ?? null;
+        currentState.loading = navigationState?.loading ?? null;
+      }
       if (
         active &&
         navigationCommand &&
@@ -689,11 +734,13 @@ export function installChatProbe(config) {
         performance.getEntriesByName("chat:visible").length > 0
       );
     },
-    start({ submit = true } = {}) {
+    start({ submit = config.scenario !== "steady" } = {}) {
       if (started || !api.ready())
         throw new Error("Chat profiling is not ready or already started");
       if (!document.hasFocus() || document.visibilityState === "hidden")
         throw new Error("Chat profiling requires a focused, visible document");
+      if (config.scenario === "steady" && (submit || !api.steady))
+        throw new Error("Steady profiling requires setup and no submission");
       started = true;
       viewport = document.querySelector("#viewport");
       initial = boundary();
@@ -779,13 +826,14 @@ export function installChatProbe(config) {
       final = boundary();
       const result = {
         schema: 1,
-        probeVersion: 5,
+        probeVersion: 6,
         timeOrigin: performance.timeOrigin,
         startTime,
         durationMs,
         mode: config.diagnostic ? "diagnostic" : "timing",
         scenario: config.scenario,
         workload: config.workload,
+        steady: config.scenario === "steady" ? api.steady : undefined,
         userAgent: navigator.userAgent,
         initial,
         final,
@@ -819,6 +867,7 @@ export function installChatProbe(config) {
         domOperations: config.diagnostic
           ? {
               totals: [...domOperations.values()],
+              byConnection: [...domConnections.values()],
               slow: slowDomOperations,
               omitted: omittedDomOperations,
               thresholdMs: 4,

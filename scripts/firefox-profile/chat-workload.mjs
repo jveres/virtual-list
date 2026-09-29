@@ -1,13 +1,83 @@
 import { createHash } from "node:crypto";
+import { imageFixture, imageFixtureSize } from "./image-fixture.mjs";
+
+function thinkingSummary(turn, pass) {
+  return Array.from({ length: 5 }, (_, step) => {
+    const stage = `${turn}.${pass}.${step}`;
+    return (
+      `### Review stage ${stage}\n\n` +
+      `The request for stage ${turn} needs a stable reading position while older results are loaded. ` +
+      "I will compare the supplied measurements with the visible message sequence, separate rendering work from scroll input, and check whether the proposed change preserves the selected branch. " +
+      "The available evidence describes a local synthetic conversation; it does not establish physical presentation timing or the behavior of an unrelated browser.\n\n" +
+      "The next check should keep the window size and text unchanged so that differences in row wrapping do not obscure the result. " +
+      "A completed request must retain the same content and tool order when its row is removed and later rebuilt.\n\n" +
+      "- Confirm that the earlier answer remains reachable.\n" +
+      "- Keep the disclosure state independent of reply completion.\n" +
+      "- Record the result before considering another change.\n\n" +
+      `\`\`\`typescript\nconst review = { turn: ${turn}, pass: ${pass}, step: ${step} };\nconst ready = review.step >= 0;\n\`\`\`\n`
+    );
+  }).join("\n");
+}
+
+function historyTools(turn, markdown) {
+  const table = markdown.indexOf("\n\n| Stage");
+  const code = markdown.indexOf("\n\n```typescript");
+  return [
+    {
+      name: "thinking",
+      status: "done",
+      durationMs: 832,
+      input: "(reasoning summary)",
+      output: thinkingSummary(turn, 1),
+      markdownOffset: 0,
+      open: false,
+    },
+    {
+      name: "local_search",
+      status: "done",
+      durationMs: 246,
+      input: JSON.stringify({
+        query: `stage ${turn} rendering and paging`,
+        limit: 6,
+      }),
+      output: JSON.stringify(
+        {
+          results: Array.from({ length: 6 }, (_, index) => ({
+            id: `stage-${turn}-result-${index}`,
+            title: `Rendering observation ${turn}.${index}`,
+            excerpt:
+              "Keep the current message visible when a page commits. Inspect whether its measured height changes, whether an earlier row is rebuilt, and whether a finished tool preserves its disclosure state.",
+          })),
+        },
+        null,
+        2,
+      ),
+      markdownOffset: table,
+      open: false,
+    },
+    {
+      name: "thinking",
+      status: "done",
+      durationMs: 1134,
+      input: "(reasoning summary after local search)",
+      output: thinkingSummary(turn, 2),
+      markdownOffset: code,
+      open: false,
+    },
+  ];
+}
 
 // Local, deterministic Responses SSE input for the actual streaming demo.
 export function chatWorkload({
   sections = 48,
   history = 160,
+  historyContent = "rich",
   durationMs = 30000,
   content = "rich",
 } = {}) {
   if (!["rich", "prose"].includes(content)) throw new Error("Invalid content");
+  if (!["rich", "tools", "images"].includes(historyContent))
+    throw new Error("Invalid historyContent");
   for (const [name, value, min, max] of [
     ["sections", sections, 1, 200],
     ["history", history, 2, 1000],
@@ -16,6 +86,12 @@ export function chatWorkload({
     if (!Number.isSafeInteger(value) || value < min || value > max)
       throw new Error(`Invalid ${name}: expected integer ${min}..${max}`);
   }
+  // The probe also seeds the legacy localStorage record. Keep tool-heavy
+  // history comfortably within that store's quota, including UTF-16 encoding.
+  if (historyContent === "tools" && history > 320)
+    throw new Error("Tool history supports at most 320 turns");
+  if (historyContent === "images" && history !== 20)
+    throw new Error("Image history requires exactly 20 turns");
   const section = (i) =>
     `\n\n## Streaming section ${i}\n\n` +
     "Inspect **stable geometry**, _incremental rendering_, and `scrollTop`. ".repeat(
@@ -40,6 +116,44 @@ export function chatWorkload({
         : `Inspect stage ${i}. ${"Keep the reading position stable. ".repeat(8)}`,
     sentAt: Date.UTC(2026, 0, 1) + Math.floor(i / 20) * 86400000,
   }));
+  if (historyContent === "tools") {
+    for (const [index, turn] of turns.entries())
+      if (turn.role === "assistant")
+        turn.toolCalls = historyTools(index, turn.markdown);
+  }
+  let imageMetadata;
+  if (historyContent === "images") {
+    let assetBytes = 0;
+    let sourceBytes = 0;
+    let count = 0;
+    for (const turn of turns) {
+      if (turn.role !== "assistant") continue;
+      const png = imageFixture(++count);
+      const source = `data:image/png;base64,${png.toString("base64")}`;
+      assetBytes += png.length;
+      sourceBytes += source.length;
+      turn.markdown += `\n\n<img src="${source}" width="${imageFixtureSize.width}" height="${imageFixtureSize.height}" alt="Synthetic raster ${count}">\n`;
+    }
+    const serialized = JSON.stringify(turns);
+    imageMetadata = {
+      historyImages: count,
+      historyImageGenerator: {
+        node: process.version,
+        zlib: process.versions.zlib,
+      },
+      historyImageSize: imageFixtureSize,
+      historyImageAssetBytes: assetBytes,
+      historyImageSourceBytes: sourceBytes,
+      historyJsonBytes: Buffer.byteLength(serialized),
+      historyStorageBytes: serialized.length * 2,
+    };
+    if (
+      imageMetadata.historyJsonBytes > 2 * 1024 ** 2 ||
+      imageMetadata.historyStorageBytes >= 5 * 1024 ** 2
+    )
+      throw new Error("Image history exceeded its fixture storage budget");
+  }
+  const calls = turns.flatMap((turn) => turn.toolCalls ?? []);
   const events = [];
   const push = (at, event) => events.push({ at, event });
   const chunkSize = 96;
@@ -97,6 +211,13 @@ export function chatWorkload({
       content,
       sections,
       history,
+      historyContent,
+      ...imageMetadata,
+      historyToolCalls: calls.length,
+      historyPayloadCharacters: calls.reduce(
+        (total, call) => total + call.input.length + call.output.length,
+        0,
+      ),
       durationMs,
       characters: text.length,
       chunks,

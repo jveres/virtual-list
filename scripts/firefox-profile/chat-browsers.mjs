@@ -20,6 +20,7 @@ import {
   webContentPids,
 } from "./safari-sample.mjs";
 import { validateDisplay } from "./safari-validation.mjs";
+import { steadyScrollArguments, steadyScrollSetup } from "./steady-scroll.mjs";
 
 const exec = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -80,7 +81,13 @@ export async function captureFirefox(server, directory, options, signal) {
   ];
   if (options.display) args.push(`--display=${options.display}`);
   if (options.refreshHz) args.push(`--refresh-hz=${options.refreshHz}`);
-  if (["follow", "buttons"].includes(options.scenario))
+  if (options.pointerX !== undefined)
+    args.push(`--pointer-x=${options.pointerX}`);
+  if (options.scenario === "steady") {
+    const setup = join(directory, "reproduce-setup.js");
+    await writeFile(setup, steadyScrollSetup());
+    args.push(...steadyScrollArguments(setup));
+  } else if (["follow", "buttons"].includes(options.scenario))
     args.push(`--idle-seconds=${options.seconds}`);
   else if (options.scenario === "manual")
     args.push(`--manual-seconds=${options.seconds}`);

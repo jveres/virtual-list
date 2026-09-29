@@ -7,6 +7,19 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 29 DOM work during scrolling
+
+The [DOM-operation investigation](dom-scroll-operations-2026-09-29.md) separates
+retained-row recycling from paging and streaming. Five Firefox comparison rounds
+test header style guards, mount-window batching and pointer location, two inline
+image URL implementations, and combined hover-selector and wheel-read changes.
+None provides a repeatable CPU gain that justifies a production optimization;
+all candidates are reverted. Reusable steady-scroll, tool-heavy, and bounded
+image fixtures, DOM classification, pointer control, and readiness checks remain.
+The short original-image memory run misses its settling budget; the full
+12-cycle repeat passes unchanged limits. Final repository and profiler checks
+pass, and temporary captures and compiler caches are removed.
+
 ## September 29 main-thread CPU and retained resources
 
 The [CPU and resource-ownership investigation](main-thread-memory-2026-09-29.md)

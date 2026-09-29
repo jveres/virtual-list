@@ -373,7 +373,7 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
     );
     api.leave(mutationSpan);
     const result = api.stop();
-    assert.equal(result.probeVersion, 5);
+    assert.equal(result.probeVersion, 6);
     assert.equal(result.domOperations.slow.length, 2);
     assert.equal(result.domOperations.omitted, 2);
     assert.equal(result.domOperations.slow[0].row, "diagnostic-row");
@@ -385,6 +385,25 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
     );
     assert.equal(insertions.count, 4);
     assert.equal(insertions.inclusiveMs, 20);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(result.domOperations.byConnection)),
+      [
+        {
+          name: "insertBefore",
+          connection: "connected-insert",
+          count: 3,
+          inclusiveMs: 15,
+          maxMs: 5,
+        },
+        {
+          name: "insertBefore",
+          connection: "failed",
+          count: 1,
+          inclusiveMs: 5,
+          maxMs: 5,
+        },
+      ],
+    );
     assert.equal(result.domOperations.bursts.length, 1);
     assert.equal(result.domOperations.bursts[0].count, 4);
     assert.equal(result.domOperations.bursts[0].groups[0].subjectTag, "SPAN");
@@ -404,6 +423,131 @@ test("recorder bounds telemetry, subtracts nested work, and restores DOM descrip
       descriptor,
     );
     assert.throws(() => api.start(), /already started/);
+  } finally {
+    dom.window.close();
+  }
+});
+
+test("DOM totals separate connected changes, detached work, no-ops, and failed calls", () => {
+  const dom = new JSDOM(
+    '<div id="viewport"><div id="left"><i id="one"></i><i id="two"></i></div><div id="right"></div></div><textarea id="prompt"></textarea><button id="send-btn"></button>',
+    {
+      url: "http://localhost:4197",
+      runScripts: "outside-only",
+      pretendToBeVisual: true,
+    },
+  );
+  const w = dom.window;
+  w.document.hasFocus = () => true;
+  w.requestAnimationFrame = () => 1;
+  w.cancelAnimationFrame = () => {};
+  let time = 100;
+  w.performance.now = () => time;
+  w.performance.mark = () => {};
+  w.performance.getEntriesByName = () => [{}];
+  w.PerformanceObserver = { supportedEntryTypes: [] };
+  for (const [prototype, name] of [
+    [w.Node.prototype, "insertBefore"],
+    [w.Node.prototype, "removeChild"],
+    [w.Element.prototype, "remove"],
+  ]) {
+    const original = prototype[name];
+    prototype[name] = function (...args) {
+      time += 0.25;
+      return original.apply(this, args);
+    };
+  }
+  try {
+    w.eval(
+      `(${installChatProbe.toString()})(${JSON.stringify({ turns: [], workload: { characters: 10, chunks: 1 }, diagnostic: true, limit: 2, scenario: "follow", trail: "off" })})`,
+    );
+    const api = w.__chatProfile;
+    api.start({ submit: false });
+    const left = w.document.querySelector("#left");
+    const right = w.document.querySelector("#right");
+    const one = w.document.querySelector("#one");
+    const two = w.document.querySelector("#two");
+    const staged = w.document.createElement("div");
+    const parking = w.document.createElement("div");
+    const fresh = w.document.createElement("span");
+    const fragment = w.document.createDocumentFragment();
+    const fragmentChild = w.document.createElement("b");
+    fragment.append(fragmentChild, w.document.createTextNode("fixture"));
+    const emptyFragment = w.document.createDocumentFragment();
+    const bounds = w.Element.prototype.getBoundingClientRect;
+    const query = w.Element.prototype.querySelectorAll;
+    w.Element.prototype.getBoundingClientRect = () => {
+      throw new Error("DOM classification must not read geometry");
+    };
+    w.Element.prototype.querySelectorAll = () => {
+      throw new Error("DOM classification must not walk subtrees");
+    };
+    staged.insertBefore(fresh, null);
+    left.insertBefore(staged, null);
+    right.insertBefore(one, null);
+    // Even an unchanged position can cause native remove/insert work.
+    right.insertBefore(one, null);
+    parking.insertBefore(one, null);
+    assert.equal(parking.removeChild(one), one);
+    assert.equal(left.removeChild(two), two);
+    two.remove();
+    staged.remove();
+    fresh.remove();
+    assert.equal(left.insertBefore(emptyFragment, null), emptyFragment);
+    assert.equal(left.insertBefore(fragment, null), fragment);
+    assert.equal(fragmentChild.isConnected, true);
+    assert.equal(fragment.firstChild, null);
+    assert.throws(() => left.removeChild(fresh), { name: "NotFoundError" });
+    assert.throws(() => left.insertBefore(fresh, right), {
+      name: "NotFoundError",
+    });
+    for (let i = 0; i < 100; i++) two.remove();
+    w.Element.prototype.getBoundingClientRect = bounds;
+    w.Element.prototype.querySelectorAll = query;
+    const result = api.stop();
+    const byConnection = Object.fromEntries(
+      result.domOperations.byConnection.map((entry) => [
+        `${entry.name}:${entry.connection}`,
+        entry.count,
+      ]),
+    );
+    assert.deepEqual(byConnection, {
+      "insertBefore:detached-insert": 1,
+      "insertBefore:connected-insert": 2,
+      "insertBefore:connected-move": 2,
+      "insertBefore:connected-remove": 1,
+      "removeChild:detached-remove": 1,
+      "removeChild:connected-remove": 1,
+      "remove:no-op": 101,
+      "remove:connected-remove": 1,
+      "remove:detached-remove": 1,
+      "insertBefore:no-op": 1,
+      "removeChild:failed": 1,
+      "insertBefore:failed": 1,
+    });
+    for (const total of result.domOperations.totals) {
+      const classes = result.domOperations.byConnection.filter(
+        (entry) => entry.name === total.name,
+      );
+      assert.equal(
+        classes.reduce((sum, entry) => sum + entry.count, 0),
+        total.count,
+      );
+      assert.equal(
+        classes.reduce((sum, entry) => sum + entry.inclusiveMs, 0),
+        total.inclusiveMs,
+      );
+      assert.equal(total.inclusiveMs, total.count * 0.25);
+      assert.equal(total.maxMs, 0.25);
+    }
+    assert.equal(result.domOperations.slow.length, 0);
+    assert.equal(result.domOperations.bursts.length, 0);
+    const summary = JSON.parse(JSON.stringify(analyzeChat(result)));
+    assert.deepEqual(
+      summary.work.domOperations.byConnection,
+      JSON.parse(JSON.stringify(result.domOperations.byConnection)),
+      "compact summaries must retain classifications after raw data is removed",
+    );
   } finally {
     dom.window.close();
   }

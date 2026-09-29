@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual, parseArgs } from "node:util";
+import { analyzeSteadyScroll } from "./steady-scroll.mjs";
 
 export function distribution(values) {
   const sorted = values.toSorted((a, b) => a - b);
@@ -240,15 +241,19 @@ export function analyzeChat(
   const moving = intervals.filter((frame) => Math.abs(frame.movement) > 0.01);
   const streaming = intervals.filter((frame) => frame.streaming);
   const reasons = [];
+  const steady =
+    recording.scenario === "steady" ? analyzeSteadyScroll(recording) : null;
+  if (steady) reasons.push(...steady.reasons);
   if (
-    !recording.stream.done ||
-    recording.stream.characters !== recording.workload.characters ||
-    recording.stream.chunks !== recording.workload.chunks
+    !steady &&
+    (!recording.stream.done ||
+      recording.stream.characters !== recording.workload.characters ||
+      recording.stream.chunks !== recording.workload.chunks)
   )
     reasons.push("Stream did not complete with the expected input");
   if (moving.length < 30) reasons.push("Insufficient scroll movement");
   if (
-    ["scrollback", "manual"].includes(recording.scenario) &&
+    ["scrollback", "manual", "steady"].includes(recording.scenario) &&
     (recording.scroll.wheels < 30 || recording.scroll.ends < 1)
   )
     reasons.push("Missing gesture input or scroll-end events");
@@ -368,6 +373,7 @@ export function analyzeChat(
     traceInvalidations: recording.traceInvalidations ?? false,
     scenario: recording.scenario,
     workload: recording.workload,
+    ...(steady ? { steady } : {}),
     userAgent: recording.userAgent,
     browserBuild:
       metadata?.driverVersion ??
@@ -513,6 +519,7 @@ export function analyzeChat(
       "Inclusive operation times overlap; self time subtracts only other instrumented synchronous calls, not browser work or asynchronous continuations.",
       "Geometry access counts do not prove forced reflow. Use the native trace and invalidation stacks to attribute layout cost.",
       "Slow DOM operations retain at most 64 calls of at least 4 ms, with tag/class metadata and child counts after the call. Up to 64 instrumented spans lasting at least 16 ms retain mutation bursts, each with at most 16 method/tag groups. Native-call timings exclude recorder bookkeeping; enclosing spans include it. No text content or geometry is read for these records.",
+      "DOM connection groups classify the wrapped insertBefore/removeChild/remove calls from pre-call tree state, not subtree size or paint cost. Moving into a detached parent counts as connected removal; detached-insert includes construction and detached reordering. Same-position inserts still count as moves. No-op means a parentless remove or an empty fragment insertion; exceptions count as failed calls.",
       "Unsupported performance entries and heap metrics are unavailable, not zero. Event Timing here is not field INP; layout shifts are not a full CLS score.",
       "Diagnostic observers, wrappers, and timers perturb execution. Compare repeated timing-mode captures before evaluating an optimization.",
     ],

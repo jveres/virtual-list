@@ -54,9 +54,116 @@ round the window up to whole bursts. Use `--stream-ms`, `--seconds`, `--sections
 three seconds after stream completion. Keep inputs identical for comparisons.
 Use `--refresh-hz` if the actual display rate differs from its reported maximum.
 
+To separate historical tool construction from ongoing streaming, add
+`--history-content=tools` and use a short reply:
+
+```sh
+pnpm run profile:chat -- --browser=firefox --scenario=scrollback \
+  --display=LU28R55 --mode=diagnostic --seconds=30 --stream-ms=1000 \
+  --sections=1 --content=prose --history=160 --history-content=tools
+```
+
+This keeps the rich history's visible text and adds two closed thinking panels
+and one search result per assistant, with bounded synthetic string payloads.
+Tool history supports up to 320 turns to fit the probe's localStorage seed.
+The default `--history-content=rich` preserves the original workload. Check
+the loaded range in the summary: a run that only traverses retained rows does
+not measure new-page construction. The
+[DOM-operation report](reports/dom-scroll-operations-2026-09-29.md) records both
+cases and their limits.
+
 Boot is a separate measurement. Use the existing `pnpm run profile:boot` command
 against a normal demo server for cold and warm `chat:visible` timing. Streaming
 captures warm the page before starting and do not measure navigation performance.
+
+## Profile steady scrolling through loaded messages
+
+Use `steady` to measure scrolling through existing content without sending a
+reply or loading another page. This scenario supports installed Firefox only
+and requires exactly 20 history turns, which is also its default:
+
+```sh
+pnpm run profile:chat -- --browser=firefox --display=LU28R55 \
+  --scenario=steady --mode=timing
+```
+
+The setup loads the whole conversation and chooses an interior starting point.
+The fixed plan sends three downward gestures followed by three upward gestures,
+each with 90 native events at 16 px per event and 16.667 ms intervals. A 700 ms
+pause follows each gesture. The planned travel is 4,320 px in each direction;
+capture takes about 15 seconds including native control overhead. `--seconds`
+does not change this plan. Setup fails if the content cannot provide a viewport
+of clearance at both ends of the travel band.
+
+Validity requires the following conditions throughout the capture:
+
+- All 20 turns remain loaded, with a constant item count and no paging,
+  navigation handoff, or held states.
+- No response request, stream delivery, or streamed character is recorded.
+  `stream.done: false` is expected because no reply starts.
+- At least 3,240 px of movement occurs in each direction, with at least four
+  mounted-range changes. Diagnostic mode also requires at least four mounts
+  and four unmounts.
+- At least 405 of the planned 540 wheel events and six scroll-end events are
+  recorded, so a truncated gesture sequence cannot pass on travel alone.
+- The viewport stays inside the interior range, and the usual focus, display,
+  scroll-end, and telemetry checks pass.
+
+Start with timing mode for native CPU samples. Use `--mode=diagnostic` for
+operation and DOM counters, and compare captures with the same mode and inputs.
+The generated `reproduce-setup.js` and recorded gesture plan preserve the setup
+without retaining raw profiles. Native events include gesture phases but no
+momentum phase; use a manual capture for real trackpad release behavior.
+
+To separate pointer-hover work from row recycling, repeat a scripted Firefox
+`steady` or `scrollback` capture with `--pointer-x=0.02`. The value is a fraction
+of the viewport width; the default is `0.5` (center), and the accepted range is
+`0.01..0.99`. On a wide chat viewport, `0.02` places the pointer in the empty
+left gutter. This does not disable hover styling or change application behavior.
+Check `run.json` → `browser.gesturePoints`: it retains the actual client/screen
+coordinates and whether each gesture starts over a message. A narrow viewport
+may have no empty gutter. The control is rejected for manual input, automatic
+end-follow, and other browsers. Compare matched movement and row changes before
+attributing a timing difference to pointer position.
+
+### Exercise inline raster images
+
+Add `--history-content=images` to exercise image source restoration as rows are
+removed and mounted again. This preset requires exactly 20 history turns and
+adds one distinct 960×360 PNG to each of the 10 assistant replies:
+
+```sh
+pnpm run profile:chat -- --browser=firefox --display=LU28R55 \
+  --scenario=steady --mode=timing --history-content=images
+```
+
+The replies keep the rich fixture's text, tables, and code. Each image has an
+inline data URL and explicit width and height. The generator creates seeded
+pixel noise with a four-color PNG palette before capture. It uses no remote
+assets or private content, and no generated binary files need to be committed.
+The existing `rich` and `tools` presets remain unchanged.
+
+The generator enforces a 2 MiB limit for the serialized 20-turn history and a
+5 MiB limit for its estimated UTF-16 localStorage footprint. These limits bound
+fixture input, not browser heap, decoded image memory, or GPU allocation.
+Workload metadata records the image count, dimensions, PNG asset bytes, inline
+source bytes, serialized history bytes, and estimated storage bytes.
+
+For replay, match `historyImageGenerator.node` and
+`historyImageGenerator.zlib` as well as the workload hash. Fixed seeds reproduce
+the pixels, but compression output can differ between Node or zlib versions.
+The workload hash covers the generated sources through the serialized turns
+and response events; compare that hash before attributing a timing difference
+to application code.
+
+Steady image captures require at least one mounted image at each boundary,
+with every mounted image reporting `complete: true` and natural dimensions of
+960×360. The summary keeps the existing `imageBoundaries[].decoded` field name
+for this readiness count and records its limitation. The probe does not await
+`img.decode()`, observe GPU readiness, or measure physical presentation.
+Data and blob display URLs both pass, so changing the display representation
+does not invalidate an otherwise matched comparison. Boundary image reads run
+only at capture start and finish, never in the animation-frame sampler.
 
 ## Compare a renderer fix before release
 
@@ -221,6 +328,7 @@ small summaries and source replay files remain; nothing is uploaded.
 | `run.json` | Revision, dirty-file list, workload hash, original-source hashes for overlays, options, browser/display metadata, server delivery deadlines, completion, and cleanup status. |
 | `summary.json` | Validity, distributions, slow-frame attribution, expensive operations, repeated-call candidates, geometry accesses, DOM churn, and paging changes. |
 | `reproduce.json`, `reproduce.patch` | Exact command, revision, source hashes, and changes from that revision, including untracked source. Apply the patch in a separate worktree to reconstruct the measured code. |
+| `reproduce-setup.js` | Generated pre-capture setup for steady scrolling; checks the loaded history and positions the viewport before measurement. |
 | `upstream.patch`, `parser.patch` | Optional owner-preview source changes. The reproduction record also includes generated runtime hashes and available parser build-tool versions; generated binaries are not retained. |
 | `firefox-cpu.json`, `firefox-attribution.json`, `firefox-bursts.json` | Sampled native costs and stacks across runtime, demo, renderer, and browser work. |
 | `chrome-analysis.json`, `chrome-metrics.json` | Marked-renderer events, styled-element distributions, optional invalidation causes, sampled script attribution, other-thread categories including compositor/raster/GPU work, and before/after CDP performance counters. Shared-process work is not necessarily caused by this page. |
@@ -288,6 +396,15 @@ start. Version 4 captures can show an early bottom completion and cannot prove
 that the restored tail was reached. Compare equal probe versions; the
 [staged-layout report](reports/staged-row-layout-2026-09-26.md) separates the
 version 4 performance comparison from version 5 completion validation.
+
+Probe version 6 adds `work.domOperations.byConnection`: bounded totals for
+connected insertions, moves, and removals, detached operations, no-op removals
+or empty fragment insertions, and failures. Classification reads tree state
+before each call, without layout reads or subtree walks. Moving a connected
+node into a detached parent counts as connected removal. These are call counts,
+not affected-subtree sizes or paint costs. Host image, collapse, viewer-mount,
+action-state, and tool-construction spans help separate hooks from runtime
+mounting. Keep probe versions and instrumentation identical in comparisons.
 
 The most useful metrics are grouped by question:
 

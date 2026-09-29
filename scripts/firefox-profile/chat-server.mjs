@@ -7,10 +7,21 @@ import { createServer } from "vite";
 import { instrumentChat } from "./chat-instrument.mjs";
 import { installChatProbe } from "./chat-probe.mjs";
 import { chatWorkload, profileImage } from "./chat-workload.mjs";
+import { steadyScrollPlan } from "./steady-scroll.mjs";
 
 export async function createChatProfileServer(options = {}) {
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  const workload = chatWorkload(options);
+  const workload = chatWorkload({
+    ...options,
+    history:
+      options.history ??
+      (options.scenario === "steady" ? steadyScrollPlan.history : undefined),
+  });
+  if (
+    options.scenario === "steady" &&
+    workload.metadata.history !== steadyScrollPlan.history
+  )
+    throw new Error("The steady scenario requires the whole 20-turn history");
   const config = {
     turns: workload.turns,
     workload: { ...workload.metadata, trail: options.trail ?? "long" },

@@ -44,6 +44,23 @@
   --cursor-gap: var(--base-size-16, 16px);
 }
 
+/* A leading image follows the tools' 6px gap, not another Markdown block.
+   Add the missing 10px in both static and live viewer wrappers. Padding
+   survives the renderer's first-child margin reset and does not collapse. */
+.message.assistant
+  .tool-calls
+  + .markdown-viewer
+  > .markdown
+  > p:first-child:has(> img:only-child),
+.message.assistant
+  .tool-calls
+  + :not(.markdown-viewer)
+  > .markdown-viewer
+  > .markdown
+  > p:first-child:has(> img:only-child) {
+  padding-top: calc(var(--base-size-16, 16px) - 6px);
+}
+
 /* The footer is row padding, outside the markdown hit-test area. A bare
    cursor paints into it without adding a line to the measured body. At
    stream end the toolbar occupies that same footer; its size never depends
