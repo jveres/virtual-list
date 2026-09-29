@@ -5,7 +5,11 @@ import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { JSDOM } from "jsdom";
 import { parseSync } from "vite";
-import { analyzeChat, compareChat } from "./chat-analysis.mjs";
+import {
+  analyzeChat,
+  compareChat,
+  summarizeScrollMotion,
+} from "./chat-analysis.mjs";
 import { chatTargets, instrumentChat } from "./chat-instrument.mjs";
 import { installChatProbe } from "./chat-probe.mjs";
 import { createChatProfileServer } from "./chat-server.mjs";
@@ -204,6 +208,52 @@ test("instrumented returns and exceptions preserve behavior and close spans", ()
   );
   assert.equal(entered, 2);
   assert.equal(left, 2);
+});
+
+test("live-commit read spans preserve values and close after a failed read", () => {
+  const path = "src/virtual-list.ts";
+  const source = `${chatTargets[path]
+    .filter((name) => !["liveCommit", "viewportState"].includes(name))
+    .map((name) => `function ${name}() { return null; }`)
+    .join("\n")}
+    let reads = 0;
+    function viewportState() {
+      if (++reads === 2 && fail) throw new Error("read failed");
+      return reads;
+    }
+    function liveCommit() {
+      const before = viewportState();
+      return (() => before + viewportState())();
+    }`;
+  const changed = instrumentChat(source, path, true);
+  for (const fail of [false, true]) {
+    const names = [];
+    const open = [];
+    const context = {
+      fail,
+      __chatProfile: {
+        enter(name) {
+          names.push(name);
+          open.push(name);
+          return name;
+        },
+        leave(name) {
+          assert.equal(open.pop(), name);
+        },
+      },
+    };
+    const run = () => runInNewContext(`${changed}; liveCommit()`, context);
+    if (fail) assert.throws(run, /read failed/);
+    else assert.equal(run(), 3);
+    assert.deepEqual(
+      names.filter((name) => name.includes(".viewportRead")),
+      [
+        `${path}:liveCommit.viewportRead[0]`,
+        `${path}:liveCommit.viewportRead[1]`,
+      ],
+    );
+    assert.deepEqual(open, []);
+  }
 });
 
 test("recorder bounds telemetry, subtracts nested work, and restores DOM descriptors", () => {
@@ -972,4 +1022,42 @@ test("Chrome backward sample timestamps cannot inflate a slow window", () => {
     window.frames.reduce((sum, f) => sum + f.selfMs, 0),
     50,
   );
+});
+
+test("scroll motion summary separates synchronous jumps from native frame progress", () => {
+  const summary = summarizeScrollMotion({
+    frames: [
+      [0, 0, "follow"],
+      [16, 0, "follow"],
+      [32, 20, "follow"],
+      [48, 100, "follow"],
+    ],
+    scrollWrites: [
+      {
+        phase: "follow",
+        method: "scrollTo",
+        behavior: "smooth",
+        top: 100,
+        beforeTop: 0,
+        afterTop: 0,
+      },
+      {
+        phase: "follow",
+        method: "scrollTo",
+        behavior: "smooth",
+        top: 200,
+        beforeTop: 100,
+        afterTop: 200,
+      },
+      { phase: "follow", method: "scrollTop", top: 210 },
+    ],
+  });
+  const phase = summary.phases[0];
+  assert.equal(phase.smooth, 2);
+  assert.equal(phase.instant, 1);
+  assert.equal(phase.synchronousSmoothJumps, 1);
+  assert.equal(phase.synchronousMovementPx.max, 100);
+  assert.equal(phase.observedMovingStepsPx.max, 80);
+  assert.equal(phase.stationaryFrames, 1);
+  assert.deepEqual(summarizeScrollMotion({ frames: [] }), { available: false });
 });

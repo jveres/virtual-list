@@ -49,6 +49,75 @@ test("raw cleanup preserves summaries and source replay while removing nested ca
   }
 });
 
+test("renderer previews retain the owner patch and CPU-load replay command", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "chat-renderer-replay-"));
+  const root = join(parent, "virtual-list");
+  const renderer = join(parent, "markdown-viewer");
+  const git = (cwd, args) =>
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
+  try {
+    for (const directory of [root, renderer]) {
+      await mkdir(join(directory, "src"), { recursive: true });
+      await writeFile(
+        join(directory, "src/value.js"),
+        "export const value = 1;\n",
+      );
+      git(directory, ["init", "-q"]);
+      git(directory, ["add", "src"]);
+      git(directory, [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "-qm",
+        "Fixture",
+      ]);
+    }
+    await writeFile(
+      join(renderer, "src/value.js"),
+      "export const value = 2;\n",
+    );
+    const directory = join(root, "capture");
+    await mkdir(directory);
+    const contention = { workers: 4, periodMs: 20, busyMs: 10 };
+    await writeReproduction(
+      directory,
+      {
+        revision: git(root, ["rev-parse", "HEAD"]).trim(),
+        options: { rendererPreview: true },
+        cpuContention: contention,
+      },
+      root,
+    );
+    const saved = JSON.parse(
+      await readFile(join(directory, "reproduce.json"), "utf8"),
+    );
+    assert.deepEqual(saved.command.slice(0, 5), [
+      "env",
+      "MARKDOWN_VIEWER_LOCAL=1",
+      "node",
+      "scripts/firefox-profile/cpu-contention.mjs",
+      "--",
+    ]);
+    assert.deepEqual(saved.cpuContention, contention);
+    assert.equal(
+      saved.renderer.revision,
+      git(renderer, ["rev-parse", "HEAD"]).trim(),
+    );
+    assert.deepEqual(saved.renderer.build, ["pnpm", "run", "build"]);
+    const patch = await readFile(
+      join(directory, saved.renderer.sourcePatch),
+      "utf8",
+    );
+    assert.match(patch, /^\+export const value = 2;$/m);
+    assert.match(saved.renderer.sourceHashes["src/value.js"], /^[a-f0-9]{64}$/);
+    assert.equal(Object.keys(saved.sourceHashes).length, 1);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("reproduction patch reconstructs modified, deleted, and untracked source at the recorded revision", async () => {
   const root = await mkdtemp(join(tmpdir(), "chat-reproduce-"));
   const git = (args) =>

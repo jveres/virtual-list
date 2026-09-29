@@ -21,11 +21,7 @@ const retained = new Set([
   "reproduce-setup.js",
 ]);
 
-export async function writeReproduction(
-  directory,
-  report,
-  root = process.cwd(),
-) {
+async function sourceSnapshot(root) {
   const git = (args) =>
     execFileSync("git", args, {
       cwd: root,
@@ -83,8 +79,17 @@ export async function writeReproduction(
       patch += error.stdout;
     }
   }
+  return { patch, hashes, revision: git(["rev-parse", "HEAD"]).trim() };
+}
+
+export async function writeReproduction(
+  directory,
+  report,
+  root = process.cwd(),
+) {
+  const { patch, hashes } = await sourceSnapshot(root);
   const o = report.options ?? {};
-  const command = report.command ?? ["pnpm", "run", "profile:chat", "--"];
+  let command = report.command ?? ["pnpm", "run", "profile:chat", "--"];
   for (const [name, value] of Object.entries({
     browser: o.browser,
     scenario: o.scenario,
@@ -110,6 +115,26 @@ export async function writeReproduction(
   }))
     if (!report.command && value !== undefined && value !== false)
       command.push(value === true ? `--${name}` : `--${name}=${value}`);
+  if (report.cpuContention)
+    command = [
+      "node",
+      "scripts/firefox-profile/cpu-contention.mjs",
+      "--",
+      ...command,
+    ];
+  let renderer;
+  if (o.rendererPreview) {
+    const snapshot = await sourceSnapshot(join(root, "../markdown-viewer"));
+    await writeFile(join(directory, "upstream.patch"), snapshot.patch);
+    renderer = {
+      checkout: "../markdown-viewer",
+      revision: snapshot.revision,
+      sourceHashes: snapshot.hashes,
+      sourcePatch: "upstream.patch",
+      build: ["pnpm", "run", "build"],
+    };
+    command = ["env", "MARKDOWN_VIEWER_LOCAL=1", ...command];
+  }
   await writeFile(join(directory, "reproduce.patch"), patch);
   await writeFile(
     join(directory, "reproduce.json"),
@@ -118,12 +143,19 @@ export async function writeReproduction(
         schema: 1,
         revision: report.revision,
         command,
+        renderer,
+        cpuContention: report.cpuContention,
         sourceHashes: hashes,
         sourcePatch: "reproduce.patch",
         environment: report.environment ?? "run.json",
         instructions: [
           "Check out revision in a separate worktree; apply reproduce.patch there with git apply.",
           "Install the locked dependencies with pnpm install --frozen-lockfile.",
+          ...(renderer
+            ? [
+                "For renderer preview, check out renderer.revision in the sibling markdown-viewer repository, install its locked dependencies, apply upstream.patch, and run renderer.build there.",
+              ]
+            : []),
           "If reproduce-setup.js is present, copy that input fixture into the checkout root before running the command.",
           `Match the browser build, display, scaling, refresh rate, and window geometry in ${report.environment ?? "run.json"}.`,
           "Run command as an argument array from that checkout. Compare workload hashes and validity before interpreting timing.",

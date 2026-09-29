@@ -8,11 +8,9 @@
    below: the space is permanent, only its occupant changes. Rows with an
    action footer use that footer as their reservation instead (see below). */
 .message.assistant .markdown {
-  /* New renderer versions expose their line reservation. Keep the 1em
-     fallback for the currently pinned release until its next update. */
+  /* Use the renderer's line reservation, with a fallback for older versions. */
   --cursor-line: var(--cursor-line-size, 1em);
-  --cursor-gap: 0em;
-  padding-bottom: calc(var(--cursor-line) + var(--cursor-gap));
+  padding-bottom: var(--cursor-line);
 }
 
 .message.assistant .markdown:has(> .cursor) {
@@ -22,12 +20,8 @@
 /* Image-only paragraphs get normal block spacing on both sides, including
    when the next block is the live cursor. Keep the same reservation after
    finalization; footer-backed rows continue to borrow their existing space. */
-.message.assistant .markdown:has(> p:last-child > img:only-child),
-.message.assistant
-  .markdown:has(> .cursor:last-child):has(
-    > p:nth-last-child(2) > img:only-child
-  ) {
-  --cursor-gap: var(--base-size-16, 16px);
+.message.assistant .markdown:where(:has(> p:last-child > img:only-child)) {
+  padding-bottom: calc(var(--cursor-line) + var(--base-size-16, 16px));
 }
 
 /* Only the final text segment reserves the streaming cursor's line. */
@@ -41,7 +35,13 @@
 }
 
 .message.assistant .markdown > .cursor {
+  /* The changing gap belongs to the cursor, never the whole Markdown tree. */
+  --cursor-gap: 0em;
   margin-top: var(--cursor-gap);
+}
+
+.message.assistant .markdown > p:has(> img:only-child) + .cursor {
+  --cursor-gap: var(--base-size-16, 16px);
 }
 
 /* The footer is row padding, outside the markdown hit-test area. A bare
@@ -50,12 +50,17 @@
    on cursor presence, hover, or whether the last text ends with a block.
    Download controls between markdown and actions need the normal line
    reservation: the cursor cannot borrow space beyond those controls. */
-.message.assistant:has(> .message-actions):not(:has(.message-generated-files))
-.markdown {
+/* File controls are direct children of message-content. Keep this check out
+   of the changing Markdown subtree during streaming. */
+.message.assistant:has(> .message-actions):not(
+  :has(> .message-content > .message-generated-files)
+) .markdown {
   padding-bottom: 0;
 }
 
-.message.assistant:has(> .message-actions):not(:has(.message-generated-files))
+.message.assistant:has(> .message-actions):not(
+    :has(> .message-content > .message-generated-files)
+  )
   .markdown
   > .cursor {
   /* Override markdown-viewer's important last-child margin reset. */

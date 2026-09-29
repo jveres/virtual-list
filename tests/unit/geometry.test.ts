@@ -737,12 +737,34 @@ describe("randomized against the oracle", () => {
 });
 
 describe("host-named anchor", () => {
+  it.each([false, true])(
+    "should retire old reading reserve for an explicit end request (pin=%s)",
+    (pinned) => {
+      const geometry = new Geometry(100);
+      seed(geometry, [...keysRange(0, 10), "prompt", "reply", "later"]);
+      geometry.measure("later", 1000);
+      if (pinned) geometry.pin("prompt", 40);
+      const before = { scrollTop: 1150, height: 600 };
+      const reading = geometry.capture(before, "viewport", {
+        key: "reply",
+        offset: -50,
+      });
+      geometry.setKeys([...keysRange(0, 10), "prompt", "reply"]);
+      geometry.resolve(reading);
+      expect(geometry.reserve).toBe(550);
+
+      const result = geometry.resolve(geometry.capture(before, "end"));
+
+      expect(result.scrollTop).toBe(pinned ? 960 : 600);
+      expect(geometry.reserve).toBe(pinned ? 360 : 0);
+    },
+  );
   it.each([
     { pinned: true, atEnd: true, expected: 960 },
-    { pinned: true, atEnd: false, expected: 1093 },
+    { pinned: true, atEnd: false, expected: 960 },
     { pinned: false, atEnd: true, expected: 1113 },
   ])(
-    "should restore a clipped collapsed pin only at end: %j",
+    "should reveal a clipped collapsed pin throughout its scroll range: %j",
     ({ pinned, atEnd, expected }) => {
       const geometry = new Geometry(100);
       seed(geometry, [...keysRange(0, 10), "prompt", "reply"]);

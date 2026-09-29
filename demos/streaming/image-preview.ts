@@ -26,6 +26,8 @@ interface ImageMessage {
 interface ChatImage extends PhotoPreviewItem {
   url: string;
   label: string;
+  /** Logical Markdown source, distinct from a responsive/display-copy URL. */
+  source?: string;
   messageId?: number;
   ordinal?: number;
 }
@@ -174,6 +176,7 @@ export function createChatImagePreview(
     message: ImageMessage,
     ordinal: number,
     url: string,
+    boundPhoto?: ChatImage,
   ): number {
     let entries = identities.get(message);
     if (!entries) {
@@ -182,7 +185,15 @@ export function createChatImagePreview(
     }
     const previous = entries.get(ordinal);
     if (previous?.url === url) return previous.id;
-    const id = nextId++;
+    // Immutable message updates keep unchanged image bindings. A changed
+    // logical source or ordinal still receives a new navigation identity.
+    const id =
+      previous === undefined &&
+      boundPhoto?.messageId === message.id &&
+      boundPhoto.ordinal === ordinal &&
+      boundPhoto.source === url
+        ? boundPhoto.id
+        : nextId++;
     entries.set(ordinal, { url, id });
     // DOM edits can replace an image and then restore it without changing the
     // stored Markdown. A cached navigation index must use the new binding ID.
@@ -267,6 +278,13 @@ export function createChatImagePreview(
     const entries = row ? rowImages(row) : undefined;
     const message = entries?.message;
     const ordinal = entries?.ordinals.get(image) ?? -1;
+    const source =
+      !selectedUrl ||
+      (url.startsWith("data:") &&
+        !image.hasAttribute("srcset") &&
+        image.parentElement?.tagName !== "PICTURE")
+        ? url
+        : image.src;
     const photo: ChatImage = {
       // Navigation checks this identity against sanitized message content.
       // A live DOM image ahead of the model cannot match another image's ID.
@@ -275,18 +293,10 @@ export function createChatImagePreview(
       // Keep logical src resolution for responsive and base-relative images.
       ...(message && ordinal >= 0
         ? {
-            id: imageId(
-              message,
-              ordinal,
-              !selectedUrl ||
-                (url.startsWith("data:") &&
-                  !image.hasAttribute("srcset") &&
-                  image.parentElement?.tagName !== "PICTURE")
-                ? url
-                : image.src,
-            ),
+            id: imageId(message, ordinal, source, previous),
             messageId: message.id,
             ordinal,
+            source,
           }
         : { id: previous?.id ?? nextId++ }),
       url,

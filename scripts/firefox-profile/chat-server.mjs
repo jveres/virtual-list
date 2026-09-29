@@ -28,11 +28,32 @@ export async function createChatProfileServer(options = {}) {
   let captureReleased = false;
   const pendingStarts = new Set();
   const streams = new Set();
+  // Match the demo's opt-in preview when measuring an owning-repository fix.
+  const rendererRoot = resolve(root, "../markdown-viewer");
+  const previewRenderer = options.rendererPreview === true;
   const server = await createServer({
     root,
     configFile: false,
     logLevel: "error",
-    cacheDir: options.cacheDir ?? "browser-artifacts/chat-profile/vite-cache",
+    cacheDir:
+      options.cacheDir ??
+      (previewRenderer
+        ? "browser-artifacts/chat-profile/renderer-preview-cache"
+        : "browser-artifacts/chat-profile/vite-cache"),
+    resolve: {
+      alias: previewRenderer
+        ? [
+            {
+              find: /^markdown-viewer$/,
+              replacement: resolve(rendererRoot, "dist/index.js"),
+            },
+            {
+              find: /^markdown-viewer\/styles\.css$/,
+              replacement: resolve(rendererRoot, "dist/styles/index.css"),
+            },
+          ]
+        : [],
+    },
     server: {
       host: "127.0.0.1",
       port: options.port ?? 0,
@@ -41,7 +62,18 @@ export async function createChatProfileServer(options = {}) {
       open: false,
       // Worktrees can share a dependency directory. WASM is served from
       // that real path, not from the node_modules symlink Vite sees here.
-      fs: { allow: [root, await realpath(resolve(root, "node_modules"))] },
+      fs: {
+        allow: [
+          root,
+          await realpath(resolve(root, "node_modules")),
+          ...(previewRenderer
+            ? [
+                rendererRoot,
+                await realpath(resolve(rendererRoot, "node_modules")),
+              ]
+            : []),
+        ],
+      },
     },
     plugins: [
       {

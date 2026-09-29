@@ -1521,17 +1521,8 @@ function shouldMountBottomEdgeSlot(): boolean {
   );
 }
 
-/** Slot spinners take their angle from the wrapper while a load runs. */
-function syncEdgeLoading(): void {
-  viewportWrap.toggleAttribute(
-    "data-edge-loading",
-    edgeState === "loading" || loadingBottom,
-  );
-}
-
 function setBottomLoading(loading: boolean): void {
   loadingBottom = loading;
-  syncEdgeLoading();
   if (bottomEdgeSlotElement) applyBottomSlotState(bottomEdgeSlotElement);
   bottomEdgeOverlay.dataset.state =
     loading && edgeLoaderMode === "pill" ? "loading" : "hidden";
@@ -1586,7 +1577,6 @@ function setEdgeState(state: EdgeState): void {
   window.clearTimeout(edgeHideTimer);
   edgeHideTimer = 0;
   edgeState = state;
-  syncEdgeLoading();
   if (edgeLoaderMode === "slot") {
     // In place, at the slot's fixed height: no structural change.
     if (edgeSlotElement) applyEdgeSlotState(edgeSlotElement, state);
@@ -2159,7 +2149,17 @@ function switchMessageVersion(messageId: number, offset: number): void {
   markConversationChanged();
   const branchIndex = transcriptIndexById.get(messageId) ?? -1;
   const replacementId = parent.childrenIds[nextSelected];
-  const anchor = replacementAnchor(messageId, replacementId);
+  // Selecting a terminal reply removes the continuation being read. Land
+  // at the new path's end rather than retaining space for the removed turns.
+  const endsEarlier =
+    node.message?.role === "assistant" &&
+    branchIndex >= 0 &&
+    branchIndex < transcript.length - 1 &&
+    replacementId !== undefined &&
+    tree.get(replacementId)?.childrenIds.length === 0;
+  const anchor = endsEarlier
+    ? "end"
+    : replacementAnchor(messageId, replacementId);
   parent.selectedChildIndex = nextSelected;
   rebuildActiveTranscript();
   if (branchIndex >= 0) selectWindowAround(branchIndex);

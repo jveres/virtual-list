@@ -137,6 +137,27 @@ function photoFor(image: HTMLImageElement): PhotoPreviewItem {
 }
 
 describe("chat image preview source identity", () => {
+  it("should retain unchanged image bindings across immutable streaming updates", async () => {
+    const messages = [message(1, "/first.png", "/second.png")];
+    const row = rowFor(messages[0]);
+    const text = document.createElement("p");
+    row.append(text);
+    const { adjacent } = bindRows(messages, row);
+    const first = photoFor(imageAt(row));
+    const second = photoFor(imageAt(row, 1));
+    for (let i = 0; i < 10; i++) {
+      messages[0] = {
+        ...messages[0]!,
+        markdown: `${messages[0]!.markdown} token`,
+      };
+      text.textContent = `Streaming chunk ${i}`;
+      await Promise.resolve();
+      // Keeping the same binding object proves no unbind/rebind happened.
+      expect(photoFor(imageAt(row))).toBe(first);
+      expect(photoFor(imageAt(row, 1))).toBe(second);
+      expect(adjacent(first, 1)?.id).toBe(second.id);
+    }
+  });
   it.each([1, 12])(
     "should bound row scans with %i images during a batch of streaming text mutations",
     async (count) => {

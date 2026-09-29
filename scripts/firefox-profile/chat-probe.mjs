@@ -216,15 +216,22 @@ export function installChatProbe(config) {
         ...descriptor,
         value(...args) {
           countAccess(`call:${name}`);
-          if (active && this === viewport && name.startsWith("scroll"))
-            append("scrollWrites", scrollWrites, {
+          if (active && this === viewport && name.startsWith("scroll")) {
+            const write = {
               time: now(),
+              phase,
               method: name,
               top: typeof args[0] === "object" ? args[0]?.top : args[1],
               behavior:
                 typeof args[0] === "object" ? args[0]?.behavior : "auto",
+              beforeTop: scrollGetter.call(viewport),
               callers: stack.slice(-4).map((entry) => entry.name),
-            });
+            };
+            const result = descriptor.value.apply(this, args);
+            write.afterTop = scrollGetter.call(viewport);
+            append("scrollWrites", scrollWrites, write);
+            return result;
+          }
           return descriptor.value.apply(this, args);
         },
       });

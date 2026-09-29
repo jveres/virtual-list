@@ -64,8 +64,9 @@ export function instrumentChat(source, path, diagnostic) {
   );
   const edits = [];
   const counts = new Map(targets.map((name) => [name, 0]));
+  let liveViewportReads = 0;
   const insert = (at, text) => edits.push({ at, text });
-  const visit = (node, parent) => {
+  const visit = (node, parent, owner = "") => {
     if (!node || typeof node !== "object") return;
     const callable = [
       "FunctionDeclaration",
@@ -73,6 +74,27 @@ export function instrumentChat(source, path, diagnostic) {
       "ArrowFunctionExpression",
     ].includes(node.type);
     const name = node.id?.name ?? parent?.key?.name ?? parent?.id?.name ?? "";
+    if (callable && name) owner = name;
+    if (
+      diagnostic &&
+      path === "src/virtual-list.ts" &&
+      owner === "liveCommit" &&
+      node.type === "CallExpression" &&
+      node.callee.type === "Identifier" &&
+      node.callee.name === "viewportState"
+    ) {
+      // Separate the flush after host rendering from the read after the
+      // runtime writes slot geometry. Function totals hide that distinction.
+      const label = `${path}:liveCommit.viewportRead[${liveViewportReads++}]`;
+      insert(
+        node.start,
+        `(() => { const __chatRead = globalThis.__chatProfile?.enter(${JSON.stringify(label)}); try { return `,
+      );
+      insert(
+        node.end,
+        "; } finally { globalThis.__chatProfile?.leave(__chatRead); } })()",
+      );
+    }
     if (
       callable &&
       node.body &&
@@ -113,13 +135,15 @@ export function instrumentChat(source, path, diagnostic) {
     }
     for (const value of Object.values(node)) {
       if (Array.isArray(value)) {
-        for (const child of value) if (child?.type) visit(child, node);
-      } else if (value?.type) visit(value, node);
+        for (const child of value) if (child?.type) visit(child, node, owner);
+      } else if (value?.type) visit(value, node, owner);
     }
   };
   visit(parsed.program);
   for (const [name, count] of counts)
     assert.equal(count, 1, `Profiling target changed: ${path}:${name}`);
+  if (diagnostic && path === "src/virtual-list.ts")
+    assert.equal(liveViewportReads, 2, "Profiling live-commit reads changed");
   for (const edit of edits.sort((a, b) => b.at - a.at))
     source = source.slice(0, edit.at) + edit.text + source.slice(edit.at);
   const replace = (needle, replacement) => {

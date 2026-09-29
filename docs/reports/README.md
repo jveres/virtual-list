@@ -7,13 +7,31 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 29 scroll hot path
+
+The [scroll-handler audit](scroll-hot-path-2026-09-29.md) compares native Firefox
+scrollback with and without bounded CPU contention. It finds small handler costs
+and reduces concurrent style work: 21% less main-thread CPU from a local spinner
+animation, then another 18% from bounded selectors and cursor-local spacing.
+An owning-repository trail index in `markdown-viewer` `v0.8.8` reduces CPU by
+9% in the separate visible end-follow workload, after user confirmation.
+These are matched Firefox captures, not proof of resolved presentation jitter.
+
+## September 29 Safari streaming follow
+
+The [streaming-follow investigation](safari-streaming-follow-2026-09-29.md)
+checks native scroll responses, records a rejected shorter-retarget experiment,
+and adds compact motion diagnostics without changing runtime scrolling.
+
 ## September 29 clean-code and anchor audit
 
 The [audit and anchor report](clean-code-anchor-audit-2026-09-29.md) records
 Safari process-ownership and display-copy failure fixes, the user-confirmed
 Chrome version-switch reserve correction, collapse/reflow and bottom-navigation
 fixes, 4,464 geometry combinations, 252 browser combinations, and matched
-Enter-to-send captures.
+Enter-to-send captures. Its follow-up covers partial-scroll collapse and
+terminal assistant branches, with 190 Chromium/WebKit browser cases and a later
+successful three-engine release check after the Firefox launch workaround.
 
 ## September 29 streaming chat memory
 

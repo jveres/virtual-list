@@ -417,6 +417,9 @@ export class Geometry {
     const mode = this.resolveMode(capture);
 
     if (mode === "end") {
+      // Explicit end navigation retires reading reserve from the old path.
+      // Automatic streaming updates still preserve the active viewport floor.
+      if (capture.policy === "end") this.reservePx = 0;
       this.recomputeReserve(viewport.height, viewport.scrollTop);
       return {
         scrollTop: this.maxScrollTop(viewport.height),
@@ -507,19 +510,16 @@ export class Geometry {
       // must: the content that was above the viewport is gone).
       const height = this.heightOf(anchor.key);
       const pinTop = this.pinTop;
-      // At the end, collapsing the clipped pinned row can make the whole
-      // tail fit below its pin again. Keeping an offset inside the expanded
-      // row would manufacture blank reserve and leave its controls offscreen.
-      // Away from the end, explicit reading-position preservation still wins.
+      // Collapsing the clipped pinned row must reveal its top, including
+      // between the pin and the end. Keeping the expanded reading offset
+      // would leave the collapsed row's controls above the viewport.
       if (
         capture.policy === "viewport" &&
         capture.retainViewportReserve &&
-        capture.atEnd &&
         anchor.key === this.pinnedKey &&
         anchor.offset > 0 &&
         height < anchor.height &&
-        pinTop !== null &&
-        this.contentSize - capture.viewport.height <= pinTop
+        pinTop !== null
       )
         return pinTop;
       const offset =

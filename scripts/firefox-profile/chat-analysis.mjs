@@ -19,6 +19,59 @@ export function distribution(values) {
   };
 }
 
+/** Compact scroll-response evidence; position sampling does not prove presentation. */
+export function summarizeScrollMotion(recording) {
+  const writes = recording.scrollWrites;
+  if (!Array.isArray(writes)) return { available: false };
+  return {
+    available: true,
+    phases: [...new Set(writes.map((write) => write.phase ?? "unknown"))].map(
+      (phase) => {
+        const selected = writes.filter(
+          (write) => (write.phase ?? "unknown") === phase,
+        );
+        const smooth = selected.filter((write) => write.behavior === "smooth");
+        const measured = smooth.filter(
+          (write) =>
+            Number.isFinite(write.beforeTop) && Number.isFinite(write.afterTop),
+        );
+        const steps = [];
+        for (let i = 1; i < recording.frames.length; i++) {
+          const previous = recording.frames[i - 1];
+          const frame = recording.frames[i];
+          if (previous[2] === phase && frame[2] === phase)
+            steps.push(Math.abs(frame[1] - previous[1]));
+        }
+        return {
+          phase,
+          writes: selected.length,
+          smooth: smooth.length,
+          instant: selected.filter(
+            (write) =>
+              write.method === "scrollTop" || write.behavior === "instant",
+          ).length,
+          measuredSmoothRequests: measured.length,
+          synchronousSmoothJumps: measured.filter(
+            (write) => Math.abs(write.afterTop - write.beforeTop) > 1,
+          ).length,
+          synchronousMovementPx: distribution(
+            measured.map((write) => Math.abs(write.afterTop - write.beforeTop)),
+          ),
+          requestedDistancePx: distribution(
+            measured
+              .map((write) => Math.abs(write.top - write.beforeTop))
+              .filter(Number.isFinite),
+          ),
+          observedMovingStepsPx: distribution(
+            steps.filter((step) => step > 0.01),
+          ),
+          stationaryFrames: steps.filter((step) => step <= 0.01).length,
+        };
+      },
+    ),
+  };
+}
+
 function schedulingWindow(recording, frame) {
   const scheduling = recording.scheduling;
   if (!scheduling || frame.callbackStart === null || frame.callbackEnd === null)
@@ -357,6 +410,7 @@ export function analyzeChat(
         .slice(0, 20),
       note: "Cached row geometry and DOM connection at publication; this does not prove that pixels were painted or cover compositor-only movement between events.",
     },
+    scrollMotion: summarizeScrollMotion(recording),
     navigation: (recording.navigation ?? []).map((command) => {
       const frames = intervals.filter(
         (frame) =>

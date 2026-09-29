@@ -52,6 +52,7 @@ if (values.help) {
   --sections N --history N       Complex reply sections / initial history turns (48 / 160)
   --trail off|short|long          Renderer trail (long)
   --output DIRECTORY            Creates a unique directory; keeps summaries and replay metadata
+  MARKDOWN_VIEWER_LOCAL=1        Preview built ../markdown-viewer; record its revision and source patch
 See docs/streaming-chat-profiling.md for overhead controls, interpretation, and Safari timelines.`);
   process.exit(0);
 }
@@ -150,6 +151,7 @@ const options = {
   sections: Number(values.sections),
   history: Number(values.history),
   trail: values.trail,
+  rendererPreview: process.env.MARKDOWN_VIEWER_LOCAL === "1",
 };
 await mkdir(values.output, { recursive: true });
 const directory = await mkdtemp(
@@ -166,6 +168,9 @@ const report = {
   status: "starting",
   startedAt: new Date().toISOString(),
   options,
+  cpuContention: process.env.VIRTUAL_LIST_CPU_CONTENTION
+    ? JSON.parse(process.env.VIRTUAL_LIST_CPU_CONTENTION)
+    : undefined,
   revision: execFileSync("git", ["rev-parse", "HEAD"], {
     encoding: "utf8",
   }).trim(),

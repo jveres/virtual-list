@@ -276,3 +276,46 @@ visibility through the thinking-to-text transition, and lack of answer focus.
 It also verifies that tool calls survive page reload. These checks pass without
 a demo workaround. They do not measure physical compositor presentation or
 prove that the earlier intermittent visual flash cannot occur.
+
+
+## Follow-up: partial collapse and terminal reply branches
+
+Two later reports exposed cases outside the original collapse coverage.
+Expanding the final prompt, scrolling 80 pixels, and collapsing it at a
+1420 × 800 viewport left its top at −40 pixels. The runtime now restores a
+clipped pinned row when an explicit viewport-preserving shrink occurs between
+the pin and the end, too. Fully visible row tops retain their placement;
+internal reflow does not acquire this behavior.
+
+Switching an older assistant reply to a terminal sibling preserved the old
+reply's −100-pixel offset after removing the later turn. This created a new
+blank reserve instead of reaching the new conversation end. The host now
+expresses that path-shortening selection with the runtime's `"end"` anchor.
+The geometry kernel discards old reading reserve for an explicit end request
+and recomputes the new pin's required space. Ordinary version replacements
+without a removed continuation keep their reading anchor.
+
+Reproduce the new cases with:
+
+```sh
+node scripts/regressions/chat-scrolling/chat-terminal-branch-collapse-regression.mjs
+```
+
+The script repeats three partial-collapse placements and six terminal-reply
+switches in each engine. `BROWSER_ENGINE` can select one engine. These are
+scripted correctness checks, not native momentum or presentation measurements.
+
+Validation: 5,615 unit tests pass. `pnpm run check` passes with three existing
+CSS warnings. The new nine-case script and the two existing exact-bottom
+collapse cases pass in Chromium and WebKit. Firefox automation exits before
+opening a page with `Could not find profile folder`, including with fresh
+profiles in alternate temporary directories; no Firefox result is claimed.
+The 84-case sequential anchor matrix also passes in each of Chromium and
+WebKit: 190 browser cases total across those engines. The 146 portable profiler
+checks pass. Test browsers exited; the pre-existing demo server was preserved.
+
+During the subsequent `markdown-viewer` `v0.8.8` release verification, the
+repository's Firefox application-data workaround allowed automation to run.
+The nine-case terminal-branch/partial-collapse script then passed in Firefox,
+Chromium, and WebKit against the pinned package. Current unit and profiler totals
+are 5,616 and 152 respectively; static checks pass with two existing CSS warnings.

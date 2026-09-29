@@ -58,6 +58,29 @@ Boot is a separate measurement. Use the existing `pnpm run profile:boot` command
 against a normal demo server for cold and warm `chat:visible` timing. Streaming
 captures warm the page before starting and do not measure navigation performance.
 
+## Compare a renderer fix before release
+
+Use the same local-renderer preview as the demo when testing a fix in the owning
+`../markdown-viewer` checkout. Build that checkout first with `pnpm run build`,
+then run the capture here:
+
+```sh
+MARKDOWN_VIEWER_LOCAL=1 pnpm run profile:chat -- --browser=firefox \
+  --display=LU28R55 --scenario=follow --mode=diagnostic
+```
+
+The preview uses a separate Vite cache. Its reproduction record includes the
+renderer revision, source hashes, build command, and `upstream.patch`. Capture
+an unchanged owner build before the candidate so both sides use the same module
+loading path. Normal captures and normal demo builds keep the pinned dependency.
+
+To apply bounded CPU contention, prefix the profiling command with
+`node scripts/firefox-profile/cpu-contention.mjs --`. The helper runs four worker
+threads, each attempting 10 ms of CPU work in a 20 ms period, and stops them when
+the command exits. The reproduction record preserves these settings and the
+wrapper command. This models CPU contention only; it does not reproduce GPU or
+memory pressure or another application's exact scheduling.
+
 ## Profile send after loading older history
 
 For a simulated-provider send regression, use the focused installed-Chrome

@@ -92,6 +92,16 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
             opacity: getComputedStyle(element).opacity,
             transform: getComputedStyle(spinner).transform,
             spinner: getComputedStyle(spinner).display,
+            localRotation: spinner
+              .getAnimations()
+              .some((animation) =>
+                animation.effect
+                  ?.getKeyframes()
+                  .some((frame) => frame.transform !== undefined),
+              ),
+            wrapperAnimations: document
+              .querySelector(".viewport-wrap")
+              .getAnimations().length,
           };
         });
         assert.equal(visible.state, "loading");
@@ -99,6 +109,12 @@ for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
         assert.equal(visible.intersects, true);
         assert.equal(visible.opacity, "1");
         assert.notEqual(visible.spinner, "none");
+        assert.equal(visible.localRotation, true, "spinner rotates locally");
+        assert.equal(
+          visible.wrapperAnimations,
+          0,
+          "loading must not animate inherited styles through the chat",
+        );
         await page.waitForFunction(
           ([selector, transform]) => {
             const spinner = document.querySelector(

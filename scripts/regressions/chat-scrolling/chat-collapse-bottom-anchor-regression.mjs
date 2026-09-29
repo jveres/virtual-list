@@ -4,6 +4,8 @@ import { openStreamingDemo } from "../shared/transcript.mjs";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 for (const [engine, type] of Object.entries({ chromium, firefox, webkit })) {
+  if (process.env.BROWSER_ENGINE && process.env.BROWSER_ENGINE !== engine)
+    continue;
   const browser = await type.launch();
   try {
     for (const replyVersion of [1, 2]) {

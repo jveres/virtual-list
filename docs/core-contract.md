@@ -215,10 +215,11 @@ The definition of correct, referenced by number throughout the code:
   shrinkage, and never collapses out from under the viewport. An explicit
   viewport-preservation request may also create trailing space when shrinkage
   would clamp a surviving reading anchor. That extra space drains after the
-  reader moves away; it does not create or move a pin. If the reader is at
-  the end and a clipped pinned row shrinks enough that its tail fits below
-  the pin, an explicit viewport request restores that pin instead of keeping
-  the row's top offscreen. Internal width reflow does not create this extra
+  reader moves away; it does not create or move a pin. When a clipped pinned
+  row shrinks, an explicit viewport request restores that pin, including
+  intermediate scroll positions, instead of keeping the row's top offscreen.
+  An explicit `"end"` request discards old reading reserve and recomputes only
+  the destination pin's shortfall. Internal width reflow does not create this extra
   reading reserve; it clamps to the available range. A pinned row
   replaced in place (a version switch, an edit: a new key at its index,
   everything before it unchanged) passes the pin to its replacement; a

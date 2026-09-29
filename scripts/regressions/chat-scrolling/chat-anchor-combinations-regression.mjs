@@ -179,11 +179,7 @@ for (const [engine, type] of Object.entries(engines)) {
           const next = after[part];
           if (old.top < before.height && old.top + old.height > 40) {
             const restoresPin =
-              action === "toggle" &&
-              state.expanded &&
-              old.top < 0 &&
-              Math.abs(before.max - before.top) <= 1 &&
-              next.height + after.reply.height <= after.height - 40;
+              action === "toggle" && state.expanded && old.top < 0;
             if (old.top + next.height > 40)
               assert.ok(
                 Math.abs(next.top - (restoresPin ? 40 : old.top)) <= 1,
