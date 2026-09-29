@@ -30,6 +30,7 @@ const { values } = parseArgs({
     "stream-ms": { type: "string", default: "12000" },
     sections: { type: "string", default: "48" },
     history: { type: "string", default: "160" },
+    content: { type: "string", default: "rich" },
     trail: { type: "string", default: "long" },
     output: { type: "string", default: "browser-artifacts/chat-profile" },
   },
@@ -50,9 +51,11 @@ if (values.help) {
   --seconds N                   Measurement window (default 20; scripted Firefox rounds up)
   --stream-ms N                 Fixed stream deadlines (default 12000; allow >=3s after completion)
   --sections N --history N       Complex reply sections / initial history turns (48 / 160)
+  --content rich|prose           Rich Markdown or growing plain prose; same history/tools
   --trail off|short|long          Renderer trail (long)
   --output DIRECTORY            Creates a unique directory; keeps summaries and replay metadata
   MARKDOWN_VIEWER_LOCAL=1        Preview built ../markdown-viewer; record its revision and source patch
+  COMRAK_WASM_LOCAL=1            Preview built ../comrak-wasm; record its revision and source patch
 See docs/streaming-chat-profiling.md for overhead controls, interpretation, and Safari timelines.`);
   process.exit(0);
 }
@@ -88,6 +91,8 @@ if (
   );
 if (!["off", "short", "long"].includes(values.trail))
   throw new Error("Invalid --trail");
+if (!["rich", "prose"].includes(values.content))
+  throw new Error("Invalid --content");
 const seconds = Number(values.seconds);
 const durationMs = Number(values["stream-ms"]);
 if (
@@ -150,8 +155,10 @@ const options = {
   durationMs,
   sections: Number(values.sections),
   history: Number(values.history),
+  content: values.content,
   trail: values.trail,
   rendererPreview: process.env.MARKDOWN_VIEWER_LOCAL === "1",
+  parserPreview: process.env.COMRAK_WASM_LOCAL === "1",
 };
 await mkdir(values.output, { recursive: true });
 const directory = await mkdtemp(

@@ -7,6 +7,16 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 29 main-thread CPU and retained resources
+
+The [CPU and resource-ownership investigation](main-thread-memory-2026-09-29.md)
+finds a 12.7% main-thread CPU reduction for a prose stream in Firefox, with no
+meaningful rich-Markdown parser improvement. The `markdown-viewer` `v0.8.10`
+release bounds shared code-line caching and pins `comrak-wasm` `v0.6.2`.
+The demo releases images when a conversation is replaced. The
+report distinguishes retained-resource accounting from physical browser memory
+and records a rejected cache cap that increased CPU work.
+
 ## September 29 scroll hot path
 
 The [scroll-handler audit](scroll-hot-path-2026-09-29.md) compares native Firefox

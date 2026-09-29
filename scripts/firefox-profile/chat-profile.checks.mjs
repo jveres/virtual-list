@@ -159,6 +159,23 @@ test("workload has reproducible input, ordered deadlines, and a complete local r
   assert.throws(() => chatWorkload({ durationMs: 0 }), /Invalid durationMs/);
 });
 
+test("prose stress keeps history and deadlines while streaming plain prose", () => {
+  const rich = chatWorkload({ content: "rich" });
+  const prose = chatWorkload({ content: "prose" });
+  assert.deepEqual(prose, chatWorkload({ content: "prose" }));
+  assert.deepEqual(prose.turns, rich.turns);
+  const reply = prose.events
+    .filter(({ event }) => event.type === "response.output_text.delta")
+    .map(({ event }) => event.delta)
+    .join("");
+  assert.equal(reply.length, prose.metadata.characters);
+  assert.doesNotMatch(reply, /[\n*_`$]/);
+  assert.equal(prose.metadata.content, "prose");
+  assert.notEqual(prose.metadata.hash, rich.metadata.hash);
+  assert.equal(prose.events.at(-1).at, rich.events.at(-1).at);
+  assert.throws(() => chatWorkload({ content: "unknown" }), /Invalid content/);
+});
+
 test("every source target is present once, parses after instrumentation, and fails closed on drift", async () => {
   for (const path of Object.keys(chatTargets)) {
     const source = await readFile(

@@ -68,13 +68,15 @@ function labReportSink(): Plugin {
 export default defineConfig({
   plugins: [labReportSink(), chatGPTPlugin()],
   cacheDir:
-    process.env.MARKDOWN_VIEWER_LOCAL === "1"
-      ? "browser-artifacts/renderer-preview-cache"
-      : undefined,
-  // Opt-in local renderer preview; normal builds retain the GitHub tag pin.
+    process.env.COMRAK_WASM_LOCAL === "1"
+      ? "browser-artifacts/parser-preview-cache"
+      : process.env.MARKDOWN_VIEWER_LOCAL === "1"
+        ? "browser-artifacts/renderer-preview-cache"
+        : undefined,
+  // Opt-in owner previews; normal builds retain their GitHub tag pins.
   resolve: {
-    alias:
-      process.env.MARKDOWN_VIEWER_LOCAL === "1"
+    alias: [
+      ...(process.env.MARKDOWN_VIEWER_LOCAL === "1"
         ? [
             {
               find: /^markdown-viewer$/,
@@ -91,7 +93,24 @@ export default defineConfig({
               ).pathname,
             },
           ]
-        : [],
+        : []),
+      ...(process.env.COMRAK_WASM_LOCAL === "1"
+        ? [
+            {
+              find: /^comrak-wasm$/,
+              replacement: new URL("../comrak-wasm/index.js", import.meta.url)
+                .pathname,
+            },
+            {
+              find: /^comrak-wasm\/comrak\.wasm$/,
+              replacement: new URL(
+                "../comrak-wasm/pkg/comrak.wasm",
+                import.meta.url,
+              ).pathname,
+            },
+          ]
+        : []),
+    ],
   },
   build: {
     rollupOptions: {

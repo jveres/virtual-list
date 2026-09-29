@@ -28,10 +28,15 @@ class CopyWorker {
   }
 }
 
+const activeObjectUrls = new Map<string, number>();
+let blobSequence = 0;
+
 beforeEach(() => {
   vi.resetModules();
   CopyWorker.instances = [];
   CopyWorker.failPost = false;
+  activeObjectUrls.clear();
+  blobSequence = 0;
   vi.stubGlobal("Worker", CopyWorker);
   vi.stubGlobal("OffscreenCanvas", class {});
   vi.stubGlobal("createImageBitmap", vi.fn());
@@ -39,7 +44,15 @@ beforeEach(() => {
   vi.stubGlobal(
     "URL",
     class extends URL {
-      static createObjectURL = vi.fn(() => "blob:display-copy");
+      static createObjectURL = vi.fn((blob: Blob) => {
+        const suffix = blobSequence++;
+        const url = `blob:display-copy${suffix ? `-${suffix}` : ""}`;
+        activeObjectUrls.set(url, blob.size);
+        return url;
+      });
+      static revokeObjectURL = vi.fn((url: string) => {
+        activeObjectUrls.delete(url);
+      });
     },
   );
   // This global is constructed with `new Image()` by the browser integration.
@@ -51,7 +64,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  document.body.replaceChildren();
+  vi.unstubAllGlobals();
+});
 
 function original(source = "data:image/png;base64,large"): HTMLImageElement {
   const image = document.createElement("img");
@@ -149,4 +165,126 @@ it("should allow a failed individual conversion to be retried", async () => {
   expect(worker.requests).toHaveLength(2);
   worker.respond(1, new Blob(["retry"]));
   await vi.waitFor(() => expect(image.src).toBe("blob:display-copy"));
+});
+
+it("should reuse a copy when a retained row leaves and reenters the window", async () => {
+  const { useDisplayCopy, adoptDisplayCopies, displaySource } = await import(
+    "../../demos/streaming/display-copies.js"
+  );
+  const image = original();
+  const source = image.src;
+  useDisplayCopy(image, source);
+  activeWorker().respond(0, new Blob(["copy"]));
+  await vi.waitFor(() => expect(image.src).toBe("blob:display-copy"));
+  const row = document.createElement("article");
+  row.append(image);
+  document.body.append(row);
+
+  row.remove();
+  adoptDisplayCopies(row);
+  document.body.append(row);
+  const rebuilt = original(source);
+  row.replaceChildren(rebuilt);
+  adoptDisplayCopies(row);
+
+  expect(rebuilt.src).toBe("blob:display-copy");
+  expect(displaySource(rebuilt, rebuilt.src)).toBe(source);
+  expect(activeWorker().requests).toHaveLength(1);
+  expect(activeObjectUrls.size).toBe(1);
+  row.remove();
+});
+
+it("should release each replaced conversation's copies and allow a fresh worker", async () => {
+  const { useDisplayCopy, readyDisplayCopy, resetDisplayCopies } = await import(
+    "../../demos/streaming/display-copies.js"
+  );
+  const copy = new Blob([new Uint8Array(256 * 1024)]);
+
+  for (let conversation = 0; conversation < 3; conversation++) {
+    const images = [original(), original("data:image/png;base64,second")];
+    for (const image of images) useDisplayCopy(image, image.src);
+    const worker = CopyWorker.instances.at(-1);
+    if (!worker) throw new Error("No copy worker");
+    worker.respond(0, copy);
+    worker.respond(1, copy);
+    await vi.waitFor(() => {
+      expect(images.every((image) => image.src.startsWith("blob:"))).toBe(true);
+    });
+    expect([...activeObjectUrls.values()]).toEqual([copy.size, copy.size]);
+
+    resetDisplayCopies();
+    resetDisplayCopies();
+
+    expect(activeObjectUrls.size).toBe(0);
+    expect(readyDisplayCopy("data:image/png;base64,large")).toBeUndefined();
+    expect(worker.terminated).toBe(true);
+  }
+  expect(CopyWorker.instances).toHaveLength(3);
+  expect(URL.revokeObjectURL).toHaveBeenCalledTimes(6);
+});
+
+it.each([false, true])(
+  "should reject a stale conversion after reset when its response was delivered: %s",
+  async (delivered) => {
+    const { useDisplayCopy, readyDisplayCopy, resetDisplayCopies } =
+      await import("../../demos/streaming/display-copies.js");
+    const image = original();
+    const source = image.src;
+    useDisplayCopy(image, source);
+    const worker = activeWorker();
+    const lateResponse = worker.onmessage;
+    if (delivered) worker.respond(0, new Blob(["old copy"]));
+
+    resetDisplayCopies();
+    const replacement = original(source);
+    useDisplayCopy(replacement, source);
+    lateResponse?.(
+      new MessageEvent("message", {
+        data: { id: worker.requests[0]?.id, blob: new Blob(["late copy"]) },
+      }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(image.src).toBe(source);
+    expect(readyDisplayCopy(source)).toBeUndefined();
+    expect(activeObjectUrls.size).toBe(0);
+    const nextWorker = CopyWorker.instances[1];
+    if (!nextWorker) throw new Error("No replacement copy worker");
+    useDisplayCopy(replacement, source);
+    expect(nextWorker.requests).toHaveLength(1);
+    nextWorker.respond(0, new Blob(["current copy"]));
+    await vi.waitFor(() => expect(replacement.src).toBe("blob:display-copy"));
+    expect(image.src).toBe(source);
+    expect(activeObjectUrls.size).toBe(1);
+  },
+);
+
+it("should cancel a stale decode without swapping its image after reset", async () => {
+  const { useDisplayCopy, resetDisplayCopies } = await import(
+    "../../demos/streaming/display-copies.js"
+  );
+  let finishDecode = () => {};
+  const decoded = new Promise<void>((resolve) => {
+    finishDecode = resolve;
+  });
+  const probe = document.createElement("img");
+  probe.decode = () => decoded;
+  // biome-ignore lint/complexity/useArrowFunction: Image is called with new.
+  vi.stubGlobal("Image", function () {
+    return probe;
+  });
+  const image = original();
+  const source = image.src;
+  useDisplayCopy(image, source);
+  activeWorker().respond(0, new Blob(["copy"]));
+  await vi.waitFor(() => expect(probe.src).toBe("blob:display-copy"));
+
+  resetDisplayCopies();
+  finishDecode();
+  await decoded;
+
+  expect(probe.hasAttribute("src")).toBe(false);
+  expect(image.src).toBe(source);
+  expect(activeObjectUrls.size).toBe(0);
 });

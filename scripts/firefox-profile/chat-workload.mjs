@@ -5,7 +5,9 @@ export function chatWorkload({
   sections = 48,
   history = 160,
   durationMs = 30000,
+  content = "rich",
 } = {}) {
+  if (!["rich", "prose"].includes(content)) throw new Error("Invalid content");
   for (const [name, value, min, max] of [
     ["sections", sections, 1, 200],
     ["history", history, 2, 1000],
@@ -24,7 +26,12 @@ export function chatWorkload({
     "\n$$\\sum_{k=1}^{n} k = \\frac{n(n+1)}{2}$$\n" +
     "\n- Keep the reading anchor stable.\n- Measure the actual work.\n\n> Synthetic input, served locally.\n" +
     (i % 8 === 0 ? "\n![Synthetic chart](/__chat-profile/image.svg)\n" : "");
-  const text = Array.from({ length: sections }, (_, i) => section(i)).join("");
+  const text =
+    content === "prose"
+      ? "Describe the measurements in plain language and keep the reading position stable as the response grows. ".repeat(
+          sections * 9,
+        )
+      : Array.from({ length: sections }, (_, i) => section(i)).join("");
   const turns = Array.from({ length: history }, (_, i) => ({
     role: i % 2 ? "assistant" : "user",
     markdown:
@@ -87,6 +94,7 @@ export function chatWorkload({
     events,
     metadata: {
       hash,
+      content,
       sections,
       history,
       durationMs,

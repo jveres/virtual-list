@@ -137,6 +137,92 @@ function photoFor(image: HTMLImageElement): PhotoPreviewItem {
 }
 
 describe("chat image preview source identity", () => {
+  it("should release a replaced conversation's URLs while continuing to bind new rows", async () => {
+    const platform = attachmentImagePlatform();
+    const entries = [message(1, "data:image/png;base64,YWJj")];
+    const row = rowFor(entries[0]);
+    const oldImage = imageAt(row);
+    const { viewport, preview, options } = bindRows(entries, row);
+    const oldUrl = options.previewUrl(photoFor(oldImage), 1800);
+    expect(platform.blobs.size).toBe(1);
+
+    row.remove();
+    preview.reset();
+    preview.reset();
+
+    expect(bindings.size).toBe(0);
+    expect(platform.blobs.size).toBe(0);
+    expect(platform.revoked).toEqual([oldUrl]);
+    entries[0] = message(1, "data:image/png;base64,ZGVm");
+    const replacement = rowFor(entries[0]);
+    viewport.append(replacement);
+    await Promise.resolve();
+    const nextUrl = options.previewUrl(photoFor(imageAt(replacement)), 1800);
+    expect(nextUrl).not.toBe(oldUrl);
+    expect(platform.blobs.size).toBe(1);
+    expect(bindings.has(oldImage)).toBe(false);
+  });
+
+  it("should cancel an opening preview before releasing its replaced conversation's URLs", async () => {
+    const { createPhotoPreview } = await vi.importActual<
+      typeof import("../../demos/shared/photo-preview.js")
+    >("../../demos/shared/photo-preview.js");
+    viewer.create.mockImplementation(createPhotoPreview);
+    const platform = attachmentImagePlatform();
+    const revoke = platform.urls.revokeObjectURL;
+    vi.spyOn(platform.urls, "revokeObjectURL").mockImplementation((url) => {
+      expect(document.querySelector(".photo-viewer")).toBeNull();
+      revoke(url);
+    });
+    vi.stubGlobal("matchMedia", () => ({ matches: true }));
+    vi.useFakeTimers();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+      window.setTimeout(() => callback(performance.now()), 16),
+    );
+    vi.stubGlobal("cancelAnimationFrame", (handle: number) =>
+      window.clearTimeout(handle),
+    );
+    const previous = Object.getOwnPropertyDescriptor(
+      HTMLImageElement.prototype,
+      "decode",
+    );
+    let finishDecode = () => {};
+    const decoded = new Promise<void>((resolve) => {
+      finishDecode = resolve;
+    });
+    Object.defineProperty(HTMLImageElement.prototype, "decode", {
+      configurable: true,
+      value: () => decoded,
+    });
+    try {
+      const entry = message(1, "data:image/png;base64,YWJj");
+      const row = rowFor(entry);
+      const image = imageAt(row);
+      const { preview } = bindRows([entry], row);
+      image.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+      expect(document.querySelector(".photo-viewer")).not.toBeNull();
+      expect(platform.blobs.size).toBe(1);
+
+      row.remove();
+      preview.reset();
+
+      expect(document.querySelector(".photo-viewer")).toBeNull();
+      expect(platform.blobs.size).toBe(0);
+      finishDecode();
+      await vi.runAllTimersAsync();
+      expect(document.querySelector(".photo-viewer")).toBeNull();
+      expect(platform.blobs.size).toBe(0);
+      expect(
+        document.documentElement.classList.contains("photo-view-open"),
+      ).toBe(false);
+    } finally {
+      if (previous)
+        Object.defineProperty(HTMLImageElement.prototype, "decode", previous);
+      else Reflect.deleteProperty(HTMLImageElement.prototype, "decode");
+      vi.useRealTimers();
+    }
+  });
+
   it("should retain unchanged image bindings across immutable streaming updates", async () => {
     const messages = [message(1, "/first.png", "/second.png")];
     const row = rowFor(messages[0]);

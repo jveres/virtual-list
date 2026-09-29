@@ -72,6 +72,8 @@ export function createChatImagePreview(
   viewport: HTMLElement,
   getMessages?: () => readonly ImageMessage[],
 ): {
+  /** Close and release a replaced conversation without removing observation. */
+  reset(): void;
   dispose(): void;
 } {
   // The viewer shows data-URL images through object URLs: WebKit decodes a
@@ -383,7 +385,20 @@ export function createChatImagePreview(
   viewport.addEventListener("click", onClick, true);
   bindAll(viewport.querySelectorAll<HTMLImageElement>("img"));
 
+  function reset(): void {
+    // Retired rows may still have queued mutation records or an opening press.
+    // Unbinding invalidates that press before closing any active decode/view.
+    observer.takeRecords();
+    for (const image of bound) unbind(image);
+    // The non-animated close removes the active view synchronously, before
+    // releasing URLs that its thumbnail or opening decode can still use.
+    void preview.close(false);
+    for (const url of displayUrls.values()) URL.revokeObjectURL(url);
+    displayUrls.clear();
+  }
+
   return {
+    reset,
     dispose() {
       observer.disconnect();
       viewport.removeEventListener("load", onLoad, true);

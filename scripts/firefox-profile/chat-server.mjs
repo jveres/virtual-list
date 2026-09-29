@@ -31,28 +31,46 @@ export async function createChatProfileServer(options = {}) {
   // Match the demo's opt-in preview when measuring an owning-repository fix.
   const rendererRoot = resolve(root, "../markdown-viewer");
   const previewRenderer = options.rendererPreview === true;
+  const parserRoot = resolve(root, "../comrak-wasm");
+  const previewParser = options.parserPreview === true;
   const server = await createServer({
     root,
     configFile: false,
     logLevel: "error",
     cacheDir:
       options.cacheDir ??
-      (previewRenderer
-        ? "browser-artifacts/chat-profile/renderer-preview-cache"
-        : "browser-artifacts/chat-profile/vite-cache"),
+      (previewParser
+        ? "browser-artifacts/chat-profile/parser-preview-cache"
+        : previewRenderer
+          ? "browser-artifacts/chat-profile/renderer-preview-cache"
+          : "browser-artifacts/chat-profile/vite-cache"),
     resolve: {
-      alias: previewRenderer
-        ? [
-            {
-              find: /^markdown-viewer$/,
-              replacement: resolve(rendererRoot, "dist/index.js"),
-            },
-            {
-              find: /^markdown-viewer\/styles\.css$/,
-              replacement: resolve(rendererRoot, "dist/styles/index.css"),
-            },
-          ]
-        : [],
+      alias: [
+        ...(previewRenderer
+          ? [
+              {
+                find: /^markdown-viewer$/,
+                replacement: resolve(rendererRoot, "dist/index.js"),
+              },
+              {
+                find: /^markdown-viewer\/styles\.css$/,
+                replacement: resolve(rendererRoot, "dist/styles/index.css"),
+              },
+            ]
+          : []),
+        ...(previewParser
+          ? [
+              {
+                find: /^comrak-wasm$/,
+                replacement: resolve(parserRoot, "index.js"),
+              },
+              {
+                find: /^comrak-wasm\/comrak\.wasm$/,
+                replacement: resolve(parserRoot, "pkg/comrak.wasm"),
+              },
+            ]
+          : []),
+      ],
     },
     server: {
       host: "127.0.0.1",
@@ -72,6 +90,7 @@ export async function createChatProfileServer(options = {}) {
                 await realpath(resolve(rendererRoot, "node_modules")),
               ]
             : []),
+          ...(previewParser ? [parserRoot] : []),
         ],
       },
     },

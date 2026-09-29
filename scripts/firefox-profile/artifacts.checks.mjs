@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
@@ -23,6 +24,7 @@ test("raw cleanup preserves summaries and source replay while removing nested ca
       "reproduce.json",
       "reproduce.patch",
       "upstream.patch",
+      "parser.patch",
       "recording.json",
       "chrome-trace.json.gz",
       "safari-sample.txt",
@@ -33,6 +35,7 @@ test("raw cleanup preserves summaries and source replay while removing nested ca
       await writeFile(join(directory, path), "owned fixture");
     await discardRaw(directory);
     assert.deepEqual((await readdir(directory)).sort(), [
+      "parser.patch",
       "reproduce.json",
       "reproduce.patch",
       "run.json",
@@ -49,74 +52,200 @@ test("raw cleanup preserves summaries and source replay while removing nested ca
   }
 });
 
-test("renderer previews retain the owner patch and CPU-load replay command", async () => {
-  const parent = await mkdtemp(join(tmpdir(), "chat-renderer-replay-"));
-  const root = join(parent, "virtual-list");
-  const renderer = join(parent, "markdown-viewer");
-  const git = (cwd, args) =>
-    execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
-  try {
-    for (const directory of [root, renderer]) {
-      await mkdir(join(directory, "src"), { recursive: true });
+for (const [rendererPreview, parserPreview] of [
+  [true, false],
+  [true, true],
+  [false, true],
+])
+  test(`previews retain owner patches and CPU-load replay (renderer=${rendererPreview}, parser=${parserPreview})`, async () => {
+    const parent = await mkdtemp(join(tmpdir(), "chat-renderer-replay-"));
+    const root = join(parent, "virtual-list");
+    const renderer = join(parent, "markdown-viewer");
+    const parser = join(parent, "comrak-wasm");
+    const git = (cwd, args) =>
+      execFileSync("git", args, { cwd, encoding: "utf8", stdio: "pipe" });
+    try {
+      for (const directory of [
+        root,
+        renderer,
+        ...(parserPreview ? [parser] : []),
+      ]) {
+        await mkdir(join(directory, "src"), { recursive: true });
+        await writeFile(
+          join(directory, "src/value.js"),
+          "export const value = 1;\n",
+        );
+        if (directory === parser) {
+          await writeFile(
+            join(parser, "Cargo.toml"),
+            '[package]\nversion = "0.0.0"\n',
+          );
+          await writeFile(join(parser, "src/heal.rs"), "pub fn heal() {}\n");
+          await mkdir(join(parser, "pkg"));
+          await writeFile(
+            join(parser, "pkg/comrak.js"),
+            "export const wasm = 1;\n",
+          );
+          await writeFile(
+            join(parser, "pkg/comrak.wasm"),
+            Buffer.from([0, 97, 115, 109]),
+          );
+        }
+        if (directory === renderer && rendererPreview) {
+          await mkdir(join(renderer, "dist/lib"), { recursive: true });
+          await mkdir(join(renderer, "dist/styles"));
+          await writeFile(
+            join(renderer, "dist/index.js"),
+            "export * from './lib/value.js';\n",
+          );
+          await writeFile(
+            join(renderer, "dist/lib/value.js"),
+            "export const value = 2;\n",
+          );
+          await writeFile(
+            join(renderer, "dist/styles/index.css"),
+            "p { color: red; }\n",
+          );
+          await writeFile(
+            join(renderer, "dist/index.js.map"),
+            "generated sourcemap",
+          );
+        }
+        git(directory, ["init", "-q"]);
+        git(directory, ["add", "."]);
+        git(directory, [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "-qm",
+          "Fixture",
+        ]);
+      }
       await writeFile(
-        join(directory, "src/value.js"),
-        "export const value = 1;\n",
+        join(renderer, "src/value.js"),
+        "export const value = 2;\n",
       );
-      git(directory, ["init", "-q"]);
-      git(directory, ["add", "src"]);
-      git(directory, [
-        "-c",
-        "user.name=Fixture",
-        "-c",
-        "user.email=fixture@example.test",
-        "commit",
-        "-qm",
-        "Fixture",
+      if (parserPreview)
+        await writeFile(
+          join(parser, "Cargo.toml"),
+          '[package]\nversion = "0.0.1"\n',
+        );
+      const directory = join(root, "capture");
+      await mkdir(directory);
+      const contention = { workers: 4, periodMs: 20, busyMs: 10 };
+      await writeReproduction(
+        directory,
+        {
+          revision: git(root, ["rev-parse", "HEAD"]).trim(),
+          options: { rendererPreview, parserPreview },
+          cpuContention: contention,
+        },
+        root,
+      );
+      const saved = JSON.parse(
+        await readFile(join(directory, "reproduce.json"), "utf8"),
+      );
+      assert.deepEqual(
+        saved.command.slice(0, rendererPreview && parserPreview ? 6 : 5),
+        [
+          "env",
+          ...(rendererPreview ? ["MARKDOWN_VIEWER_LOCAL=1"] : []),
+          ...(parserPreview ? ["COMRAK_WASM_LOCAL=1"] : []),
+          "node",
+          "scripts/firefox-profile/cpu-contention.mjs",
+          "--",
+        ],
+      );
+      assert.deepEqual(saved.cpuContention, contention);
+      if (rendererPreview) {
+        assert.equal(
+          saved.renderer.revision,
+          git(renderer, ["rev-parse", "HEAD"]).trim(),
+        );
+        assert.deepEqual(saved.renderer.build, ["pnpm", "run", "build"]);
+        const patch = await readFile(
+          join(directory, saved.renderer.sourcePatch),
+          "utf8",
+        );
+        assert.match(patch, /^\+export const value = 2;$/m);
+        assert.match(
+          saved.renderer.sourceHashes["src/value.js"],
+          /^[a-f0-9]{64}$/,
+        );
+        assert.deepEqual(Object.keys(saved.renderer.buildHashes), [
+          "dist/index.js",
+          "dist/lib/value.js",
+          "dist/styles/index.css",
+        ]);
+        for (const [path, hash] of Object.entries(saved.renderer.buildHashes))
+          assert.equal(
+            hash,
+            createHash("sha256")
+              .update(await readFile(join(renderer, path)))
+              .digest("hex"),
+          );
+        assert.doesNotMatch(patch, /dist\//);
+      } else assert.equal(saved.renderer, undefined);
+      assert.equal(Object.keys(saved.sourceHashes).length, 1);
+      if (parserPreview) {
+        assert.equal(
+          saved.parser.revision,
+          git(parser, ["rev-parse", "HEAD"]).trim(),
+        );
+        assert.deepEqual(saved.parser.build, ["pnpm", "run", "build"]);
+        assert.match(saved.parser.sourceHashes["Cargo.toml"], /^[a-f0-9]{64}$/);
+        assert.match(
+          saved.parser.sourceHashes["src/heal.rs"],
+          /^[a-f0-9]{64}$/,
+        );
+        assert.deepEqual(Object.keys(saved.parser.buildHashes), [
+          "pkg/comrak.js",
+          "pkg/comrak.wasm",
+        ]);
+        for (const [path, hash] of Object.entries(saved.parser.buildHashes))
+          assert.equal(
+            hash,
+            createHash("sha256")
+              .update(await readFile(join(parser, path)))
+              .digest("hex"),
+          );
+        assert.equal(saved.parser.sourceHashes["pkg/comrak.wasm"], undefined);
+        assert.deepEqual(Object.keys(saved.parser.toolchain), [
+          "rustc",
+          "wasm-bindgen",
+          "wasm-opt",
+        ]);
+        for (const result of Object.values(saved.parser.toolchain)) {
+          assert.equal(typeof result.available, "boolean");
+          if (result.available) assert.match(result.version, /\S/);
+          else assert.match(result.reason, /\S/);
+        }
+        assert.match(
+          await readFile(join(directory, saved.parser.sourcePatch), "utf8"),
+          /^\+version = "0.0.1"$/m,
+        );
+        assert.doesNotMatch(
+          await readFile(join(directory, saved.parser.sourcePatch), "utf8"),
+          /pkg\//,
+        );
+        assert.ok(
+          saved.instructions.some((instruction) =>
+            instruction.includes("Compare regenerated parser.buildHashes"),
+          ),
+        );
+      } else assert.equal(saved.parser, undefined);
+      assert.deepEqual((await readdir(directory)).sort(), [
+        ...(parserPreview ? ["parser.patch"] : []),
+        "reproduce.json",
+        "reproduce.patch",
+        ...(rendererPreview ? ["upstream.patch"] : []),
       ]);
+    } finally {
+      await rm(parent, { recursive: true, force: true });
     }
-    await writeFile(
-      join(renderer, "src/value.js"),
-      "export const value = 2;\n",
-    );
-    const directory = join(root, "capture");
-    await mkdir(directory);
-    const contention = { workers: 4, periodMs: 20, busyMs: 10 };
-    await writeReproduction(
-      directory,
-      {
-        revision: git(root, ["rev-parse", "HEAD"]).trim(),
-        options: { rendererPreview: true },
-        cpuContention: contention,
-      },
-      root,
-    );
-    const saved = JSON.parse(
-      await readFile(join(directory, "reproduce.json"), "utf8"),
-    );
-    assert.deepEqual(saved.command.slice(0, 5), [
-      "env",
-      "MARKDOWN_VIEWER_LOCAL=1",
-      "node",
-      "scripts/firefox-profile/cpu-contention.mjs",
-      "--",
-    ]);
-    assert.deepEqual(saved.cpuContention, contention);
-    assert.equal(
-      saved.renderer.revision,
-      git(renderer, ["rev-parse", "HEAD"]).trim(),
-    );
-    assert.deepEqual(saved.renderer.build, ["pnpm", "run", "build"]);
-    const patch = await readFile(
-      join(directory, saved.renderer.sourcePatch),
-      "utf8",
-    );
-    assert.match(patch, /^\+export const value = 2;$/m);
-    assert.match(saved.renderer.sourceHashes["src/value.js"], /^[a-f0-9]{64}$/);
-    assert.equal(Object.keys(saved.sourceHashes).length, 1);
-  } finally {
-    await rm(parent, { recursive: true, force: true });
-  }
-});
+  });
 
 test("reproduction patch reconstructs modified, deleted, and untracked source at the recorded revision", async () => {
   const root = await mkdtemp(join(tmpdir(), "chat-reproduce-"));

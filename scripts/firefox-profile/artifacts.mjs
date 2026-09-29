@@ -9,6 +9,7 @@ const retained = new Set([
   "reproduce.json",
   "reproduce.patch",
   "upstream.patch",
+  "parser.patch",
   "firefox-cpu.json",
   "firefox-attribution.json",
   "firefox-bursts.json",
@@ -29,7 +30,7 @@ async function sourceSnapshot(root) {
       maxBuffer: 16 * 1024 * 1024,
     });
   const relevant = (path) =>
-    /^(src\/|demos\/|integrations\/|patches\/|scripts\/|package\.json$|pnpm-(lock|workspace)\.yaml$|vite\.config\.|tsconfig\.)/.test(
+    /^(src\/|demos\/|integrations\/|patches\/|scripts\/|vendor\/|bench\/|\.cargo\/|Cargo\.(toml|lock)$|build\.rs$|rust-toolchain(\.toml)?$|index\.js$|types\.d\.ts$|package\.json$|pnpm-(lock|workspace)\.yaml$|vite\.config\.|tsconfig\.)/.test(
       path,
     );
   const tracked = [
@@ -82,6 +83,45 @@ async function sourceSnapshot(root) {
   return { patch, hashes, revision: git(["rev-parse", "HEAD"]).trim() };
 }
 
+// Record the bytes served by a preview without retaining generated binaries.
+async function buildHashes(root, directory) {
+  const hashes = {};
+  const visit = async (path) => {
+    const entries = await readdir(join(root, path), { withFileTypes: true });
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      const relative = `${path}/${entry.name}`;
+      if (entry.isDirectory()) await visit(relative);
+      else if (entry.isFile() && /\.(?:js|css|wasm)$/.test(entry.name))
+        hashes[relative] = createHash("sha256")
+          .update(await readFile(join(root, relative)))
+          .digest("hex");
+    }
+  };
+  await visit(directory);
+  if (Object.keys(hashes).length === 0)
+    throw new Error(`No built preview artifacts in ${directory}`);
+  return hashes;
+}
+
+function toolVersion(command, root) {
+  try {
+    const version = execFileSync(command, ["--version"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: "pipe",
+      timeout: 3000,
+      maxBuffer: 64 * 1024,
+    }).trim();
+    return { available: true, version };
+  } catch (error) {
+    return {
+      available: false,
+      reason: String(error.code ?? `exit ${error.status ?? "unknown"}`),
+    };
+  }
+}
+
 export async function writeReproduction(
   directory,
   report,
@@ -111,6 +151,7 @@ export async function writeReproduction(
     "stream-ms": o.durationMs,
     sections: o.sections,
     history: o.history,
+    content: o.content,
     trail: o.trail,
   }))
     if (!report.command && value !== undefined && value !== false)
@@ -123,18 +164,44 @@ export async function writeReproduction(
       ...command,
     ];
   let renderer;
+  let parser;
+  const previewEnvironment = [];
   if (o.rendererPreview) {
-    const snapshot = await sourceSnapshot(join(root, "../markdown-viewer"));
+    const rendererRoot = join(root, "../markdown-viewer");
+    const snapshot = await sourceSnapshot(rendererRoot);
     await writeFile(join(directory, "upstream.patch"), snapshot.patch);
     renderer = {
       checkout: "../markdown-viewer",
       revision: snapshot.revision,
       sourceHashes: snapshot.hashes,
+      buildHashes: await buildHashes(rendererRoot, "dist"),
       sourcePatch: "upstream.patch",
       build: ["pnpm", "run", "build"],
     };
-    command = ["env", "MARKDOWN_VIEWER_LOCAL=1", ...command];
+    previewEnvironment.push("MARKDOWN_VIEWER_LOCAL=1");
   }
+  if (o.parserPreview) {
+    const parserRoot = join(root, "../comrak-wasm");
+    const snapshot = await sourceSnapshot(parserRoot);
+    await writeFile(join(directory, "parser.patch"), snapshot.patch);
+    parser = {
+      checkout: "../comrak-wasm",
+      revision: snapshot.revision,
+      sourceHashes: snapshot.hashes,
+      buildHashes: await buildHashes(parserRoot, "pkg"),
+      toolchain: Object.fromEntries(
+        ["rustc", "wasm-bindgen", "wasm-opt"].map((command) => [
+          command,
+          toolVersion(command, parserRoot),
+        ]),
+      ),
+      sourcePatch: "parser.patch",
+      build: ["pnpm", "run", "build"],
+    };
+    previewEnvironment.push("COMRAK_WASM_LOCAL=1");
+  }
+  if (previewEnvironment.length)
+    command = ["env", ...previewEnvironment, ...command];
   await writeFile(join(directory, "reproduce.patch"), patch);
   await writeFile(
     join(directory, "reproduce.json"),
@@ -144,6 +211,7 @@ export async function writeReproduction(
         revision: report.revision,
         command,
         renderer,
+        parser,
         cpuContention: report.cpuContention,
         sourceHashes: hashes,
         sourcePatch: "reproduce.patch",
@@ -151,9 +219,15 @@ export async function writeReproduction(
         instructions: [
           "Check out revision in a separate worktree; apply reproduce.patch there with git apply.",
           "Install the locked dependencies with pnpm install --frozen-lockfile.",
+          ...(parser
+            ? [
+                "For parser preview, check out parser.revision in the sibling comrak-wasm repository, apply parser.patch, install its locked dependencies, and run parser.build with the recorded parser.toolchain versions when available.",
+                "Compare regenerated parser.buildHashes before capturing. A mismatch means the served build differs; unavailable tool versions are recorded explicitly and do not prove build equivalence.",
+              ]
+            : []),
           ...(renderer
             ? [
-                "For renderer preview, check out renderer.revision in the sibling markdown-viewer repository, install its locked dependencies, apply upstream.patch, and run renderer.build there.",
+                "For renderer preview, check out renderer.revision in the sibling markdown-viewer repository, apply upstream.patch, install its locked dependencies, and run renderer.build there. Compare regenerated renderer.buildHashes before capturing.",
               ]
             : []),
           "If reproduce-setup.js is present, copy that input fixture into the checkout root before running the command.",

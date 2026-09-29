@@ -74,6 +74,22 @@ renderer revision, source hashes, build command, and `upstream.patch`. Capture
 an unchanged owner build before the candidate so both sides use the same module
 loading path. Normal captures and normal demo builds keep the pinned dependency.
 
+For a parser change, build `../comrak-wasm` with its Rust/Wasm toolchain and add
+`COMRAK_WASM_LOCAL=1`. This works independently of the renderer preview, so a
+parser comparison can retain the released renderer on both sides. The record
+includes the parser revision, source hashes, generated JS/WASM hashes, available
+build-tool versions, build command, and `parser.patch`. Renderer previews also
+record generated runtime hashes. Compare rebuilt hashes before capturing;
+source hashes alone cannot detect a stale preview build.
+The same environment variables also select owner builds in `pnpm run dev`.
+Use unchanged and candidate owner builds with the same preview flags; installed
+dependency files remain untouched.
+
+Pass `--content=prose` to exercise growing plain prose while retaining
+the rich history, tool events, chunk size, and stream duration. The default
+`--content=rich` keeps the existing Markdown workload. These measure different
+parser costs; report them separately and compare identical workload hashes.
+
 To apply bounded CPU contention, prefix the profiling command with
 `node scripts/firefox-profile/cpu-contention.mjs --`. The helper runs four worker
 threads, each attempting 10 ms of CPU work in a 20 ms period, and stops them when
@@ -205,6 +221,7 @@ small summaries and source replay files remain; nothing is uploaded.
 | `run.json` | Revision, dirty-file list, workload hash, original-source hashes for overlays, options, browser/display metadata, server delivery deadlines, completion, and cleanup status. |
 | `summary.json` | Validity, distributions, slow-frame attribution, expensive operations, repeated-call candidates, geometry accesses, DOM churn, and paging changes. |
 | `reproduce.json`, `reproduce.patch` | Exact command, revision, source hashes, and changes from that revision, including untracked source. Apply the patch in a separate worktree to reconstruct the measured code. |
+| `upstream.patch`, `parser.patch` | Optional owner-preview source changes. The reproduction record also includes generated runtime hashes and available parser build-tool versions; generated binaries are not retained. |
 | `firefox-cpu.json`, `firefox-attribution.json`, `firefox-bursts.json` | Sampled native costs and stacks across runtime, demo, renderer, and browser work. |
 | `chrome-analysis.json`, `chrome-metrics.json` | Marked-renderer events, styled-element distributions, optional invalidation causes, sampled script attribution, other-thread categories including compositor/raster/GPU work, and before/after CDP performance counters. Shared-process work is not necessarily caused by this page. |
 | `safari-sample-summary.json` | Optional native main-thread stack counts for a selected interval. Includes the 40 most frequent WebCore, WebKit, JavaScriptCore, and IPC symbols; recursive calls count once per stack path. |

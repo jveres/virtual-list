@@ -68,7 +68,11 @@ import {
   type TranscriptTree,
 } from "./branching-transcript.js";
 import { createConversationTree } from "./conversation-tree.js";
-import { adoptDisplayCopies, readyDisplayCopy } from "./display-copies.js";
+import {
+  adoptDisplayCopies,
+  readyDisplayCopy,
+  resetDisplayCopies,
+} from "./display-copies.js";
 import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
 import { resumeRowImages, suspendRowImages } from "./image-lifecycle.js";
 import {
@@ -1180,6 +1184,7 @@ function refreshLoadedWindow(): void {
 // Assigned at boot; callbacks that can fire during the boot transaction
 // (onReachStart on a short conversation) must tolerate it being unset.
 let virtualList: VirtualList<ChatRow> | undefined;
+let imagePreview: ReturnType<typeof createChatImagePreview> | undefined;
 // Assigned right after the list; onState may fire before then.
 let stickyHeaders: StickyHeaders | undefined;
 
@@ -2090,7 +2095,7 @@ function reloadConversation(importedTree?: TranscriptTree | null): void {
   endSendGlide();
   seedActiveConversation(importedTree);
   setEdgeState("hidden");
-  mountConversation();
+  mountConversation(true);
   syncMetrics();
   conversationTree?.reset();
   persistSimulatedConversation();
@@ -3899,11 +3904,15 @@ persistSimulatedConversation();
  * where the setting says. Reloading through the live runtime instead left
  * it carrying the old conversation's pin, follow intent, and held work.
  */
-function mountConversation(): void {
+function mountConversation(replaced = false): void {
   paging?.dispose();
   paging = undefined;
   setBottomLoading(false);
   virtualList?.dispose();
+  if (replaced) {
+    imagePreview?.reset();
+    resetDisplayCopies();
+  }
   // A replacement owns its loader state: do not inherit the old chat's
   // invisible scrollback strip when all imported turns are already loaded.
   edgeSlotRequested = shouldMountEdgeSlot();
@@ -4339,7 +4348,7 @@ syncMetrics();
 document.documentElement.classList.remove("booting");
 performance.mark("chat:visible");
 
-const imagePreview = createChatImagePreview(viewport, () => transcript);
+imagePreview = createChatImagePreview(viewport, () => transcript);
 const headingCache = new WeakMap<Message, readonly ResponseHeading[]>();
 const treeImageCache = new WeakMap<
   Message,
@@ -4402,7 +4411,7 @@ window.addEventListener("pagehide", () => {
   windowNavigation?.abort();
   conversationTree?.dispose();
 });
-window.addEventListener("pagehide", () => imagePreview.dispose());
+window.addEventListener("pagehide", () => imagePreview?.dispose());
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) location.reload();
 });

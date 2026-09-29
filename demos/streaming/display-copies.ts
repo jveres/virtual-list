@@ -7,7 +7,7 @@
 /** Long edge of a display copy: a chat column at 2x, with headroom. */
 const MAX_EDGE = 2048;
 
-// Copies are small and live as long as the page; transcripts reuse them.
+// Copies are shared by retained rows within one conversation.
 const copies = new Map<string, Promise<string | null>>();
 const ready = new Map<string, string>();
 const pending = new Map<number, (blob: Blob | null) => void>();
@@ -16,9 +16,11 @@ const sources = new WeakMap<
   { display: string; source: string }
 >();
 // A decoded copy held from the swap until the row's image has loaded it.
-const probes = new WeakMap<HTMLImageElement, HTMLImageElement>();
+let probes = new WeakMap<HTMLImageElement, HTMLImageElement>();
+const decoding = new Set<HTMLImageElement>();
 let worker: Worker | null | undefined;
 let nextId = 1;
+let generation = 0;
 
 function disableWorker(target: Worker): void {
   if (worker !== target) return;
@@ -72,6 +74,7 @@ function displayCopy(url: string): Promise<string | null> {
   const target = copyWorker();
   if (!target) return Promise.resolve(null);
   const id = nextId++;
+  const started = generation;
   copy = new Promise<Blob | null>((resolve) => {
     pending.set(id, resolve);
     try {
@@ -80,6 +83,7 @@ function displayCopy(url: string): Promise<string | null> {
       disableWorker(target);
     }
   }).then((blob) => {
+    if (started !== generation) return null;
     if (blob) {
       try {
         const display = URL.createObjectURL(blob);
@@ -96,6 +100,19 @@ function displayCopy(url: string): Promise<string | null> {
   return copy;
 }
 
+/** Release a replaced conversation after disposing its rows, never on paging. */
+export function resetDisplayCopies(): void {
+  generation++;
+  if (worker) disableWorker(worker);
+  worker = undefined;
+  copies.clear();
+  for (const display of ready.values()) URL.revokeObjectURL(display);
+  ready.clear();
+  for (const probe of decoding) probe.removeAttribute("src");
+  decoding.clear();
+  probes = new WeakMap();
+}
+
 /** Swap a loaded, oversized data-URL image to its display copy once ready. */
 export function useDisplayCopy(image: HTMLImageElement, url: string): void {
   if (
@@ -109,21 +126,36 @@ export function useDisplayCopy(image: HTMLImageElement, url: string): void {
     return;
   const width = image.naturalWidth;
   const height = image.naturalHeight;
+  const started = generation;
   void displayCopy(url).then(async (display) => {
     // The renderer may have replaced the source meanwhile.
-    if (!display || sources.has(image) || image.currentSrc !== url) return;
+    if (
+      started !== generation ||
+      !display ||
+      sources.has(image) ||
+      image.currentSrc !== url
+    )
+      return;
     // The swap lands on a visible row. Chrome and WebKit decode a large
     // image asynchronously, so a swap to an undecoded copy can paint one
     // empty frame. Decode the copy first, and keep that decode alive until
     // the row's own image has loaded from the shared resource.
     const probe = new Image();
     probe.src = display;
+    decoding.add(probe);
     try {
       await probe.decode();
     } catch {
       return;
+    } finally {
+      decoding.delete(probe);
     }
-    if (sources.has(image) || image.currentSrc !== url) return;
+    if (
+      started !== generation ||
+      sources.has(image) ||
+      image.currentSrc !== url
+    )
+      return;
     // The attributes keep the box at the original size and aspect ratio.
     if (!image.hasAttribute("width") || !image.hasAttribute("height")) {
       image.width = width;
