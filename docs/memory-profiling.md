@@ -34,6 +34,7 @@ memory. Each command starts and closes its own local server and browser.
 pnpm run test:memory -- --browser=firefox --workload=text
 pnpm run test:memory -- --browser=firefox --workload=images
 pnpm run test:memory -- --browser=firefox --workload=streaming
+pnpm run test:memory -- --browser=firefox --workload=streaming --trail=long
 pnpm run test:memory -- --browser=safari --workload=images
 pnpm run test:memory -- --browser=chrome --workload=images
 ```
@@ -49,6 +50,17 @@ The workloads exercise different allocations:
 | `text` | The default simulated conversation, including history paging. |
 | `images` | 48 imported turns with 24 distinct, locally generated 4000 × 3000 JPEGs. The complete data window loads before measurement. |
 | `streaming` | The built-in fast, long reply over the default history. Token-delay randomness is fixed. Scrolling overlaps the reply, then continues after completion. |
+
+The default trail mode is `off`, matching a fresh demo profile. Pass
+`--trail=short` or `--trail=long` with the streaming workload to measure trail
+allocations. The runner verifies the selected setting and requires rendered
+trail rectangles during scrolling. It waits for the first rectangles before
+starting, and the first instant-step cycle begins with ten alternating 120-pixel
+steps near the reply before traversing history. This keeps the active trail
+covered even if streaming finishes while the reply is later offscreen.
+Selecting a trail with another workload fails before the browser starts.
+The command and summary retain the selected
+mode, so comparisons cannot silently substitute a trail-disabled run.
 
 A default cycle sends 80 upward and 80 downward instant scroll steps, 900 CSS
 pixels apart, every 40 ms, with 700 ms pauses. This intentionally stresses image
@@ -92,6 +104,8 @@ A passing result requires real movement in every cycle. The image workload also
 requires all 48 message keys to be visited, all 24 image rows to decode during the
 trial, and a stable document height across completed cycles. The streaming
 workload must observe an active reply during scrolling and its later completion.
+When a trail is requested, at least one cycle must also observe rendered trail
+rectangles; an enabled setting alone is not sufficient.
 
 The test reads `proc_pid_rusage` physical footprint and lifetime peak for owned
 processes. A lifetime peak catches temporary graphics explosions even when the

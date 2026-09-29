@@ -50,6 +50,7 @@ export function startMemoryCycle({
   step = 900,
   interval = 40,
   external = false,
+  warmupSteps = 0,
 } = {}) {
   if (window.__memoryCycle && !window.__memoryCycle.done)
     throw new Error("Previous memory cycle still running");
@@ -65,6 +66,7 @@ export function startMemoryCycle({
     decodedImageKeys: [],
     wheels: 0,
     streamingObserved: false,
+    trailObserved: false,
   };
   window.__memoryCycle = result;
   let last = viewport.scrollTop;
@@ -73,6 +75,8 @@ export function startMemoryCycle({
   const recordContent = () => {
     if (document.querySelector("#send-btn").classList.contains("stop-btn"))
       result.streamingObserved = true;
+    if (document.querySelector("[data-trail-group] > div"))
+      result.trailObserved = true;
     for (const row of viewport.querySelectorAll("article[data-key]")) {
       keys.add(row.dataset.key);
       for (const image of row.querySelectorAll("img"))
@@ -113,6 +117,16 @@ export function startMemoryCycle({
   }
   void (async () => {
     try {
+      // Keep the newly streaming reply mounted long enough to exercise its
+      // trail before the full history traversal can recycle that row.
+      for (let i = 0; i < warmupSteps; i++) {
+        viewport.scrollBy({
+          top: i % 2 === 0 ? -120 : 120,
+          behavior: "instant",
+        });
+        await new Promise((resolve) => setTimeout(resolve, interval));
+        recordContent();
+      }
       for (const direction of [-1, 1]) {
         for (let i = 0; i < steps; i++) {
           viewport.scrollBy({ top: direction * step, behavior: "instant" });

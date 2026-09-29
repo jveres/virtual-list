@@ -15,6 +15,9 @@ and reduces concurrent style work: 21% less main-thread CPU from a local spinner
 animation, then another 18% from bounded selectors and cursor-local spacing.
 An owning-repository trail index in `markdown-viewer` `v0.8.8` reduces CPU by
 9% in the separate visible end-follow workload, after user confirmation.
+The confirmed `v0.8.9` single-text-node path reduces that workload by another
+5.3%; a subsequent array-copy experiment was rejected. Memory captures can now
+require actual trail rendering instead of relying on the fresh demo's default.
 These are matched Firefox captures, not proof of resolved presentation jitter.
 
 ## September 29 Safari streaming follow

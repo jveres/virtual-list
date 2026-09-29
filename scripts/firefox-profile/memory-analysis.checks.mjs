@@ -125,7 +125,31 @@ test("memory CLI help is portable and does not launch a capture", () => {
     { encoding: "utf8" },
   );
   assert.match(help, /--input=steps\|native/);
+  assert.match(help, /--trail=off\|short\|long/);
   assert.match(help, /physical trackpad momentum/);
+});
+
+test("invalid trail captures fail before starting a browser", () => {
+  for (const [args, reason] of [
+    [["--trail=invalid"], /Unknown trail mode/],
+    [["--trail=long", "--workload=images"], /require --workload=streaming/],
+  ])
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          ["scripts/profile-memory.mjs", ...args],
+          {
+            encoding: "utf8",
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        ),
+      (error) => {
+        assert.equal(error.status, 1);
+        assert.match(error.stderr, reason);
+        return true;
+      },
+    );
 });
 
 test("native recorder checks decoded images and releases listeners between cycles", () => {
@@ -145,21 +169,26 @@ test("native recorder checks decoded images and releases listeners between cycle
       listeners.delete(name);
     },
   };
+  let trail = null;
   const context = {
     window: {},
     document: {
-      querySelector: (selector) =>
-        selector === "#viewport"
-          ? viewport
-          : { classList: { contains: () => true } },
+      querySelector: (selector) => {
+        if (selector === "#viewport") return viewport;
+        if (selector === "[data-trail-group] > div") return trail;
+        return { classList: { contains: () => true } };
+      },
     },
   };
   for (let i = 0; i < 3; i++) {
+    trail = i === 1 ? {} : null;
     runInNewContext(
       `(${startMemoryCycle.toString()})({external:true})`,
       context,
     );
     viewport.scrollTop += 900;
+    listeners.get("scroll")();
+    trail = null;
     listeners.get("scroll")();
     listeners.get("scrollend")();
     listeners.get("wheel")();
@@ -169,7 +198,50 @@ test("native recorder checks decoded images and releases listeners between cycle
     assert.equal(result.distance, 900);
     assert.deepEqual([...result.decodedImageKeys], ["photo"]);
     assert.equal(result.streamingObserved, true);
+    assert.equal(result.trailObserved, i === 1);
     assert.equal(listeners.size, 0);
     assert.equal(context.window.__finishMemoryCycle, undefined);
+  }
+});
+
+test("near-reply steps observe the trail before history traversal recycles it", async () => {
+  for (const warmupSteps of [0, 2]) {
+    const listeners = new Map();
+    let trailPresent = true;
+    const viewport = {
+      scrollTop: 10000,
+      querySelectorAll: () => [],
+      addEventListener: (name, callback) => listeners.set(name, callback),
+      removeEventListener: (name) => listeners.delete(name),
+      scrollBy({ top }) {
+        this.scrollTop += top;
+        if (Math.abs(top) >= 900) trailPresent = false;
+        listeners.get("scroll")?.();
+      },
+    };
+    const result = await runInNewContext(
+      `(async () => {
+        (${startMemoryCycle.toString()})({steps:1,warmupSteps:${warmupSteps}});
+        for (let i = 0; i < 20 && !window.__memoryCycle.done; i++)
+          await Promise.resolve();
+        return window.__memoryCycle;
+      })()`,
+      {
+        window: {},
+        setTimeout: (callback) => callback(),
+        document: {
+          querySelector: (selector) => {
+            if (selector === "#viewport") return viewport;
+            if (selector === "[data-trail-group] > div")
+              return trailPresent ? {} : null;
+            return { classList: { contains: () => true } };
+          },
+        },
+      },
+    );
+    assert.equal(result.done, true);
+    assert.equal(result.error, undefined);
+    assert.equal(result.trailObserved, warmupSteps > 0);
+    assert.equal(listeners.size, 0);
   }
 });

@@ -30,6 +30,7 @@ const { values: options } = parseArgs({
   options: {
     browser: { type: "string", default: "firefox" },
     workload: { type: "string", default: "text" },
+    trail: { type: "string", default: "off" },
     cycles: { type: "string", default: "12" },
     display: { type: "string", default: "LU28R55" },
     input: { type: "string", default: "steps" },
@@ -42,10 +43,18 @@ const { values: options } = parseArgs({
 });
 if (options.help) {
   console.log(
-    "Usage: pnpm run test:memory -- --browser=firefox|safari|chrome --workload=text|images|streaming --cycles=12 --display=LU28R55 [--input=steps|native] [--message-layers=default|off] [--canvas-layer=default|off] [--url=http://localhost:5173] [--transcript=FILE]\nmacOS installed browsers, fresh sessions, closed DevTools. Fixed scroll allocation stress; not a physical trackpad momentum or presentation test. Temporary profiles and raw process reports are removed.",
+    "Usage: pnpm run test:memory -- --browser=firefox|safari|chrome --workload=text|images|streaming --cycles=12 --display=LU28R55 [--trail=off|short|long] [--input=steps|native] [--message-layers=default|off] [--canvas-layer=default|off] [--url=http://localhost:5173] [--transcript=FILE]\nmacOS installed browsers, fresh sessions, closed DevTools. Fixed scroll allocation stress; not a physical trackpad momentum or presentation test. Temporary profiles and raw process reports are removed.",
   );
   process.exit(0);
 }
+assert.ok(
+  ["off", "short", "long"].includes(options.trail),
+  "Unknown trail mode",
+);
+assert.ok(
+  options.trail === "off" || options.workload === "streaming",
+  "Trail memory checks require --workload=streaming",
+);
 assert.equal(
   process.platform,
   "darwin",
@@ -108,7 +117,10 @@ const report = {
       ? "Safari plus WebKit services with the isolated Safari PID as responsible application"
       : "Isolated browser and descendants in the process tree",
   workload:
-    "80 upward and 80 downward 900 CSS-pixel instant steps, 40ms apart; 700ms edge waits; fresh installed browser; no forced GC",
+    "80 upward and 80 downward 900 CSS-pixel instant steps, 40ms apart; 700ms edge waits; fresh installed browser; no forced GC" +
+    (options.trail !== "off"
+      ? "; start with rendered trail, with ten alternating 120px steps before the first instant-step traversal"
+      : ""),
 };
 const save = () =>
   writeFile(join(directory, "summary.json"), JSON.stringify(report, null, 2));
@@ -307,6 +319,7 @@ try {
     processes: processSnapshot(),
   };
   const url = new URL("/demos/streaming/index.html", base);
+  url.searchParams.set("trail", options.trail);
   const compositing = [];
   if (options["message-layers"] === "off")
     compositing.push("no-message-layers");
@@ -315,6 +328,11 @@ try {
     url.searchParams.set("debug-compositing", compositing.join(","));
   await browser.navigate(url.href);
   await waitFor("Boolean(document.querySelector('#viewport article'))");
+  assert.equal(
+    await browser.evaluate("document.querySelector('#trail-mode').value"),
+    options.trail,
+    "Requested trail setting was not applied",
+  );
   await delay(2000);
   const point = await browser.evaluate(`(()=>{
     const v=document.querySelector('#viewport'),r=v.getBoundingClientRect();
@@ -400,16 +418,21 @@ try {
         .replace(/;$/, ""),
     );
     await delay(400);
+    if (options.trail !== "off")
+      await waitFor(
+        "Boolean(document.querySelector('[data-trail-group] > div'))",
+      );
   }
-  await browser.evaluate(
-    "(document.querySelector('#viewport').scrollTop=1000,true)",
-  );
+  if (options.trail === "off")
+    await browser.evaluate(
+      "(document.querySelector('#viewport').scrollTop=1000,true)",
+    );
   await delay(700);
   report.checkpoints.push(await snapshot("baseline"));
   for (let cycle = 1; cycle <= cycles; cycle++) {
     check();
     await browser.evaluate(
-      `(${startMemoryCycle.toString()})({external:${options.input === "native"}})`,
+      `(${startMemoryCycle.toString()})({external:${options.input === "native"},warmupSteps:${options.trail !== "off" && cycle === 1 ? 10 : 0}})`,
     );
     if (options.input === "native") {
       for (const delta of [100, -100]) {
@@ -483,6 +506,11 @@ try {
       report.samples.some((s) => s.page.streamingObserved),
       "No active streaming captured",
     );
+    if (options.trail !== "off")
+      assert.ok(
+        report.samples.some((s) => s.page.trailObserved),
+        "No rendered streaming trail captured",
+      );
     assert.equal(
       report.checkpoints.at(-1).page.streaming,
       false,
