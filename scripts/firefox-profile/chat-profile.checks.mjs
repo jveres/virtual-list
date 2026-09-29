@@ -910,6 +910,13 @@ test("analysis rejects incomplete, stationary, overflowed, and interrupted evide
   after.traceInvalidations = before.traceInvalidations;
   delete before.traceInvalidations;
   assert.equal(compareChat(before, after).comparable, true);
+  after.traceSelectorStats = true;
+  assert.deepEqual(compareChat(before, after).mismatches, [
+    "traceSelectorStats",
+  ]);
+  after.traceSelectorStats = false;
+  delete before.traceSelectorStats;
+  assert.equal(compareChat(before, after).comparable, true);
   after.workload = { ...after.workload, trail: "off" };
   assert.deepEqual(compareChat(before, after).mismatches, ["trail"]);
   after.workload = before.workload;
@@ -1017,6 +1024,77 @@ test("Chrome invalidation summaries group causes, bound examples, and exclude un
   assert.equal(summary.omittedInvalidationGroups, 0);
   assert.equal(summary.styleRecalculationElements.count, 2);
   assert.equal(summary.styleRecalculationElements.max, 100);
+});
+
+test("Chrome selector statistics aggregate matching cost within the marked renderer", () => {
+  const timing = {
+    style_sheet_id: "sheet-a",
+    selector: ".message:has(> .message-actions)",
+    "elapsed (us)": 250,
+    match_attempts: 10,
+    match_count: 2,
+    fast_reject_count: 3,
+  };
+  const event = (timings = [timing]) => ({
+    name: "SelectorStats",
+    ph: "I",
+    ts: 2000,
+    pid: 1,
+    tid: 2,
+    args: { selector_stats: { selector_timings: timings } },
+  });
+  const marks = [
+    { name: "chat-profile-start", ph: "R", ts: 1000, pid: 1, tid: 2 },
+    { name: "chat-profile-end", ph: "R", ts: 11000, pid: 1, tid: 2 },
+  ];
+  const analyze = (events) =>
+    analyzeChatChrome({ traceEvents: [...marks, ...events] }).selectorStats;
+  const result = analyze([
+    event(),
+    event(),
+    event([{ ...timing, style_sheet_id: "sheet-b" }]),
+    { ...event(), ts: 999 },
+    { ...event(), ts: 11001 },
+    { ...event(), tid: 3 },
+    { ...event(), pid: 2 },
+  ]);
+  assert.equal(result.events, 3);
+  assert.equal(result.selectors, 2);
+  assert.equal(result.omitted, 0);
+  assert.deepEqual(result.totals, {
+    elapsedMs: 0.75,
+    attempts: 30,
+    matches: 6,
+    fastRejects: 9,
+  });
+  assert.deepEqual(result.top[0], {
+    styleSheetId: "sheet-a",
+    selector: timing.selector,
+    elapsedMs: 0.5,
+    attempts: 20,
+    matches: 4,
+    fastRejects: 6,
+  });
+  assert.deepEqual(analyze([]).top, []);
+  assert.equal(analyze([]).events, 0);
+  const many = analyze([
+    event(
+      Array.from({ length: 70 }, (_, i) => ({
+        ...timing,
+        selector: `.row-${i}`,
+        "elapsed (us)": 1000 * i,
+      })),
+    ),
+  ]);
+  assert.equal(many.omitted, 6);
+  assert.equal(many.top.length, 64);
+  assert.equal(many.top[0].selector, ".row-69");
+  assert.equal(many.totals.elapsedMs, (69 * 70) / 2);
+  assert.equal(many.totals.attempts, 700);
+  assert.throws(
+    () => analyze([event([{ ...timing, "elapsed (us)": -1 }])]),
+    /Invalid SelectorStats elapsed/,
+  );
 });
 
 test("Chrome slow-window stacks clip boundaries and deduplicate nested events and recursive frames", () => {

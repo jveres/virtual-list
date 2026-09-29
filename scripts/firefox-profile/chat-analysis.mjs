@@ -371,6 +371,7 @@ export function analyzeChat(
       : "automation-correctness-only",
     mode: recording.mode,
     traceInvalidations: recording.traceInvalidations ?? false,
+    traceSelectorStats: recording.traceSelectorStats ?? false,
     scenario: recording.scenario,
     workload: recording.workload,
     ...(steady ? { steady } : {}),
@@ -531,6 +532,7 @@ export function compareChat(before, after) {
   for (const [key, fallback] of [
     ["probeVersion", 1],
     ["renderSnapshots", false],
+    ["traceSelectorStats", false],
   ])
     if ((before[key] ?? fallback) !== (after[key] ?? fallback))
       mismatches.push(key);

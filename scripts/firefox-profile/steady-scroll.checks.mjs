@@ -6,10 +6,34 @@ import { analyzeChat } from "./chat-analysis.mjs";
 import { installChatProbe } from "./chat-probe.mjs";
 import { createChatProfileServer } from "./chat-server.mjs";
 import {
+  fastSteadyScrollPlan,
+  scrollPlan,
   steadyScrollArguments,
   steadyScrollPlan,
   steadyScrollSetup,
 } from "./steady-scroll.mjs";
+
+test("steady speed rejects unsupported plans and non-steady CLI scenarios", () => {
+  assert.equal(scrollPlan("normal"), steadyScrollPlan);
+  assert.equal(scrollPlan("fast"), fastSteadyScrollPlan);
+  assert.throws(() => scrollPlan("faster"), /Invalid steady scroll speed/);
+  for (const [args, expected] of [
+    [["--scenario=steady", "--steady-speed=NaN"], /Invalid --steady-speed/],
+    ...["follow", "scrollback", "manual", "buttons"].map((scenario) => [
+      [`--scenario=${scenario}`, "--steady-speed=fast"],
+      /--steady-speed requires --scenario=steady/,
+    ]),
+  ]) {
+    const result = spawnSync(
+      process.execPath,
+      [new URL("../profile-chat.mjs", import.meta.url).pathname, ...args],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, expected);
+    assert.equal(result.stdout, "");
+  }
+});
 
 test("pointer control validates values and rejects captures without scripted Firefox input", () => {
   const cases = [
@@ -64,9 +88,8 @@ test("native pointer control rejects manual and idle captures before creating ar
 
 test("steady CLI rejects other browsers and partial histories before launch", () => {
   for (const [argument, message] of [
-    ["--browser=chrome", /requires --browser=firefox/],
-    ["--browser=safari", /requires --browser=firefox/],
-    ["--browser=engine-firefox", /requires --browser=firefox/],
+    ["--browser=safari", /requires --browser=firefox or chrome/],
+    ["--browser=engine-firefox", /requires --browser=firefox or chrome/],
     ["--history=19", /requires --history=20/],
     ["--history=21", /requires --history=20/],
   ]) {
@@ -83,6 +106,19 @@ test("steady CLI rejects other browsers and partial histories before launch", ()
     assert.match(result.stderr, message);
     assert.equal(result.stdout, "");
   }
+  const chrome = spawnSync(
+    process.execPath,
+    [
+      new URL("../profile-chat.mjs", import.meta.url).pathname,
+      "--scenario=steady",
+      "--browser=chrome",
+      "--history=19",
+    ],
+    { encoding: "utf8", timeout: 10000 },
+  );
+  assert.equal(chrome.status, 1);
+  assert.match(chrome.stderr, /requires --history=20/);
+  assert.equal(chrome.stdout, "");
 });
 
 test("steady server defaults to the whole 20-turn history", async () => {
@@ -173,6 +209,9 @@ test("steady setup replays the interior position and never submits a reply", () 
     });
     time += 16;
     callback(time);
+    const skipped = new w.Event("contentvisibilityautostatechange");
+    Object.defineProperty(skipped, "skipped", { value: true });
+    viewport.dispatchEvent(skipped);
     Object.defineProperty(viewport, "clientHeight", {
       configurable: true,
       value: 800,
@@ -188,6 +227,10 @@ test("steady setup replays the interior position and never submits a reply", () 
     assert.equal(result.deliveries.length, 0);
     assert.equal(result.frames[0][10], false);
     assert.equal(result.steady.plan.oneWayPx, 4320);
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(result.steady.visibilityChanges)),
+      [[116, true]],
+    );
   } finally {
     w.close();
   }
@@ -199,6 +242,7 @@ function steadyRecording() {
     start,
     end: start + 4,
     held: false,
+    totalSize: 10800,
     loadedStart: 0,
     loadedEnd: 20,
     loading: false,
@@ -217,6 +261,7 @@ function steadyRecording() {
     schema: 1,
     probeVersion: 6,
     durationMs: 15000,
+    startTime: 100,
     mode: "timing",
     scenario: "steady",
     userAgent: "test",
@@ -266,6 +311,92 @@ test("steady analysis accepts real churn without requiring a fabricated stream",
   assert.equal(summary.steady.upPx, 4320);
   assert.equal(summary.steady.rangeChanges, 12);
   assert.equal(summary.steady.mounts, null);
+});
+
+test("fast input covers the same band and analysis enforces its lower input count", () => {
+  for (const plan of [steadyScrollPlan, fastSteadyScrollPlan]) {
+    assert.equal(plan.down * plan.ticks * plan.delta, 4320);
+    assert.equal(plan.up * plan.ticks * plan.delta, 4320);
+  }
+  const args = steadyScrollArguments("setup.js", "fast");
+  assert.ok(args.includes("--ticks=30"));
+  assert.ok(args.includes("--delta=48"));
+  const recording = steadyRecording();
+  recording.steady.plan = fastSteadyScrollPlan;
+  recording.scroll.wheels = 135;
+  assert.equal(analyzeChat(recording, { native: true }).valid, true);
+  recording.scroll.wheels = 134;
+  assert.equal(analyzeChat(recording, { native: true }).valid, false);
+  recording.scroll.wheels = 180;
+  recording.steady.plan = { ...fastSteadyScrollPlan, ticks: 31 };
+  const summary = analyzeChat(recording, { native: true });
+  assert.equal(summary.valid, false);
+  assert.ok(
+    summary.invalidReasons.includes(
+      "Steady scroll must use a supported native input plan",
+    ),
+  );
+});
+
+test("steady analysis rejects size changes and counts only measured browser skipping", () => {
+  const recording = steadyRecording();
+  assert.deepEqual(analyzeChat(recording).steady.browserSkipping, {
+    available: false,
+    skipped: null,
+    rendered: null,
+    eventLimitReached: null,
+  });
+  recording.steady.visibilityChanges = [
+    [99, true],
+    [100, true],
+    [1000, false],
+    [15100, true],
+    [15101, false],
+  ];
+  const summary = analyzeChat(recording, { native: true });
+  assert.deepEqual(summary.steady.browserSkipping, {
+    available: true,
+    skipped: 2,
+    rendered: 1,
+    eventLimitReached: false,
+  });
+  const capped = structuredClone(recording);
+  capped.steady.visibilityChanges = Array.from({ length: 1000 }, () => [
+    1000,
+    true,
+  ]);
+  const cappedSummary = analyzeChat(capped, { native: true });
+  assert.equal(cappedSummary.valid, false);
+  assert.equal(cappedSummary.steady.browserSkipping.eventLimitReached, true);
+  assert.ok(
+    cappedSummary.invalidReasons.includes(
+      "Steady browser-skipping telemetry reached its event limit",
+    ),
+  );
+  for (const change of [
+    (r) => {
+      r.states[2][1].totalSize += 1;
+    },
+    (r) => {
+      r.frames[4][7] += 1;
+    },
+    (r) => {
+      r.final.height += 1;
+    },
+    (r) => {
+      r.final.scrollHeight += 1;
+    },
+  ]) {
+    const invalid = structuredClone(recording);
+    change(invalid);
+    const result = analyzeChat(invalid, { native: true });
+    assert.equal(result.valid, false);
+    assert.ok(
+      result.invalidReasons.includes(
+        "Steady scroll geometry changed during the loaded-history run",
+      ),
+    );
+  }
 });
 
 test("steady image history requires decoded images at both boundaries regardless of URL representation", () => {

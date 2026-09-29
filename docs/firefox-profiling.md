@@ -10,6 +10,12 @@ For a repeatable complex stream through the full chat demo, use the
 SSE replay, bounded operation attribution, validity checks, and comparison
 reports while retaining this native Firefox capture as the primary baseline.
 
+For already-loaded messages, use its
+[steady-scroll scenario](streaming-chat-profiling.md#profile-steady-scrolling-through-loaded-messages).
+`--steady-speed=fast` covers the same interior band with three times the native
+input speed. It checks stable content geometry and excludes paging and replies;
+use manual input to investigate real trackpad momentum.
+
 For image-heavy scrolling without paging or streaming, use the
 [steady inline-image workload](streaming-chat-profiling.md#exercise-inline-raster-images).
 It loads 20 turns containing 10 known-size 960×360 PNGs, then runs the fixed

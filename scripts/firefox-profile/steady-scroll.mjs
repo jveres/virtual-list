@@ -11,6 +11,20 @@ export const steadyScrollPlan = Object.freeze({
   minimumMounts: 4,
 });
 
+// Same interior band, three times the input speed. Both plans keep each
+// gesture's release separate from the next gesture and exclude paging.
+export const fastSteadyScrollPlan = Object.freeze({
+  ...steadyScrollPlan,
+  ticks: 30,
+  delta: 48,
+});
+
+export function scrollPlan(speed = "normal") {
+  if (speed === "normal") return steadyScrollPlan;
+  if (speed === "fast") return fastSteadyScrollPlan;
+  throw new Error("Invalid steady scroll speed");
+}
+
 // Serialized into the existing Firefox setup hook before measurement. Geometry
 // is read once here, never from the animation-frame sampler.
 export function prepareSteadyScroll(plan) {
@@ -29,29 +43,56 @@ export function prepareSteadyScroll(plan) {
   if (!(height > 0) || top < height)
     throw new Error("Steady scrolling needs more interior scroll space");
   viewport.scrollTop = top;
-  const setup = { plan, top: viewport.scrollTop, maximum, height, status };
+  const visibilityChanges = [];
+  // This event reports browser skipping without a geometry read. A timing
+  // capture without content-visibility:auto generates no such events.
+  viewport.addEventListener(
+    "contentvisibilityautostatechange",
+    (event) => {
+      if (typeof event.skipped !== "boolean") return;
+      if (visibilityChanges.length >= 1000) return;
+      visibilityChanges.push([performance.now(), event.skipped]);
+    },
+    { capture: true, passive: true },
+  );
+  const setup = {
+    plan,
+    top: viewport.scrollTop,
+    maximum,
+    height,
+    status,
+    visibilityChanges,
+  };
   profile.steady = setup;
   return setup;
 }
 
-export function steadyScrollSetup() {
-  return `(${prepareSteadyScroll.toString()})(${JSON.stringify(steadyScrollPlan)})`;
+export function steadyScrollSetup(speed = "normal") {
+  return `(${prepareSteadyScroll.toString()})(${JSON.stringify(scrollPlan(speed))})`;
 }
 
-export function steadyScrollArguments(setupPath) {
+export function steadyScrollArguments(setupPath, speed = "normal") {
+  const plan = scrollPlan(speed);
   return [
     `--setup=${setupPath}`,
-    `--down=${steadyScrollPlan.down}`,
-    `--up=${steadyScrollPlan.up}`,
-    `--ticks=${steadyScrollPlan.ticks}`,
-    `--delta=${steadyScrollPlan.delta}`,
-    `--interval-ms=${steadyScrollPlan.intervalMs}`,
-    `--settle-ms=${steadyScrollPlan.settleMs}`,
+    `--down=${plan.down}`,
+    `--up=${plan.up}`,
+    `--ticks=${plan.ticks}`,
+    `--delta=${plan.delta}`,
+    `--interval-ms=${plan.intervalMs}`,
+    `--settle-ms=${plan.settleMs}`,
   ];
 }
 
 export function analyzeSteadyScroll(recording) {
   const reasons = [];
+  const speed = recording.steady?.plan?.delta === 48 ? "fast" : "normal";
+  const plan = scrollPlan(speed);
+  if (
+    !recording.steady?.plan ||
+    Object.keys(plan).some((key) => recording.steady.plan[key] !== plan[key])
+  )
+    reasons.push("Steady scroll must use a supported native input plan");
   const status = `loaded 1-${steadyScrollPlan.history}/${steadyScrollPlan.history} · load none`;
   const states = [
     recording.initial.state,
@@ -59,6 +100,17 @@ export function analyzeSteadyScroll(recording) {
     recording.final.state,
   ];
   const count = states[0]?.count;
+  const totalSize = states[0]?.totalSize;
+  if (
+    !Number.isFinite(totalSize) ||
+    states.some((state) => state?.totalSize !== totalSize) ||
+    recording.frames.some((frame) => frame[7] !== totalSize) ||
+    recording.final.height !== recording.initial.height ||
+    recording.final.scrollHeight !== recording.initial.scrollHeight
+  )
+    reasons.push(
+      "Steady scroll geometry changed during the loaded-history run",
+    );
   if (
     recording.workload.history !== steadyScrollPlan.history ||
     recording.initial.status !== status ||
@@ -91,8 +143,8 @@ export function analyzeSteadyScroll(recording) {
     recording.stream.events !== 0
   )
     reasons.push("Steady scroll must not send or stream a reply");
-  const bursts = steadyScrollPlan.down + steadyScrollPlan.up;
-  const minimumWheels = Math.ceil(bursts * steadyScrollPlan.ticks * 0.75);
+  const bursts = plan.down + plan.up;
+  const minimumWheels = Math.ceil(bursts * plan.ticks * 0.75);
   if (
     !Number.isInteger(recording.scroll.wheels) ||
     recording.scroll.wheels < minimumWheels ||
@@ -170,8 +222,31 @@ export function analyzeSteadyScroll(recording) {
         "Steady image history needs decoded mounted images at both boundaries",
       );
   }
+  const { visibilityChanges = [], ...setup } = recording.steady ?? {};
+  if (visibilityChanges.length >= 1000)
+    reasons.push("Steady browser-skipping telemetry reached its event limit");
+  const measuredVisibility = visibilityChanges.filter(
+    ([time]) =>
+      time >= recording.startTime &&
+      time <= recording.startTime + recording.durationMs,
+  );
+  const visibilityAvailable = Array.isArray(
+    recording.steady?.visibilityChanges,
+  );
   return {
-    ...recording.steady,
+    ...setup,
+    browserSkipping: {
+      available: visibilityAvailable,
+      skipped: visibilityAvailable
+        ? measuredVisibility.filter(([, skipped]) => skipped).length
+        : null,
+      rendered: visibilityAvailable
+        ? measuredVisibility.filter(([, skipped]) => !skipped).length
+        : null,
+      eventLimitReached: visibilityAvailable
+        ? visibilityChanges.length >= 1000
+        : null,
+    },
     rangeChanges,
     downPx,
     upPx,

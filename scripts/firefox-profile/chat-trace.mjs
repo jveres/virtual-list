@@ -110,6 +110,8 @@ export function analyzeChatChrome(trace, cpu = null) {
   );
   const categories = new Map();
   const invalidations = new Map();
+  const selectors = new Map();
+  let selectorEvents = 0;
   let invalidationRecords = 0;
   const styledElements = [];
   const threads = new Map();
@@ -126,6 +128,38 @@ export function analyzeChatChrome(trace, cpu = null) {
   const longest = [];
   for (const event of trace.traceEvents) {
     const renderer = event.pid === start.pid && event.tid === start.tid;
+    if (
+      renderer &&
+      event.name === "SelectorStats" &&
+      event.ts >= start.ts &&
+      event.ts <= end.ts
+    ) {
+      selectorEvents++;
+      for (const timing of event.args?.selector_stats?.selector_timings ?? []) {
+        const key = JSON.stringify([timing.style_sheet_id, timing.selector]);
+        const entry = selectors.get(key) ?? {
+          styleSheetId: timing.style_sheet_id,
+          selector: timing.selector,
+          elapsedMs: 0,
+          attempts: 0,
+          matches: 0,
+          fastRejects: 0,
+        };
+        for (const [name, field, scale] of [
+          ["elapsedMs", "elapsed (us)", 1000],
+          ["attempts", "match_attempts", 1],
+          ["matches", "match_count", 1],
+          ["fastRejects", "fast_reject_count", 1],
+        ]) {
+          assert.ok(
+            Number.isFinite(timing[field]) && timing[field] >= 0,
+            `Invalid SelectorStats ${field}`,
+          );
+          entry[name] += timing[field] / scale;
+        }
+        selectors.set(key, entry);
+      }
+    }
     if (
       renderer &&
       event.ts >= start.ts &&
@@ -244,6 +278,23 @@ export function analyzeChatChrome(trace, cpu = null) {
     durationMs: (end.ts - start.ts) / 1000,
     renderer: { pid: start.pid, tid: start.tid },
     styleRecalculationElements: distribution(styledElements),
+    // Diagnostic-only: per-selector clocks perturb style matching. These
+    // totals attribute work; they are not uninstrumented timing evidence.
+    selectorStats: {
+      events: selectorEvents,
+      selectors: selectors.size,
+      totals: [...selectors.values()].reduce(
+        (total, entry) => {
+          for (const key of Object.keys(total)) total[key] += entry[key];
+          return total;
+        },
+        { elapsedMs: 0, attempts: 0, matches: 0, fastRejects: 0 },
+      ),
+      omitted: Math.max(0, selectors.size - 64),
+      top: [...selectors.values()]
+        .sort((a, b) => b.elapsedMs - a.elapsedMs || b.attempts - a.attempts)
+        .slice(0, 64),
+    },
     invalidationRecords,
     omittedInvalidationGroups: Math.max(0, invalidations.size - 64),
     invalidations: [...invalidations.values()]

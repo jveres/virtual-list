@@ -140,7 +140,7 @@ try {
       assert.equal(settled.footerPadding, 52);
       assert.ok(
         Math.abs(settled.overlap) < 1 && Math.abs(settled.buttonGap - 16) < 1,
-        "actions have a 16px gap and do not overlap markdown",
+        `actions have a 16px gap and do not overlap markdown: ${JSON.stringify({ markdown, hasTouch, settled })}`,
       );
       const hitTargets = await row
         .locator(".message-actions button")

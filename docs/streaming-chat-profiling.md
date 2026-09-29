@@ -79,8 +79,9 @@ captures warm the page before starting and do not measure navigation performance
 ## Profile steady scrolling through loaded messages
 
 Use `steady` to measure scrolling through existing content without sending a
-reply or loading another page. This scenario supports installed Firefox only
-and requires exactly 20 history turns, which is also its default:
+reply or loading another page. This scenario supports installed Firefox and
+Chrome and requires exactly 20 history turns, which is also its default.
+Start with Firefox:
 
 ```sh
 pnpm run profile:chat -- --browser=firefox --display=LU28R55 \
@@ -95,17 +96,31 @@ capture takes about 15 seconds including native control overhead. `--seconds`
 does not change this plan. Setup fails if the content cannot provide a viewport
 of clearance at both ends of the travel band.
 
+Add `--steady-speed=fast` to cover the same travel band at three times the
+input speed. Each gesture then contains 30 native events at 48 px per event,
+still 16.667 ms apart, or about 2,880 px/s. Capture takes about eight seconds
+including the same 700 ms pauses and native control overhead. The default
+`--steady-speed=normal` uses about 960 px/s. Both are uniform scripted input;
+neither reproduces trackpad acceleration or released momentum.
+
+Use `--browser=chrome` for a secondary layout or CSS attribution check with the
+same native plan. Compare timing within one browser: browser chrome changes the
+available viewport height, and layout engines can choose different row ranges.
+
 Validity requires the following conditions throughout the capture:
 
 - All 20 turns remain loaded, with a constant item count and no paging,
   navigation handoff, or held states.
+- The modeled content size remains constant through every sampled state and
+  frame. Initial and final viewport height and scroll height must match.
 - No response request, stream delivery, or streamed character is recorded.
   `stream.done: false` is expected because no reply starts.
 - At least 3,240 px of movement occurs in each direction, with at least four
   mounted-range changes. Diagnostic mode also requires at least four mounts
   and four unmounts.
-- At least 405 of the planned 540 wheel events and six scroll-end events are
-  recorded, so a truncated gesture sequence cannot pass on travel alone.
+- At least 405 of the planned 540 normal-speed wheel events, or 135 of the
+  planned 180 fast-speed events, and six scroll-end events are recorded. A
+  truncated gesture sequence cannot pass on travel alone.
 - The viewport stays inside the interior range, and the usual focus, display,
   scroll-end, and telemetry checks pass.
 
@@ -114,6 +129,14 @@ operation and DOM counters, and compare captures with the same mode and inputs.
 The generated `reproduce-setup.js` and recorded gesture plan preserve the setup
 without retaining raw profiles. Native events include gesture phases but no
 momentum phase; use a manual capture for real trackpad release behavior.
+
+The setup also listens for `contentvisibilityautostatechange` without reading
+geometry. `steady.browserSkipping` counts transitions into skipped rendering
+and back into rendered content during measurement. These are event counts,
+not numbers of unique rows, bytes saved, or paint durations. Older recordings
+without the listener report this metric as unavailable. A capture that reaches
+the 1,000-event telemetry cap is invalid. The runtime does not enable
+`content-visibility: auto`; this metric supports controlled experiments.
 
 To separate pointer-hover work from row recycling, repeat a scripted Firefox
 `steady` or `scrollback` capture with `--pointer-x=0.02`. The value is a fraction
@@ -300,7 +323,8 @@ automation windows restrict native user input; Apple's
 describes those isolated windows. Use the manual workflow below on older
 Safari versions and for browsers without an automated adapter.
 
-For a Chrome style-recalculation investigation, enable invalidation stacks on
+For a Chrome style-recalculation investigation, enable invalidation stacks and
+CSS selector statistics on
 a short, reduced workload:
 
 ```sh
@@ -309,12 +333,27 @@ pnpm run profile:chat -- --browser=chrome --mode=diagnostic \
   --seconds=8 --stream-ms=4000 --sections=12 --history=40
 ```
 
-This option records reasons, affected nodes, CSS selectors when available, and
-mutation stacks. It has substantial overhead; the full default workload can
+This option records reasons, affected nodes, CSS selectors when available,
+mutation stacks, and per-selector matching costs. `chrome-analysis.json` keeps
+selector totals and the 64 most expensive selector/stylesheet pairs, including
+attempts, matches, and fast rejections. Totals include omitted pairs. Zero
+selector-stat events means no statistics were captured, not zero CSS cost. These
+statistics identify candidates; their instrumented clocks are not clean timing
+measurements. See Chrome's
+[selector statistics guidance](https://developer.chrome.com/docs/devtools/performance/selector-stats).
+
+For scrolling alone, combine the flag with `--scenario=steady`,
+`--steady-speed=fast`, and `--history-content=tools`. The same workload without
+the flag supplies the timing control. The
+[CSS and layout report](reports/css-layout-performance-2026-09-29.md) records
+the first investigation using this method.
+
+The flag has substantial overhead; the full default workload can
 overflow Chrome's trace buffer and lose the required markers. Use it to locate
 causes, then repeat the full workload without the flag to measure performance.
 The runner rejects this flag outside installed Chrome diagnostic mode, and the
-comparison tool rejects captures with different invalidation settings.
+comparison tool rejects captures with different invalidation or selector-stat
+settings, including older invalidation-only captures.
 
 ## Read the report
 

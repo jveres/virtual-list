@@ -7,6 +7,27 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 29 CSS and row layout
+
+The [CSS and layout investigation](css-layout-performance-2026-09-29.md) replaces
+an unnecessary assistant-row flex context with block layout and preserves its
+content's margin boundary with `flow-root`. The corrected Firefox pair records a
+small layout saving and lower total CPU; Chrome records no improvement.
+The report records the initial candidate's empty-reply spacing failure and its
+correction. Selector attribution finds little remaining matching-cost headroom.
+The profiler now supports Chrome's native loaded-history scroll plan and compact
+CSS selector statistics. The report separates these results from presentation
+smoothness and memory claims.
+
+## September 29 fast-scroll follow-up
+
+The [fast-scroll exploration](fast-scroll-exploration-2026-09-29.md) repeats the
+loaded-chat investigation in installed Firefox 157 at three times the earlier
+input speed. A fixed-height `content-visibility: auto` candidate does skip
+rendering, but adds style, layout, and display-list work without a CPU saving.
+It is reverted. The fast native-input preset, stable-geometry checks, and
+bounded browser-skipping event metric remain in the profiler.
+
 ## September 29 DOM work during scrolling
 
 The [DOM-operation investigation](dom-scroll-operations-2026-09-29.md) separates

@@ -20,7 +20,12 @@ import {
   webContentPids,
 } from "./safari-sample.mjs";
 import { validateDisplay } from "./safari-validation.mjs";
-import { steadyScrollArguments, steadyScrollSetup } from "./steady-scroll.mjs";
+import {
+  prepareSteadyScroll,
+  scrollPlan,
+  steadyScrollArguments,
+  steadyScrollSetup,
+} from "./steady-scroll.mjs";
 
 const exec = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -85,8 +90,8 @@ export async function captureFirefox(server, directory, options, signal) {
     args.push(`--pointer-x=${options.pointerX}`);
   if (options.scenario === "steady") {
     const setup = join(directory, "reproduce-setup.js");
-    await writeFile(setup, steadyScrollSetup());
-    args.push(...steadyScrollArguments(setup));
+    await writeFile(setup, steadyScrollSetup(options.steadySpeed));
+    args.push(...steadyScrollArguments(setup, options.steadySpeed));
   } else if (["follow", "buttons"].includes(options.scenario))
     args.push(`--idle-seconds=${options.seconds}`);
   else if (options.scenario === "manual")
@@ -202,6 +207,17 @@ export async function capturePlaywright(server, directory, options, signal) {
     );
     await page.waitForTimeout(2000);
     await options.preparePage?.(page);
+    const plan =
+      options.scenario === "steady" ? scrollPlan(options.steadySpeed) : null;
+    if (plan) {
+      assert.ok(installed, "Steady scrolling requires an installed browser");
+      await writeFile(
+        join(directory, "reproduce-setup.js"),
+        steadyScrollSetup(options.steadySpeed),
+      );
+      await page.evaluate(prepareSteadyScroll, plan);
+      await page.waitForTimeout(plan.settleMs);
+    }
     await page.bringToFront();
     const geometry = await page.evaluate(() => ({
       x: screenX,
@@ -237,7 +253,7 @@ export async function capturePlaywright(server, directory, options, signal) {
         categories:
           "devtools.timeline,blink.user_timing,toplevel,v8,gpu,cc,disabled-by-default-devtools.timeline.frame" +
           (options.traceInvalidations
-            ? ",disabled-by-default-devtools.timeline.invalidationTracking"
+            ? ",disabled-by-default-devtools.timeline.invalidationTracking,disabled-by-default-blink.debug"
             : ""),
         transferMode: "ReturnAsStream",
       });
@@ -249,14 +265,31 @@ export async function capturePlaywright(server, directory, options, signal) {
     const metricsBefore = cdp ? await cdp.send("Performance.getMetrics") : null;
     await page.evaluate(
       (submit) => globalThis.__chatProfile.start({ submit }),
-      options.submit !== "enter",
+      !plan && options.submit !== "enter",
     );
     if (options.submit === "enter")
       await page.locator("#prompt").press("Enter");
     const end = Date.now() + options.seconds * 1000;
     if (options.scenario === "manual")
       console.log("Scroll the foreground test Chrome now.");
-    while (Date.now() < end) {
+    for (let burst = 0; plan && burst < plan.down + plan.up; burst++) {
+      signal.throwIfAborted();
+      await exec(
+        native.helper,
+        [
+          "scroll",
+          String(pid),
+          String(point.x),
+          String(point.y),
+          String(burst < plan.down ? -plan.delta : plan.delta),
+          String(plan.ticks),
+          String(Math.round(plan.intervalMs * 1000)),
+        ],
+        { timeout: Math.ceil(plan.ticks * plan.intervalMs + 10000) },
+      );
+      await sleep(plan.settleMs);
+    }
+    while (!plan && Date.now() < end) {
       signal.throwIfAborted();
       if (options.scenario === "scrollback") {
         if (native)
@@ -284,13 +317,15 @@ export async function capturePlaywright(server, directory, options, signal) {
       globalThis.__chatProfile.stop(),
     );
     recording.traceInvalidations = options.traceInvalidations ?? false;
+    recording.traceSelectorStats = options.traceInvalidations ?? false;
     await json(join(directory, "recording.json"), recording);
     const metadata = {
       browser: browser.version(),
       display: native?.display ?? null,
       geometry,
       nativeInput:
-        installed && ["scrollback", "manual"].includes(options.scenario),
+        installed &&
+        ["scrollback", "manual", "steady"].includes(options.scenario),
       isolated: true,
     };
     if (cdp) {

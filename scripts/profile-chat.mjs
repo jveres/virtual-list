@@ -28,6 +28,7 @@ const { values } = parseArgs({
     display: { type: "string" },
     "refresh-hz": { type: "string" },
     "pointer-x": { type: "string" },
+    "steady-speed": { type: "string" },
     seconds: { type: "string", default: "20" },
     "stream-ms": { type: "string", default: "12000" },
     sections: { type: "string", default: "48" },
@@ -43,10 +44,10 @@ if (values.help) {
   --browser firefox|chrome|safari  Installed browser; default Firefox
             engine-firefox|engine-chromium|engine-webkit  Headless correctness checks only
   --scenario follow|scrollback|buttons|manual|steady  Safari automation requires Safari 27+
-    steady: Firefox only, 20 fully loaded turns, no reply; fixed 3 down/3 up gestures
-    of 90 ticks at 16px (about 15s including pauses/control; --seconds is ignored)
+    steady: Firefox/Chrome, 20 fully loaded turns, no reply; fixed 3 down/3 up gestures
+    over 4320px each way (about 15s normal / 8s fast; --seconds is ignored)
   --mode timing|diagnostic       Optional synchronous spans, access and mutation counters
-  --trace-invalidations         Chrome diagnostic only; use a short, reduced fixture
+  --trace-invalidations         Chrome diagnostic style invalidations + selector stats (slow)
   --scheduler                   Timer/task latency, rAF work, and trail lifecycle diagnostics
   --safari-detached             Disconnect the Safari driver before follow/button captures
   --safari-sample S:D:I         Native diagnostic: start seconds, duration seconds, interval ms
@@ -54,6 +55,7 @@ if (values.help) {
   --display INDEX|NAME           Default first external display, otherwise built-in
   --refresh-hz N                 Actual display rate if different from reported maximum
   --pointer-x F                 Horizontal pointer fraction 0.01..0.99; Firefox scrollback/steady only
+  --steady-speed normal|fast     Loaded-history native input: 960 or 2880 px/s (steady only)
   --seconds N                   Measurement window (default 20; scripted Firefox rounds up)
   --stream-ms N                 Fixed stream deadlines (default 12000; allow >=3s after completion)
   --sections N --history N       Complex reply sections / initial history turns (48 / 160)
@@ -85,6 +87,11 @@ if (
 )
   throw new Error("Invalid --scenario");
 const steady = values.scenario === "steady";
+if (values["steady-speed"] !== undefined) {
+  if (!["normal", "fast"].includes(values["steady-speed"]))
+    throw new Error("Invalid --steady-speed: expected normal or fast");
+  if (!steady) throw new Error("--steady-speed requires --scenario=steady");
+}
 const pointerX =
   values["pointer-x"] === undefined ? undefined : Number(values["pointer-x"]);
 if (pointerX !== undefined) {
@@ -103,8 +110,8 @@ if (pointerX !== undefined) {
 const history = Number(
   values.history ?? (steady ? steadyScrollPlan.history : 160),
 );
-if (steady && values.browser !== "firefox")
-  throw new Error("The steady scenario requires --browser=firefox");
+if (steady && !["firefox", "chrome"].includes(values.browser))
+  throw new Error("The steady scenario requires --browser=firefox or chrome");
 if (steady && history !== steadyScrollPlan.history)
   throw new Error(
     "The steady scenario requires --history=20 (the whole history)",
@@ -193,6 +200,7 @@ const options = {
   display: values.display,
   refreshHz,
   pointerX,
+  steadySpeed: values["steady-speed"] ?? "normal",
   seconds,
   durationMs,
   sections: Number(values.sections),

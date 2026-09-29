@@ -691,6 +691,8 @@ p.ai-settings-note {
 }
 
 .message.assistant .message-content {
+  /* Keep label and empty-reply margins inside the measured content box. */
+  display: flow-root;
   width: 100%;
 }
 
@@ -710,7 +712,9 @@ p.ai-settings-note {
 }
 
 .message.assistant {
-  flex-direction: column;
+  /* Content owns its formatting boundary; the toolbar is absolute.
+     The full-width row needs no flex layout. */
+  display: block;
   --message-action-height: 24px;
 }
 
