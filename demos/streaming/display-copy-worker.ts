@@ -19,7 +19,8 @@ async function copy({ id, url, maxEdge }: CopyRequest): Promise<void> {
   try {
     const source = await (await fetch(url)).blob();
     bitmap = await createImageBitmap(source);
-    const scale = maxEdge / Math.max(bitmap.width, bitmap.height);
+    // Copies only shrink; a small image keeps its own size.
+    const scale = Math.min(1, maxEdge / Math.max(bitmap.width, bitmap.height));
     const width = Math.max(1, Math.round(bitmap.width * scale));
     const height = Math.max(1, Math.round(bitmap.height * scale));
     canvas = new OffscreenCanvas(width, height);

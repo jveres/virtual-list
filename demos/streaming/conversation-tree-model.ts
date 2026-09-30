@@ -18,6 +18,8 @@ export interface TreeEntry {
   id: number;
   parentId: number;
   row: number;
+  /** The only reply to a prompt shares its prompt's row as one turn. */
+  attached: boolean;
   active: boolean;
   role: "user" | "assistant";
   label: string;
@@ -94,8 +96,9 @@ function messageContent(
   };
 }
 
-/** Every message in depth-first order; a row is a depth. The selected path
- * is active; alternatives and their descendants stay visible. */
+/** Every message in depth-first order; a row is a turn depth. A prompt and
+ * its only reply form one turn; regenerated replies keep rows of their own.
+ * The selected path is active; alternatives and descendants stay visible. */
 export function conversationEntries(
   tree: ReadonlyMap<number, ConversationNode>,
 ): TreeEntry[] {
@@ -108,17 +111,29 @@ export function conversationEntries(
   }
   const entries: TreeEntry[] = [];
   const seen = new Set<number>([0]);
-  const pending: { id: number; parentId: number; row: number }[] = [];
+  const pending: {
+    id: number;
+    parentId: number;
+    row: number;
+    attached: boolean;
+  }[] = [];
   const queueChildren = (parentId: number, row: number): void => {
-    const children = tree.get(parentId)?.childrenIds ?? [];
+    const parent = tree.get(parentId);
+    const children = parent?.childrenIds ?? [];
+    const only = children.length === 1 ? children[0] : undefined;
+    const attached =
+      parent?.message?.role === "user" &&
+      only !== undefined &&
+      tree.get(only)?.message?.role === "assistant";
     for (let index = children.length - 1; index >= 0; index--) {
       const id = children[index];
-      if (id !== undefined) pending.push({ id, parentId, row });
+      if (id !== undefined)
+        pending.push({ id, parentId, row: attached ? row - 1 : row, attached });
     }
   };
   queueChildren(0, 0);
   for (let item = pending.pop(); item; item = pending.pop()) {
-    const { id, parentId, row } = item;
+    const { id, parentId, row, attached } = item;
     if (seen.has(id)) continue;
     seen.add(id);
     const message = tree.get(id)?.message;
@@ -134,6 +149,7 @@ export function conversationEntries(
       id,
       parentId,
       row,
+      attached,
       active: selected.has(id),
       role: message.role,
       ...content,

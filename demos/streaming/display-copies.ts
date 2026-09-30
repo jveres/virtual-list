@@ -6,10 +6,14 @@
 
 /** Long edge of a display copy: a chat column at 2x, with headroom. */
 const MAX_EDGE = 2048;
+/** Long edge of a tree thumbnail: a 44x30 cover crop at 3x. */
+const THUMBNAIL_EDGE = 160;
 
 // Copies are shared by retained rows within one conversation.
 const copies = new Map<string, Promise<string | null>>();
 const ready = new Map<string, string>();
+const thumbnails = new Map<string, Promise<string | null>>();
+const thumbnailsReady = new Map<string, string>();
 const pending = new Map<number, (blob: Blob | null) => void>();
 const sources = new WeakMap<
   HTMLImageElement,
@@ -68,8 +72,14 @@ function copyWorker(): Worker | null {
   return worker;
 }
 
-function displayCopy(url: string): Promise<string | null> {
-  let copy = copies.get(url);
+/** One worker copy of `url` whose long edge is at most `maxEdge`. */
+function requestCopy(
+  url: string,
+  maxEdge: number,
+  cache: Map<string, Promise<string | null>>,
+  done: Map<string, string>,
+): Promise<string | null> {
+  let copy = cache.get(url);
   if (copy) return copy;
   const target = copyWorker();
   if (!target) return Promise.resolve(null);
@@ -78,7 +88,7 @@ function displayCopy(url: string): Promise<string | null> {
   copy = new Promise<Blob | null>((resolve) => {
     pending.set(id, resolve);
     try {
-      target.postMessage({ id, url, maxEdge: MAX_EDGE });
+      target.postMessage({ id, url, maxEdge });
     } catch {
       disableWorker(target);
     }
@@ -87,17 +97,35 @@ function displayCopy(url: string): Promise<string | null> {
     if (blob) {
       try {
         const display = URL.createObjectURL(blob);
-        ready.set(url, display);
+        done.set(url, display);
         return display;
       } catch {
-        // A display copy is optional; retain the original on allocation failure.
+        // A copy is optional; retain the original on allocation failure.
       }
     }
-    copies.delete(url);
+    cache.delete(url);
     return null;
   });
-  copies.set(url, copy);
+  cache.set(url, copy);
   return copy;
+}
+
+function displayCopy(url: string): Promise<string | null> {
+  return requestCopy(url, MAX_EDGE, copies, ready);
+}
+
+/**
+ * A small preview of an image for the conversation tree: the finished copy
+ * when one exists, else a pending worker copy. Never the original, whose
+ * full-size decode is what previews must avoid.
+ */
+export function thumbnailCopy(url: string): string | Promise<string | null> {
+  // Vectors draw cheaply at thumbnail size, and a worker cannot decode them.
+  if (url.startsWith("data:image/svg+xml")) return url;
+  return (
+    thumbnailsReady.get(url) ??
+    requestCopy(url, THUMBNAIL_EDGE, thumbnails, thumbnailsReady)
+  );
 }
 
 /** Release a replaced conversation after disposing its rows, never on paging. */
@@ -108,6 +136,10 @@ export function resetDisplayCopies(): void {
   copies.clear();
   for (const display of ready.values()) URL.revokeObjectURL(display);
   ready.clear();
+  thumbnails.clear();
+  for (const thumbnail of thumbnailsReady.values())
+    URL.revokeObjectURL(thumbnail);
+  thumbnailsReady.clear();
   for (const probe of decoding) probe.removeAttribute("src");
   decoding.clear();
   probes = new WeakMap();

@@ -115,13 +115,15 @@ for (const engine of [firefox, webkit, chromium]) {
             `.conversation-tree-toc:has([data-message-id="${node.dataset.messageId}"])`,
           );
           const row = rows.get(node.dataset.row) ?? [];
-          row.push({
-            left: box.left,
-            right: Math.max(
-              box.right,
-              toc?.getBoundingClientRect().right ?? box.right,
-            ),
-          });
+          const right = Math.max(
+            box.right,
+            toc?.getBoundingClientRect().right ?? box.right,
+          );
+          // A turn's reply line extends its prompt's band in the same row.
+          const prompt = row.at(-1);
+          if (node.classList.contains("conversation-tree-reply") && prompt)
+            prompt.right = Math.max(prompt.right, right);
+          else row.push({ left: box.left, right });
           rows.set(node.dataset.row, row);
         }
         return [...rows.values()]
@@ -430,7 +432,8 @@ for (const engine of [firefox, webkit, chromium]) {
       }
     });
     assert.ok(
-      Math.abs((await zoom()) - 1.2) < 0.001,
+      // Trackpad pinches zoom 2.5 times faster than the gesture scale.
+      Math.abs((await zoom()) - 1.2 ** 2.5) < 0.001,
       "Safari gesture path changes zoom",
     );
     await reset.click();

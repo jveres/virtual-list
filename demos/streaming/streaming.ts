@@ -72,6 +72,7 @@ import {
   adoptDisplayCopies,
   readyDisplayCopy,
   resetDisplayCopies,
+  thumbnailCopy,
 } from "./display-copies.js";
 import { storedGeneratedFiles, syncGeneratedFiles } from "./generated-files.js";
 import { resumeRowImages, suspendRowImages } from "./image-lifecycle.js";
@@ -4358,6 +4359,26 @@ const treeImageCache = new WeakMap<
     sources: ReturnType<typeof messageImageSources>;
   }
 >();
+function treeImageSources(
+  id: number,
+): readonly { url: string; label: string }[] {
+  const message = tree.get(id)?.message;
+  if (!message) return [];
+  let cached = treeImageCache.get(message);
+  // A streaming reply keeps its object while its Markdown grows.
+  if (
+    cached?.markdown !== message.markdown ||
+    cached.attachments !== message.attachments
+  ) {
+    cached = {
+      markdown: message.markdown,
+      attachments: message.attachments,
+      sources: messageImageSources(message),
+    };
+    treeImageCache.set(message, cached);
+  }
+  return cached.sources;
+}
 conversationTree = createConversationTree({
   host: mustGet("scroll-jump-layer"),
   viewport,
@@ -4379,27 +4400,15 @@ conversationTree = createConversationTree({
     return headings;
   },
   navigate: navigateTreeMessage,
-  images: (id) => {
-    const message = tree.get(id)?.message;
-    if (!message) return [];
-    let cached = treeImageCache.get(message);
-    // A streaming reply keeps its object while its Markdown grows.
-    if (
-      cached?.markdown !== message.markdown ||
-      cached.attachments !== message.attachments
-    ) {
-      cached = {
-        markdown: message.markdown,
-        attachments: message.attachments,
-        sources: messageImageSources(message),
-      };
-      treeImageCache.set(message, cached);
-    }
+  images: (id) =>
     // Prefer the display copy the chat row already decoded.
-    return cached.sources.map(({ url, label }) => ({
+    treeImageSources(id).map(({ url, label }) => ({
       src: readyDisplayCopy(url) ?? url,
       label,
-    }));
+    })),
+  thumbnail: (id) => {
+    const first = treeImageSources(id)[0];
+    return first ? thumbnailCopy(first.url) : null;
   },
 });
 window.addEventListener("pagehide", () => {

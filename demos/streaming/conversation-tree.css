@@ -1,5 +1,10 @@
 .conversation-tree {
   --conversation-tree-bg: var(--bg);
+  --conversation-tree-rail: color-mix(
+    in srgb,
+    var(--fg-muted) 50%,
+    var(--conversation-tree-bg)
+  );
   position: absolute;
   top: 0;
   bottom: 14px;
@@ -214,11 +219,14 @@
 }
 .conversation-tree-edge {
   fill: none;
-  stroke: var(--border);
+  stroke: var(--conversation-tree-rail);
   stroke-width: 1px;
+  stroke-dasharray: 3 3;
 }
 .conversation-tree-edge.active {
   stroke: var(--accent);
+  stroke-width: 2px;
+  stroke-dasharray: none;
 }
 .conversation-tree-node {
   position: absolute;
@@ -238,7 +246,9 @@
   font-weight: 400;
   color: var(--fg);
 }
-.conversation-tree-node[data-loaded="false"] {
+.conversation-tree-node[data-loaded="false"],
+.conversation-tree-node[data-active="false"] {
+  /* Color only: a weight change would resize bands on branch switches. */
   color: var(--fg-muted);
 }
 .conversation-tree-node:hover,
@@ -249,10 +259,10 @@
 .conversation-tree-path-ribbon {
   fill: none;
   stroke: var(--accent);
-  stroke-width: 10px;
+  stroke-width: 8px;
   stroke-linecap: round;
   stroke-linejoin: round;
-  opacity: 0.06;
+  opacity: 0.1;
 }
 .conversation-tree-node:focus-visible {
   outline: 2px solid var(--accent);
@@ -261,34 +271,54 @@
 .conversation-tree-node[aria-current="location"] {
   color: var(--accent);
 }
+/* Each message is a dot on its rail. The margins keep the rail where the
+ * dot's center has always been: 26px in and 22px down from the node's top. */
 .conversation-tree-glyph {
   position: relative;
   display: grid;
   place-items: center;
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  margin: 8px 8px 0;
   border-radius: 50%;
   background: var(--conversation-tree-bg);
-  border: 1px solid var(--border);
+  border: 1.5px solid var(--conversation-tree-rail);
+  box-shadow: 0 0 0 3px var(--conversation-tree-bg);
 }
 .conversation-tree-node[data-active="true"] .conversation-tree-glyph {
+  border-width: 2px;
   border-color: var(--accent);
 }
-.conversation-tree-node[aria-current="location"] .conversation-tree-glyph {
-  animation: conversation-tree-current-pulse 2.4s ease-in-out infinite;
+/* The turn being read: a filled dot whose opaque halo still masks the rail. */
+.conversation-tree-node[data-reading] .conversation-tree-glyph {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--accent) 20%, var(--conversation-tree-bg));
+}
+/* A ring that breathes by opacity alone, a few times after the reading
+ * position moves. It animates on the compositor, so it stays smooth under
+ * main-thread load. A running animation also gives the zoomed canvas its own
+ * layer, which browsers scale as a bitmap. Stopping lets the tree repaint
+ * sharp at any zoom. */
+.conversation-tree-node[data-reading] .conversation-tree-glyph::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  animation: conversation-tree-current-pulse 2.4s ease-in-out 3;
 }
 @keyframes conversation-tree-current-pulse {
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent);
-  }
   50% {
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent);
+    opacity: 0.45;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .conversation-tree-node[aria-current="location"] .conversation-tree-glyph {
+  .conversation-tree-node[data-reading] .conversation-tree-glyph::after {
     animation: none;
   }
 }
@@ -298,23 +328,19 @@
   width: 12px;
   height: 12px;
 }
+/* In the node's left padding, so marking a dot never shifts its label. */
 .conversation-tree-image-indicator,
 .conversation-tree-attachment-indicator {
   position: absolute;
-  right: -4px;
-  bottom: -3px;
+  top: -1px;
+  right: calc(100% + 5px);
   display: grid;
-  place-items: center;
-  width: 14px;
-  height: 14px;
-  border-radius: 4px;
-  background: var(--bg);
-  box-shadow: 0 0 0 1px var(--border);
+  color: var(--fg-muted);
 }
-.conversation-tree-image-indicator svg,
-.conversation-tree-attachment-indicator svg {
-  width: 10px;
-  height: 10px;
+.conversation-tree-glyph > .conversation-tree-image-indicator > svg,
+.conversation-tree-glyph > .conversation-tree-attachment-indicator > svg {
+  width: 11px;
+  height: 11px;
 }
 .conversation-tree-label {
   display: -webkit-box;
@@ -326,6 +352,42 @@
 .conversation-tree-text {
   padding-top: 5px;
   min-width: 0;
+}
+/* A turn's only reply: one muted line under the prompt, aligned with its
+ * label. The prompt's glyph and spine stand for the whole turn. */
+.conversation-tree-reply {
+  align-items: center;
+  gap: 6px;
+  padding: 0 0 8px 49px;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+}
+.conversation-tree-node.conversation-tree-reply .conversation-tree-glyph {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 16px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  animation: none;
+}
+/* The slot keeps its size while the worker makes the preview. */
+.conversation-tree-node.conversation-tree-reply .conversation-tree-thumb {
+  flex-basis: 44px;
+  width: 44px;
+  height: 30px;
+  margin-right: 2px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.conversation-tree-reply .conversation-tree-text {
+  padding-top: 0;
+}
+.conversation-tree-reply .conversation-tree-label {
+  -webkit-line-clamp: 1;
 }
 .conversation-tree-toc {
   position: absolute;
@@ -471,4 +533,18 @@
   .conversation-tree {
     left: 16px;
   }
+}
+/* Tree thumbnails follow the image card, whose img rule is less specific. */
+.conversation-tree-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  dynamic-range-limit: standard;
+}
+.conversation-tree-reply[aria-current="location"] .conversation-tree-thumb {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+.conversation-tree-node[data-active="false"] .conversation-tree-thumb img {
+  opacity: 0.55;
 }

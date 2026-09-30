@@ -44,16 +44,37 @@ for (const engine of [firefox, webkit, chromium]) {
         const rows = new Map();
         for (const node of nodes) {
           const box = node.getBoundingClientRect();
+          // A turn's reply line joins its prompt's band and spine.
+          if (node.classList.contains("conversation-tree-reply")) {
+            let prompt = node.previousElementSibling;
+            while (prompt && !prompt.matches(".conversation-tree-node"))
+              prompt = prompt.previousElementSibling;
+            const turn = byId.get(prompt?.dataset.messageId);
+            const toc = panel.querySelector(
+              `.conversation-tree-toc:has([data-message-id="${node.dataset.messageId}"])`,
+            );
+            turn.bandRight = Math.max(
+              turn.bandRight,
+              Math.max(box.right, toc?.getBoundingClientRect().right ?? 0) -
+                origin.left,
+            );
+            turn.replyOffset =
+              node
+                .querySelector(".conversation-tree-glyph")
+                .getBoundingClientRect().left -
+              origin.left -
+              turn.labelLeft;
+            byId.set(node.dataset.messageId, {
+              id: node.dataset.messageId,
+              x: turn.x,
+              y: turn.y,
+              reply: true,
+            });
+            continue;
+          }
           const glyph = node
             .querySelector(".conversation-tree-glyph")
             .getBoundingClientRect();
-          const svg = node.querySelector(".conversation-tree-glyph > svg");
-          const pictogram = svg.getBoundingClientRect();
-          const drawing = svg.getBBox();
-          const drawingCenter = new DOMPoint(
-            drawing.x + drawing.width / 2,
-            drawing.y + drawing.height / 2,
-          ).matrixTransform(svg.getScreenCTM());
           const label = node
             .querySelector(".conversation-tree-label")
             .getBoundingClientRect();
@@ -72,17 +93,10 @@ for (const engine of [firefox, webkit, chromium]) {
                 toc?.getBoundingClientRect().right ?? box.right,
               ) - origin.left,
             maxWidth: Number.parseFloat(node.style.maxWidth),
-            pictogramRatio: pictogram.width / glyph.width,
-            drawingOffsetX: drawingCenter.x - (glyph.left + glyph.width / 2),
-            drawingOffsetY: drawingCenter.y - (glyph.top + glyph.height / 2),
-            pictogramOffsetX:
-              pictogram.left +
-              pictogram.width / 2 -
-              (glyph.left + glyph.width / 2),
-            pictogramOffsetY:
-              pictogram.top +
-              pictogram.height / 2 -
-              (glyph.top + glyph.height / 2),
+            // The rail runs through each dot's center, 26px in, 22px down.
+            dotOffsetX: glyph.left + glyph.width / 2 - box.left - 26,
+            dotOffsetY: glyph.top + glyph.height / 2 - box.top - 22,
+            dotSize: glyph.width,
             role: node.dataset.role,
             labelLeft: label.left - origin.left,
             labelRight: label.right - origin.left,
@@ -125,34 +139,26 @@ for (const engine of [firefox, webkit, chromium]) {
       }
       for (const [parentId, siblings] of children) {
         const parent = geometry.nodes[parentId];
-        if (parent)
+        if (parent) {
+          const center =
+            siblings.reduce((sum, node) => sum + node.x, 0) / siblings.length;
+          // Near-centered forks continue the nearest child's spine straight.
+          const straight = siblings.some(
+            (node) => Math.abs(node.x - parent.x) < 0.1,
+          );
           assert.ok(
-            Math.abs(
-              siblings.reduce((sum, node) => sum + node.x, 0) /
-                siblings.length -
-                parent.x,
-            ) < 0.1,
+            Math.abs(center - parent.x) < 0.1 ||
+              (straight && Math.abs(center - parent.x) < 24),
             "each fork is centered under its actual parent",
           );
+        }
       }
       for (const siblings of geometry.rows) {
         for (const [index, node] of siblings.entries()) {
-          assert.ok(Math.abs(node.pictogramRatio - 12 / 28) < 0.001);
+          assert.equal(node.dotSize, 12, "messages are 12px dots");
           assert.ok(
-            Math.abs(node.drawingOffsetX) < 0.02,
-            "drawing centers horizontally in its ring",
-          );
-          assert.ok(
-            Math.abs(node.drawingOffsetY) < 0.02,
-            "drawing centers vertically in its ring",
-          );
-          assert.ok(
-            Math.abs(node.pictogramOffsetX) < 0.1,
-            "pictogram centers horizontally in its ring",
-          );
-          assert.ok(
-            Math.abs(node.pictogramOffsetY) < 0.1,
-            "pictogram centers vertically in its ring",
+            Math.abs(node.dotOffsetX) < 0.1 && Math.abs(node.dotOffsetY) < 0.1,
+            "dots sit on the rail at the node's spine",
           );
           assert.ok(
             node.width <= node.maxWidth + 0.1 &&
@@ -167,6 +173,11 @@ for (const engine of [firefox, webkit, chromium]) {
             node.labelLeft - node.x - 5 >= 17.9,
             "message labels keep an 18px gap from the active ribbon",
           );
+          if (node.replyOffset !== undefined)
+            assert.ok(
+              Math.abs(node.replyOffset) < 0.1,
+              "a reply line starts under its prompt's label",
+            );
           if (index > 0)
             assert.ok(
               node.left - siblings[index - 1].bandRight >= 11,
@@ -182,16 +193,16 @@ for (const engine of [firefox, webkit, chromium]) {
           "edge starts at parent spine",
         );
         assert.ok(
-          Math.abs(edge.start[1] - (parent.y + 28)) < 0.1,
-          "edge starts below parent glyph",
+          Math.abs(edge.start[1] - (parent.y + 6)) < 0.1,
+          "edge starts at the parent dot's center",
         );
         assert.ok(
           Math.abs(edge.end[0] - child.x) < 0.1,
           "edge ends at child spine",
         );
         assert.ok(
-          Math.abs(edge.end[1] - child.y) < 0.1,
-          "edge ends above child glyph",
+          Math.abs(edge.end[1] - (child.y + 6)) < 0.1,
+          "edge ends at the child dot's center",
         );
       }
       return geometry;
@@ -306,7 +317,8 @@ for (const engine of [firefox, webkit, chromium]) {
       const geometry = await checkRowLayout();
       assert.deepEqual(
         [...new Set(geometry.rows.map((row) => row.length))].sort(),
-        [1, 2, 4],
+        // 103 answers version 101 in its turn row; 104-106 answer 102.
+        [1, 2, 3],
       );
       if (width === 1200 || width === 2560)
         await page.screenshot({
@@ -423,7 +435,7 @@ for (const engine of [firefox, webkit, chromium]) {
         const style = getComputedStyle(ribbon);
         const last = [
           ...panel.querySelectorAll(
-            '.conversation-tree-node[data-active="true"]',
+            '.conversation-tree-node[data-active="true"]:not(.conversation-tree-reply)',
           ),
         ].at(-1);
         const ribbonBounds = ribbon.getBBox();
@@ -434,23 +446,36 @@ for (const engine of [firefox, webkit, chromium]) {
           panel.querySelector(".conversation-tree-edge:not(.active)"),
         ).stroke;
         return {
+          // The reading path's rail is as heavy as its dots' rings; other
+          // branches recede as thin dashed rails.
           spineMatchesRingWidth: [
             ...panel.querySelectorAll(".conversation-tree-edge"),
-          ].every(
-            (edge) =>
-              getComputedStyle(edge).strokeWidth ===
-              getComputedStyle(panel.querySelector(".conversation-tree-glyph"))
-                .borderTopWidth,
-          ),
+          ].every((edge) => {
+            const style = getComputedStyle(edge);
+            return edge.classList.contains("active")
+              ? style.strokeWidth ===
+                  getComputedStyle(
+                    panel.querySelector(
+                      '.conversation-tree-node[data-active="true"] .conversation-tree-glyph',
+                    ),
+                  ).borderTopWidth && style.strokeDasharray === "none"
+              : style.strokeWidth === "1px" && style.strokeDasharray !== "none";
+          }),
+          // Reply lines share their prompt's dot and draw none of their own.
+          // The dot of the turn being read is filled with the accent instead.
           ringsMatchCanvas: [
-            ...panel.querySelectorAll(".conversation-tree-glyph"),
+            ...panel.querySelectorAll(
+              ".conversation-tree-node:not(.conversation-tree-reply, [data-reading]) .conversation-tree-glyph",
+            ),
           ].every(
             (glyph) =>
               getComputedStyle(glyph).backgroundColor ===
               getComputedStyle(panel).backgroundColor,
           ),
           ringsFollowPath: [
-            ...panel.querySelectorAll(".conversation-tree-node"),
+            ...panel.querySelectorAll(
+              ".conversation-tree-node:not(.conversation-tree-reply)",
+            ),
           ].every(
             (node) =>
               getComputedStyle(node.querySelector(".conversation-tree-glyph"))
@@ -486,8 +511,8 @@ for (const engine of [firefox, webkit, chromium]) {
         startsAtFirstRing: true,
         terminalStopsAtRing: true,
         count: 1,
-        opacity: "0.06",
-        width: "10px",
+        opacity: "0.1",
+        width: "8px",
         followsActive: true,
         transparentCards: true,
       });
@@ -508,7 +533,11 @@ for (const engine of [firefox, webkit, chromium]) {
         ),
       ]);
       const geometry = await checkRowLayout();
-      assert.equal(geometry.rows[1].length, count);
+      // A single version is the prompt's reply line in one turn row.
+      if (count === 1) {
+        assert.equal(geometry.rows.length, 1);
+        assert.equal(geometry.nodes[2]?.reply, true);
+      } else assert.equal(geometry.rows[1].length, count);
     }
     await importTree([prompt, response(2, "Short answer", "## Details")]);
     const shortWidth = await panel.evaluate(
@@ -625,16 +654,18 @@ for (const engine of [firefox, webkit, chromium]) {
       "base headings align with user text",
     );
     const spacing = await panel.evaluate((panel) => {
-      const node = panel.querySelector(
-        '.conversation-tree-node[data-message-id="2"]',
+      const label = panel.querySelector(
+        '.conversation-tree-node[data-message-id="2"] .conversation-tree-label',
       );
       const toc = panel.querySelector(".conversation-tree-toc");
-      return toc.getBoundingClientRect().top - node.getBoundingClientRect().top;
+      return (
+        toc.getBoundingClientRect().top - label.getBoundingClientRect().bottom
+      );
     });
     assert.equal(
       spacing,
-      36,
-      "first ToC item immediately follows the node glyph",
+      4,
+      "first ToC item immediately follows the turn's reply line",
     );
     await page.screenshot({
       path: `browser-artifacts/conversation-tree/${engine.name()}-long-headings.png`,
@@ -726,18 +757,17 @@ for (const engine of [firefox, webkit, chromium]) {
       },
     ]);
     assert.equal(
-      await panel
-        .locator(".conversation-tree-toc")
-        .evaluate(
-          (el) =>
-            Number.parseFloat(el.style.top) -
-            Number.parseFloat(
-              el.parentElement.querySelector(
-                '.conversation-tree-node[data-message-id="2"]',
-              ).style.top,
-            ),
-        ),
-      36,
+      await panel.locator(".conversation-tree-toc").evaluate((el) => {
+        const reply = el.parentElement.querySelector(
+          '.conversation-tree-node[data-message-id="2"]',
+        );
+        return (
+          Number.parseFloat(el.style.top) -
+          Number.parseFloat(reply.style.top) -
+          reply.querySelector(".conversation-tree-label").offsetHeight
+        );
+      }),
+      4,
     );
     await importTree([
       prompt,
@@ -766,7 +796,8 @@ for (const engine of [firefox, webkit, chromium]) {
         .getBoundingClientRect();
       return { height: label.height, gap: toc.top - label.bottom };
     });
-    assert.equal(wrappedClearance.height, 32);
+    // A turn's reply stays one ellipsized line under its prompt.
+    assert.equal(wrappedClearance.height, 16);
     assert.ok(Math.abs(wrappedClearance.gap - 4) < 0.01);
     assert.deepEqual(errors, []);
     console.log(

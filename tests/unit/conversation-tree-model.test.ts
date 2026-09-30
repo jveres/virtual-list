@@ -54,6 +54,50 @@ describe("conversation tree layout", () => {
     expect(tree.get(1)?.selectedChildIndex).toBe(1);
   });
 
+  it("should pair a prompt with its only reply as one turn row", () => {
+    const node = (
+      id: number,
+      role: "user" | "assistant",
+      childrenIds: number[],
+      selectedChildIndex = 0,
+    ): ConversationNode => ({
+      message: { id, role, markdown: `Message ${id}` },
+      parentId: 0,
+      childrenIds,
+      selectedChildIndex,
+    });
+    const tree = new Map<number, ConversationNode>([
+      [
+        0,
+        { message: null, parentId: 0, childrenIds: [1], selectedChildIndex: 0 },
+      ],
+      [1, node(1, "user", [2])],
+      [2, node(2, "assistant", [3])],
+      [3, node(3, "user", [4, 5], 1)],
+      [4, node(4, "assistant", [])],
+      [5, node(5, "assistant", [6])],
+      [6, node(6, "user", [])],
+    ]);
+
+    const entries = conversationEntries(tree);
+
+    expect(
+      entries.map(({ id, parentId, row, attached }) => ({
+        id,
+        parentId,
+        row,
+        attached,
+      })),
+    ).toEqual([
+      { id: 1, parentId: 0, row: 0, attached: false },
+      { id: 2, parentId: 1, row: 0, attached: true },
+      { id: 3, parentId: 2, row: 1, attached: false },
+      { id: 4, parentId: 3, row: 2, attached: false },
+      { id: 5, parentId: 3, row: 2, attached: false },
+      { id: 6, parentId: 5, row: 3, attached: false },
+    ]);
+  });
+
   it("should move the selected path without reordering branches", () => {
     const tree = fixture();
     const parent = tree.get(1);

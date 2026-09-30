@@ -15,10 +15,10 @@ for (const engine of [firefox, webkit, chromium]) {
       const { branchingTranscriptMarkdown } = await import(
         "/demos/streaming/branching-transcript.ts"
       );
-      const nodes = Array.from({ length: 20 }, (_, index) => ({
+      const nodes = Array.from({ length: 40 }, (_, index) => ({
         id: index + 1,
         parentId: index,
-        selectedChildId: index < 19 ? index + 2 : null,
+        selectedChildId: index < 39 ? index + 2 : null,
         message: {
           role: index % 2 ? "assistant" : "user",
           markdown:
@@ -28,10 +28,10 @@ for (const engine of [firefox, webkit, chromium]) {
         },
       }));
       // Enough content-sized versions to clip a middle node at either edge.
-      for (let id = 21; id <= 30; id++)
+      for (let id = 41; id <= 50; id++)
         nodes.push({
           id,
-          parentId: 19,
+          parentId: 39,
           selectedChildId: null,
           message: { role: "assistant", markdown: `Version ${id}` },
         });
@@ -41,7 +41,7 @@ for (const engine of [firefox, webkit, chromium]) {
       );
     });
     await importTranscript(page, markdown, { name: "reveal.md" });
-    await page.locator('#viewport [data-key="20"]').waitFor();
+    await page.locator('#viewport [data-key="40"]').waitFor();
     await page
       .getByRole("button", { name: "Conversation tree", exact: true })
       .click();
@@ -119,8 +119,8 @@ for (const engine of [firefox, webkit, chromium]) {
         reducedMotion: reduced ? "reduce" : "no-preference",
       });
       const selector = heading
-        ? '.conversation-tree-heading[data-message-id="10"][data-heading-index="1"]'
-        : '.conversation-tree-node[data-message-id="10"]';
+        ? '.conversation-tree-heading[data-message-id="20"][data-heading-index="1"]'
+        : '.conversation-tree-node[data-message-id="20"]';
       const before = await page.evaluate(
         async ({ selector, edge }) => {
           const scroller = document.querySelector(".conversation-tree-scroll");

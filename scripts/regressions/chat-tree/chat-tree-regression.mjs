@@ -181,13 +181,9 @@ for (const engine of [firefox, webkit, chromium]) {
         0,
       );
       assert.equal(
-        await node(id)
-          .locator(".conversation-tree-glyph > svg path")
-          .getAttribute("d"),
-        await node(119)
-          .locator(".conversation-tree-glyph > svg path")
-          .getAttribute("d"),
-        "attachments preserve the user-message bubble",
+        await node(id).locator(".conversation-tree-glyph > svg").count(),
+        0,
+        "a prompt is a plain dot; only its paperclip marks attachments",
       );
     }
     const unloadedInk = await node(1).evaluate((element) => {
@@ -245,22 +241,23 @@ for (const engine of [firefox, webkit, chromium]) {
       }));
     assert.equal(marker.border, marker.ink);
     assert.equal(marker.dot, "none");
+    // The turn being read fills its dot, also when its reply is current.
+    // Its ring pulses on the compositor, and stays still for reduced motion.
+    assert.equal(await panel.locator("[data-reading]").count(), 1);
     const currentGlyph = panel.locator(
-      '[aria-current="location"] .conversation-tree-glyph',
+      "[data-reading] > .conversation-tree-glyph",
     );
-    assert.equal(
-      await currentGlyph.evaluate(
-        (element) => getComputedStyle(element).animationName,
-      ),
-      "conversation-tree-current-pulse",
-    );
+    const pulse = () =>
+      currentGlyph.evaluate((element) => {
+        const style = getComputedStyle(element, "::after");
+        return {
+          name: style.animationName,
+          property: style.transitionProperty,
+        };
+      });
+    assert.equal((await pulse()).name, "conversation-tree-current-pulse");
     await page.emulateMedia({ reducedMotion: "reduce" });
-    assert.equal(
-      await currentGlyph.evaluate(
-        (element) => getComputedStyle(element).animationName,
-      ),
-      "none",
-    );
+    assert.equal((await pulse()).name, "none");
     await page.emulateMedia({ reducedMotion: "no-preference" });
     // Labels use their side of the branch band. Long text keeps its full
     // accessible label while the visible summary is clamped to two lines.
@@ -554,9 +551,19 @@ for (const engine of [firefox, webkit, chromium]) {
       multipleImagePath,
       await imagePath(202, ".conversation-tree-attachment-indicator path"),
     );
-    assert.equal(
-      multipleImagePath,
-      await imagePath(203, ".conversation-tree-glyph > svg path"),
+    // A reply that made images previews the first one once its turn nears
+    // the tree's viewport. Rasters become small worker copies; this fixture's
+    // vector image draws directly.
+    await node(203).scrollIntoViewIfNeeded();
+    const thumbnail = node(203).locator(".conversation-tree-thumb img");
+    await thumbnail.waitFor();
+    assert.ok(
+      await thumbnail.evaluate(async (image) => {
+        await image.decode();
+        return (
+          image.naturalWidth > 0 && image.src.startsWith("data:image/svg+xml")
+        );
+      }),
     );
     assert.equal(
       await node(201).locator(".conversation-tree-label").textContent(),
@@ -566,7 +573,7 @@ for (const engine of [firefox, webkit, chromium]) {
       await node(203).locator(".conversation-tree-label").textContent(),
       "Tree image summary",
     );
-    assert.equal(await node(203).locator("img").count(), 0);
+    assert.equal(await node(203).locator("img").count(), 1);
     assert.equal(
       await node(203).locator(".conversation-tree-image-indicator").count(),
       0,

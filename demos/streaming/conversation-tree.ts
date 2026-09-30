@@ -17,14 +17,24 @@ interface TreeOptions {
   navigate: (id: number, headingIndex?: number) => Promise<boolean>;
   /** Image sources of a message, resolved only when its node is hovered. */
   images?: (id: number) => readonly { src: string; label: string }[];
+  /** A small preview of a reply's first image, requested once its turn is
+   * about to scroll into view: a ready URL, or one still being made. */
+  thumbnail?: (id: number) => string | Promise<string | null> | null;
 }
 
 const SVG_NS = "http://www.w3.org/2000/svg";
 const HEADING_ROW_HEIGHT = 24;
 const BAND_GAP = 12;
+/** Children closer than this to their parent's spine continue it straight. */
+const SPINE_SNAP = 24;
+/** A reply's image thumbnail; its line grows to this height. */
+const THUMBNAIL_HEIGHT = 30;
+/** Rails run through each node's dot, centered this far below its top. */
+const DOT_CENTER = 22;
+/** Trackpad pinches zoom this much faster than 1:1; touch pinches stay 1:1
+ * so the content stays under the fingers. */
+const PINCH_GAIN = 2.5;
 const ICONS = {
-  // Lucide MessageSquare.
-  user: "M22 17a2 2 0 0 1-2 2H6.828a2 2 0 0 0-1.414.586l-2.202 2.202A.71.71 0 0 1 2 21.286V5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2z",
   assistant: "M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8",
   image: "M3 3h18v18H3zM3 17l6-6 4 4 3-3 5 5M15 7h.01",
   images: "M3 7v14h14M7 3h14v14H7zM7 13l4-4 4 4 2-2 4 4M16 6h.01",
@@ -214,9 +224,85 @@ export function createConversationTree(options: TreeOptions): {
     readingId: number | null;
   } | null = null;
   const buttons = new Map<number, HTMLElement>();
+  // A turn's reply maps to its prompt, whose dot stands for the whole turn.
+  const turns = new Map<number, number>();
+  let readingDot: HTMLElement | undefined;
   const bandWidths = new Map<number, number>();
   const headingButtons = new Map<string, HTMLElement>();
   const stopFade = scrollFade(scroller);
+  // Thumbnails shown per message, so a rebuild repaints them without waiting.
+  const thumbnails = new Map<number, string>();
+  const thumbnailSlots = new Map<Element, number>();
+  function showThumbnail(slot: Element, url: string): void {
+    if (slot.querySelector("img")?.getAttribute("src") === url) return;
+    const image = document.createElement("img");
+    image.alt = "";
+    image.decoding = "async";
+    image.src = url;
+    slot.replaceChildren(image);
+  }
+  // Thumbnail requests and swaps wait until the tree has stopped scrolling,
+  // so scrolling frames never mutate the canvas.
+  const pendingSlots = new Set<Element>();
+  const pendingReveals = new Map<Element, string>();
+  let lastTreeScroll = 0;
+  let thumbnailTimer = 0;
+  function flushThumbnails(): void {
+    window.clearTimeout(thumbnailTimer);
+    const wait = 150 - (performance.now() - lastTreeScroll);
+    if (wait > 0) {
+      thumbnailTimer = window.setTimeout(flushThumbnails, wait);
+      return;
+    }
+    // Take the queues first: a ready thumbnail reveals synchronously and
+    // flushes again.
+    const reveals = [...pendingReveals];
+    const slots = [...pendingSlots];
+    pendingReveals.clear();
+    pendingSlots.clear();
+    for (const [slot, url] of reveals)
+      if (slot.isConnected) showThumbnail(slot, url);
+    for (const slot of slots) requestThumbnail(slot);
+  }
+  function requestThumbnail(slot: Element): void {
+    const id = thumbnailSlots.get(slot);
+    const request = id === undefined ? null : options.thumbnail?.(id);
+    if (id === undefined || !request) return;
+    const reveal = (url: string): void => {
+      thumbnails.set(id, url);
+      if (thumbnailSlots.get(slot) !== id) return;
+      pendingReveals.set(slot, url);
+      flushThumbnails();
+    };
+    if (typeof request === "string") reveal(request);
+    else
+      void request.then(async (url) => {
+        if (!url) return;
+        // Swap in a decoded preview so the slot never paints empty.
+        const probe = new Image();
+        probe.src = url;
+        await probe.decode().catch(() => undefined);
+        reveal(url);
+      });
+  }
+  const thumbnailObserver = new IntersectionObserver(
+    (records) => {
+      for (const record of records) {
+        if (!record.isIntersecting) continue;
+        thumbnailObserver.unobserve(record.target);
+        pendingSlots.add(record.target);
+      }
+      if (pendingSlots.size) flushThumbnails();
+    },
+    { root: scroller, rootMargin: "240px" },
+  );
+  scroller.addEventListener(
+    "scroll",
+    () => {
+      lastTreeScroll = performance.now();
+    },
+    { passive: true, signal },
+  );
   // Toolbar interaction makes a hover-opened panel persistent too. Updating
   // the percentage must not let a transient focus/hover change dismiss it.
   controls.addEventListener(
@@ -487,7 +573,7 @@ export function createConversationTree(options: TreeOptions): {
       const anchorY =
         (scroller.scrollTop + event.clientY - view.top - canvasTop) / zoom;
       zoomAt(
-        zoom * Math.exp(-event.deltaY / 300),
+        zoom * Math.exp((-event.deltaY * PINCH_GAIN) / 300),
         event.clientX,
         event.clientY,
         anchorX,
@@ -543,7 +629,7 @@ export function createConversationTree(options: TreeOptions): {
       event.preventDefault();
       const start = trackpadPinch;
       zoomAt(
-        start.zoom * event.scale,
+        start.zoom * event.scale ** PINCH_GAIN,
         start.x,
         start.y,
         start.anchorX,
@@ -788,6 +874,11 @@ export function createConversationTree(options: TreeOptions): {
           ? buttons.get(id)
           : (headingButtons.get(`${id}:${headingIndex}`) ?? buttons.get(id));
     current?.setAttribute("aria-current", "location");
+    // Fill the dot of the turn being read, also when its reply or one of
+    // the reply's sections is the current location.
+    readingDot?.removeAttribute("data-reading");
+    readingDot = id === null ? undefined : buttons.get(turns.get(id) ?? id);
+    readingDot?.setAttribute("data-reading", "");
     locateButton.disabled = !current;
   }
 
@@ -849,6 +940,7 @@ export function createConversationTree(options: TreeOptions): {
         ? document.activeElement.dataset.messageId
         : undefined;
     buttons.clear();
+    turns.clear();
     bandWidths.clear();
     headingButtons.clear();
     const entries = conversationEntries(options.tree);
@@ -879,10 +971,6 @@ export function createConversationTree(options: TreeOptions): {
       siblings.push(entry);
       childEntries.set(entry.parentId, siblings);
     }
-    const lastActiveRow = entries.reduce(
-      (row, entry) => (entry.active ? Math.max(row, entry.row) : row),
-      0,
-    );
     const edges = document.createElementNS(SVG_NS, "svg");
     edges.classList.add("conversation-tree-edges");
     edges.setAttribute("aria-hidden", "true");
@@ -900,7 +988,9 @@ export function createConversationTree(options: TreeOptions): {
       const button = document.createElement("div");
       button.setAttribute("role", "button");
       button.tabIndex = 0;
-      button.className = "conversation-tree-node";
+      button.className = entry.attached
+        ? "conversation-tree-node conversation-tree-reply"
+        : "conversation-tree-node";
       button.dataset.messageId = String(entry.id);
       button.dataset.row = String(entry.row);
       button.dataset.active = String(entry.active);
@@ -908,23 +998,41 @@ export function createConversationTree(options: TreeOptions): {
       if (entry.hasImages) button.dataset.images = String(entry.imageCount);
       const glyph = document.createElement("span");
       glyph.className = "conversation-tree-glyph";
-      const imageIcon = entry.imageCount > 1 ? ICONS.images : ICONS.image;
-      const userAttachments =
-        entry.role === "user" && (entry.hasImages || entry.fileCount > 0);
-      const pictogram = icon(
-        entry.image && !userAttachments ? imageIcon : ICONS[entry.role],
-      );
-      // MessageSquare's drawing spans y=3..22, centered at 12.5, not 12.
-      if (entry.role === "user")
-        pictogram.setAttribute("viewBox", "0 0.5 24 24");
-      glyph.append(pictogram);
-      if (userAttachments || (entry.hasImages && !entry.image)) {
+      // A prompt or standalone message is a dot on its rail. A turn's reply
+      // line previews its first image, or marks a text reply with an icon.
+      if (entry.attached && entry.hasImages && options.thumbnail) {
+        glyph.classList.add("conversation-tree-thumb");
+        glyph.append(icon(entry.imageCount > 1 ? ICONS.images : ICONS.image));
+        thumbnailSlots.set(glyph, entry.id);
+        const shown = thumbnails.get(entry.id);
+        if (shown) showThumbnail(glyph, shown);
+      } else if (entry.attached)
+        glyph.append(
+          icon(
+            entry.hasImages
+              ? entry.imageCount > 1
+                ? ICONS.images
+                : ICONS.image
+              : ICONS.assistant,
+          ),
+        );
+      else if (entry.hasImages || entry.fileCount > 0) {
+        // Beside the dot: a prompt's attachments or a message's images.
+        const userAttachments = entry.role === "user";
         const indicator = document.createElement("span");
         indicator.className = userAttachments
           ? "conversation-tree-attachment-indicator"
           : "conversation-tree-image-indicator";
         indicator.setAttribute("aria-hidden", "true");
-        indicator.append(icon(userAttachments ? ICONS.attachment : imageIcon));
+        indicator.append(
+          icon(
+            userAttachments
+              ? ICONS.attachment
+              : entry.imageCount > 1
+                ? ICONS.images
+                : ICONS.image,
+          ),
+        );
         glyph.append(indicator);
       }
       const included: string[] = [];
@@ -949,6 +1057,7 @@ export function createConversationTree(options: TreeOptions): {
       text.append(label);
       button.append(glyph, text);
       buttons.set(entry.id, button);
+      if (entry.attached) turns.set(entry.id, entry.parentId);
       content.append(button);
       const sections = headings.get(entry.id) ?? [];
       if (sections.length) {
@@ -988,6 +1097,11 @@ export function createConversationTree(options: TreeOptions): {
     } finally {
       replacingNodes = false;
     }
+    thumbnailObserver.disconnect();
+    for (const slot of thumbnailSlots.keys()) {
+      if (slot.isConnected) thumbnailObserver.observe(slot);
+      else thumbnailSlots.delete(slot);
+    }
     layout = () => {
       const previousOrigin = layoutOrigin;
       const previousScrollLeft = scroller.scrollLeft;
@@ -1015,6 +1129,19 @@ export function createConversationTree(options: TreeOptions): {
           entry.id,
           button?.querySelector<HTMLElement>(".conversation-tree-label")
             ?.offsetHeight ?? 0,
+        );
+      }
+      // A turn packs as one band: its prompt and reply share a spine and row.
+      const replies = new Map<number, (typeof entries)[number]>();
+      for (const entry of entries) {
+        if (!entry.attached) continue;
+        replies.set(entry.parentId, entry);
+        bandWidths.set(
+          entry.parentId,
+          Math.max(
+            bandWidths.get(entry.parentId) ?? 0,
+            bandWidths.get(entry.id) ?? 0,
+          ),
         );
       }
       // Keep extents stable for branch switches, but refit on real resizes.
@@ -1067,8 +1194,16 @@ export function createConversationTree(options: TreeOptions): {
           }
           return shift;
         });
-        const center =
+        let center =
           placed.reduce((sum, shift) => sum + shift, 0) / (placed.length || 1);
+        // A child a few pixels off its parent's spine would draw a jog, not
+        // an elbow. Align the nearest child exactly; the group stays packed.
+        const nearest = placed.reduce(
+          (best, shift) =>
+            Math.abs(shift - center) < Math.abs(best - center) ? shift : best,
+          placed[0] ?? 0,
+        );
+        if (Math.abs(nearest - center) < SPINE_SNAP) center = nearest;
         children.forEach((child, index) => {
           shifts.set(child.id, (placed[index] ?? 0) - center);
         });
@@ -1133,18 +1268,34 @@ export function createConversationTree(options: TreeOptions): {
         let contentBottom = 36;
         let headingCount = 0;
         for (const entry of row) {
-          const button = buttons.get(entry.id);
-          const bottom = Math.max(36, 13 + (labelHeights.get(entry.id) ?? 0));
-          contentBottom = Math.max(contentBottom, bottom);
           headingCount = Math.max(
             headingCount,
             headings.get(entry.id)?.length ?? 0,
           );
           const position = positions.get(entry.id);
           if (position) position.y = canvasHeight;
+          // A reply is placed beneath its prompt's label, in the same band.
+          if (entry.attached) continue;
+          const button = buttons.get(entry.id);
+          let bottom = Math.max(36, 13 + (labelHeights.get(entry.id) ?? 0));
+          let height = Math.max(48, bottom);
+          const reply = replies.get(entry.id);
+          const replyButton = reply && buttons.get(reply.id);
+          if (reply && replyButton) {
+            const replyTop = 17 + (labelHeights.get(entry.id) ?? 0);
+            const replyHeight = Math.max(
+              labelHeights.get(reply.id) ?? 0,
+              reply.hasImages && options.thumbnail ? THUMBNAIL_HEIGHT : 0,
+            );
+            replyButton.style.top = `${canvasHeight + replyTop}px`;
+            replyButton.style.height = `${replyHeight + 8}px`;
+            height = replyTop;
+            bottom = Math.max(36, replyTop + replyHeight);
+          }
+          contentBottom = Math.max(contentBottom, bottom);
           if (button) {
             button.style.top = `${canvasHeight}px`;
-            button.style.height = `${Math.max(48, bottom)}px`;
+            button.style.height = `${height}px`;
           }
         }
         const tocOffset = contentBottom > 36 ? contentBottom + 4 : 36;
@@ -1169,21 +1320,19 @@ export function createConversationTree(options: TreeOptions): {
         const position = positions.get(entry.id);
         if (!position) continue;
         const { x, y } = position;
-        // Bridge the glyph as well as the connectors for one continuous stream.
-        if (entry.active) {
-          const terminal = entry.row === lastActiveRow && !tocs.has(entry.id);
-          const start = entry.row === 0 ? 22 : 8;
-          ribbonPaths.push(`M${x} ${y + start}V${y + (terminal ? 22 : 36)}`);
-        }
+        // Connectors meet at dot centers, so the active ones form one stream.
+        // A reply shares its prompt's dot, rail, and incoming connector.
         const paths: string[] = [];
-        const parent = positions.get(entry.parentId);
+        const parent = entry.attached
+          ? undefined
+          : positions.get(entry.parentId);
         if (parent) {
           const direction = Math.sign(x - parent.x);
           const radius = Math.min(8, Math.abs(x - parent.x) / 2);
           paths.push(
             x === parent.x
-              ? `M${parent.x} ${parent.y + 36}V${y + 8}`
-              : `M${parent.x} ${parent.y + 36}V${y - 8 - radius}Q${parent.x} ${y - 8} ${parent.x + direction * radius} ${y - 8}H${x - direction * radius}Q${x} ${y - 8} ${x} ${y - 8 + radius}V${y + 8}`,
+              ? `M${parent.x} ${parent.y + DOT_CENTER}V${y + DOT_CENTER}`
+              : `M${parent.x} ${parent.y + DOT_CENTER}V${y - 8 - radius}Q${parent.x} ${y - 8} ${parent.x + direction * radius} ${y - 8}H${x - direction * radius}Q${x} ${y - 8} ${x} ${y - 8 + radius}V${y + DOT_CENTER}`,
           );
         }
         const toc = tocs.get(entry.id);
@@ -1192,7 +1341,7 @@ export function createConversationTree(options: TreeOptions): {
           toc.style.top = `${top}px`;
           const count = headings.get(entry.id)?.length ?? 0;
           paths.push(
-            `M${x} ${y + 36}V${top + (count - 1) * HEADING_ROW_HEIGHT + 12}`,
+            `M${x} ${y + DOT_CENTER}V${top + (count - 1) * HEADING_ROW_HEIGHT + 12}`,
           );
         }
         for (const [index, path] of paths.entries()) {
@@ -1485,6 +1634,7 @@ export function createConversationTree(options: TreeOptions): {
       zoom = 1;
       fitting = false;
       selection = null;
+      thumbnails.clear();
       scroller.scrollTop = 0;
       scroller.scrollLeft = 0;
       dirty = true;
@@ -1503,6 +1653,11 @@ export function createConversationTree(options: TreeOptions): {
       listeners.abort();
       clearGesture();
       placementObserver.disconnect();
+      thumbnailObserver.disconnect();
+      thumbnailSlots.clear();
+      pendingSlots.clear();
+      pendingReveals.clear();
+      window.clearTimeout(thumbnailTimer);
       stopFade();
       window.clearTimeout(closeTimer);
       window.clearTimeout(imageTimer);
