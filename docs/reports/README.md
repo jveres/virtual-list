@@ -7,6 +7,16 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 29 scroll listener isolation
+
+The [listener-isolation investigation](scroll-listener-isolation-2026-09-29.md)
+records mixed user observations with recycling, scroll callbacks, and input
+listeners disabled. Development-only controls now separate scroll events from
+wheel/touch/pointer input and support complete listener removal. A CSS-only
+static fixture isolates scroll height. The investigation is closed with a
+browser/macOS presentation issue as the working conclusion; no production
+performance change or new timing improvement is claimed.
+
 ## September 29 CSS and row layout
 
 The [CSS and layout investigation](css-layout-performance-2026-09-29.md) replaces

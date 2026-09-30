@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
 import { chatGPTPlugin } from "./demos/streaming/server/chatgpt-plugin.js";
+import { scrollIsolationPlugin } from "./scripts/firefox-profile/scroll-isolation";
 
 /**
  * Dev-only report sink for the dynamic-height lab: a device (a phone, a
@@ -66,7 +67,7 @@ function labReportSink(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [labReportSink(), chatGPTPlugin()],
+  plugins: [labReportSink(), chatGPTPlugin(), scrollIsolationPlugin()],
   cacheDir:
     process.env.COMRAK_WASM_LOCAL === "1"
       ? "browser-artifacts/parser-preview-cache"
