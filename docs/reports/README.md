@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## September 30 runtime performance audit
+
+The [runtime audit](runtime-performance-audit-2026-09-30.md) records fresh
+Firefox 157 baselines for 10,000 declared rows, gallery masonry, rich-chat
+paging, and complex streaming. No workload has a frame over 25 ms, and it
+finds no high or medium runtime finding. Streaming viewport reads and demo
+Markdown rendering are recorded as low-severity and out-of-scope costs.
+
 ## September 29 scroll listener isolation
 
 The [listener-isolation investigation](scroll-listener-isolation-2026-09-29.md)
