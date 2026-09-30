@@ -43,7 +43,7 @@ for (const { browser, scenario } of [
     assert.deepEqual(summary.invalidReasons, [], browser);
     assert.equal(server.requests.length, 1);
     assert.equal(server.requests[0].finished, true);
-    assert.equal(summary.probeVersion, 5);
+    assert.equal(summary.probeVersion, 6);
     assert.ok(
       summary.work.domOperations.totals.some((entry) => entry.count > 0),
     );
