@@ -529,6 +529,19 @@
   font-size: 11px;
   color: var(--fg-muted);
 }
+/* With no tree to overlay, the message is the panel's content: in flow
+ * below the header, without zoom controls or an empty canvas. */
+.conversation-tree-panel[data-empty]
+:is(.conversation-tree-controls, .conversation-tree-scroll) {
+  display: none;
+}
+.conversation-tree-panel[data-empty] .conversation-tree-status {
+  position: static;
+  padding: 4px 16px 16px;
+  background: none;
+  font-size: 12px;
+  line-height: 18px;
+}
 @media (max-width: 984px) {
   .conversation-tree {
     left: 16px;

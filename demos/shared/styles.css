@@ -32,6 +32,9 @@ body {
   --accent: #4f6df5;
   --border: #e5e7eb;
   --alert-caution-border: #ef4444;
+  /* A select's chevron, drawn in --fg-muted; browsers place native ones
+     inconsistently and Safari ignores padding for them. */
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%236b7280' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
   color-scheme: light;
 }
 
@@ -46,6 +49,7 @@ body {
   --accent: #7c9cff;
   --border: #3a3f4a;
   --alert-caution-border: #f85149;
+  --select-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238b919d' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 4.5 6 7.5 9 4.5'/%3E%3C/svg%3E");
   color-scheme: dark;
 }
 
@@ -197,6 +201,13 @@ button.active {
   padding: 0 8px;
   font: inherit;
   font-size: 12px;
+}
+
+.ai-settings-field select {
+  appearance: none;
+  padding-right: 30px;
+  background:
+    var(--bg) var(--select-chevron) no-repeat right 10px center / 12px 12px;
 }
 
 .ai-settings-field input:focus,

@@ -819,7 +819,11 @@ export function createConversationTree(options: TreeOptions): {
     layout();
     const width = Math.min(
       maximumWidth,
-      Math.max(214, Math.ceil(stableRight - stableLeft) + 26),
+      // An empty panel keeps room for its title beside the close button.
+      Math.max(
+        panel.hasAttribute("data-empty") ? 260 : 214,
+        Math.ceil(stableRight - stableLeft) + 26,
+      ),
     );
     panel.style.width = `${width}px`;
     if (!compact) {
@@ -827,9 +831,13 @@ export function createConversationTree(options: TreeOptions): {
       panel.style.left = `${left - origin.left}px`;
     }
     layout();
+    // An empty tree shows only its in-flow message below the header.
     panel.style.height = `${Math.min(
       panel.getBoundingClientRect().height,
-      header.offsetHeight + stableCanvasHeight + 26,
+      header.offsetHeight +
+        (panel.hasAttribute("data-empty")
+          ? status.offsetHeight
+          : stableCanvasHeight + 26),
     )}px`;
     layout();
   }
@@ -1364,6 +1372,7 @@ export function createConversationTree(options: TreeOptions): {
         previousScrollLeft + (layoutOrigin - previousOrigin) * zoom;
       applyZoom();
     };
+    panel.toggleAttribute("data-empty", entries.length === 0);
     setStatus(entries.length ? "" : "Send a message to start a conversation.");
     dirty = false;
     placePanel();
