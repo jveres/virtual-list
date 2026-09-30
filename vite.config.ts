@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { defineConfig, type Plugin } from "vite";
 import { chatGPTPlugin } from "./demos/streaming/server/chatgpt-plugin.js";
-import { scrollIsolationPlugin } from "./scripts/firefox-profile/scroll-isolation";
+import { scrollIsolationPlugin } from "./scripts/firefox-profile/scroll-isolation.js";
 
 /**
  * Dev-only report sink for the dynamic-height lab: a device (a phone, a
