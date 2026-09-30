@@ -356,8 +356,21 @@ export function createVirtualList<T>(
   /** A resize during a phase commits at the settle with this stance (I5). */
   let resizeHeld: "pin" | "viewport" | null = null;
 
+  /**
+   * The viewport's exact inner height. `clientHeight` rounds, and a rounded-up
+   * height puts the computed end short of the engine's fractional maximum:
+   * landing there leaves the content a device pixel off the bottom. The rect
+   * is exact; it matches the inner height within rounding only without
+   * borders, a scrollbar, or a scaling transform, so otherwise keep rounding.
+   */
+  function clientHeight(): number {
+    const rounded = viewport.clientHeight;
+    const exact = viewport.getBoundingClientRect().height;
+    return Math.abs(exact - rounded) < 1 ? exact : rounded;
+  }
+
   function viewportState(): GeometryViewport {
-    return { scrollTop: viewport.scrollTop, height: viewport.clientHeight };
+    return { scrollTop: viewport.scrollTop, height: clientHeight() };
   }
 
   /**
@@ -1577,6 +1590,15 @@ export function createVirtualList<T>(
           ? Math.ceil(resolvedTop)
           : toDevicePixel(resolvedTop);
       const moves = Math.abs(target - before.scrollTop) > EPSILON_PX;
+      // Growth entirely above the reading position (a slot or row inserted
+      // at the top) moves the end by exactly the anchor row's shift. Landing
+      // there at once keeps the screen still; a glide would scroll visibly.
+      const anchor = capture.anchor;
+      const anchorOnly =
+        anchor !== null &&
+        geometry.indexOf(anchor.key) >= 0 &&
+        // The end target rounds up to a whole pixel; the engine clamps it.
+        Math.abs(geometry.offsetOf(anchor.key) + anchor.offset - target) < 1;
       glideFollow =
         !o.instant &&
         !booting &&
@@ -1584,7 +1606,8 @@ export function createVirtualList<T>(
         smoothFollow &&
         result.mode === "end" &&
         takingOver === null &&
-        moves;
+        moves &&
+        !anchorOnly;
       // Native flow: the rows on screen stay mounted in the new geometry, so
       // the engine can measure how far its anchor node moved and follow it.
       // Restore the flow before follow policy reads the viewport height: an
@@ -2006,7 +2029,7 @@ export function createVirtualList<T>(
 
   const follow = new FollowController(
     {
-      maxScrollTop: () => geometry.maxScrollTop(viewport.clientHeight),
+      maxScrollTop: () => geometry.maxScrollTop(clientHeight()),
       lastItemTop: (content) => {
         const key = lastItemKey();
         if (key === null) return null;
@@ -2756,14 +2779,15 @@ export function createVirtualList<T>(
   /** The command's destination under current geometry; null once gone. */
   function targetTop(target: ScrollTarget, below = 0): number | null {
     // Without pinning, commands target content, not retained reserve.
+    const height = clientHeight();
     const maxTop = pinning
-      ? geometry.maxScrollTop(viewport.clientHeight)
-      : Math.max(0, geometry.contentSize - viewport.clientHeight);
+      ? geometry.maxScrollTop(height)
+      : Math.max(0, geometry.contentSize - height);
     if (target === "start") return 0;
     if (target === "end") {
       // End intent targets content or the current pin, never temporary space
       // retained for a prior reading anchor. That space drains after landing.
-      return Math.ceil(contentEnd(viewport.clientHeight));
+      return Math.ceil(contentEnd(height));
     }
     const offset = geometry.offsetOf(target);
     // Land past a fractional boundary: engines can floor the write.
