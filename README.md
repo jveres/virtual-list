@@ -24,10 +24,12 @@ The contract, its invariants (I0–I6), and the design decisions live in
 [`docs/core-contract.md`](docs/core-contract.md). This file covers running, using,
 and testing the code.
 
-The [streaming integration release plan](docs/streaming-integration-plan.md)
-tracks the implemented consumer examples and companions, verification
-evidence, and remaining release gates. Historical measurements and audits are
-listed in the [verification report index](docs/reports/README.md).
+The [streaming integration release record](docs/streaming-integration-plan.md)
+documents the implemented consumer examples and companions, verification
+evidence, and the integration's first source release, `v0.2.0`. This README
+describes the current checkout, including APIs added in later tags.
+Historical measurements and audits are listed in the
+[verification report index](docs/reports/README.md).
 
 Start with the [streaming consumer guide](docs/streaming-consumer.md) and
 `/examples/streaming-basic/` for the small runtime-only example, or
@@ -181,8 +183,10 @@ const list = createVirtualList(viewport, {
   edgeSlots: { start: { key: "loader", height: 52, render } },
   onState: (state) => {},
   onViewport: ({ scrollTop, height }) => {},
-  onReachStart: ({ signal }) => loadOlder(signal),
-  onReachEnd: ({ signal }) => loadNewer(signal),
+  onReachStart: ({ signal, complete }) =>
+    loadOlder(signal).catch(reportError).finally(complete),
+  onReachEnd: ({ signal, complete }) =>
+    loadNewer(signal).catch(reportError).finally(complete),
   onDestroy: (element) => {},
   anchorable: (item) => item.kind !== "day", // separators never anchor
   settleStrategy: undefined, // detected from the user agent

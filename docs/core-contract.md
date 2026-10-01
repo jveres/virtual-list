@@ -206,7 +206,10 @@ The definition of correct, referenced by number throughout the code:
 - **I2** — end-follow resolves against the final geometry of the
   transaction: measurements landing inside it are fully reflected.
 - **I3** — reach signals fire once per approach, with entry/exit
-  hysteresis, and re-arm only after the viewport leaves the exit zone.
+  hysteresis. Leaving the exit zone re-arms the signal. An explicit start/end
+  command can also re-arm a consumed reach without leaving the zone, provided
+  no load remains pending for that edge. A reach remains pending until the
+  host calls its context's `complete()` or the runtime aborts its signal.
 - **I4** — one logical update is one transaction; API calls from host
   callbacks queue behind it and run against the state those callbacks
   observed; a failed transaction discards only what it queued.
@@ -526,9 +529,10 @@ interaction; the [README](../README.md) lists the public options.
   Preparation preserves internal ownership and cleans up fresh elements on
   failure. Rollback of in-place host rendering is best effort, because the
   runtime cannot reverse arbitrary DOM mutations or external side effects.
-- The reach callbacks receive a context with
-  an `AbortSignal` — `onReachStart?: ({ signal }) => void` — that the
-  runtime aborts only on conditions it knows objectively: the user reached
+- The reach callbacks receive a context with `signal` and `complete()` —
+  `onReachStart?: ({ signal, complete }) => void`. The signal is an
+  `AbortSignal` that the runtime aborts only on conditions it knows
+  objectively: the user reached
   the OPPOSITE edge (their intent moved on; every started operation for
   this edge — the fetch, the staged rows, the queued uncommitted chunk —
   dies with it), or `dispose()`. Hosts wire real fetches to it
@@ -538,6 +542,12 @@ interaction; the [README](../README.md) lists the public options.
   Short lists can occupy both proximity zones at once. In that overlap,
   neither edge cancels the other. Opposite-edge cancellation waits until
   the viewport leaves the original proximity zone.
+  Call `complete()` when work finishes, fails, or is skipped. It is idempotent
+  and releases the pending reach without aborting its signal. For asynchronous
+  work, handle errors and call it in `finally`; the runtime does not await a
+  returned promise. A synchronously thrown callback error releases the reach
+  automatically. When you pass the context to `paging.load(edge, context)`,
+  the paging companion handles completion and cancellation for you.
 - Invariants I0–I6 define correct behavior. An idle ResizeObserver observation
   commits in its own delivery, which is I6. A phase-time one commits at once
   when no scroll write is needed (at or below the anchor, or under native

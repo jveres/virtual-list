@@ -176,15 +176,20 @@ browser when the requested interval ends. No scrolling makes the trial fail.
 
 Keep manual live captures to about 50 seconds. A 90-second capture can
 overflow the profiler buffer and lose its start, which the runner's analysis
-requires. To compare trackpad-event delivery with display frames, run the
-input analyzer. It reads captures whose buffer wrapped:
-
-```sh
-node scripts/firefox-profile/input-cadence.mjs browser-artifacts/firefox/run-ID
-```
+requires. The [input-cadence analyzer](../scripts/firefox-profile/input-cadence.mjs)
+compares trackpad-event delivery with display frames and can read captures
+whose buffer wrapped. It requires temporary `profile.json` (or `.gz`) and
+`frames.json` inputs. The standard runner does not include this analyzer and
+deletes those inputs after analysis, including on failure, so it cannot run
+against a completed run directory. Adding cadence analysis requires a runner
+change: run it independently of, or before, `analyzeDirectory`, which rejects
+wrapped captures without complete measurement marks. Run it before raw-file
+cleanup, retain only its compact result, and keep cleanup on failure.
 
 The [external-display jitter report](reports/external-display-scroll-jitter-2026-09-22.md)
-explains its measures and limits. Scripted gestures can't reproduce this
+explains its measures and limits. Its post-capture analyzer command predates
+automatic raw-file cleanup and cannot be used with completed runs from the
+current runner. Scripted gestures can't reproduce this
 kind of defect, because the helper's ticks don't match the display's frames.
 
 ## Inspect the summaries

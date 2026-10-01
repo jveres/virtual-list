@@ -1,14 +1,22 @@
-# virtual-list-next
+# Runtime architecture and rewrite history
 
-`virtual-list-next` is the virtual list's orchestration engine on this
-branch. It keeps the parts of the original runtime that encode verified
-browser behavior and replaces the part that grew too heavy to change: the
+The current orchestration engine began as the `virtual-list-next` rewrite.
+It retained the parts of the original runtime that encode verified browser
+behavior and replaced the part that grew too heavy to change: the
 3,474-line `src/virtual-list.ts` and its `snapshot`, `render-state`, and
 `premeasure` helpers.
 
-This document has three parts: a review of the original architecture, the
-new architecture and why, and the verification and measurements for its
-implementation on this branch (`virtual-list-next`).
+This document records the original architecture, the rewrite's design, and
+its verification and measurements. References to `main` and the
+`virtual-list-next` branch in historical comparisons identify the revisions
+tested then, not the current branch state.
+
+The current runtime uses browser-owned smooth scrolling through
+`src/native-glide.ts` for commands and automatic following. The original
+rewrite retained a synthetic JavaScript glide, which was later replaced.
+The [core contract](core-contract.md) and [public API](../README.md#public-api)
+define current behavior, including subsequent changes to settling, pinning,
+and reach handling.
 
 ## 1. What virtual-list is for
 
@@ -22,8 +30,9 @@ scrolling.
 That requirement is hard because the browsers disagree on one thing: what
 happens when a page writes `scrollTop` while the user is scrolling. Safari
 stops momentum. Firefox's async scrolling keeps a stale scroll limit for the
-rest of the gesture. Chrome sends `scrollend` early at edges. The current
-solution rests on three cornerstones, and `next` keeps all three:
+rest of the gesture. Chrome sends `scrollend` early at edges. Before the
+rewrite, the solution rested on three cornerstones. `next` retained them with
+F5 relaxing the first where native anchoring is available:
 
 1. **No structural change during a scroll.** Any change that needs a scroll
    write waits for the scroll to settle. A per-engine settle sensor decides
@@ -75,9 +84,9 @@ orchestration layer's structure:
 
 ## 3. Recommendation: the next foundation
 
-`next` keeps the physics layer unchanged (F4) and rebuilds orchestration on
-three ideas (F1–F3). Where the engine supports it, it also hands scroll
-anchoring to the engine (F5).
+`next` initially kept the physics layer (F4) and rebuilt orchestration on
+three ideas (F1–F3). Where the engine supported it, the rewrite also handed
+scroll anchoring to the engine (F5).
 
 ### F1. One commit rule over a desired state
 
@@ -149,10 +158,13 @@ replaces the transaction stack with about 50 lines.
 
 ### F4. Keep the physics
 
-The settle sensor, the geometry kernel (anchoring, the pin reserve, I0–I5),
-the glide, follow intent, and reach hysteresis are kept unchanged. They encode engine behavior verified on real hardware, including
-the Firefox, Chrome, and Safari edge battery. Replacing them needs that
-battery again, not a rewrite on a desk (see [Roadmap](#5-roadmap)).
+The rewrite initially kept the settle sensor, geometry kernel (anchoring,
+the pin reserve, I0–I5), synthetic glide, follow intent, and reach hysteresis.
+These encoded engine behavior verified on real hardware, including the
+Firefox, Chrome, and Safari edge battery. Later changes, including the move
+to native glides, have their own verification records in the
+[report index](reports/README.md). Further replacements need that battery
+again; the [historical roadmap](#5-roadmap) records the original proposals.
 
 ### F5. Native scroll anchoring where the engine has it
 
@@ -287,8 +299,10 @@ tests.
 
 ### Browser verification
 
-These runs used the Playwright engines (Chromium, Firefox, WebKit) against a
-private `next` server in `auto` mode, which anchors natively in all three.
+The following results record the rewrite verification on September 23, 2026
+(`4fa4f77`). These runs used the Playwright engines (Chromium, Firefox, WebKit)
+against a private `next` server in `auto` mode, which anchors natively in all
+three.
 They are correctness evidence, not native-input or physical-smoothness
 evidence.
 
@@ -305,6 +319,8 @@ evidence.
   and stream-paging regressions in
   [`scripts/regressions/runtime/`](../scripts/regressions/runtime/) pass in
   all three engines.
+  Here, `native-glide-regression.mjs` tests a glide under native anchoring;
+  its name does not identify the later browser-owned smooth-scroll engine.
   The native-anchoring regression lands an older page mid-gesture with zero
   script scroll writes and a reader drift of at most 1 px.
 
@@ -347,8 +363,9 @@ The runtime's own CPU was never the bottleneck: 0.2–0.5% of samples on
 - **DOM order always follows list order.**
 
 The user checked `next` by hand in Firefox, Chrome, and Safari, on macOS
-and iOS: no bugs found, and smoother than `main`. A native Firefox profile
-hasn't been captured.
+and iOS: no bugs found, and smoother than `main`. At that checkpoint, a native
+Firefox profile had not been captured. Later installed-Firefox captures are
+recorded in the [September 30 runtime audit](reports/runtime-performance-audit-2026-09-30.md).
 
 A probe ([`scripts/anchoring-probe.mjs`](../scripts/anchoring-probe.mjs))
 confirms that Chromium 153, Firefox 155, and WebKit 26.6 all perform native
@@ -356,8 +373,10 @@ scroll anchoring at rest, the premise of F5. The CPU benchmarks predate F5.
 
 ## 5. Roadmap
 
-These items were considered and not built. Each needs evidence this branch
-can't produce on a desk.
+This is the historical roadmap from the September 23, 2026 rewrite checkpoint
+(`4fa4f77`). These items and evidence gaps describe that checkpoint, not
+current outstanding work. Consult the [report index](reports/README.md) for
+subsequent profiling and implementation decisions.
 
 1. **Native anchoring only.** F5 hands mid-gesture compensation to the
    engine but keeps the runtime path for edges, glides, explicit anchors,

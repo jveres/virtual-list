@@ -14,8 +14,9 @@ For paging and live updates together, open `/examples/streaming-paged/` and
 read [its source](../examples/streaming-paged/main.ts). This separate example
 uses a bounded history window with an evictable latest-prompt pin. The full
 streaming demo uses the same companion for history and live row updates.
-The [release plan](streaming-integration-plan.md) records the completed merge
-and the remaining release actions.
+The [release record](streaming-integration-plan.md) documents the completed
+merge and the integration's first source release, `v0.2.0`. This guide
+describes the current checkout, including changes from later source tags.
 
 For renderer integration, open `/examples/streaming-markdown/` and read
 [its source](../examples/streaming-markdown/main.ts). It adds Markdown and an
@@ -246,11 +247,14 @@ Import the companion CSS or provide equivalent paint-only styling for
 `destroy()` before removing the overlay. The host owns header appearance.
 
 For branch/version replacement, supply semantic `{ from, to }` key pairs to
-`replacementAnchor(list, viewport, pairs, inset)`. It prefers the first
-candidate whose top is visible below the inset; otherwise it places the first
-clipped candidate at that inset. Rows outside the viewport are ignored. The
-helper reads geometry but never scrolls. Submit its result as the snapshot's
-anchor. `captureItemPlacement` supplies offset, visibility, above-viewport,
+`replacementAnchor(list, viewport, pairs, inset)`. It selects the first source
+row in the supplied order that intersects the viewport below the inset,
+preserving its offset even when its top is clipped. A near-pinned offset is
+normalized to the inset. The returned `visibilityInset` lets the runtime
+reveal the replacement at that inset if its measured height would leave it
+fully hidden. Missing and offscreen rows are ignored. The helper reads
+geometry but never scrolls. Submit its result as the snapshot's anchor.
+`captureItemPlacement` supplies offset, visibility, above-viewport,
 and pinned-position facts for edit/send policy without duplicated arithmetic.
 
 Capture immediately before the replacement. If an action may interrupt queued
@@ -322,6 +326,11 @@ pnpm run test:regression -- --group=runtime --match=streaming-consumer
 
 The [candidate review](reports/streaming-release-review-2026-09-13.md) records completed
 API and browser verification with native-performance evidence and its limits.
-The integration is merged into `main`. Follow
-[the release plan](streaming-integration-plan.md) for remaining tag and
-publication actions. Additional standalone examples are not required.
+The integration first shipped in the `v0.2.0` source tag; the
+[release record](streaming-integration-plan.md) documents that milestone.
+Later tags include subsequent runtime changes. When copying a tagged source
+release, use its matching documentation and verify that it contains the APIs
+you need; the current guide also covers APIs absent from `v0.2.0`.
+Package publication remains out of scope; distribution uses the supported
+source entry points above.
+Additional standalone examples are not required.
