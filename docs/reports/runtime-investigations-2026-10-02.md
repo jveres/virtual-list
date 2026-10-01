@@ -3,8 +3,11 @@
 The [pixel-ratio comparison](runtime-pixel-ratio-2026-10-02.md) retains one
 verified gain over `v0.4.9`, revision
 `01f9cdea881561225205ca539b58350bbdac9acc`: median large positioned edits improve
-from 49 to 45 ms in two fresh candidate captures. Compact snapshots, bulk
-paging, and sustained memory remain under investigation.
+from 49 to 45 ms in two fresh candidate captures. The subsequent
+[declared-snapshot comparison](runtime-declared-snapshots-2026-10-02.md) reduces
+that median to 28–29 ms and removes about 7.1 MiB of loaded fixture-window
+storage at 100,000 items. Bulk paging and sustained memory remain under
+investigation.
 
 ## Measurement status
 
@@ -31,7 +34,7 @@ The four investigations from the data-structure audit have these dispositions:
 | Candidate | Evidence and next measurement |
 | --- | --- |
 | Read the device pixel ratio once per synchronous declaration pass. | Retained after baseline, candidate, and repeat. Large positioned edits improve about 8%, and structural batches improve 4–6%. No retained-memory or GC gain is claimed. |
-| Compact declared-item snapshots. | A full declared snapshot still allocates a `Map<string, { item, height }>` alongside its key index. Measure aligned item and height storage while preserving constant-time individual edits and independent pending/committed ownership. No candidate is implemented. |
+| Compact declared-item snapshots. | Retained after four incremental comparisons: compact columns, known-prefix validation, direct indexing, and filtered row preparation. The final candidate repeats its 7.1 MiB saving and 36–38% shorter large positioned edits against v0.4.10. |
 | Bulk paging with overlap, cancellation, and eviction. | The first installed-Firefox capture passes 120 cycles per case. Median page loads are 2 ms at a 480-item budget, 5 ms for 2,000 positioned items, and 16 ms for 10,000 stacked items. Matched comparisons and attribution remain open. |
 | Sustained mixed-workload memory and natural GC. | The first capture records natural process samples and GC slices without diagnostic tabs or forced collection between cycles. Comparison with compact snapshots remains open. |
 

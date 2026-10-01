@@ -1,3 +1,4 @@
+import { DeclaredItems } from "./declared-items";
 import { FollowController } from "./follow";
 import {
   type AnchorPolicy,
@@ -174,11 +175,6 @@ interface Row<T> {
   spec?: EdgeSlot;
 }
 
-interface Declared<T> {
-  item: T;
-  height: number;
-}
-
 /** The desired state: what the next commit makes true. */
 interface Pending<T> {
   index: KeyIndex;
@@ -187,7 +183,7 @@ interface Pending<T> {
   staged: Map<string, Row<T>>;
   /** Declared rows re-rendered inside the commit that changes their height. */
   deferred: Map<string, T>;
-  declared: Map<string, Declared<T>> | null;
+  declared: DeclaredItems<T> | null;
   /** `declared` holds only updated keys, over the committed entries. */
   patch: boolean;
   positioned: PositionedGeometry | null;
@@ -268,7 +264,7 @@ export function createVirtualList<T>(
   // --- Committed state ------------------------------------------------------
   const geometry = new Geometry(1);
   const rows = new Map<string, Row<T>>();
-  let declaredItems = new Map<string, Declared<T>>();
+  let declaredItems = new DeclaredItems<T>();
   geometry.setAnchorExclusion((key) => {
     if (isSlotKey(key)) return true;
     if (anchorable === undefined) return false;
@@ -1111,19 +1107,27 @@ export function createVirtualList<T>(
     const keys: string[] = [];
     const byKey = new Map<string, T>();
     const heights =
-      withHeights && declared ? new Map<string, Declared<T>>() : null;
-    const entries = heights ?? byKey;
+      withHeights && declared ? new Float64Array(items.length) : null;
+    let seen: Set<string> | null = null;
+    const priorKeys = desiredIndex.keys;
+    const leading = desiredLeading;
     // Use one device grid within this synchronous declaration pass.
     const ratio = heights ? pixelRatio() : undefined;
     for (const item of items) {
       const key = keyOf(item);
       if (isSlotKey(key))
         throw new Error(`item key "${key}" uses the reserved edge-slot prefix`);
-      if (entries.has(key)) throw new Error(`duplicate key "${key}"`);
+      // A matching prefix of the owned key order is already unique. Build a
+      // validation set only when the new order first departs from that prefix.
+      if (heights && !seen && priorKeys[keys.length + leading] !== key)
+        seen = new Set(keys);
+      if (heights ? seen?.has(key) : byKey.has(key))
+        throw new Error(`duplicate key "${key}"`);
       keys.push(key);
-      if (heights)
-        heights.set(key, { item, height: declaredHeight(item, ratio) });
-      else byKey.set(key, item);
+      if (heights) {
+        seen?.add(key);
+        heights[keys.length - 1] = declaredHeight(item, ratio);
+      } else byKey.set(key, item);
     }
     return { keys, byKey, heights };
   }
@@ -1181,22 +1185,22 @@ export function createVirtualList<T>(
   }
 
   function preparePositioned(
-    entries: ReadonlyMap<string, Declared<T>> | null,
+    entries: DeclaredItems<T> | null,
   ): PositionedGeometry | null {
     if (!place || !entries?.size) return null;
     const placed: PositionedItem[] = [];
     const ratio = pixelRatio();
     let origin = Number.POSITIVE_INFINITY;
-    for (const entry of entries.values()) {
-      const position = place(entry.item);
-      if (position === null) continue;
+    entries.forEach((item, height) => {
+      const position = place(item);
+      if (position === null) return;
       if (!Number.isFinite(position.top))
         throw new RangeError("item top must be finite");
       // Snap in the shared coordinate system, before rebasing (I0).
       const top = toDevicePixel(position.top, ratio);
       origin = Math.min(origin, top);
-      placed.push({ top, lane: position.lane, height: entry.height });
-    }
+      placed.push({ top, lane: position.lane, height });
+    });
     if (placed.length === 0) return null;
     if (placed.length !== entries.size)
       throw new Error("a positioned snapshot must place every item or none");
@@ -1228,7 +1232,7 @@ export function createVirtualList<T>(
   function prepare(
     p: Pending<T>,
     stageKeys: Iterable<string>,
-    itemAt: (key: string) => T,
+    itemAt: (index: number) => T,
     previous: Pending<T> | null,
     full: boolean,
     jobRows?: Map<string, Row<T>>,
@@ -1246,6 +1250,7 @@ export function createVirtualList<T>(
     };
     /** The staged key's index in the desired order. */
     let at = -1;
+    const contiguous = stageKeys === p.keys;
 
     const create = (key: string, item: T, element: HTMLElement): Row<T> => {
       if (disposed) {
@@ -1253,7 +1258,7 @@ export function createVirtualList<T>(
         throw new Abort();
       }
       const height = declared
-        ? (p.declared?.get(key)?.height ?? declaredHeight(item))
+        ? (p.declared?.heightOf(key) ?? declaredHeight(item))
         : 1;
       const row = createRow(key, item, element, height);
       built.push(row);
@@ -1298,11 +1303,11 @@ export function createVirtualList<T>(
 
     try {
       for (const key of stageKeys) {
-        at = full ? at + 1 : (p.index.positions.get(key) ?? -1);
+        at = contiguous ? at + 1 : (p.index.positions.get(key) ?? -1);
         if (isSlotKey(key)) {
           stageSlot(key);
         } else {
-          const item = itemAt(key);
+          const item = itemAt(at);
           const before = previous?.staged.get(key);
           const committed = rows.get(key);
           if (before) {
@@ -1331,7 +1336,7 @@ export function createVirtualList<T>(
               declared &&
               !idle() &&
               (place !== undefined ||
-                (p.declared?.get(key)?.height !== committed.height && !free()))
+                (p.declared?.heightOf(key) !== committed.height && !free()))
             ) {
               p.deferred.set(key, item);
             } else {
@@ -1390,25 +1395,41 @@ export function createVirtualList<T>(
     jobRows?: Map<string, Row<T>>,
   ): Pending<T> | null {
     const previous = pending;
-    const { keys: itemKeys, byKey, heights } = indexItems(items, true);
+    const { keys: itemKeys, heights } = indexItems(items, true);
     const start = edgeSlots.start;
     const end = edgeSlots.end;
+    const leading = start ? 1 : 0;
     const keys = [
       ...(start ? [slotKey("start", start.key)] : []),
       ...itemKeys,
       ...(end ? [slotKey("end", end.key)] : []),
     ];
     const p = newPending(keys, requested, previous);
-    p.declared = heights;
-    p.positioned = preparePositioned(heights);
+    p.declared = heights
+      ? new DeclaredItems(p.index, leading, items, heights)
+      : null;
+    p.positioned = preparePositioned(p.declared);
     selectPin(p, items);
+    let stageKeys = p.keys;
+    if (declared) {
+      // Unrendered declared items need geometry only. Prepare retained rows
+      // and slots in source order so host render calls keep their ordering.
+      const retained = new Set(rows.keys());
+      for (const key of previous?.staged.keys() ?? []) retained.add(key);
+      if (start) retained.add(p.keys[0] as string);
+      if (end) retained.add(p.keys[p.keys.length - 1] as string);
+      stageKeys = [...retained]
+        .filter((key) => p.index.positions.has(key))
+        .sort(
+          (a, b) =>
+            (p.index.positions.get(a) as number) -
+            (p.index.positions.get(b) as number),
+        );
+    }
     const ok = prepare(
       p,
-      keys,
-      (key) =>
-        heights
-          ? (heights.get(key) as Declared<T>).item
-          : (byKey.get(key) as T),
+      stageKeys,
+      (index) => items[index - leading] as T,
       previous,
       true,
       jobRows,
@@ -1448,7 +1469,7 @@ export function createVirtualList<T>(
       const key = geometry.keyAt(index);
       if (key === undefined || p.keys[index] !== key || p.staged.has(key))
         return false;
-      if (p.declared?.get(key)?.height !== declaredItems.get(key)?.height)
+      if (p.declared?.heightOf(key) !== declaredItems.heightOf(key))
         return false;
     }
     // The anchor row may change in place, be replaced at its index, or be
@@ -1527,7 +1548,7 @@ export function createVirtualList<T>(
     for (const [key, item] of p.deferred) {
       const row = rows.get(key);
       if (!row || row.dead) continue;
-      const height = p.declared?.get(key)?.height ?? declaredHeight(item);
+      const height = p.declared?.heightOf(key) ?? declaredHeight(item);
       let element: HTMLElement;
       try {
         element = renderInto(row, item);
@@ -1612,14 +1633,14 @@ export function createVirtualList<T>(
           geometry.pin(p.pinKey ?? null, committedPinOffset);
         }
         if (p.declared) {
-          for (const [key, entry] of p.declared) {
+          p.declared.forEach((item, height, key) => {
             const row = rows.get(key);
-            if (row && row.item === entry.item) commitHeight(row, entry.height);
-            else if (declaredItems.get(key)?.height !== entry.height)
-              geometry.measure(key, entry.height);
-            if (p.patch) declaredItems.set(key, entry);
-          }
-          // A snapshot replaces the map: its removed keys drop out.
+            if (row && row.item === item) commitHeight(row, height);
+            else if (declaredItems.heightOf(key) !== height)
+              geometry.measure(key, height);
+            if (p.patch) declaredItems.set(key, { item, height });
+          });
+          // A snapshot replaces its columns: removed keys drop out.
           if (!p.patch) declaredItems = p.declared;
         }
         for (const row of p.staged.values()) {
@@ -2328,7 +2349,8 @@ export function createVirtualList<T>(
       const entry = declared ? { item, height: declaredHeight(item) } : null;
       // The touched entry alone: no copy of the declared entries.
       if (entry) {
-        p.declared = new Map([[key, entry]]);
+        p.declared = new DeclaredItems<T>();
+        p.declared.set(key, entry);
         p.patch = true;
       }
       selectPin(p, lastItems, { index, item });
@@ -2369,7 +2391,7 @@ export function createVirtualList<T>(
     const protectedItems: T[] = [];
     for (const key of keys) {
       if (isSlotKey(key)) continue;
-      const item = declaredItems.get(key)?.item ?? rows.get(key)?.item;
+      const item = declaredItems.itemOf(key) ?? rows.get(key)?.item;
       if (item !== undefined) protectedItems.push(item);
     }
     return { items: [...lastItems], protectedItems };

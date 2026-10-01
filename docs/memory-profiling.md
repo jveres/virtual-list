@@ -262,6 +262,8 @@ profiles are deleted immediately after parsing, including on parser failure.
 
 The [allocation and anchor study](reports/runtime-allocation-anchors-2026-10-01.md)
 records the matched baseline, candidate, repeat, and accounting limits.
+The [declared-snapshot comparison](reports/runtime-declared-snapshots-2026-10-02.md)
+records compact snapshot columns and the subsequent staging improvements.
 
 ## Exercise sustained paging without forced collection
 

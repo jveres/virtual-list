@@ -1,0 +1,50 @@
+import { describe, expect, it } from "vitest";
+import { DeclaredItems } from "../../src/declared-items";
+import { KeyIndex } from "../../src/key-index";
+
+describe("declared snapshot ownership", () => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "keeps committed and desired items independent (start=%s, end=%s)",
+    (start, end) => {
+      const original = [{ id: "a" }, { id: "b" }];
+      const desired = [...original];
+      const index = new KeyIndex([
+        ...(start ? ["start-slot"] : []),
+        "a",
+        "b",
+        ...(end ? ["end-slot"] : []),
+      ]);
+      const committed = new DeclaredItems(
+        index,
+        Number(start),
+        desired,
+        Float64Array.from([40, 50]),
+      );
+      const pending = new DeclaredItems(
+        index,
+        Number(start),
+        desired,
+        Float64Array.from([40, 50]),
+      );
+      const replacement = { id: "b" };
+
+      desired[0] = { id: "a" };
+      pending.set("b", { item: replacement, height: 70.5 });
+
+      expect(committed.itemOf("a")).toBe(original[0]);
+      expect(pending.itemOf("a")).toBe(original[0]);
+      expect(committed.itemOf("b")).toBe(original[1]);
+      expect(committed.heightOf("b")).toBe(50);
+      expect(pending.itemOf("b")).toBe(replacement);
+      expect(pending.heightOf("b")).toBe(70.5);
+      expect(committed.has("start-slot")).toBe(false);
+      expect(committed.has("end-slot")).toBe(false);
+      expect([...pending].map(([key]) => key)).toEqual(["a", "b"]);
+    },
+  );
+});

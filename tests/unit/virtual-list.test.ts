@@ -7145,6 +7145,60 @@ describe("targeted item updates", () => {
 
 describe("declared heights", () => {
   it.each([false, true])(
+    "rerenders retained rows in the new source order (slots=%s)",
+    (slots) => {
+      const items = range(0, 20);
+      const rendered: number[] = [];
+      const slot = (key: string) => ({
+        key,
+        height: 40,
+        render: () => document.createElement("div"),
+      });
+      const h = mount(items, {
+        boot: "start",
+        itemHeight: () => 100,
+        edgeSlots: slots
+          ? { start: slot("start"), end: slot("end") }
+          : undefined,
+        onRender: (item) => rendered.push(item.id),
+      });
+      const retained = new Set(
+        items
+          .filter((item) => h.list.elementOf(`m${item.id}`) !== null)
+          .map((item) => item.id),
+      );
+      const next = [items[2], items[0], items[1], ...items.slice(3)].map(
+        (item) => message((item as Msg).id, "updated"),
+      );
+      rendered.length = 0;
+
+      h.list.setItems(next, { anchor: "none", interrupt: true });
+
+      expect(rendered).toEqual(
+        next.filter((item) => retained.has(item.id)).map((item) => item.id),
+      );
+      expect(h.list.elementOf("m2")?.textContent).toBe("updated");
+      h.list.dispose();
+    },
+  );
+
+  it("rejects a duplicate after a matching prefix before changing committed heights", () => {
+    const items = range(0, 6);
+    const height = vi.fn((item: Msg) => (item.body === "changed" ? 200 : 100));
+    const h = mount(items, { boot: "start", itemHeight: height });
+    height.mockClear();
+    const duplicate = [message(0, "changed"), ...items.slice(1), message(3)];
+
+    expect(() => h.list.setItems(duplicate)).toThrow('duplicate key "m3"');
+
+    expect(height).toHaveBeenCalledTimes(items.length);
+    expect(h.list.state.count).toBe(items.length);
+    expect(h.list.state.totalSize).toBe(600);
+    expect(h.list.positionOf("m0")?.height).toBe(100);
+    h.list.dispose();
+  });
+
+  it.each([false, true])(
     "should refresh the device grid between snapshots and individual edits (positioned=%s)",
     (positioned) => {
       const items = range(0, 20);

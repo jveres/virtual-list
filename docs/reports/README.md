@@ -16,6 +16,15 @@ batches by sharing device-grid reads within synchronous passes. The
 declared-item snapshots, bulk paging, and sustained natural collection. The
 new paging fixture passes installed-Firefox validation at 120 cycles per case.
 
+## October 2 compact declared snapshots
+
+The [declared-snapshot comparison](runtime-declared-snapshots-2026-10-02.md)
+retains compact item/height columns, known-prefix validation, direct snapshot
+indexing, and preparation of retained declared rows only. Against v0.4.10,
+100,000-item positioned edits improve from 45 to 28–29 ms, structural batches
+improve 12–23%, and loaded fixture-window storage falls by about 7.1 MiB.
+Worst GC pauses and whole-process peaks don't improve.
+
 ## October 1 runtime allocation and anchor lookup
 
 The [allocation and anchor follow-up](runtime-allocation-anchors-2026-10-01.md)
