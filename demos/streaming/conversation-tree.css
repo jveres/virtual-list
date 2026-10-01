@@ -264,9 +264,18 @@
   stroke-linejoin: round;
   opacity: 0.1;
 }
+/* The turn-wide focus ring replaces a node's own outline. */
 .conversation-tree-node:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: -2px;
+  outline: none;
+}
+.conversation-tree-focus-ring {
+  position: absolute;
+  border-radius: 10px;
+  box-shadow: inset 0 0 0 2px var(--accent);
+  pointer-events: none;
+}
+.conversation-tree-focus-ring[hidden] {
+  display: none;
 }
 .conversation-tree-node[aria-current="location"] {
   color: var(--accent);
@@ -290,12 +299,10 @@
   border-width: 2px;
   border-color: var(--accent);
 }
-/* The turn being read: a filled dot whose opaque halo still masks the rail. */
+/* The turn being read: a filled dot; its background halo masks the rail. */
 .conversation-tree-node[data-reading] .conversation-tree-glyph {
   border-color: var(--accent);
   background: var(--accent);
-  box-shadow: 0 0 0 3px
-    color-mix(in srgb, var(--accent) 20%, var(--conversation-tree-bg));
 }
 /* A repeating ripple around the reading dot. Only the ring moves; the dot
  * and label stay still. Fade out before resetting for a seamless loop. */
@@ -422,15 +429,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* Section dots sit on the rail, sized against the 12px message dots. */
 .conversation-tree-heading::before {
   content: "";
   position: absolute;
-  left: 3px;
-  top: 9px;
-  width: 6px;
-  height: 6px;
+  left: 2px;
+  top: 8px;
+  width: 8px;
+  height: 8px;
   border-radius: 50%;
-  border: 1px solid var(--border);
+  border: 1.5px solid var(--conversation-tree-rail);
   background: var(--bg);
 }
 .conversation-tree-heading[data-active="true"]::before {
@@ -440,10 +448,10 @@
   padding-left: 41px;
 }
 .conversation-tree-heading[data-level="2"]::before {
-  left: 4px;
-  top: 10px;
-  width: 4px;
-  height: 4px;
+  left: 3px;
+  top: 9px;
+  width: 6px;
+  height: 6px;
 }
 .conversation-tree-heading[data-loaded="false"] {
   color: var(--fg-muted);
@@ -560,9 +568,6 @@
   height: 100%;
   object-fit: cover;
   dynamic-range-limit: standard;
-}
-.conversation-tree-reply[aria-current="location"] .conversation-tree-thumb {
-  box-shadow: 0 0 0 2px var(--accent);
 }
 .conversation-tree-node[data-active="false"] .conversation-tree-thumb img {
   opacity: 0.55;

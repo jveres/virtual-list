@@ -245,12 +245,14 @@ for (const engine of [firefox, webkit, chromium]) {
           radius: style.borderRadius,
         };
       });
-      assert.equal(ring.border, "1px");
+      // 1.5px; engines snap borders to device pixels, so 1x reports 1px.
+      assert.ok(["1px", "1.5px"].includes(ring.border), ring.border);
       assert.equal(ring.borderStyle, "solid");
       assert.equal(ring.ink, ring.spine);
       assert.equal(ring.fill, ring.background, "ring center masks the spine");
       assert.notEqual(ring.fill, ring.ink, "ToC markers are hollow");
-      assert.equal(ring.width, index === 0 ? "6px" : "4px");
+      // Sized against the 12px message dots on the same rail.
+      assert.equal(ring.width, index === 0 ? "8px" : "6px");
       assert.equal(ring.height, ring.width);
       assert.equal(ring.radius, "50%");
       assert.equal(

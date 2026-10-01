@@ -29,6 +29,13 @@ const BAND_GAP = 12;
 const SPINE_SNAP = 24;
 /** A reply's image thumbnail; its line grows to this height. */
 const THUMBNAIL_HEIGHT = 30;
+/** A tree jump shows "Opening message…" only after waiting this long. */
+const OPENING_STATUS_DELAY_MS = 400;
+/** A node's label starts this far in from its left and top edges. */
+const TEXT_LEFT = 49;
+const TEXT_TOP = 13;
+/** Even space between the keyboard focus ring and the turn it frames. */
+const FOCUS_RING_PADDING = 8;
 /** Rails run through each node's dot, centered this far below its top. */
 const DOT_CENTER = 22;
 /** Trackpad pinches zoom this much faster than 1:1; touch pinches stay 1:1
@@ -202,6 +209,7 @@ export function createConversationTree(options: TreeOptions): {
   let navigationEpoch = 0;
   let replacingNodes = false;
   let closeTimer = 0;
+  let statusTimer = 0;
   let imageTimer = 0;
   let imageNode: HTMLElement | null = null;
   // Retain the scroll extent while alternative branches fold.
@@ -226,7 +234,46 @@ export function createConversationTree(options: TreeOptions): {
   const buttons = new Map<number, HTMLElement>();
   // A turn's reply maps to its prompt, whose dot stands for the whole turn.
   const turns = new Map<number, number>();
+  const turnReplies = new Map<number, number>();
+  // Where each turn's text or thumbnail ends, in canvas coordinates.
+  const turnBottoms = new Map<number, number>();
   let readingDot: HTMLElement | undefined;
+  /**
+   * The rounded box around a turn's text and thumbnail, with even padding;
+   * the rail, its glow, and the dot stay outside. A reply resolves to its
+   * prompt's turn. Built from stored positions, never measured.
+   */
+  function placeOnTurn(box: HTMLElement, node: HTMLElement | undefined): void {
+    const id = Number(node?.dataset.messageId);
+    const turn = node?.isConnected ? buttons.get(turns.get(id) ?? id) : null;
+    const turnId = Number(turn?.dataset.messageId);
+    const left = Number.parseFloat(turn?.style.left ?? "");
+    const top = Number.parseFloat(turn?.style.top ?? "");
+    const bottom = turnBottoms.get(turnId) ?? Number.NaN;
+    const width = bandWidths.get(turnId) ?? Number.NaN;
+    box.hidden = ![left, top, bottom, width].every(Number.isFinite);
+    if (box.hidden) return;
+    const p = FOCUS_RING_PADDING;
+    box.style.left = `${left + TEXT_LEFT - p}px`;
+    box.style.top = `${top + TEXT_TOP - p}px`;
+    box.style.width = `${width - TEXT_LEFT + 2 * p}px`;
+    box.style.height = `${bottom - top - TEXT_TOP + 2 * p}px`;
+  }
+  // Keyboard focus frames the whole turn instead of
+  // the focused node's own box, which covers a prompt but not its reply.
+  let focusRing: HTMLElement | null = null;
+  function placeFocusRing(): void {
+    if (!focusRing) return;
+    const focused = document.activeElement;
+    const node =
+      focused instanceof HTMLElement &&
+      focused.matches(".conversation-tree-node") &&
+      canvas.contains(focused) &&
+      root.dataset.pointerFocus === undefined
+        ? focused
+        : undefined;
+    placeOnTurn(focusRing, node);
+  }
   const bandWidths = new Map<number, number>();
   const headingButtons = new Map<string, HTMLElement>();
   const stopFade = scrollFade(scroller);
@@ -949,6 +996,8 @@ export function createConversationTree(options: TreeOptions): {
         : undefined;
     buttons.clear();
     turns.clear();
+    turnReplies.clear();
+    turnBottoms.clear();
     bandWidths.clear();
     headingButtons.clear();
     const entries = conversationEntries(options.tree);
@@ -991,6 +1040,12 @@ export function createConversationTree(options: TreeOptions): {
     edges.append(ribbon, inactiveEdges, activeEdges);
     const content = document.createDocumentFragment();
     content.append(edges);
+    // Above the rails, below every node.
+    focusRing = document.createElement("div");
+    focusRing.className = "conversation-tree-focus-ring";
+    focusRing.setAttribute("aria-hidden", "true");
+    focusRing.hidden = true;
+    content.append(focusRing);
     const tocs = new Map<number, HTMLUListElement>();
     for (const entry of entries) {
       const button = document.createElement("div");
@@ -1065,7 +1120,10 @@ export function createConversationTree(options: TreeOptions): {
       text.append(label);
       button.append(glyph, text);
       buttons.set(entry.id, button);
-      if (entry.attached) turns.set(entry.id, entry.parentId);
+      if (entry.attached) {
+        turns.set(entry.id, entry.parentId);
+        turnReplies.set(entry.parentId, entry.id);
+      }
       content.append(button);
       const sections = headings.get(entry.id) ?? [];
       if (sections.length) {
@@ -1244,9 +1302,10 @@ export function createConversationTree(options: TreeOptions): {
       for (const entry of entries) {
         const left = (bands.get(entry.id) ?? 0) - 26;
         stableLeft = Math.min(stableLeft, left);
+        // The focus ring extends past the band's text.
         stableRight = Math.max(
           stableRight,
-          left + (bandWidths.get(entry.id) ?? 0),
+          left + (bandWidths.get(entry.id) ?? 0) + FOCUS_RING_PADDING,
         );
       }
       const contentWidth = stableRight - stableLeft;
@@ -1299,7 +1358,12 @@ export function createConversationTree(options: TreeOptions): {
             replyButton.style.height = `${replyHeight + 8}px`;
             height = replyTop;
             bottom = Math.max(36, replyTop + replyHeight);
-          }
+            turnBottoms.set(entry.id, canvasHeight + replyTop + replyHeight);
+          } else
+            turnBottoms.set(
+              entry.id,
+              canvasHeight + TEXT_TOP + (labelHeights.get(entry.id) ?? 0),
+            );
           contentBottom = Math.max(contentBottom, bottom);
           if (button) {
             button.style.top = `${canvasHeight}px`;
@@ -1371,6 +1435,7 @@ export function createConversationTree(options: TreeOptions): {
       scroller.scrollLeft =
         previousScrollLeft + (layoutOrigin - previousOrigin) * zoom;
       applyZoom();
+      placeFocusRing();
     };
     panel.toggleAttribute("data-empty", entries.length === 0);
     setStatus(entries.length ? "" : "Send a message to start a conversation.");
@@ -1481,6 +1546,7 @@ export function createConversationTree(options: TreeOptions): {
     "pointerdown",
     () => {
       root.dataset.pointerFocus = "";
+      placeFocusRing();
     },
     { signal },
   );
@@ -1488,9 +1554,14 @@ export function createConversationTree(options: TreeOptions): {
     "keydown",
     () => {
       delete root.dataset.pointerFocus;
+      placeFocusRing();
     },
     { signal },
   );
+  canvas.addEventListener("focusin", placeFocusRing, { signal });
+  canvas.addEventListener("focusout", () => queueMicrotask(placeFocusRing), {
+    signal,
+  });
   root.addEventListener(
     "focusout",
     (event) => {
@@ -1581,7 +1652,12 @@ export function createConversationTree(options: TreeOptions): {
       const isCurrentNavigation = (): boolean =>
         !signal.aborted && epoch === navigationEpoch;
       navigating = true;
-      setStatus("Opening message…");
+      // Most jumps land at once; announce only one that waits, such as an
+      // older page loading, so a quick click never flashes a status line.
+      window.clearTimeout(statusTimer);
+      statusTimer = window.setTimeout(() => {
+        if (navigating && isCurrentNavigation()) setStatus("Opening message…");
+      }, OPENING_STATUS_DELAY_MS);
       panel.setAttribute("aria-busy", "true");
       try {
         const headingIndex = button.dataset.headingIndex;
@@ -1616,6 +1692,7 @@ export function createConversationTree(options: TreeOptions): {
           setStatus("Could not open this message. Please try again.");
       } finally {
         if (isCurrentNavigation()) {
+          window.clearTimeout(statusTimer);
           navigating = false;
           panel.removeAttribute("aria-busy");
         }
@@ -1629,6 +1706,7 @@ export function createConversationTree(options: TreeOptions): {
       if (signal.aborted) return;
       // A new conversation must not inherit pending selection or busy state.
       navigationEpoch++;
+      window.clearTimeout(statusTimer);
       navigating = false;
       clearGesture();
       panel.removeAttribute("aria-busy");
@@ -1670,6 +1748,7 @@ export function createConversationTree(options: TreeOptions): {
       stopFade();
       window.clearTimeout(closeTimer);
       window.clearTimeout(imageTimer);
+      window.clearTimeout(statusTimer);
       root.remove();
     },
   };
