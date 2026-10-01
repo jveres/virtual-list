@@ -174,7 +174,11 @@ export async function launchFirefox(directory) {
       close,
       navigate: (url) =>
         command("browsingContext.navigate", { context, url, wait: "complete" }),
-      memoryReport: async () => {
+      memoryReport: async ({
+        minimize = false,
+        minBytes = 4 * 1024 * 1024,
+      } = {}) => {
+        assert.ok(Number.isSafeInteger(minBytes) && minBytes >= 0);
         const memoryContext = (
           await command("browsingContext.create", { type: "tab" })
         ).context;
@@ -185,14 +189,16 @@ export async function launchFirefox(directory) {
             wait: "complete",
           });
           const result = await command("script.evaluate", {
-            expression: `(async () => JSON.stringify(await new Promise(resolve => {
-              const rows = [];
+            expression: `(async () => {
               const manager = Cc['@mozilla.org/memory-reporter-manager;1'].getService(Ci.nsIMemoryReporterManager);
+              if (${Boolean(minimize)}) await new Promise(resolve => manager.minimizeMemoryUsage({run:resolve}));
+              return JSON.stringify(await new Promise(resolve => {
+              const rows = [];
               manager.getReports({ callback(process,path,kind,units,amount) {
-                if (units === Ci.nsIMemoryReporter.UNITS_BYTES && amount >= 4*1024*1024)
+                if (units === Ci.nsIMemoryReporter.UNITS_BYTES && amount >= ${minBytes})
                   rows.push({process,path:path.replace(/data:image[^)]*/g,'inline-image').slice(0,500),kind,amount});
               }}, null, {callback(){resolve(rows)}}, null, false);
-            })))()`,
+            })); })()`,
             target: { context: memoryContext },
             awaitPromise: true,
           });

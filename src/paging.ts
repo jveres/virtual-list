@@ -74,9 +74,10 @@ export interface PagedWindow<T, C> {
  * pages; restoring a discarded page is the source's job. A feed refresh is not
  * a continuation: dispose/recreate on a source reset, or merge it separately.
  */
-export function createPagedWindow<T, C, Row>(
-  options: PagedWindowOptions<T, C, Row>,
-): PagedWindow<T, C> {
+export function createPagedWindow<T, C, Row>({
+  initial,
+  ...options
+}: PagedWindowOptions<T, C, Row>): PagedWindow<T, C> {
   if (!Number.isSafeInteger(options.maxItems) || options.maxItems < 1)
     throw new Error("maxItems must be a positive safe integer");
   const unique = (items: readonly T[]): T[] => {
@@ -89,7 +90,8 @@ export function createPagedWindow<T, C, Row>(
     });
   };
   let pages: Page<T, C>[] = [
-    { ...options.initial, items: unique(options.initial.items) },
+    // Do not keep the initial page on the options captured by live methods.
+    { ...initial, items: unique(initial.items) },
   ];
   let items: readonly T[] = pages[0]?.items ?? [];
   let disposed = false;

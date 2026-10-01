@@ -226,7 +226,7 @@ const disposedViewports = new WeakSet<HTMLElement>();
 
 export function createVirtualList<T>(
   viewport: HTMLElement,
-  options: VirtualListOptions<T>,
+  { items: initialItems, ...options }: VirtualListOptions<T>,
 ): VirtualList<T> {
   const { key: keyOf, render, anchorable } = options;
   const heightOf = options.height;
@@ -297,7 +297,9 @@ export function createVirtualList<T>(
   let pending: Pending<T> | null = null;
   /** The pending state mid-commit: dispose must reach its rows too. */
   let committing: Pending<T> | null = null;
-  let lastItems: T[] = [...options.items];
+  // Initial source ownership ends with this copy. Callbacks retain options,
+  // so keeping its input array would pin the first snapshot after replacement.
+  let lastItems: T[] = [...initialItems];
   let indexByKey = new Map<string, number>();
   let indexedKeys: readonly string[] = [];
   let revision = 0;
@@ -3053,6 +3055,7 @@ export function createVirtualList<T>(
     ];
     rows.clear();
     declaredItems.clear();
+    lastItems = [];
     pending = null;
     committing = null;
     for (const row of doomed) destroyRow(row);

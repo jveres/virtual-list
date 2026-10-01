@@ -7,6 +7,15 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 1 runtime source retention
+
+The [lifecycle memory comparison](runtime-retention-2026-10-01.md) finds and
+fixes retained initial snapshots in list and pager options, plus the last
+source snapshot on disposed list handles. Installed Firefox collects retired
+items after the fix. Keeping twelve disposed handles drops from 56.36 MiB to
+2.24 MiB of reported fixture-window memory; normal disposal with handles
+released already collects its items and rows.
+
 ## October 1 runtime boundary optimizations
 
 The [implementation comparison](runtime-boundary-optimizations-2026-10-01.md)

@@ -18,6 +18,11 @@ your source item, `C` your opaque cursor, and `Row` the projected runtime
 item. Creation records `initial`; it doesn't submit those rows to the list.
 Initialize the list from the same projected data.
 
+Creation copies the top-level configuration separately from `initial`.
+Evicting the initial page releases its source ownership; disposal clears the
+retained pages and exposed items. Host stores and callbacks can still own those
+items independently. Release the disposed pager handle when finished with it.
+
 `Page<T, C>` contains `items: readonly T[]`, `start`, and `end`. Each
 `PageBoundary<C>` is `{ available: true, cursor: C }` or
 `{ available: false }`. A cursor restores the immediately adjacent page;

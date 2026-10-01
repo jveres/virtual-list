@@ -155,6 +155,48 @@ caches, so those counters diagnose ownership rather than replace the measured
 peak. The test never forces garbage collection or sends global low-memory
 notifications.
 
+## Check source ownership across runtime lifecycles
+
+The separate lifecycle diagnostic checks replacement within one list, paging
+with eviction, disposal with API handles released, and disposal with old API
+handles deliberately retained. It uses synthetic source items and measured
+rows, without the Markdown renderer, storage, or remote assets.
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --cycles=12 --display=LU28R55
+```
+
+The runner owns its server, installed Firefox instance, and temporary profile.
+It checks movement, scroll-end delivery, paging progress, and display geometry.
+Every four cycles it records process footprints, then requests Firefox's
+`minimizeMemoryUsage` operation through a temporary `about:memory` tab. This
+forces garbage collection, cycle collection, and memory-pressure cleanup.
+Weak references count surviving source items and rendered row roots without
+keeping those objects alive. Memory reporters measure the fixture's window
+subtree and the content process heap separately.
+
+Unlike `test:memory`, this diagnostic changes normal collection and cache
+behavior. Use it to identify strong ownership, not to predict natural GC
+timing, scrolling speed, or physical presentation. A surviving disposed handle
+still owns configuration and geometry metadata. Host callbacks can also retain
+source data independently. The fixture does not inspect those host stores.
+
+Compact summaries and reproduction patches remain under ignored
+`browser-artifacts/runtime-retention/`. Per-run profiles, native helpers,
+compiler caches, and servers are removed. No raw heap snapshot is saved.
+The [October 1 comparison](reports/runtime-retention-2026-10-01.md) records
+the measured source-retention fixes and their limits.
+
+Run the portable fixture regression with:
+
+```sh
+pnpm run test:regression -- --group=runtime --match=runtime-retention
+```
+
+It verifies lifecycle behavior in Firefox, Chromium, and WebKit. Chromium's
+CDP garbage collector additionally checks item and row reachability; the
+installed-Firefox diagnostic remains the primary memory comparison.
+
 ## Preserve reproducibility
 
 Each run keeps `summary.json`, `reproduce.json`, and `reproduce.patch` under ignored

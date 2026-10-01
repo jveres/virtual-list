@@ -480,6 +480,10 @@ interaction; the [README](../README.md) lists the public options.
   change). Heights are measured or declared, never estimated. After a
   viewport width change, a detached row keeps its old-width measurement
   until it's read again.
+  Creation copies the top-level configuration separately from the initial
+  item snapshot. Replacing items can release the initial snapshot; disposal
+  clears the last desired source snapshot. Hosts still release their own
+  item references, callback closures, and disposed API handles.
   Hosts window their data; the chat demo hands the runtime a modest loaded
   window. Measured rows keep their rendered element and their clip slot for
   their whole life, including while unmounted; element-local state
