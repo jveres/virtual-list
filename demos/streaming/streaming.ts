@@ -3601,11 +3601,9 @@ async function scrollToLatest(): Promise<boolean> {
     setBottomLoading(true);
     syncMetrics();
     try {
-      // Start moving through the loaded window while the evicted tail is
-      // prepared. Its replacement takes over only when ready to animate.
-      void list
-        .scrollTo("end", { behavior: "smooth" })
-        .catch(reportPagingError);
+      // Prepare the final destination before starting native motion. An
+      // approach through the old window would be cancelled at replacement,
+      // resetting the browser's easing halfway through this navigation.
       const committed = await list.updateWindow(
         () => {
           if (controller.signal.aborted || epoch !== conversationEpoch)

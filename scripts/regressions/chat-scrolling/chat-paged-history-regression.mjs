@@ -23,10 +23,11 @@ async function smoothBottom(page) {
     const initialWindow = status();
     let firstRequestWindow;
     const legs = [];
+    const interruptions = [];
     const scrollTo = viewport.scrollTo;
     viewport.scrollTo = function (options) {
       if (options.behavior === "smooth" && initial === null) {
-        // The approach must begin in the old window while the tail prepares.
+        // The destination must be ready before the one native animation.
         firstRequestWindow = status();
         initial = viewport.scrollTop;
         maximum = viewport.scrollHeight - viewport.clientHeight;
@@ -34,6 +35,7 @@ async function smoothBottom(page) {
       }
       if (options.behavior === "smooth")
         legs.push({ from: viewport.scrollTop, to: options.top, positions: [] });
+      else if (legs.length) interruptions.push(options);
       return scrollTo.call(this, options);
     };
     const capture = () => {
@@ -55,6 +57,7 @@ async function smoothBottom(page) {
         initial,
         maximum,
         legs,
+        interruptions,
         tailRenderedSynchronously,
         initialWindow,
         firstRequestWindow,
@@ -73,11 +76,13 @@ async function smoothBottom(page) {
     "restoration yields before rendering the evicted tail",
   );
   assert.notEqual(result.initial, null, "restoration starts native animation");
-  assert.equal(
+  assert.notEqual(
     result.firstRequestWindow,
     result.initialWindow,
-    "native movement starts before the tail finishes preparing",
+    "tail preparation finishes before native movement starts",
   );
+  assert.equal(result.legs.length, 1, "bottom navigation has one easing curve");
+  assert.deepEqual(result.interruptions, [], "no mid-animation cancellation");
   assert.ok(
     result.maximum - result.initial > 100,
     "restoration must not land at the end before the glide",

@@ -7,6 +7,13 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 1 bottom navigation
+
+The [bottom-navigation investigation](bottom-navigation-2026-10-01.md)
+identifies an explicit cancellation and restart when restoring an evicted
+chat tail. The candidate uses one native animation after preparation; the
+report records the startup-latency tradeoff and matched Firefox captures.
+
 ## September 30 runtime performance audit
 
 The [runtime audit](runtime-performance-audit-2026-09-30.md) records fresh
