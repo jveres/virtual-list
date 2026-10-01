@@ -394,6 +394,7 @@ try {
       `(() => { document.querySelector('[data-layout="${options.layout}"]').click(); return true; })()`,
     );
   }
+  // Page readiness can precede the accessible native window on a warm server.
   execFileSync(
     "osascript",
     [
@@ -401,6 +402,10 @@ try {
       `tell application "System Events"
     tell first application process whose unix id is ${child.pid}
       set frontmost to true
+      repeat 100 times
+        if (count of windows) > 0 then exit repeat
+        delay 0.1
+      end repeat
       set position of front window to {${Math.round(monitor.x + 10)}, ${Math.round(monitor.y + 10)}}
       set size of front window to {${Math.floor(monitor.width - 20)}, ${Math.floor(monitor.height - 20)}}
     end tell

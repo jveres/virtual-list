@@ -3,6 +3,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+  advanceFramesUntil,
   fireResize,
   flowHeight,
   type Harness,
@@ -18,8 +19,9 @@ import {
 // A viewport width change reads in two tiers. Rows connected to the canvas
 // (the window) are read in the delivery: the engine has laid them out. Rows
 // detached at that moment keep their old-width height until the width has
-// been quiet for 150ms, until they mount, or until a settle, a command, or a
-// window job needs exact geometry. `state.held` reports the wait.
+// been quiet for 150ms and background batches read them, until they mount,
+// or until a settle, a command, or a window job needs exact geometry.
+// `state.held` reports the wait.
 
 useHarness();
 
@@ -117,6 +119,8 @@ describe("viewport width change: two tiers", () => {
     expect(h.measured).not.toContain(49);
 
     vi.advanceTimersByTime(1);
+    expect(h.measured).toContain(0);
+    advanceFramesUntil(() => !h.list.state.held);
     expect(h.list.state.held).toBe(false);
     expect(h.list.state.totalSize).toBe(COUNT * 150);
     expect(h.measured.filter((id) => id === 0)).toHaveLength(1);

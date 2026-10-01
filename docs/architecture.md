@@ -132,10 +132,13 @@ detaches, as offscreen rows always did. A lone row updated offscreen, such as
 a streaming reply the user scrolled away from, stays laid out between tokens.
 
 A viewport width change reads the rows connected to the canvas in its
-delivery. Detached rows keep their old-width height until the width has been
-unchanged for 150 ms, or until they mount, a scroll phase settles, a command
-takes over, or a window job commits. Connecting every loaded row on each
-delivery made a window drag cost a first layout of the whole list per frame.
+delivery. After the width has been unchanged for 150 ms, background commits
+read detached rows in bounded groups across frames. Each group preserves the
+reading anchor; rows keep their old-width height until their group is read.
+Mounting reads a waiting row sooner. A scroll phase settling, a command taking
+over, or a window job committing reads all remaining rows. Connecting every
+loaded row on each delivery made a window drag cost a first layout of the whole
+list per frame.
 The [core contract](core-contract.md#viewport-width-changes) has the rule.
 
 This removes `premeasure.ts`, the `measurementContainer` option, width

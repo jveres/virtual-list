@@ -4734,6 +4734,7 @@ describe("runtime — commits and slots", () => {
     // Rows out of the window follow once the width has been quiet.
     expect(h.list.state.held).toBe(true);
     vi.advanceTimersByTime(150);
+    advanceFramesUntil(() => !h.list.state.held);
     expect(h.list.state.held).toBe(false);
     expect(h.list.state.totalSize).toBe(50 * 101); // Integral geometry.
 
@@ -6072,6 +6073,42 @@ describe("runtime — commands", () => {
     h.list.dispose();
   });
 
+  it.each(["start", "end", "both"] as const)(
+    "should reevaluate a stateful pin in source order with %s edge slots",
+    async (edge) => {
+      let target = 18;
+      const seen: number[] = [];
+      const slot = {
+        key: "loader",
+        height: 52,
+        render: () => document.createElement("div"),
+      };
+      const h = mount(range(0, 20), {
+        boot: "start",
+        edgeSlots: {
+          start: edge !== "end" ? slot : null,
+          end: edge !== "start" ? slot : null,
+        },
+        pinning: {
+          match: (item) => {
+            seen.push(item.id);
+            return item.id === target;
+          },
+          offset: 40,
+        },
+      });
+      target = 16;
+      seen.length = 0;
+
+      h.list.updateItem("m19", message(19, "new reply"));
+
+      expect(seen).toEqual([19, 18, 17, 16]);
+      await expect(h.list.scrollTo("end")).resolves.toBe(true);
+      expect(h.viewport.scrollTop).toBe((edge === "end" ? 0 : 52) + 1600 - 40);
+      h.list.dispose();
+    },
+  );
+
   it("should retain the prepared inset while a snapshot is held", () => {
     let offset = 40;
     const h = mount(range(0, 20), {
@@ -7166,6 +7203,119 @@ describe("boot position", () => {
 });
 
 describe("viewport width change", () => {
+  it("should yield between detached reflows while preserving the reading anchor", async () => {
+    let width = 300;
+    const reads: number[] = [];
+    const h = mount(range(0, 240), {
+      width: () => width,
+      onMeasure: (item) => reads.push(item.id),
+    });
+    await h.list.scrollTo("m120");
+    for (let id = 0; id < 240; id++) h.heights.set(id, 120);
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    reads.length = 0;
+
+    vi.advanceTimersByTime(150);
+
+    expect(reads.length).toBeGreaterThan(0);
+    expect(reads.length).toBeLessThan(100);
+    expect(h.list.state.held).toBe(true);
+    for (let frame = 0; frame < 100 && h.list.state.held; frame++) {
+      expect(h.viewport.scrollTop).toBe(h.list.positionOf("m120")?.top);
+      vi.advanceTimersByTime(16);
+    }
+    expect(h.list.state.held).toBe(false);
+    expect(h.list.state.totalSize).toBe(240 * 120);
+    expect(h.viewport.scrollTop).toBe(120 * 120);
+    h.list.dispose();
+  });
+
+  it("should restart the quiet wait after a new width and drain before a command", async () => {
+    let width = 300;
+    let reads = 0;
+    const h = mount(range(0, 240), {
+      width: () => width,
+      onMeasure: () => reads++,
+    });
+    await h.list.scrollTo("m120");
+    for (let id = 0; id < 240; id++) h.heights.set(id, 120);
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    vi.advanceTimersByTime(150);
+    expect(h.list.state.held).toBe(true);
+
+    for (let id = 0; id < 240; id++) h.heights.set(id, 140);
+    width = 400;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    reads = 0;
+    vi.advanceTimersByTime(100);
+
+    expect(reads).toBe(0);
+    expect(h.list.state.held).toBe(true);
+    await expect(h.list.scrollTo("m200")).resolves.toBe(true);
+    expect(h.list.state.held).toBe(false);
+    expect(h.viewport.scrollTop).toBe(200 * 140);
+    expect(h.list.state.totalSize).toBe(240 * 140);
+    const settledReads = reads;
+    vi.advanceTimersByTime(1000);
+    expect(reads).toBe(settledReads);
+    h.list.dispose();
+  });
+
+  it("should cancel the next detached reflow when disposed between batches", () => {
+    let width = 300;
+    let reads = 0;
+    const h = mount(range(0, 240), {
+      width: () => width,
+      onMeasure: () => reads++,
+    });
+    width = 500;
+    fireResize(1, h.viewport, VIEWPORT_H);
+    vi.advanceTimersByTime(150);
+    expect(h.list.state.held).toBe(true);
+
+    h.list.dispose();
+    reads = 0;
+    vi.advanceTimersByTime(1000);
+
+    expect(reads).toBe(0);
+    expect(h.viewport.childElementCount).toBe(0);
+    expect(h.destroyed).toHaveLength(240);
+    expect(new Set(h.destroyedElements).size).toBe(240);
+  });
+
+  it("should finish a partial resize drain when hidden animation frames stop", () => {
+    let width = 300;
+    const h = mount(range(0, 240), { width: () => width });
+    const frames = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockReturnValue(123);
+    const visibility = vi.spyOn(document, "visibilityState", "get");
+    try {
+      for (let id = 0; id < 240; id++) h.heights.set(id, 120);
+      width = 500;
+      fireResize(1, h.viewport, VIEWPORT_H);
+      vi.advanceTimersByTime(150);
+      expect(h.list.state.held).toBe(true);
+
+      visibility.mockReturnValue("hidden");
+      document.dispatchEvent(new Event("visibilitychange"));
+      vi.advanceTimersByTime(150);
+
+      expect(h.list.state.held).toBe(false);
+      expect(h.list.state.totalSize).toBe(240 * 120);
+      expect(h.list.positionOf("m239")).toEqual({
+        top: 239 * 120,
+        height: 120,
+      });
+    } finally {
+      h.list.dispose();
+      frames.mockRestore();
+      visibility.mockRestore();
+    }
+  });
+
   it("should preserve end-follow intent when a width change interrupts its glide", () => {
     let width = 300;
     const h = mount(range(0, 50), {

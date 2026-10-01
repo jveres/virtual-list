@@ -7,6 +7,40 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 1 runtime boundary optimizations
+
+The [implementation comparison](runtime-boundary-optimizations-2026-10-01.md)
+retains bounded resize draining and a cheaper declarative pin scan. It records
+the tradeoff between shorter frame gaps and later exact resize completion,
+and rejects positioned, edge-slot, and pager prototypes after a restored
+original-runtime control.
+
+## October 1 complete runtime audit
+
+The [complete runtime audit](runtime-complete-audit-2026-10-01.md) reviews every
+source module and measures large-window edits and resize completion in two
+installed-Firefox captures. It confirms remaining costs in detached-row resize
+draining, positioned edits, and edge-slot changes, plus conditional pin/pager
+costs. No production patch or measured optimization gain is claimed.
+
+## October 1 declared-row pooling
+
+The [pooling measurement](declared-pooling-2026-10-01.md) tests a bounded host
+pool with 10,000 declared-height cards in installed Firefox. It eliminates
+240 card-tree constructions and reduces host rendering time, but total CPU
+matches the restored non-pooled control and frame timing does not improve.
+Production behavior stays unchanged; the reusable fixture and cross-browser
+identity, geometry, and cleanup regression remain.
+
+## October 1 virtualization and layout web research
+
+The [web-research review](virtualization-web-research-2026-10-01.md) compares
+six virtualization projects with the current runtime and prior Firefox results.
+It prioritizes rendering within huge rows, constrained table layout, scroll-seek
+placeholders, declared-row pooling, and an estimate-based large-history control.
+These are unmeasured investigation candidates; no runtime patch or new speedup
+is claimed.
+
 ## October 1 bottom navigation
 
 The [bottom-navigation investigation](bottom-navigation-2026-10-01.md)

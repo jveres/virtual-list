@@ -42,6 +42,10 @@ export function markers(thread) {
 }
 
 export function analyze(profile, recording) {
+  // Fixtures may retain compact counters, never their full diagnostic records.
+  const fixtureSummary = recording.runtimeAudit?.fixtureSummary;
+  if (fixtureSummary && JSON.stringify(fixtureSummary).length > 65536)
+    throw new Error("Fixture summary exceeds 64 KiB");
   const processes = [];
   const visit = (process) => {
     processes.push(process);
@@ -98,6 +102,7 @@ export function analyze(profile, recording) {
     scrollEvents: recording.scrollEvents,
     scrollEnds: recording.scrollEnds,
     bursts: recording.bursts,
+    ...(fixtureSummary ? { fixtureSummary } : {}),
     markersMs: Object.fromEntries(
       [
         "RefreshDriverTick",

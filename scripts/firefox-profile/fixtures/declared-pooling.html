@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Declared card pooling comparison</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #edf1f5; color: #17212b; font: 14px system-ui; }
+  #status { height: 40px; padding: 8px 20px; }
+  #viewport { height: calc(100vh - 40px); overflow: auto; overscroll-behavior: contain; }
+  .card { height: 180px; padding: 8px 24px; }
+  .surface { height: 164px; max-width: 1050px; margin: auto; padding: 12px 16px; background: white; border: 1px solid #cbd5df; border-radius: 6px; }
+  header, footer, .metrics, .tags { display: flex; align-items: center; gap: 16px; }
+  header { justify-content: space-between; }
+  h2, p, dl { margin: 0; }
+  h2 { font-size: 16px; }
+  p { margin: 8px 0; }
+  .metrics { margin-bottom: 8px; }
+  .metric { display: flex; gap: 6px; }
+  dd { margin: 0; font-weight: 600; }
+  footer { justify-content: space-between; }
+  .tags { gap: 6px; }
+  .tags span { padding: 2px 8px; background: #e9eff5; border-radius: 4px; }
+  button { min-width: 72px; }
+</style>
+</head>
+<body>
+<div id="status">10,000 declared cards; deterministic local content</div>
+<div id="viewport"></div>
+<script type="module" src="./declared-pooling.js"></script>
+</body>
+</html>

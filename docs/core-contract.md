@@ -275,12 +275,15 @@ heights don't depend on the width and aren't read.
   height measured at the old width until the runtime reads it again.
   `state.held` is `true` while such rows wait.
 
-The first of these events reads the waiting rows:
+The following events read waiting rows:
 
-- **The width stays unchanged for 150 ms.** One pass reads every waiting row
-  and commits on the viewport's anchor, so nothing on screen moves. A newer
-  width change restarts the wait. A scroll phase or a pending `remeasure`
-  postpones the pass.
+- **The width stays unchanged for 150 ms.** Background commits read bounded
+  groups of waiting rows across animation frames. Each commit preserves the
+  viewport's anchor. `state.held` stays true until the remaining rows are read.
+  A newer width change cancels the scheduled batch and restarts the wait.
+  A scroll phase or a pending `remeasure` postpones background batches.
+  In a hidden document, the timer reads the remaining rows in one pass because
+  animation frames can stop.
 - **The row mounts.** Its height commits under the one commit rule (rule 4):
   at once when the list is idle, when the row sits at or below the anchor,
   or under native anchoring away from the edges and outside a glide;

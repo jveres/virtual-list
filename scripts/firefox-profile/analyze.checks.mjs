@@ -96,6 +96,20 @@ test("the long-frame threshold follows the recorded display refresh rate", () =>
   assert.equal(result.longIntervals, 3);
 });
 
+test("analysis retains bounded fixture counters without raw audit events", () => {
+  const fixtureSummary = { created: 12, reused: 300 };
+  const input = {
+    ...recording(),
+    runtimeAudit: { fixtureSummary, events: ["temporary diagnostic input"] },
+  };
+  const result = analyze(fixture(), input);
+  assert.deepEqual(result.fixtureSummary, fixtureSummary);
+  assert.equal("runtimeAudit" in result, false);
+  assert.equal("fixtureSummary" in analyze(fixture(), recording()), false);
+  input.runtimeAudit.fixtureSummary = { data: "x".repeat(65536) };
+  assert.throws(() => analyze(fixture(), input), /exceeds 64 KiB/);
+});
+
 test("analysis reports live capture without labelling it as shutdown capture", () => {
   const result = analyze(fixture(), { ...recording(), capture: "live" });
   assert.equal(result.capture, "live");

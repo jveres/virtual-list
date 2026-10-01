@@ -69,12 +69,13 @@ for (const engine of [firefox, chromium, webkit]) {
             });
             return { list, viewport };
           };
-          const settled = async (list) => {
+          const settled = async (list, checkFrame = () => {}) => {
             const deadline = performance.now() + 5000;
             while (list.state.held) {
               if (performance.now() > deadline)
                 throw new Error("held never cleared");
               await frame();
+              checkFrame();
             }
           };
           const positions = (list) =>
@@ -133,7 +134,7 @@ for (const engine of [firefox, chromium, webkit]) {
           const narrowed = await burst("narrow", 800, -8);
           const heldAfterNarrow = list.state.held;
           const started = performance.now();
-          await settled(list);
+          await settled(list, () => check("narrow drain"));
           const waited = performance.now() - started;
           check("narrow quiet");
           const narrow = build(640);

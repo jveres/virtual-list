@@ -63,6 +63,8 @@ const MIN_OVERSCAN_PX = 300;
 const IDLE_SLICE_MIN_MS = 4;
 /** A width this long unchanged is settled: rows it left detached are read. */
 const WIDTH_QUIET_MS = 150;
+/** Bound background reflow; explicit commands still drain exact geometry. */
+const WIDTH_DRAIN_ROWS = 32;
 /** A window update adding more fresh rows prepares them across frames. */
 const JOB_MIN_ROWS = 8;
 const SLOT_PREFIX = "\u0000edge:";
@@ -280,6 +282,7 @@ export function createVirtualList<T>(
   /** Detached at a width change: their heights are of the old width. */
   const staleRows = new Set<Row<T>>();
   let staleTimer = 0;
+  let staleFrame = 0;
   /** A stale row joined the window: the next reconciliation commits it. */
   let staleMounted = false;
   let committedKeys: readonly string[] = [];
@@ -772,6 +775,8 @@ export function createVirtualList<T>(
 
   /** The next commit reads the rows a width change left detached. */
   function flushStale(): void {
+    cancelAnimationFrame(staleFrame);
+    staleFrame = 0;
     for (const row of staleRows) markDirty(row);
     staleRows.clear();
   }
@@ -796,13 +801,49 @@ export function createVirtualList<T>(
   /** Drain once the width has been quiet; a newer change restarts the wait. */
   function awaitQuietWidth(): void {
     clearTimeout(staleTimer);
+    cancelAnimationFrame(staleFrame);
+    staleFrame = 0;
     staleTimer = window.setTimeout(() => {
       staleTimer = 0;
-      if (disposed) return;
-      // A phase or a remeasure owns the next commit: look again after it.
-      if (!idle() || remeasurePolicy !== undefined) awaitQuietWidth();
-      else pass(drainStale);
+      drainStaleBatch();
     }, WIDTH_QUIET_MS);
+  }
+
+  /** Each background commit preserves the anchor before yielding to input. */
+  function drainStaleBatch(): void {
+    staleFrame = 0;
+    if (disposed || staleRows.size === 0) return;
+    // A phase or a remeasure owns the next commit: look again after it.
+    if (!idle() || remeasurePolicy !== undefined) {
+      awaitQuietWidth();
+      return;
+    }
+    // Animation frames can stop in a hidden document. Finish from the timer
+    // there; no visible frame needs the work spread across paint opportunities.
+    if (document.visibilityState === "hidden") {
+      pass(drainStale);
+      return;
+    }
+    try {
+      pass(() => {
+        let count = 0;
+        for (const row of staleRows) {
+          staleRows.delete(row);
+          markDirty(row);
+          if (++count === WIDTH_DRAIN_ROWS) break;
+        }
+        commit(null, {
+          policy: "viewport",
+          keepFollow: true,
+          instant: true,
+          retainViewportReserve: false,
+        });
+      });
+    } finally {
+      // A host callback can dispose, drain, or start a newer width's wait.
+      if (!disposed && staleRows.size > 0 && staleTimer === 0)
+        staleFrame = requestAnimationFrame(drainStaleBatch);
+    }
   }
 
   /** A row the window took in stale commits under the one commit rule. */
@@ -1053,7 +1094,10 @@ export function createVirtualList<T>(
 
   // A hidden document follows by write; the return cancels a leftover glide.
   const onVisibilityChange = (): void => {
-    if (document.visibilityState === "hidden") glide?.cancel();
+    if (document.visibilityState === "hidden") {
+      glide?.cancel();
+      if (!disposed && staleFrame !== 0) awaitQuietWidth();
+    }
     if (document.visibilityState !== "visible") return;
     follow.resume();
     glide?.cancel();
@@ -1105,17 +1149,21 @@ export function createVirtualList<T>(
   }
 
   /** Declarative pinning: the last matching item, chosen while staging. */
-  function selectPin(p: Pending<T>, itemAt: (key: string) => T | undefined) {
+  function selectPin(
+    p: Pending<T>,
+    items: readonly T[],
+    replacement?: { index: number; item: T },
+  ) {
     if (!pinPolicy) return;
     const offset = pinPolicy.offset ?? 0;
     p.pinOffset = Number.isFinite(offset) ? offset : 0;
     p.pinKey = null;
-    for (let index = p.keys.length - 1; index >= 0; index--) {
-      const key = p.keys[index] as string;
-      if (isSlotKey(key)) continue;
-      const item = itemAt(key);
+    const leading = isSlotKey(p.keys[0] ?? "") ? 1 : 0;
+    for (let index = items.length - 1; index >= 0; index--) {
+      const item =
+        replacement?.index === index ? replacement.item : items[index];
       if (item !== undefined && pinPolicy.match(item)) {
-        p.pinKey = key;
+        p.pinKey = p.keys[index + leading] as string;
         return;
       }
     }
@@ -1341,7 +1389,7 @@ export function createVirtualList<T>(
     const p = newPending(keys, requested, previous);
     p.declared = heights;
     p.positioned = preparePositioned(heights);
-    selectPin(p, (key) => byKey.get(key));
+    selectPin(p, items);
     const ok = prepare(
       p,
       keys,
@@ -2273,9 +2321,7 @@ export function createVirtualList<T>(
         p.declared = new Map([[key, entry]]);
         p.patch = true;
       }
-      selectPin(p, (other) =>
-        other === key ? item : lastItems[indexByKey.get(other) ?? -1],
-      );
+      selectPin(p, lastItems, { index, item });
       if (!prepare(p, [key], () => item, previous, false)) return;
       lastItems[index] = item;
       revision += 1;
@@ -2991,6 +3037,7 @@ export function createVirtualList<T>(
     if (observeFrame !== 0) cancelAnimationFrame(observeFrame);
     if (remeasureFrame !== 0) cancelAnimationFrame(remeasureFrame);
     clearTimeout(staleTimer);
+    cancelAnimationFrame(staleFrame);
     staleRows.clear();
     remeasureRequests.clear();
     rowObserver.disconnect();
