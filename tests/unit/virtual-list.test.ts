@@ -7145,6 +7145,50 @@ describe("targeted item updates", () => {
 
 describe("declared heights", () => {
   it.each([false, true])(
+    "should refresh the device grid between snapshots and individual edits (positioned=%s)",
+    (positioned) => {
+      const items = range(0, 20);
+      const height = vi.fn(() => 99.3);
+      const position = vi.fn((item: Msg) => ({
+        top: item.id * 100.13,
+        lane: 0,
+      }));
+      vi.stubGlobal("devicePixelRatio", 1);
+      const h = mount(items, {
+        boot: "start",
+        itemHeight: height,
+        position: positioned ? position : undefined,
+      });
+
+      for (const ratio of [1.25, 2, 1.5]) {
+        vi.stubGlobal("devicePixelRatio", ratio);
+        height.mockClear();
+        position.mockClear();
+
+        h.list.setItems(items);
+
+        const size =
+          !positioned && Number.isInteger(ratio)
+            ? 100
+            : Math.ceil(99.3 * ratio) / ratio;
+        expect(height).toHaveBeenCalledTimes(items.length);
+        expect(position).toHaveBeenCalledTimes(positioned ? items.length : 0);
+        expect(h.list.positionOf("m7")?.height).toBeCloseTo(size, 8);
+        expect(h.list.positionOf("m7")?.top).toBeCloseTo(
+          positioned ? Math.round(7 * 100.13 * ratio) / ratio : 7 * size,
+          8,
+        );
+      }
+
+      vi.stubGlobal("devicePixelRatio", 2);
+      h.list.updateItem("m7", message(7, "new grid"));
+
+      expect(h.list.positionOf("m7")?.height).toBe(positioned ? 99.5 : 100);
+      h.list.dispose();
+    },
+  );
+
+  it.each([false, true])(
     "should reject duplicate snapshot keys before rendering and preserve committed data (declared=%s)",
     (declared) => {
       const effects: string[] = [];

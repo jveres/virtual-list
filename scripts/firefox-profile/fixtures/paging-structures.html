@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Runtime paging structures</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/20px system-ui; background: #edf1f5; }
+  #status { height: 40px; padding: 10px; }
+  #viewport { width: 1100px; max-width: 100%; height: calc(100vh - 40px); overflow: auto; overscroll-behavior: contain; }
+  .row { background: white; border-bottom: 1px solid #ccd; }
+</style>
+</head>
+<body>
+<div id="status">Runtime paging fixture</div>
+<div id="viewport"></div>
+<script type="module" src="./paging-structures.js"></script>
+</body>
+</html>

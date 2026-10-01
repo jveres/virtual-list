@@ -7,6 +7,15 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 pixel-ratio reads and remaining investigations
+
+The [pixel-ratio comparison](runtime-pixel-ratio-2026-10-02.md) confirms an 8%
+improvement for large positioned edits and 4–6% shorter positioned structural
+batches by sharing device-grid reads within synchronous passes. The
+[investigation record](runtime-investigations-2026-10-02.md) tracks compact
+declared-item snapshots, bulk paging, and sustained natural collection. The
+new paging fixture passes installed-Firefox validation at 120 cycles per case.
+
 ## October 1 runtime allocation and anchor lookup
 
 The [allocation and anchor follow-up](runtime-allocation-anchors-2026-10-01.md)

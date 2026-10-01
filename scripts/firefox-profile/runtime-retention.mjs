@@ -26,23 +26,29 @@ const { values: options } = parseArgs({
 });
 if (options.help) {
   console.log(
-    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--workload=lifecycle|structures|structures-natural] [--diagnostic] [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory. Lifecycle measures weak item/node counts for replacement, paging, and disposal; structures measures geometry and list API operations at 1k, 10k, and 100k items. structures-natural additionally records post-operation memory before requesting collection. --diagnostic requires structures and an owned server; adds GC/sample attribution, gap/overlap queries, tree-build controls, and a buffer-accounting probe. No native gesture timing claims.",
+    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--workload=lifecycle|structures|structures-natural|paging-natural] [--diagnostic] [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory. Lifecycle measures weak item/node counts for replacement, paging, and disposal; structures measures geometry and list API operations at 1k, 10k, and 100k items. structures-natural additionally records post-operation memory before requesting collection. paging-natural runs overlapping pages, cancellation, live edits and eviction without forced collection between cycles; use --cycles=120 for a sustained workload (maximum 240). --diagnostic requires structures or paging-natural and an owned server; adds GC/sample attribution and, for structures, gap/overlap queries, tree-build controls, and a buffer-accounting probe. No native gesture timing claims.",
   );
   process.exit(0);
 }
 const cycles = Number(options.cycles);
 assert.ok(
-  ["lifecycle", "structures", "structures-natural"].includes(options.workload),
+  ["lifecycle", "structures", "structures-natural", "paging-natural"].includes(
+    options.workload,
+  ),
   "Unknown workload",
 );
 const structures = options.workload.startsWith("structures");
+const paging = options.workload === "paging-natural";
 assert.ok(
-  !options.diagnostic || (structures && !options.url),
-  "Diagnostic capture requires structures and an owned server",
+  !options.diagnostic || ((structures || paging) && !options.url),
+  "Diagnostic capture requires structures or paging-natural and an owned server",
 );
 assert.ok(
-  Number.isInteger(cycles) && cycles >= 4 && cycles <= 24 && cycles % 4 === 0,
-  "cycles must be 4..24 in groups of four",
+  Number.isInteger(cycles) &&
+    cycles >= 4 &&
+    cycles <= (paging ? 240 : 24) &&
+    cycles % 4 === 0,
+  `cycles must be 4..${paging ? 240 : 24} in groups of four`,
 );
 assert.equal(
   process.platform,
@@ -72,12 +78,17 @@ const report = {
   checkpoints: [],
   footprintRetries: [],
   profiles: [],
-  measurement: `${structures ? "Geometry/list API wall timings and storage" : "WeakRef counts"}; explicit window reporter bytes; owned-process physical footprints. Checkpoints request Firefox minimizeMemoryUsage (GC, cycle collection, memory pressure) unless minimize=false; structures-natural adds an unforced checkpoint after exercise. Forced collection between cases alters natural cache/GC behavior. Diagnostics add per-case 2 ms sampled JS profiles and clipped GC/CC slices during marked workload phases, including warmup and frame waits but excluding diagnostic collections. Profiler overhead affects timing and memory. Instant API scrolling, not native gesture timing.`,
+  naturalSamples: [],
+  measurement: `${structures ? "Geometry/list API wall timings and storage" : paging ? "Paging API wall timings, ownership and storage" : "WeakRef counts"}; explicit window reporter bytes; owned-process physical footprints. Checkpoints request Firefox minimizeMemoryUsage (GC, cycle collection, memory pressure) unless minimize=false; structures-natural and paging-natural add an unforced checkpoint after exercise. Paging cycles have no forced collection or diagnostic tabs; naturalSamples records process footprints every twenty cycles and at the end. Forced collection between cases alters natural cache/GC behavior. Diagnostics add per-case 2 ms sampled JS profiles and clipped GC/CC slices during marked workload phases, including warmup and frame waits but excluding diagnostic collections. Profiler overhead affects timing and memory. Instant API scrolling, not native gesture timing.`,
 };
 const geometryExpression =
   "({x:screenX,y:screenY,outerWidth,outerHeight,innerWidth,innerHeight,dpr:devicePixelRatio})";
-const fixturePath = `/scripts/firefox-profile/fixtures/${structures ? "data-structures" : "runtime-retention"}.html`;
-const fixtureAPI = structures ? "__dataStructures" : "__runtimeRetention";
+const fixturePath = `/scripts/firefox-profile/fixtures/${structures ? "data-structures" : paging ? "paging-structures" : "runtime-retention"}.html`;
+const fixtureAPI = structures
+  ? "__dataStructures"
+  : paging
+    ? "__pagingStructures"
+    : "__runtimeRetention";
 function check() {
   assert.equal(interrupted, false, "Capture interrupted");
   const session = JSON.parse(
@@ -241,7 +252,61 @@ try {
   report.geometry = await browser.evaluate(geometryExpression);
   validateDisplay(display, report.geometry);
   await checkpoint("empty");
-  if (structures) {
+  if (paging) {
+    for (const [mode, count] of [
+      ["stacked", 480],
+      ["positioned", 2000],
+      ["stacked", 10000],
+    ]) {
+      await browser.evaluate(
+        `${fixtureAPI}.prepare(${JSON.stringify(mode)}, ${count})`,
+      );
+      await checkpoint(`${mode}:${count}:loaded`);
+      if (options.diagnostic) {
+        await browser.startProfile();
+        await browser.evaluate("performance.mark('ff-profile-start')");
+      }
+      for (let index = 1; index <= cycles; index++) {
+        check();
+        await browser.evaluate(`${fixtureAPI}.cycle(${cycles})`);
+        if (index % 20 === 0 || index === cycles) {
+          assert.deepEqual(
+            await browser.evaluate(geometryExpression),
+            report.geometry,
+            "Display geometry changed",
+          );
+          report.naturalSamples.push({
+            label: `${mode}:${count}:${index}`,
+            processes: footprints(),
+          });
+          console.log(`${mode}:${count}:cycles=${index}`);
+        }
+      }
+      if (options.diagnostic)
+        await browser.evaluate("performance.mark('ff-profile-end')");
+      await checkpoint(`${mode}:${count}:natural`, false);
+      const last = report.checkpoints.at(-1).page;
+      assert.equal(last.cycles, cycles);
+      assert.equal(last.cancelled, cycles / 4);
+      assert.equal(last.completedReaches, last.cancelled);
+      assert.ok(
+        last.evicted > 0 && last.activeItems <= count,
+        "Missing bounded eviction",
+      );
+      assert.ok(
+        last.distance > 10000 && last.scrolls > cycles && last.ends > 0,
+        "Stationary paging workload",
+      );
+      await checkpoint(`${mode}:${count}:exercised`);
+      if (options.diagnostic)
+        report.profiles.push({
+          label: `${mode}:${count}`,
+          ...summarizeStructureProfile(await browser.finishProfile()),
+        });
+      await browser.evaluate(`${fixtureAPI}.release()`);
+      await checkpoint(`${mode}:${count}:released`);
+    }
+  } else if (structures) {
     for (const mode of [
       "geometry",
       "geometry-sparse",

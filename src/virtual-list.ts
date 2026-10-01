@@ -87,14 +87,12 @@ function pixelRatio(): number {
 }
 
 /** A reading-anchor write lands on the device grid (I0). */
-function toDevicePixel(value: number): number {
-  const ratio = pixelRatio();
+function toDevicePixel(value: number, ratio = pixelRatio()): number {
   return Math.round(value * ratio) / ratio;
 }
 
 /** A positioned origin that survives engines rounding writes to CSS pixels. */
-function positionedOrigin(top: number): number {
-  const ratio = pixelRatio();
+function positionedOrigin(top: number, ratio = pixelRatio()): number {
   for (let step = 1; step <= 32; step++) {
     if (Math.abs(step * ratio - Math.round(step * ratio)) <= HEIGHT_NOISE)
       return Math.floor(top / step) * step;
@@ -251,8 +249,7 @@ export function createVirtualList<T>(
       : Math.max(MIN_OVERSCAN_PX, viewport.clientHeight);
 
   /** I0: whole CSS pixels at integral ratios, the device grid otherwise. */
-  function quantize(height: number): number {
-    const ratio = pixelRatio();
+  function quantize(height: number, ratio = pixelRatio()): number {
     if (!place && Number.isInteger(ratio))
       return Math.max(1, Math.ceil(height - HEIGHT_NOISE));
     return Math.max(
@@ -261,11 +258,11 @@ export function createVirtualList<T>(
     );
   }
 
-  function declaredHeight(item: T): number {
+  function declaredHeight(item: T, ratio?: number): number {
     const height = heightOf?.(item);
     if (height === undefined || !Number.isFinite(height) || height <= 0)
       throw new RangeError(`item height must be finite and > 0, got ${height}`);
-    return quantize(height);
+    return quantize(height, ratio);
   }
 
   // --- Committed state ------------------------------------------------------
@@ -1116,13 +1113,16 @@ export function createVirtualList<T>(
     const heights =
       withHeights && declared ? new Map<string, Declared<T>>() : null;
     const entries = heights ?? byKey;
+    // Use one device grid within this synchronous declaration pass.
+    const ratio = heights ? pixelRatio() : undefined;
     for (const item of items) {
       const key = keyOf(item);
       if (isSlotKey(key))
         throw new Error(`item key "${key}" uses the reserved edge-slot prefix`);
       if (entries.has(key)) throw new Error(`duplicate key "${key}"`);
       keys.push(key);
-      if (heights) heights.set(key, { item, height: declaredHeight(item) });
+      if (heights)
+        heights.set(key, { item, height: declaredHeight(item, ratio) });
       else byKey.set(key, item);
     }
     return { keys, byKey, heights };
@@ -1185,6 +1185,7 @@ export function createVirtualList<T>(
   ): PositionedGeometry | null {
     if (!place || !entries?.size) return null;
     const placed: PositionedItem[] = [];
+    const ratio = pixelRatio();
     let origin = Number.POSITIVE_INFINITY;
     for (const entry of entries.values()) {
       const position = place(entry.item);
@@ -1192,17 +1193,17 @@ export function createVirtualList<T>(
       if (!Number.isFinite(position.top))
         throw new RangeError("item top must be finite");
       // Snap in the shared coordinate system, before rebasing (I0).
-      const top = toDevicePixel(position.top);
+      const top = toDevicePixel(position.top, ratio);
       origin = Math.min(origin, top);
       placed.push({ top, lane: position.lane, height: entry.height });
     }
     if (placed.length === 0) return null;
     if (placed.length !== entries.size)
       throw new Error("a positioned snapshot must place every item or none");
-    origin = positionedOrigin(origin);
+    origin = positionedOrigin(origin, ratio);
     const start = edgeSlots.start;
     const end = edgeSlots.end;
-    const leading = start ? quantize(start.height) : 0;
+    const leading = start ? quantize(start.height, ratio) : 0;
     let bottom = leading;
     for (const item of placed) {
       item.top += leading - origin;
@@ -1210,7 +1211,11 @@ export function createVirtualList<T>(
     }
     if (start) placed.unshift({ top: 0, height: leading, lane: 0 });
     if (end)
-      placed.push({ top: bottom, height: quantize(end.height), lane: 0 });
+      placed.push({
+        top: bottom,
+        height: quantize(end.height, ratio),
+        lane: 0,
+      });
     return new PositionedGeometry(placed);
   }
 

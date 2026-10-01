@@ -263,6 +263,43 @@ profiles are deleted immediately after parsing, including on parser failure.
 The [allocation and anchor study](reports/runtime-allocation-anchors-2026-10-01.md)
 records the matched baseline, candidate, repeat, and accounting limits.
 
+## Exercise sustained paging without forced collection
+
+Use `paging-natural` to investigate page overlap, cancellation, live edits,
+eviction, and natural collection over a longer sequence:
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=paging-natural --cycles=120 --diagnostic --display=LU28R55 --output=browser-artifacts/paging-natural
+```
+
+The synthetic cases use stacked lists with 480 and 10,000 retained items, and
+a four-lane positioned list with 2,000 retained items. Each page contains one
+quarter of the item budget and overlaps its neighbor by 20%. Each cycle edits
+an overlapping item, loads a page, and reconciles eviction. Every fourth cycle
+also cancels a load whose source resolves afterward. The final quarter of the
+cycles pages in the reverse direction. Assertions check preserved edits,
+bounded ownership, actual movement, scroll-end events, and row disposal.
+
+The runner forces collection before and after each case, but never between its
+cycles. It samples process footprints every twenty cycles and at the end,
+without opening diagnostic tabs during the cycle sequence. The default is
+twelve cycles; the supported range is 4–240 in multiples of four. The optional
+profile records per-cycle JavaScript samples and GC/CC slices. Edit, load, and
+reconcile timings include awaited work and are wall times, not exclusive CPU.
+Lifetime process peaks can include earlier cases and diagnostics. This workload
+doesn't measure native input or physical presentation.
+
+Run the fixture's correctness regression with:
+
+```sh
+pnpm run test:regression -- --group=runtime --match=paging-structures
+```
+
+This checks twelve cycles of each case in Firefox, Chromium, and WebKit. Its
+headless results establish correctness only. The
+[investigation record](reports/runtime-investigations-2026-10-02.md) tracks the
+installed-Firefox measurements for this workload.
+
 ## Preserve reproducibility
 
 Each run keeps `summary.json`, `reproduce.json`, and `reproduce.patch` under ignored
