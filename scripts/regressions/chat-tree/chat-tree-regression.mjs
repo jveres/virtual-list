@@ -252,10 +252,11 @@ for (const engine of [firefox, webkit, chromium]) {
         const style = getComputedStyle(element, "::after");
         return {
           name: style.animationName,
-          property: style.transitionProperty,
+          iterations: style.animationIterationCount,
         };
       });
     assert.equal((await pulse()).name, "conversation-tree-current-pulse");
+    assert.equal((await pulse()).iterations, "infinite");
     await page.emulateMedia({ reducedMotion: "reduce" });
     assert.equal((await pulse()).name, "none");
     await page.emulateMedia({ reducedMotion: "no-preference" });

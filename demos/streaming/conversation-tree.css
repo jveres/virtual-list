@@ -297,11 +297,8 @@
   box-shadow: 0 0 0 3px
     color-mix(in srgb, var(--accent) 20%, var(--conversation-tree-bg));
 }
-/* A ring that breathes by opacity alone, a few times after the reading
- * position moves. It animates on the compositor, so it stays smooth under
- * main-thread load. A running animation also gives the zoomed canvas its own
- * layer, which browsers scale as a bitmap. Stopping lets the tree repaint
- * sharp at any zoom. */
+/* A repeating ripple around the reading dot. Only the ring moves; the dot
+ * and label stay still. Fade out before resetting for a seamless loop. */
 .conversation-tree-node[data-reading] .conversation-tree-glyph::after {
   content: "";
   position: absolute;
@@ -310,11 +307,20 @@
   border-radius: 50%;
   pointer-events: none;
   opacity: 0;
-  animation: conversation-tree-current-pulse 2.4s ease-in-out 3;
+  animation: conversation-tree-current-pulse 2.4s ease-out infinite;
 }
 @keyframes conversation-tree-current-pulse {
-  50% {
-    opacity: 0.45;
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  15% {
+    opacity: 0.55;
+  }
+  80%,
+  100% {
+    transform: scale(1.45);
+    opacity: 0;
   }
 }
 @media (prefers-reduced-motion: reduce) {
