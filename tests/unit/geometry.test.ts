@@ -5,6 +5,7 @@ import {
   Geometry,
   type GeometryViewport,
 } from "../../src/geometry";
+import { KeyIndex } from "../../src/key-index";
 
 // The geometry kernel is judged by the core invariants (docs/core-contract.md):
 // I1 — the resolved scroll target keeps the visible anchor's viewport
@@ -104,6 +105,9 @@ describe("input invariants", () => {
     expect(() => geometry.setKeys([...keysRange(0, 10), "poison"])).toThrow(
       /poison/,
     );
+    expect(() =>
+      geometry.setKeys(new KeyIndex([...keysRange(0, 10), "poison"])),
+    ).toThrow(/poison/);
     expect(() => geometry.setKeys(["m0", "m1", "m1"])).toThrow(/duplicate key/);
 
     // Keys, index map, and tree still describe the old snapshot together.
@@ -116,6 +120,28 @@ describe("input invariants", () => {
       geometry.setKeys(keysRange(0, 12)),
     );
     expect(geometry.count).toBe(12);
+  });
+
+  it("should share key order without sharing measurements or later replacements", () => {
+    const keys = ["a", "b"];
+    const order = new KeyIndex(keys);
+    const first = new Geometry(100);
+    const second = new Geometry(200);
+    first.setKeys(order);
+    second.setKeys(order);
+    keys.reverse();
+    first.measure("a", 10.25);
+    second.measure("b", 20.5);
+
+    first.setKeys(new KeyIndex(["b", "c"]));
+
+    expect(first.offsetOf("b")).toBe(0);
+    expect(first.heightOf("b")).toBe(100);
+    expect(first.contentSize).toBe(200);
+    expect(second.offsetOf("b")).toBe(200);
+    expect(second.contentSize).toBe(220.5);
+    expect(second.keyIndex.matches(["a", "b"])).toBe(true);
+    expect(second.indexOf("c")).toBe(-1);
   });
 
   it("a measured key never consults the estimator again", () => {
@@ -167,6 +193,34 @@ describe("offsets and totals", () => {
     transact(geometry, viewport(0), "none", () => geometry.setKeys(["a", "b"]));
     expect(geometry.heightOf("b")).toBe(100);
     expect(geometry.isMeasured("b")).toBe(false);
+  });
+
+  it("should preserve fractional learned heights by identity when measured and estimated rows exchange indices", () => {
+    let estimate = 80;
+    const geometry = new Geometry(() => estimate);
+    geometry.setKeys(["small", "unseen", "large"]);
+    geometry.measure("small", 0.125);
+    geometry.measure("large", 2 ** 24 + 0.25);
+
+    estimate = 90;
+    geometry.setKeys(["large", "small", "unseen", "new"]);
+
+    expect(geometry.heightOf("large")).toBe(2 ** 24 + 0.25);
+    expect(geometry.heightOf("small")).toBe(0.125);
+    expect(geometry.offsetOf("unseen")).toBe(2 ** 24 + 0.375);
+    expect(geometry.isMeasured("unseen")).toBe(false);
+    expect(geometry.isMeasured("new")).toBe(false);
+    expect(geometry.isMeasured("absent")).toBe(false);
+    expect(geometry.contentSize).toBe(2 ** 24 + 180.375);
+
+    estimate = 100;
+    expect(geometry.heightOf("unseen")).toBe(100);
+    expect(geometry.heightOf("absent")).toBe(100);
+    geometry.setKeys(["unseen", "new"]);
+    geometry.setKeys(["small", "new", "large"]);
+    expect(geometry.isMeasured("small")).toBe(false);
+    expect(geometry.heightOf("large")).toBe(100);
+    expect(geometry.contentSize).toBe(300);
   });
 });
 

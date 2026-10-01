@@ -6,6 +6,24 @@ import {
 } from "../../src/positioned-geometry";
 
 describe("positioned geometry", () => {
+  it("should preserve fractional boundaries at large coordinates", () => {
+    const top = 2 ** 25 + 0.25;
+    const layout = new PositionedGeometry([
+      { top, height: 0.5, lane: Number.MAX_SAFE_INTEGER },
+      { top: top + 0.75, height: 0.25, lane: 0 },
+    ]);
+
+    expect(layout.top(0)).toBe(top);
+    expect(layout.top(-1)).toBe(-1);
+    expect(layout.top(0.5)).toBe(-1);
+    expect(layout.top(2)).toBe(-1);
+    expect(layout.totalSize).toBe(top + 1);
+    expect(layout.window(top, top + 0.25).indices).toEqual([0]);
+    expect(layout.window(top + 0.5, top + 0.75).indices).toEqual([]);
+    expect(layout.window(top + 0.75, top + 1).indices).toEqual([1]);
+    expect(layout.anchorAt(top + 0.25, () => false, true)).toBe(0);
+  });
+
   it("should preserve exact membership and deltas through reversals, resizing, gaps and jumps", () => {
     const items = Array.from({ length: 200 }, (_, i) => ({
       top: Math.floor(i / 5) * 113.25 + (i % 5) * 9.5,
@@ -187,6 +205,44 @@ describe("positioned geometry", () => {
       for (const permutation of permutations) {
         const layout = new PositionedGeometry(permutation);
         for (const divisor of [1, 3, 7, 49]) {
+          const excluded = (index: number) => (index + 1) % divisor === 0;
+          for (const top of queries) {
+            const expected = layout.anchorAt(top, excluded);
+
+            expect(layout.anchorAt(top, excluded, true)).toBe(expected);
+          }
+        }
+      }
+    },
+  );
+
+  it.each([1, 4, 7])(
+    "should match source-order anchors across gaps and nested intervals in %i lanes",
+    (lanes) => {
+      const items = Array.from({ length: 96 }, (_, index) => ({
+        top: Math.floor(index / 4) * 32.25,
+        height: index % 13 === 0 ? 257.5 : 9.5 + (index % 3) * 6.125,
+        lane: index % lanes,
+      }));
+      const queries = [
+        -1,
+        ...items.flatMap(({ top, height }) => [
+          top,
+          top + height - 0.125,
+          top + height,
+          top + height + 0.125,
+        ]),
+        5000,
+      ];
+      const permutations = [
+        items,
+        [...items].reverse(),
+        [...items.filter((_, i) => i % 2), ...items.filter((_, i) => !(i % 2))],
+      ];
+
+      for (const permutation of permutations) {
+        const layout = new PositionedGeometry(permutation);
+        for (const divisor of [1, 3, 13, 97]) {
           const excluded = (index: number) => (index + 1) % divisor === 0;
           for (const top of queries) {
             const expected = layout.anchorAt(top, excluded);

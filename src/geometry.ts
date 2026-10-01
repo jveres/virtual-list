@@ -1,4 +1,5 @@
 import { FenwickTree } from "./fenwick";
+import { KeyIndex } from "./key-index";
 import type { GeometryWindow, PositionedGeometry } from "./positioned-geometry";
 
 // The keyed geometry kernel: items, measured or declared heights, offsets,
@@ -83,12 +84,13 @@ const EPSILON = 0.5;
 const AT_END_EPSILON = 1;
 
 export class Geometry {
-  private keys: readonly string[] = [];
-  private indexByKey = new Map<string, number>();
+  private order = new KeyIndex([]);
+  private keys = this.order.keys;
+  private indexByKey = this.order.positions;
   private tree = new FenwickTree(new Float64Array(0));
   private positioned: PositionedGeometry | null = null;
-  /** Learned (measured) heights by identity; estimates fill the rest. */
-  private readonly heightByKey = new Map<string, number>();
+  /** Learned heights at the current key indices; zero means unmeasured. */
+  private heights = new Float64Array(0);
   private readonly estimateForKey: (key: string) => number;
   private pinnedKey: string | null = null;
   /** Space reserved above the pinned key for host chrome. */
@@ -105,6 +107,10 @@ export class Geometry {
 
   get count(): number {
     return this.keys.length;
+  }
+
+  get keyIndex(): KeyIndex {
+    return this.order;
   }
 
   /**
@@ -133,8 +139,12 @@ export class Geometry {
 
   /** Learned height, or the (validated) estimate for unseen keys. */
   heightOf(key: string): number {
-    const learned = this.heightByKey.get(key);
-    if (learned !== undefined) return learned;
+    const index = this.indexByKey.get(key);
+    const learned = index === undefined ? 0 : (this.heights[index] as number);
+    return learned || this.estimate(key);
+  }
+
+  private estimate(key: string): number {
     const estimate = this.estimateForKey(key);
     if (!Number.isFinite(estimate) || estimate <= 0) {
       throw new Error(
@@ -145,7 +155,8 @@ export class Geometry {
   }
 
   isMeasured(key: string): boolean {
-    return this.heightByKey.has(key);
+    const index = this.indexByKey.get(key);
+    return index !== undefined && this.heights[index] !== 0;
   }
 
   /** Content-space top of the item; `indexOf(key) === -1` yields -1. */
@@ -315,27 +326,24 @@ export class Geometry {
    * removed pin transfers to a known replacement, otherwise it is cleared.
    */
   setKeys(
-    nextKeys: readonly string[],
+    nextKeys: readonly string[] | KeyIndex,
     replacementAnchor: ExplicitAnchor | null = null,
   ): void {
     // Build and validate the entire candidate state first — a throwing
     // estimator or a duplicate key must leave the previous geometry fully
     // intact, never a half-updated one.
-    const keys = [...nextKeys];
-    const indexByKey = new Map<string, number>();
-    for (let index = 0; index < keys.length; index++) {
-      indexByKey.set(keys[index] as string, index);
-    }
-    if (indexByKey.size !== keys.length) {
-      const seen = new Set<string>();
-      for (const key of keys) {
-        if (seen.has(key)) throw new Error(`duplicate key: "${key}"`);
-        seen.add(key);
-      }
-    }
+    const order =
+      nextKeys instanceof KeyIndex ? nextKeys : new KeyIndex(nextKeys);
+    const { keys, positions: indexByKey } = order;
     const sizes = new Float64Array(keys.length);
+    const heights = new Float64Array(keys.length);
     for (let index = 0; index < keys.length; index++) {
-      sizes[index] = this.heightOf(keys[index] as string);
+      const key = keys[index] as string;
+      const previous = this.indexByKey.get(key);
+      const learned =
+        previous === undefined ? 0 : (this.heights[previous] as number);
+      heights[index] = learned;
+      sizes[index] = learned || this.estimate(key);
     }
     const tree = new FenwickTree(sizes);
     // A pinned row replaced in place (a version switch, an edit) passes
@@ -364,12 +372,11 @@ export class Geometry {
       }
     }
 
+    this.order = order;
     this.keys = keys;
     this.indexByKey = indexByKey;
     this.tree = tree;
-    for (const key of this.heightByKey.keys()) {
-      if (!indexByKey.has(key)) this.heightByKey.delete(key);
-    }
+    this.heights = heights;
     this.pin(pinned, pinnedInset);
   }
 
@@ -382,8 +389,8 @@ export class Geometry {
   measure(key: string, height: number): void {
     const index = this.indexByKey.get(key);
     if (index === undefined || !Number.isFinite(height) || height <= 0) return;
-    const delta = height - this.heightOf(key);
-    this.heightByKey.set(key, height);
+    const delta = height - (this.heights[index] || this.estimate(key));
+    this.heights[index] = height;
     if (delta !== 0) this.tree.add(index, delta);
   }
 

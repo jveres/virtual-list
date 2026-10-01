@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { chromium } from "playwright";
 import { SafariMcp } from "./safari-mcp.mjs";
 
@@ -58,7 +58,7 @@ async function freePort() {
   return port;
 }
 
-export async function launchFirefox(directory) {
+export async function launchFirefox(directory, { profiler = false } = {}) {
   const profile = join(directory, "profile");
   await mkdir(profile);
   await writeFile(
@@ -67,6 +67,13 @@ export async function launchFirefox(directory) {
       'user_pref("browser.aboutwelcome.enabled",false);',
       'user_pref("browser.shell.checkDefaultBrowser",false);',
       'user_pref("browser.startup.homepage_override.mstone","ignore");',
+      ...(profiler
+        ? [
+            'user_pref("browser.download.folderList",2);',
+            `user_pref("browser.download.dir",${JSON.stringify(resolve(directory))});`,
+            'user_pref("browser.download.useDownloadDir",true);',
+          ]
+        : []),
     ].join("\n"),
   );
   const port = await freePort();
@@ -145,7 +152,7 @@ export async function launchFirefox(directory) {
       for (const waiter of pending.values())
         waiter.reject(Error("Firefox connection closed"));
     };
-    const command = (method, params = {}) =>
+    const command = (method, params = {}, timeout = 30000) =>
       new Promise((resolve, reject) => {
         const id = ++next;
         const finish = (fn, result) => {
@@ -155,7 +162,7 @@ export async function launchFirefox(directory) {
         };
         const timer = setTimeout(
           () => finish(reject, Error(`${method} timed out`)),
-          30000,
+          timeout,
         );
         pending.set(id, {
           resolve: (r) => finish(resolve, r),
@@ -172,6 +179,27 @@ export async function launchFirefox(directory) {
       build: session.capabilities["moz:buildID"],
       processes: () => descendants(child.pid),
       close,
+      startProfile: () => {
+        assert.ok(profiler, "Profiler was not enabled");
+        return command("moz:profiler.start", {
+          entries: 8388608,
+          interval: 2,
+          features: ["js"],
+          threads: ["GeckoMain"],
+          activeContext: context,
+        });
+      },
+      finishProfile: async () => {
+        assert.ok(profiler, "Profiler was not enabled");
+        const saved = await command("moz:profiler.stop", {}, 60000);
+        assert.equal(typeof saved.path, "string", "Missing live profile");
+        assert.equal(dirname(saved.path), resolve(directory));
+        try {
+          return JSON.parse(await readFile(saved.path, "utf8"));
+        } finally {
+          await rm(saved.path, { force: true });
+        }
+      },
       navigate: (url) =>
         command("browsingContext.navigate", { context, url, wait: "complete" }),
       memoryReport: async ({

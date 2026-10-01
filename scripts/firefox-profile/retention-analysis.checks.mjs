@@ -28,6 +28,8 @@ test("retention report sums fixture leaves without cross-counting other windows 
     contentHeapAllocated: 100,
     contentResident: null,
     contentJsGcHeap: null,
+    contentHeapUnclassified: null,
+    windowClasses: {},
   });
   assert.equal(
     summarizeRetentionMemory(
@@ -56,6 +58,29 @@ test("retention report sums fixture leaves without cross-counting other windows 
   );
 });
 
+test("retention summary preserves buffer accounting separately from window classes", () => {
+  const prefix =
+    "explicit/window-objects/top(http://localhost/fixture.html)/active/window/js-realm/classes";
+  const rows = [
+    {
+      process: "content",
+      path: `${prefix}/class(Float64Array)/objects/gc-heap`,
+      amount: 80,
+    },
+    {
+      process: "content",
+      path: `${prefix}/class(Float64Array)/objects/malloc-heap/elements/array-buffer`,
+      amount: 8000,
+    },
+    { process: "content", path: "explicit/heap-unclassified", amount: 16000 },
+    { process: "parent", path: "explicit/heap-unclassified", amount: 99999 },
+  ];
+  const summary = summarizeRetentionMemory(rows, "/fixture.html");
+  assert.equal(summary.windowBytes, 8080);
+  assert.deepEqual(summary.windowClasses, { Float64Array: 8080 });
+  assert.equal(summary.contentHeapUnclassified, 16000);
+});
+
 test("retention CLI help is portable and does not launch a browser", () => {
   const output = execFileSync(
     process.execPath,
@@ -63,4 +88,5 @@ test("retention CLI help is portable and does not launch a browser", () => {
     { encoding: "utf8" },
   );
   assert.match(output, /GC\+CC/);
+  assert.match(output, /--workload=lifecycle\|structures\|structures-natural/);
 });

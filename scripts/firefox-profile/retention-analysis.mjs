@@ -27,6 +27,11 @@ export function summarizeRetentionMemory(rows, pagePath) {
   const total = (values) => values.reduce((sum, row) => sum + row.amount, 0);
   const metric = (path) =>
     ownRows.find((row) => row.path === path)?.amount ?? null;
+  const classes = new Map();
+  for (const row of pageRows) {
+    const name = row.path.match(/\/classes\/class\(([^)]+)\)/)?.[1];
+    if (name) classes.set(name, (classes.get(name) ?? 0) + row.amount);
+  }
   return {
     process,
     windowBytes: total(pageRows),
@@ -37,5 +42,7 @@ export function summarizeRetentionMemory(rows, pagePath) {
     contentHeapAllocated: metric("heap-allocated"),
     contentResident: metric("resident"),
     contentJsGcHeap: metric("js-main-runtime-gc-heap-committed"),
+    contentHeapUnclassified: metric("explicit/heap-unclassified"),
+    windowClasses: Object.fromEntries(classes),
   };
 }

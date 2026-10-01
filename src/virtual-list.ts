@@ -6,6 +6,7 @@ import {
   Geometry,
   type GeometryViewport,
 } from "./geometry";
+import { KeyIndex } from "./key-index";
 import { type Glide, startNativeGlide, stopNativeScroll } from "./native-glide";
 import {
   type GeometryWindow,
@@ -182,6 +183,7 @@ interface Declared<T> {
 
 /** The desired state: what the next commit makes true. */
 interface Pending<T> {
+  index: KeyIndex;
   keys: readonly string[];
   /** New and replacing rows, rendered and measured, not yet committed. */
   staged: Map<string, Row<T>>;
@@ -285,7 +287,7 @@ export function createVirtualList<T>(
   let staleFrame = 0;
   /** A stale row joined the window: the next reconciliation commits it. */
   let staleMounted = false;
-  let committedKeys: readonly string[] = [];
+  let committedKeys = geometry.keyIndex.keys;
   let committedPinOffset = 0;
   let positionedNow = false;
   /** Advances on every commit; reconciliation and publication key on it. */
@@ -300,8 +302,8 @@ export function createVirtualList<T>(
   // Initial source ownership ends with this copy. Callbacks retain options,
   // so keeping its input array would pin the first snapshot after replacement.
   let lastItems: T[] = [...initialItems];
-  let indexByKey = new Map<string, number>();
-  let indexedKeys: readonly string[] = [];
+  let desiredIndex = geometry.keyIndex;
+  let desiredLeading = 0;
   let revision = 0;
   /** Advances when the host's key order changes; window jobs stage against it. */
   let structure = 0;
@@ -1113,14 +1115,15 @@ export function createVirtualList<T>(
     const byKey = new Map<string, T>();
     const heights =
       withHeights && declared ? new Map<string, Declared<T>>() : null;
+    const entries = heights ?? byKey;
     for (const item of items) {
       const key = keyOf(item);
       if (isSlotKey(key))
         throw new Error(`item key "${key}" uses the reserved edge-slot prefix`);
-      if (byKey.has(key)) throw new Error(`duplicate key "${key}"`);
+      if (entries.has(key)) throw new Error(`duplicate key "${key}"`);
       keys.push(key);
-      byKey.set(key, item);
-      heights?.set(key, { item, height: declaredHeight(item) });
+      if (heights) heights.set(key, { item, height: declaredHeight(item) });
+      else byKey.set(key, item);
     }
     return { keys, byKey, heights };
   }
@@ -1132,8 +1135,14 @@ export function createVirtualList<T>(
     previous: Pending<T> | null,
   ): Pending<T> {
     const named = typeof requested === "object" ? requested : null;
+    const index = geometry.keyIndex.matches(keys)
+      ? geometry.keyIndex
+      : desiredIndex.matches(keys)
+        ? desiredIndex
+        : new KeyIndex(keys);
     return {
-      keys,
+      index,
+      keys: index.keys,
       staged: new Map(),
       deferred: new Map(),
       declared: null,
@@ -1284,11 +1293,7 @@ export function createVirtualList<T>(
 
     try {
       for (const key of stageKeys) {
-        at = full
-          ? at + 1
-          : p.keys === committedKeys
-            ? geometry.indexOf(key)
-            : p.keys.indexOf(key);
+        at = full ? at + 1 : (p.index.positions.get(key) ?? -1);
         if (isSlotKey(key)) {
           stageSlot(key);
         } else {
@@ -1395,7 +1400,10 @@ export function createVirtualList<T>(
     const ok = prepare(
       p,
       keys,
-      (key) => byKey.get(key) as T,
+      (key) =>
+        heights
+          ? (heights.get(key) as Declared<T>).item
+          : (byKey.get(key) as T),
       previous,
       true,
       jobRows,
@@ -1404,12 +1412,7 @@ export function createVirtualList<T>(
   }
 
   function sameKeys(keys: readonly string[]): boolean {
-    if (keys === committedKeys) return true;
-    if (keys.length !== geometry.count) return false;
-    for (let index = 0; index < keys.length; index++) {
-      if (geometry.keyAt(index) !== keys[index]) return false;
-    }
-    return true;
+    return geometry.keyIndex.matches(keys);
   }
 
   /**
@@ -1446,7 +1449,7 @@ export function createVirtualList<T>(
     // The anchor row may change in place, be replaced at its index, or be
     // removed — unless its surviving successor moves down (a prepend).
     if (p.keys[anchorIndex] !== anchor.key) {
-      const nextIndex = new Map(p.keys.map((key, index) => [key, index]));
+      const nextIndex = p.index.positions;
       if (nextIndex.has(anchor.key)) return false;
       for (let index = anchorIndex + 1; index < geometry.count; index++) {
         const moved = nextIndex.get(geometry.keyAt(index) as string);
@@ -1566,7 +1569,7 @@ export function createVirtualList<T>(
     if (p) {
       if (p.deferred.size > 0) renderDeferred(p);
       if (keysChanged) {
-        const next = new Set(p.keys);
+        const next = p.index.positions;
         for (const [key, row] of rows) {
           if (next.has(key)) continue;
           rows.delete(key);
@@ -1596,7 +1599,7 @@ export function createVirtualList<T>(
       if (disposed) return;
       if (p) {
         if (keysChanged) {
-          geometry.setKeys(p.keys, p.target);
+          geometry.setKeys(p.index, p.target);
           committedKeys = p.keys;
         }
         if (pinPolicy) {
@@ -2234,22 +2237,20 @@ export function createVirtualList<T>(
   }
 
   // --- Data -----------------------------------------------------------------
-  function adoptItems(snapshot: T[], keys: readonly string[]): void {
-    if (
-      keys.length !== indexedKeys.length ||
-      keys.some((key, index) => key !== indexedKeys[index])
-    ) {
-      const previous = indexByKey;
-      indexByKey = new Map();
-      let index = 0;
-      for (const key of keys) if (!isSlotKey(key)) indexByKey.set(key, index++);
-      indexedKeys = keys;
+  function adoptItems(snapshot: T[], index: KeyIndex): void {
+    if (index !== desiredIndex) {
+      const leading = isSlotKey(index.keys[0] ?? "") ? 1 : 0;
       // An edge slot coming or going leaves the host's order as it was.
       if (
-        indexByKey.size !== previous.size ||
-        [...indexByKey].some(([key, at]) => previous.get(key) !== at)
+        snapshot.length !== lastItems.length ||
+        snapshot.some(
+          (_, at) =>
+            index.keys[at + leading] !== desiredIndex.keys[at + desiredLeading],
+        )
       )
         structure += 1;
+      desiredIndex = index;
+      desiredLeading = leading;
     }
     lastItems = snapshot;
   }
@@ -2277,7 +2278,7 @@ export function createVirtualList<T>(
         throw error;
       }
       if (!p || disposed) return;
-      adoptItems(snapshot, p.keys);
+      adoptItems(snapshot, p.index);
       apply(p);
     });
   }
@@ -2302,8 +2303,10 @@ export function createVirtualList<T>(
     if (disposed) return;
     const anchor = ownAnchor(o.anchor);
     if (defer(() => updateItem(key, item, { anchor }))) return;
-    const index = indexByKey.get(key);
-    if (index === undefined) return;
+    if (isSlotKey(key)) return;
+    const position = desiredIndex.positions.get(key);
+    if (position === undefined) return;
+    const index = position - desiredLeading;
     if (keyOf(item) !== key)
       throw new Error("updateItem cannot change an item's key");
     if (place) {
@@ -3069,7 +3072,7 @@ export function createVirtualList<T>(
         options.boot === "start" ? "none" : "end",
       );
       if (!p) return;
-      adoptItems(lastItems, p.keys);
+      adoptItems(lastItems, p.index);
       commit(p);
     });
   } catch (error) {

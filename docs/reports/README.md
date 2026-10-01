@@ -7,6 +7,32 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 1 runtime allocation and anchor lookup
+
+The [allocation and anchor follow-up](runtime-allocation-anchors-2026-10-01.md)
+removes duplicate transient item indexing and extends indexed anchor search to
+gaps and overlaps. A matched Firefox candidate and repeat confirm large-query
+gains and about 5–11% shorter large structural batches. The report explains the
+typed-array accounting discrepancy and records the absence of a consistent
+peak-memory or worst-GC-pause improvement.
+
+## October 1 shared runtime key indexes
+
+The [key-index follow-up](runtime-key-index-2026-10-01.md) shares immutable key
+orders between desired state and committed geometry. Against the compact-buffer
+baseline, it removes about 6 MiB of reported loaded storage at 100,000 rows and
+reduces structural batch times by 13–25%. Direct positioned-buffer construction
+is rejected. The report also records the higher observed process peak and the
+limits of uncollected memory samples.
+
+## October 1 runtime data structures
+
+The [data-structure comparison](runtime-data-structures-2026-10-01.md) replaces
+the learned-height hash table and per-item positioned objects with numeric
+buffers. It compares installed-Firefox memory and API costs at 1,000, 10,000,
+and 100,000 items, including a sparse-height control and mounted list cases.
+The report records memory-accounting limits and the structures left unchanged.
+
 ## October 1 runtime source retention
 
 The [lifecycle memory comparison](runtime-retention-2026-10-01.md) finds and

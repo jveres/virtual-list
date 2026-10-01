@@ -32,7 +32,8 @@ interface Lane {
 
 /** Immutable positioned snapshot. Only the last visibility result is cached. */
 export class PositionedGeometry {
-  private readonly items: readonly PositionedItem[];
+  private readonly tops: Float64Array;
+  private readonly bottoms: Float64Array;
   private readonly lanes: Lane[];
   readonly totalSize: number;
   private cached: GeometryWindow | null = null;
@@ -42,8 +43,10 @@ export class PositionedGeometry {
 
   constructor(items: readonly PositionedItem[]) {
     const lanes = new Map<number, number[]>();
+    this.tops = new Float64Array(items.length);
+    this.bottoms = new Float64Array(items.length);
     let total = 0;
-    this.items = items.map(({ top, height, lane }, index) => {
+    items.forEach(({ top, height, lane }, index) => {
       if (
         !Number.isFinite(top) ||
         top < 0 ||
@@ -60,7 +63,8 @@ export class PositionedGeometry {
       if (!lanes.has(lane)) lanes.set(lane, indices);
       indices.push(index);
       total = Math.max(total, top + height);
-      return { top, height, lane };
+      this.tops[index] = top;
+      this.bottoms[index] = top + height;
     });
     this.totalSize = total;
     this.lanes = [...lanes.values()].map((indices) => {
@@ -80,12 +84,11 @@ export class PositionedGeometry {
   }
 
   top(index: number): number {
-    return this.items[index]?.top ?? -1;
+    return this.tops[index] ?? -1;
   }
 
   private bottom(index: number): number {
-    const item = this.items[index];
-    return item ? item.top + item.height : -1;
+    return this.bottoms[index] ?? -1;
   }
 
   private firstAfter(lane: Lane, top: number): number {
@@ -131,8 +134,8 @@ export class PositionedGeometry {
     )
       return this.cached;
     this.cached = {
-      start: indices[0] ?? this.items.length,
-      end: indices.length ? (indices.at(-1) as number) + 1 : this.items.length,
+      start: indices[0] ?? this.tops.length,
+      end: indices.length ? (indices.at(-1) as number) + 1 : this.tops.length,
       indices,
     };
     return this.cached;
@@ -193,8 +196,8 @@ export class PositionedGeometry {
     }
     while (added < entering.length) indices.push(entering[added++] as number);
     this.cached = {
-      start: indices[0] ?? this.items.length,
-      end: indices.length ? (indices.at(-1) as number) + 1 : this.items.length,
+      start: indices[0] ?? this.tops.length,
+      end: indices.length ? (indices.at(-1) as number) + 1 : this.tops.length,
       indices,
       delta: { from, entering, leaving },
     };
@@ -210,30 +213,71 @@ export class PositionedGeometry {
     excluded: (index: number) => boolean,
     isPure = false,
   ): number {
-    // Ordered lane bottoms let us skip everything above the reading point.
-    // Source order can differ from both lane order and vertical order, so
-    // compare every containing candidate before choosing the anchor.
-    if (isPure && this.orderedBottoms && Number.isFinite(top)) {
+    // Prefix maxima skip intervals that end above the reading point, even
+    // when later intervals nest inside an earlier one. Preserve source-order
+    // ties while using each lane's vertical order to stop searching in gaps.
+    if (isPure && Number.isFinite(top)) {
       let containing = -1;
+      let following = -1;
       for (const lane of this.lanes) {
-        for (let i = this.firstAfter(lane, top); i < lane.indices.length; i++) {
+        let i = this.firstAfter(lane, top);
+        for (; i < lane.indices.length; i++) {
           const index = lane.indices[i] as number;
           if (this.top(index) > top) break;
-          if ((containing < 0 || index < containing) && !excluded(index)) {
+          if (
+            this.bottom(index) > top &&
+            (containing < 0 || index < containing) &&
+            !excluded(index)
+          ) {
             if (index === 0) return index;
             containing = index;
           }
         }
+        if (containing >= 0) continue;
+        for (; i < lane.indices.length; i++) {
+          const index = lane.indices[i] as number;
+          if (excluded(index)) continue;
+          if (
+            following < 0 ||
+            this.top(index) < this.top(following) ||
+            (this.top(index) === this.top(following) && index < following)
+          )
+            following = index;
+          break;
+        }
       }
       if (containing >= 0) return containing;
+      if (following >= 0) return following;
+
+      let previous = -1;
+      for (const lane of this.lanes) {
+        for (let i = lane.indices.length - 1; i >= 0; i--) {
+          if (
+            previous >= 0 &&
+            (lane.bottoms[i] as number) < this.bottom(previous)
+          )
+            break;
+          const index = lane.indices[i] as number;
+          if (
+            this.top(index) <= top &&
+            (previous < 0 ||
+              this.bottom(index) > this.bottom(previous) ||
+              (this.bottom(index) === this.bottom(previous) &&
+                index < previous)) &&
+            !excluded(index)
+          )
+            previous = index;
+        }
+      }
+      return previous;
     }
 
-    // Keep the source-order fallback for gaps, excluded content, and nested
-    // intervals whose bottoms are unordered. It also preserves boundary ties.
+    // Arbitrary predicates keep their observable source-order effects.
+    // Nonfinite coordinates retain the original comparison semantics.
     let containing = -1;
     let following = -1;
     let previous = -1;
-    for (let index = 0; index < this.items.length; index++) {
+    for (let index = 0; index < this.tops.length; index++) {
       if (excluded(index)) continue;
       if (this.top(index) <= top && this.bottom(index) > top) {
         containing = index;

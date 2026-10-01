@@ -197,6 +197,72 @@ It verifies lifecycle behavior in Firefox, Chromium, and WebKit. Chromium's
 CDP garbage collector additionally checks item and row reachability; the
 installed-Firefox diagnostic remains the primary memory comparison.
 
+## Compare runtime data structures
+
+Use the same installed-Firefox runner with the `structures` workload to compare
+retained geometry storage and synchronous API costs:
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=structures --display=LU28R55 --output=browser-artifacts/data-structures
+```
+
+The deterministic fixture covers 1,000, 10,000, and 100,000 items in fully
+measured geometry, sparse measured geometry, four-lane positioned geometry,
+and mounted stacked and positioned lists with declared heights. It checks
+offsets, membership, edits, reorders, append/remove and prepend/remove pairs,
+movement, scroll-end delivery, and release.
+Memory checkpoints follow forced collection. Timed operations run between
+checkpoints, with a warmup and batched samples; they are API wall times, not
+sampled CPU, boot timings, or native gesture measurements.
+
+Use `--workload=structures-natural` to add a post-operation checkpoint before
+requesting collection. The summary marks it with `minimize: false`. Loaded
+and released checkpoints still force collection. The extra checkpoint opens a
+diagnostic tab and can observe uncollected objects; it does not measure GC
+pauses or allocation rate. Process lifetime peaks include all earlier cases
+and diagnostics in the same session.
+
+The summary keeps window allocations separate from process heap, resident
+memory, unclassified heap, and per-class totals. These metrics overlap and
+must not be added together. Reporter attribution can change after repeated
+allocations; compare matching checkpoints and inspect the accounting before
+claiming a saving. Invalid process-counter samples are recorded and retried
+at most twice; persistent invalid counters fail the run.
+
+Run the fixture correctness checks in Firefox, Chromium, and WebKit with:
+
+```sh
+pnpm run test:regression -- --group=runtime --match=data-structures
+```
+
+The [October 1 investigation](reports/runtime-data-structures-2026-10-01.md)
+records the retained changes, sparse-storage tradeoff, and measured limits.
+The [key-index follow-up](reports/runtime-key-index-2026-10-01.md) records the
+structural update batches, unforced checkpoints, and peak-memory limits.
+
+Add `--diagnostic` to a structures workload with an owned server to collect
+per-case JavaScript samples and GC/CC slices in installed Firefox:
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=structures-natural --diagnostic --output=browser-artifacts/structure-diagnostics
+```
+
+This mode adds gap-anchor queries, a nested-overlap control, isolated Fenwick
+construction, and a buffer-accounting probe. The probe reads `.buffer` from live
+numeric arrays after the exercised checkpoint, then collects again. It helps
+distinguish missing attribution from released backing storage.
+
+Each case gets a separate 2 ms profile. The compact summary clips GC and cycle
+collector slices to marked workload phases, including warmup and frame waits
+but excluding diagnostic collections. Runtime frame counts include native work
+below the recorded JavaScript frame; they are not exclusive CPU times. Profiling
+adds overhead to timing and memory. Process footprints remain checkpoint and
+cumulative lifetime measurements, not per-operation allocation rates. Raw
+profiles are deleted immediately after parsing, including on parser failure.
+
+The [allocation and anchor study](reports/runtime-allocation-anchors-2026-10-01.md)
+records the matched baseline, candidate, repeat, and accounting limits.
+
 ## Preserve reproducibility
 
 Each run keeps `summary.json`, `reproduce.json`, and `reproduce.patch` under ignored

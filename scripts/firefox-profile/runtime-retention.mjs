@@ -1,4 +1,4 @@
-// Installed Firefox lifecycle/collection diagnostic, not a scroll-speed benchmark.
+// Installed Firefox memory diagnostic, not a scroll-speed benchmark.
 import assert from "node:assert/strict";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
@@ -11,23 +11,35 @@ import { parseFootprints } from "./memory-analysis.mjs";
 import { delay, launchFirefox } from "./memory-browser.mjs";
 import { summarizeRetentionMemory } from "./retention-analysis.mjs";
 import { validateDisplay } from "./safari-validation.mjs";
+import { summarizeStructureProfile } from "./structure-analysis.mjs";
 
 const { values: options } = parseArgs({
   options: {
     cycles: { type: "string", default: "12" },
+    workload: { type: "string", default: "lifecycle" },
     display: { type: "string", default: "LU28R55" },
     output: { type: "string", default: "browser-artifacts/runtime-retention" },
     url: { type: "string" },
+    diagnostic: { type: "boolean", default: false },
     help: { type: "boolean" },
   },
 });
 if (options.help) {
   console.log(
-    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory and weak item/node counts for replacement, paging, and disposal. No native gesture or timing claims.",
+    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--workload=lifecycle|structures|structures-natural] [--diagnostic] [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory. Lifecycle measures weak item/node counts for replacement, paging, and disposal; structures measures geometry and list API operations at 1k, 10k, and 100k items. structures-natural additionally records post-operation memory before requesting collection. --diagnostic requires structures and an owned server; adds GC/sample attribution, gap/overlap queries, tree-build controls, and a buffer-accounting probe. No native gesture timing claims.",
   );
   process.exit(0);
 }
 const cycles = Number(options.cycles);
+assert.ok(
+  ["lifecycle", "structures", "structures-natural"].includes(options.workload),
+  "Unknown workload",
+);
+const structures = options.workload.startsWith("structures");
+assert.ok(
+  !options.diagnostic || (structures && !options.url),
+  "Diagnostic capture requires structures and an owned server",
+);
 assert.ok(
   Number.isInteger(cycles) && cycles >= 4 && cycles <= 24 && cycles % 4 === 0,
   "cycles must be 4..24 in groups of four",
@@ -58,12 +70,14 @@ const report = {
   }).trim(),
   system: execFileSync("/usr/bin/sw_vers", { encoding: "utf8" }).trim(),
   checkpoints: [],
-  measurement:
-    "WeakRef counts after Firefox minimizeMemoryUsage (GC, cycle collection, memory pressure); explicit window reporter bytes; owned-process physical footprints. Forced collection alters natural cache/GC behavior. Instant API scrolling, not native gesture timing.",
+  footprintRetries: [],
+  profiles: [],
+  measurement: `${structures ? "Geometry/list API wall timings and storage" : "WeakRef counts"}; explicit window reporter bytes; owned-process physical footprints. Checkpoints request Firefox minimizeMemoryUsage (GC, cycle collection, memory pressure) unless minimize=false; structures-natural adds an unforced checkpoint after exercise. Forced collection between cases alters natural cache/GC behavior. Diagnostics add per-case 2 ms sampled JS profiles and clipped GC/CC slices during marked workload phases, including warmup and frame waits but excluding diagnostic collections. Profiler overhead affects timing and memory. Instant API scrolling, not native gesture timing.`,
 };
 const geometryExpression =
   "({x:screenX,y:screenY,outerWidth,outerHeight,innerWidth,innerHeight,dpr:devicePixelRatio})";
-const fixturePath = "/scripts/firefox-profile/fixtures/runtime-retention.html";
+const fixturePath = `/scripts/firefox-profile/fixtures/${structures ? "data-structures" : "runtime-retention"}.html`;
+const fixtureAPI = structures ? "__dataStructures" : "__runtimeRetention";
 function check() {
   assert.equal(interrupted, false, "Capture interrupted");
   const session = JSON.parse(
@@ -72,17 +86,25 @@ function check() {
   assert.ok(session.onConsole && !session.locked, "Desktop is locked");
 }
 function footprints() {
-  const owned = browser.processes();
-  assert.ok(owned.length, "No owned browser processes");
-  return parseFootprints(
-    execFileSync(
+  for (let attempt = 0; ; attempt++) {
+    const owned = browser.processes();
+    assert.ok(owned.length, "No owned browser processes");
+    const sample = execFileSync(
       counter,
       owned.map((p) => String(p.pid)),
       { encoding: "utf8" },
-    ),
-  );
+    );
+    try {
+      return parseFootprints(sample);
+    } catch (error) {
+      // Current and lifetime-peak counters can be sampled across an update.
+      // Preserve the rejected counters and require a subsequent valid sample.
+      report.footprintRetries.push({ sample, error: String(error) });
+      if (attempt === 2) throw error;
+    }
+  }
 }
-async function checkpoint(label) {
+async function checkpoint(label, minimize = true) {
   check();
   assert.deepEqual(
     await browser.evaluate(geometryExpression),
@@ -97,9 +119,9 @@ async function checkpoint(label) {
   const before = footprints();
   // about:memory runs privileged collection in a temporary diagnostic tab.
   // No fixture objects are returned through the automation protocol.
-  const rows = await browser.memoryReport({ minimize: true, minBytes: 0 });
+  const rows = await browser.memoryReport({ minimize, minBytes: 0 });
   await delay(100);
-  const page = await browser.evaluate("__runtimeRetention.snapshot()");
+  const page = await browser.evaluate(`${fixtureAPI}.snapshot()`);
   assert.deepEqual(page.errors, [], "Fixture errors");
   if (report.documentId)
     assert.equal(page.documentId, report.documentId, "Fixture reloaded");
@@ -107,6 +129,7 @@ async function checkpoint(label) {
   const memory = summarizeRetentionMemory(rows, fixturePath);
   report.checkpoints.push({
     label,
+    minimize,
     page,
     memory,
     beforeCollection: before,
@@ -120,10 +143,11 @@ async function checkpoint(label) {
     label,
     JSON.stringify({
       windowMiB: +(memory.windowBytes / 1024 ** 2).toFixed(2),
-      aliveItems: page.cohorts.reduce((sum, row) => sum + row.aliveItems, 0),
-      aliveNodes: page.cohorts.reduce((sum, row) => sum + row.aliveNodes, 0),
+      aliveItems: page.cohorts?.reduce((sum, row) => sum + row.aliveItems, 0),
+      aliveNodes: page.cohorts?.reduce((sum, row) => sum + row.aliveNodes, 0),
       activeItems: page.activeItems,
       retainedHandles: page.retainedHandles,
+      operations: page.results,
     }),
   );
 }
@@ -177,7 +201,7 @@ try {
     await server.listen();
     base = server.resolvedUrls.local[0];
   }
-  browser = await launchFirefox(directory);
+  browser = await launchFirefox(directory, { profiler: options.diagnostic });
   report.browser = {
     version: browser.version,
     build: browser.build,
@@ -207,7 +231,7 @@ try {
   await browser.navigate(new URL(fixturePath, base).href);
   for (
     let i = 0;
-    !(await browser.evaluate("Boolean(globalThis.__runtimeRetention)"));
+    !(await browser.evaluate(`Boolean(globalThis.${fixtureAPI})`));
     i++
   ) {
     assert.ok(i < 100, "Fixture did not load");
@@ -217,26 +241,71 @@ try {
   report.geometry = await browser.evaluate(geometryExpression);
   validateDisplay(display, report.geometry);
   await checkpoint("empty");
-  for (const mode of ["replace", "paging", "dispose-drop", "dispose-keep"]) {
-    check();
-    await browser.evaluate(`__runtimeRetention.begin(${JSON.stringify(mode)})`);
-    await checkpoint(`${mode}:loaded`);
-    for (let i = 1; i <= cycles; i++) {
-      check();
-      await browser.evaluate("__runtimeRetention.cycle()");
-      if (i % 4 === 0) await checkpoint(`${mode}:${i}`);
+  if (structures) {
+    for (const mode of [
+      "geometry",
+      "geometry-sparse",
+      "positioned",
+      "list",
+      "positioned-list",
+      ...(options.diagnostic ? ["positioned-overlap"] : []),
+    ]) {
+      for (const count of [1000, 10000, 100000]) {
+        check();
+        await browser.evaluate(
+          `${fixtureAPI}.prepare(${JSON.stringify(mode)}, ${count}, ${options.diagnostic})`,
+        );
+        await checkpoint(`${mode}:${count}:loaded`);
+        if (options.diagnostic) {
+          await browser.startProfile();
+          await browser.evaluate("performance.mark('ff-profile-start')");
+        }
+        await browser.evaluate(`${fixtureAPI}.exercise()`);
+        if (options.diagnostic)
+          await browser.evaluate("performance.mark('ff-profile-end')");
+        if (options.workload === "structures-natural")
+          await checkpoint(`${mode}:${count}:natural`, false);
+        await checkpoint(`${mode}:${count}:exercised`);
+        if (options.diagnostic && !mode.includes("list")) {
+          const bytes = await browser.evaluate(
+            `${fixtureAPI}.materializeBuffers()`,
+          );
+          assert.ok(bytes >= count * 16, "Missing live geometry buffers");
+          await checkpoint(`${mode}:${count}:buffers-materialized`);
+        }
+        if (options.diagnostic)
+          report.profiles.push({
+            label: `${mode}:${count}`,
+            ...summarizeStructureProfile(await browser.finishProfile()),
+          });
+        await browser.evaluate(`${fixtureAPI}.release()`);
+        await checkpoint(`${mode}:${count}:released`);
+      }
     }
-    const last = report.checkpoints.at(-1).page;
-    assert.equal(last.cycles, cycles);
-    assert.ok(
-      last.distance > 10000 && last.scrolls > cycles && last.ends > 0,
-      "Invalid stationary or incomplete workload",
-    );
-    if (mode === "paging") assert.ok(last.evicted > 0, "Paging did not evict");
-    await browser.evaluate("__runtimeRetention.release()");
-    await delay(200);
-    await checkpoint(`${mode}:released`);
-  }
+  } else
+    for (const mode of ["replace", "paging", "dispose-drop", "dispose-keep"]) {
+      check();
+      await browser.evaluate(
+        `__runtimeRetention.begin(${JSON.stringify(mode)})`,
+      );
+      await checkpoint(`${mode}:loaded`);
+      for (let i = 1; i <= cycles; i++) {
+        check();
+        await browser.evaluate("__runtimeRetention.cycle()");
+        if (i % 4 === 0) await checkpoint(`${mode}:${i}`);
+      }
+      const last = report.checkpoints.at(-1).page;
+      assert.equal(last.cycles, cycles);
+      assert.ok(
+        last.distance > 10000 && last.scrolls > cycles && last.ends > 0,
+        "Invalid stationary or incomplete workload",
+      );
+      if (mode === "paging")
+        assert.ok(last.evicted > 0, "Paging did not evict");
+      await browser.evaluate("__runtimeRetention.release()");
+      await delay(200);
+      await checkpoint(`${mode}:released`);
+    }
   report.status = "completed";
 } catch (error) {
   report.status = "invalid";

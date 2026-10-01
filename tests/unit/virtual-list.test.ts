@@ -5324,6 +5324,39 @@ describe("runtime — edge slots", () => {
     h.list.dispose();
   });
 
+  it.each([false, true])(
+    "should index desired items during a held prepend and edge removal (declared: %s)",
+    (declared) => {
+      const initial = range(0, 20);
+      const h = mount(initial, {
+        boot: "start",
+        edgeSlots: { start: loader() },
+        itemHeight: declared ? () => ROW_H : undefined,
+      });
+      h.userScroll(500);
+
+      h.list.updateItem("\u0000edge:start:top", message(99));
+      h.list.setItems([message(20), ...initial], { anchor: "viewport" });
+      h.list.setEdgeSlot("start", null);
+      h.list.updateItem("m10", message(10, "updated existing"));
+      h.list.updateItem("m20", message(20, "updated new"));
+
+      expect(h.list.state.held).toBe(true);
+      expect(h.list.positionOf("m20")).toBeNull();
+      expect(h.list.positionOf("m10")?.top).toBe(52 + 10 * ROW_H);
+      h.settle();
+      expect(h.list.state.count).toBe(21);
+      expect(h.list.state.totalSize).toBe(21 * ROW_H);
+      expect(h.list.positionOf("m20")).toEqual({ top: 0, height: ROW_H });
+      expect(h.list.positionOf("m10")?.top).toBe(11 * ROW_H);
+      void h.list.scrollTo("m10");
+      expect(h.list.elementOf("m10")?.textContent).toBe("updated existing");
+      void h.list.scrollTo("m20");
+      expect(h.list.elementOf("m20")?.textContent).toBe("updated new");
+      h.list.dispose();
+    },
+  );
+
   it("should atomically remove the loader slot when a staged jump loads the beginning", async () => {
     const slot = loader();
     const h = mount(range(20, 40), { edgeSlots: { start: slot } });
@@ -7111,6 +7144,46 @@ describe("targeted item updates", () => {
 });
 
 describe("declared heights", () => {
+  it.each([false, true])(
+    "should reject duplicate snapshot keys before rendering and preserve committed data (declared=%s)",
+    (declared) => {
+      const effects: string[] = [];
+      const initial = range(0, 20);
+      const h = mount(initial, {
+        boot: "start",
+        onKey: (item) => effects.push(`key:${item.id}`),
+        itemHeight: declared
+          ? (item) => {
+              effects.push(`height:${item.id}`);
+              return ROW_H;
+            }
+          : undefined,
+        onRender: (item) => effects.push(`render:${item.id}`),
+      });
+      const first = h.rowElement("msg 0");
+      effects.length = 0;
+
+      expect(() =>
+        h.list.setItems([message(7, "replacement"), message(7, "duplicate")]),
+      ).toThrow('duplicate key "m7"');
+
+      expect(effects).toEqual(
+        declared ? ["key:7", "height:7", "key:7"] : ["key:7", "key:7"],
+      );
+      expect(h.list.state.count).toBe(20);
+      expect(h.rowElement("msg 0")).toBe(first);
+      expect(h.list.positionOf("m7")).toEqual({ top: 700, height: ROW_H });
+
+      h.list.setItems(
+        initial.map((item) => (item.id === 7 ? message(7, "accepted") : item)),
+      );
+      void h.list.scrollTo("m7");
+
+      expect(h.rowElement("accepted").textContent).toBe("accepted");
+      h.list.dispose();
+    },
+  );
+
   it("keeps mounted slots synchronized when declarations change without new item identities", () => {
     let height = ROW_H;
     const initial = range(0, 20);
