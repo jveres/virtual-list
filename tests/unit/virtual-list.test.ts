@@ -758,6 +758,35 @@ describe("settle-time window updates", () => {
 });
 
 describe("incremental window preparation", () => {
+  it("should yield after an expensive render even when preparing at rest", async () => {
+    let clock = 0;
+    const prepared: number[] = [];
+    vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const h = mount(range(0, 20), {
+      onRender: (item) => {
+        if (item.id >= 20) {
+          prepared.push(item.id);
+          clock += 4;
+        }
+      },
+    });
+    const abort = new AbortController();
+    const applied = h.list.updateWindow(
+      ({ items }) => ({ items: [...items, ...range(20, 80)] }),
+      abort.signal,
+    );
+
+    vi.advanceTimersByTime(16);
+
+    expect(prepared).toEqual([20]);
+    expect(h.list.state.count).toBe(20);
+    expect(h.list.elementOf("m20")).toBeNull();
+    abort.abort();
+    await expect(applied).resolves.toBe(false);
+    expect(h.destroyed).toEqual([20]);
+    h.list.dispose();
+  });
+
   it("should keep a chunked row hidden until its final height can commit", async () => {
     const steps: number[] = [];
     const stage = vi.fn((item: Msg, element: HTMLElement) => {
@@ -1044,14 +1073,22 @@ describe("incremental window preparation", () => {
   });
 
   it("should discard an aborted partial batch without mounting or leaking it", async () => {
-    const h = mount(range(0, 20));
+    const prepared: number[] = [];
+    const h = mount(range(0, 20), {
+      onRender: (item) => {
+        if (item.id >= 20) prepared.push(item.id);
+      },
+    });
     const abort = new AbortController();
     const bodyChildren = document.body.childElementCount;
     const applied = h.list.updateWindow(
-      ({ items }) => ({ items: [...items, ...range(20, 44)] }),
+      ({ items }) => ({ items: [...items, ...range(20, 80)] }),
       abort.signal,
     );
     vi.advanceTimersByTime(16);
+    const beforeAbort = [...prepared];
+    expect(beforeAbort.length).toBeGreaterThan(0);
+    expect(beforeAbort.length).toBeLessThan(60);
 
     abort.abort();
     vi.advanceTimersByTime(300);
@@ -1059,7 +1096,8 @@ describe("incremental window preparation", () => {
     await expect(applied).resolves.toBe(false);
     expect(h.list.state.count).toBe(20);
     expect(h.list.state.held).toBe(false);
-    expect(h.destroyed).toEqual(range(20, 28).map((item) => item.id));
+    expect(prepared).toEqual(beforeAbort);
+    expect(h.destroyed).toEqual(beforeAbort);
     expect(h.destroyedElements.every((element) => !element.isConnected)).toBe(
       true,
     );
@@ -1129,7 +1167,12 @@ describe("incremental window preparation", () => {
   );
 
   it("should cancel a stale preparation after a newer snapshot", async () => {
-    const h = mount(range(0, 20));
+    const prepared: number[] = [];
+    const h = mount(range(0, 20), {
+      onRender: (item) => {
+        if (item.id >= 20 && item.id < 100) prepared.push(item.id);
+      },
+    });
     const applied = h.list.updateWindow(({ items }) => ({
       items: [...items, ...range(20, 44)],
     }));
@@ -1142,9 +1185,8 @@ describe("incremental window preparation", () => {
     expect(h.list.state.count).toBe(20);
     expect(h.list.positionOf("m100")).toEqual({ top: 0, height: 100 });
     expect(h.list.positionOf("m20")).toBeNull();
-    expect(h.destroyed.filter((id) => id >= 20)).toEqual(
-      range(20, 28).map((item) => item.id),
-    );
+    expect(prepared.length).toBeGreaterThan(0);
+    expect(h.destroyed.filter((id) => id >= 20)).toEqual(prepared);
     h.list.dispose();
   });
 
@@ -1181,8 +1223,12 @@ describe("incremental window preparation", () => {
   it("should rebuild width-stale work and retain the pending update", async () => {
     let width = 300;
     const proposals: number[] = [];
+    const staleRows: number[] = [];
     const h = mount(range(0, 20), {
       width: () => width,
+      onRender: (item) => {
+        if (width === 300 && item.id >= 20) staleRows.push(item.id);
+      },
     });
     const applied = h.list.updateWindow(({ items }) => {
       proposals.push(width);
@@ -1199,7 +1245,8 @@ describe("incremental window preparation", () => {
     expect(proposals).toEqual([300, 500]);
     expect(h.list.state.count).toBe(44);
     expect(h.list.positionOf("m20")).toEqual({ top: 2000, height: 180 });
-    expect(h.destroyed).toEqual(range(20, 28).map((item) => item.id));
+    expect(staleRows.length).toBeGreaterThan(0);
+    expect(h.destroyed).toEqual(staleRows);
     expect(h.list.state.held).toBe(false);
     h.list.dispose();
   });

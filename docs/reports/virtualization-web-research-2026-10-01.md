@@ -15,11 +15,12 @@ hypotheses to investigate, not approved performance patches. Web sources were
 accessed on October 1, 2026; linked main branches and latest documentation can
 change. No third-party benchmark establishes performance in this application.
 
-The subsequent [remaining-scope audit](runtime-remaining-scope-2026-10-02.md)
-reconciles these hypotheses with later measurements. Declared pooling and the
-tested block-skipping mechanism are rejected; renderer-owned large blocks,
-constrained tables, placeholders, and estimated histories remain separate
-questions with explicit evidence and behavior requirements.
+The subsequent [exploration closeout](runtime-exploration-closeout-2026-10-02.md)
+reconciles all these hypotheses with later measurements and behavior gates.
+Large-table staging and faster exact preparation at rest earn implementation.
+Pooling, block skipping, fixed table layout, code-block staging, placeholders,
+and estimated histories receive explicit dispositions. The ranked list below
+records the original research hypotheses, not a current open queue.
 
 ## Existing evidence and runtime design
 

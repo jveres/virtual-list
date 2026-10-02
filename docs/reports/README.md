@@ -7,6 +7,23 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 exploration closeout
+
+The [closeout](runtime-exploration-closeout-2026-10-02.md) reconciles the full
+cleanup and web-research queue: two retained preparation changes, measured
+rejections, the estimated-geometry reference, and the missing bottleneck that
+prevents a placeholder patch. No measured gain remains unimplemented and no
+experiment in that queue remains open. Device and renderer limits are explicit.
+
+## October 2 large-history preparation
+
+The [large-history comparison](history-preparation-2026-10-02.md) retains a
+larger preparation slice at rest: 5,000 exact rows complete in 2.66–2.67 seconds
+instead of 10.46 seconds, using 64–66% less sampled preparation CPU. Active
+scrolling keeps the original limit. A TanStack reference confirms large savings
+from deferring unvisited rows, but retains estimated geometry and remains a
+benchmark control rather than a production mode.
+
 ## October 2 large table preparation
 
 The [large-table staging comparison](large-table-staging-2026-10-02.md)

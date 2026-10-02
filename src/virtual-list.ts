@@ -69,6 +69,8 @@ const WIDTH_QUIET_MS = 150;
 const WIDTH_DRAIN_ROWS = 32;
 /** A window update adding more fresh rows prepares them across frames. */
 const JOB_MIN_ROWS = 8;
+/** At rest, amortize preparation while retaining the render-time budget. */
+const JOB_REST_ROWS = 32;
 const SLOT_PREFIX = "\u0000edge:";
 const SLOT_BASE = "position:absolute;top:0;left:0;right:0;";
 /** Where hidden slots wait: above the scroll origin, out of every rect query. */
@@ -2528,7 +2530,8 @@ export function createVirtualList<T>(
           const started = performance.now();
           let last: Row<T> | null = null;
           let count = 0;
-          while (j.cursor < j.fresh.length && count < JOB_MIN_ROWS) {
+          const limit = !deadline && idle() ? JOB_REST_ROWS : JOB_MIN_ROWS;
+          while (j.cursor < j.fresh.length && count < limit) {
             if (deadline && deadline.timeRemaining() < IDLE_SLICE_MIN_MS) break;
             if (j.partial) {
               const partial = j.partial;

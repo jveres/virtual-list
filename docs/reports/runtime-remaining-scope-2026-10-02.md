@@ -1,10 +1,11 @@
 # Artifact cleanup and remaining runtime scope, October 2, 2026
 
-Further targeted measurements remain possible, but no verified runtime gain is
-waiting for implementation. The strongest unanswered measurement question is
-natural memory behavior beyond 120 cycles in the measured-height paging fixture.
-Large-row renderer work and several design alternatives also remain distinct
-from the completed runtime data-structure audit.
+This cleanup audit identified further measurement questions after the runtime
+data-structure review. The subsequent
+[exploration closeout](runtime-exploration-closeout-2026-10-02.md) resolves the
+queue: longer measured paging, table layout, nested preparation, placeholders,
+and estimated history. It retains two further preparation improvements. No
+measured gain remains waiting for implementation.
 
 This is an artifact and report audit at revision `0d5efe2`, with a clean starting
 working tree. It adds no browser capture, benchmark result, or production
@@ -34,10 +35,10 @@ finds no remaining screenshots, capture binaries, raw dumps, or profiling caches
 No owned profiling process was running. The pre-existing development server,
 installed dependencies, and tracked sources are preserved.
 
-## Remaining measurement questions
+## Questions raised by this audit
 
-These questions have a concrete evidence gap or measured cost. They do not
-establish that another patch will help.
+These questions had a concrete evidence gap or measured cost at the cleanup
+checkpoint. Follow-up dispositions link to their later results.
 
 ### Longer measured-height paging
 
@@ -96,15 +97,14 @@ total CPU. Code-block staging is rejected; its synchronous HTML generation
 remains expensive. The experiment closes nested first-layout slicing, without
 claiming a renderer-wide solution to arbitrarily large content.
 
-## Conditional design experiments
+## Design experiment dispositions
 
-Two web-research alternatives remain unmeasured. Each requires a workload that
-exposes its intended cost and accepts its behavior tradeoff.
+The follow-up also resolves the two conditional web-research alternatives.
 
-| Alternative | Evidence needed before implementation |
+| Alternative | Follow-up decision |
 | --- | --- |
-| [Scroll-seek placeholders](virtualization-web-research-2026-10-01.md#3-use-cheaper-content-during-fast-travel-if-acceptable) | Reproduce expensive entering content during fast travel. Compare scrolling cost and time to restore readable content after release, while preserving geometry, selection, and focus. The latest huge-row traversals have no sampled gap above 25 ms, so they do not establish a stall for this mechanism to fix. |
-| [Estimated geometry for much larger histories](virtualization-web-research-2026-10-01.md#5-estimate-geometry-for-much-larger-loaded-histories) | Compare a separate prototype with exact preparation under the same renderer, content, retention, and overscan. Measure boot or restoration latency, correction work, scrollbar drift, reading anchors, and navigation accuracy. Estimates cannot silently replace the current declared-height contract. |
+| [Scroll-seek placeholders](virtualization-web-research-2026-10-01.md#3-use-cheaper-content-during-fast-travel-if-acceptable) | Closed by the [bottleneck review](runtime-exploration-closeout-2026-10-02.md#why-placeholders-do-not-earn-a-patch). The measured workloads do not justify replacing readable content and adding restoration work. No placeholder speedup is claimed. |
+| [Estimated geometry for much larger histories](virtualization-web-research-2026-10-01.md#5-estimate-geometry-for-much-larger-loaded-histories) | The [TanStack reference](history-preparation-2026-10-02.md) measures large deferred-work savings, accurate targets, and restored width anchors, but provisional total geometry. It remains development-only tooling. The exact baseline exposes a separate preparation-cap improvement, retained without estimates. |
 
 Cross-item pooling, smaller resize batches, pager allocation substitutions, and
 the measured transient-allocation prototype already have negative comparisons.

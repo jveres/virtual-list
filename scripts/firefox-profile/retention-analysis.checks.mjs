@@ -125,6 +125,10 @@ test("retention CLI rejects oversized allocation traces and irrelevant skipping 
       /Nested staging requires/,
     ],
     [
+      ["--workload=rendering", "--scenario=table", "--variant=estimated"],
+      /Estimated geometry requires/,
+    ],
+    [
       ["--workload=rendering", "--scenario=construction", "--variant=fixed"],
       /Fixed layout requires/,
     ],
