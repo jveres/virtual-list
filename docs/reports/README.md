@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 cleanup and remaining scope
+
+The [cleanup and scope audit](runtime-remaining-scope-2026-10-02.md) removes
+405.21 MiB of generated caches, screenshots, helpers, and obsolete copies while
+preserving compact evidence. It separates the closed runtime candidate queue
+from longer measured-paging memory runs, large-row renderer work, and conditional
+table, placeholder, and estimated-geometry experiments. No new gain is claimed.
+
 ## October 2 large rows, uneven reflow, and measured streaming
 
 The [rendering and allocation follow-up](runtime-rendering-allocation-2026-10-02.md)
@@ -113,8 +121,10 @@ The [web-research review](virtualization-web-research-2026-10-01.md) compares
 six virtualization projects with the current runtime and prior Firefox results.
 It prioritizes rendering within huge rows, constrained table layout, scroll-seek
 placeholders, declared-row pooling, and an estimate-based large-history control.
-These are unmeasured investigation candidates; no runtime patch or new speedup
-is claimed.
+Those were research hypotheses. Subsequent comparisons reject declared pooling
+and the tested block-skipping mechanism; the
+[remaining-scope audit](runtime-remaining-scope-2026-10-02.md) records which
+questions still lack measurements. The web review itself claims no speedup.
 
 ## October 1 bottom navigation
 
@@ -537,6 +547,9 @@ request, captures are removed after analysis. The September 25 cleanup removes
 the remaining old raw trials and obsolete probes. Compact summaries, source
 replay metadata, tracked fixtures, and curated reports preserve the useful
 results and procedure. New Firefox and chat captures enforce this policy.
+The [October 2 cleanup](runtime-remaining-scope-2026-10-02.md#cleanup) removes
+later generated caches, screenshots, helpers, and obsolete prototype copies
+while verifying that retained evidence stays unchanged.
 
 Run IDs in historical reports remain labels even after pruning. Their commands
 and tracked fixtures reproduce synthetic workloads with a new run ID. Exact
