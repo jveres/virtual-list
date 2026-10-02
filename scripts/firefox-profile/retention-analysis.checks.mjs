@@ -112,6 +112,14 @@ test("retention CLI rejects oversized allocation traces and irrelevant skipping 
       ["--workload=mixed-natural", "--allocations"],
       /JS allocation sampling requires/,
     ],
+    [
+      ["--workload=rendering", "--scenario=huge", "--variant=fixed"],
+      /Fixed layout requires/,
+    ],
+    [
+      ["--workload=rendering", "--scenario=table", "--variant=skip"],
+      /Block skipping is a huge-row experiment/,
+    ],
   ]) {
     assert.throws(
       () =>

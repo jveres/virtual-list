@@ -29,7 +29,7 @@ const { values: options } = parseArgs({
 });
 if (options.help) {
   console.log(
-    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--workload=lifecycle|structures|structures-natural|paging-natural|mixed-natural|rendering] [--scenario=huge|resize] [--variant=plain|skip] [--diagnostic] [--allocations] [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory. Lifecycle measures weak item/node counts for replacement, paging, and disposal; structures measures geometry and list API operations at 1k, 10k, and 100k items. structures-natural additionally records post-operation memory before requesting collection. paging-natural runs overlapping pages, cancellation, live edits and eviction without forced collection between cycles; use --cycles=120 for a sustained workload (maximum 240 with --diagnostic, 960 without). mixed-natural adds measured wrapping text, six live edits per cycle, asynchronous inline images and width changes at 480/2,000 retained items; --allocations adds sampled JS-object allocation sites and requires --diagnostic (maximum 40 cycles). Allocation markers are not total allocated bytes or retained memory. rendering measures completed huge rows or heterogeneous width changes; --scenario=huge|resize selects cases and --variant=plain|skip selects the block-skipping control. --diagnostic requires structures, paging-natural, mixed-natural or rendering and an owned server; adds GC/sample attribution and, for structures, gap/overlap queries, tree-build controls, and a buffer-accounting probe. No native gesture timing claims.",
+    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--workload=lifecycle|structures|structures-natural|paging-natural|mixed-natural|rendering] [--scenario=huge|resize|table] [--variant=plain|skip|fixed] [--diagnostic] [--allocations] [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory. Lifecycle measures weak item/node counts for replacement, paging, and disposal; structures measures geometry and list API operations at 1k, 10k, and 100k items. structures-natural additionally records post-operation memory before requesting collection. paging-natural runs overlapping pages, cancellation, live edits and eviction without forced collection between cycles; use --cycles=120 for a sustained workload (maximum 240 with --diagnostic, 960 without). mixed-natural adds measured wrapping text, six live edits per cycle, asynchronous inline images and width changes at 480/2,000 retained items; --allocations adds sampled JS-object allocation sites and requires --diagnostic (maximum 40 cycles). Allocation markers are not total allocated bytes or retained memory. rendering measures completed huge rows, heterogeneous width changes, or host-owned constrained tables; --scenario=huge|resize|table selects cases, --variant=skip selects block skipping for huge rows, and --variant=fixed selects fixed-column table layout. --diagnostic requires structures, paging-natural, mixed-natural or rendering and an owned server; adds GC/sample attribution and, for structures, gap/overlap queries, tree-build controls, and a buffer-accounting probe. No native gesture timing claims.",
   );
   process.exit(0);
 }
@@ -50,16 +50,20 @@ const mixed = options.workload === "mixed-natural";
 const paging = options.workload === "paging-natural" || mixed;
 const rendering = options.workload === "rendering";
 assert.ok(
-  ["huge", "resize"].includes(options.scenario),
+  ["huge", "resize", "table"].includes(options.scenario),
   "Unknown rendering scenario",
 );
 assert.ok(
-  ["plain", "skip"].includes(options.variant),
+  ["plain", "skip", "fixed"].includes(options.variant),
   "Unknown rendering variant",
 );
 assert.ok(
-  !rendering || options.scenario === "huge" || options.variant === "plain",
+  options.variant !== "skip" || (rendering && options.scenario === "huge"),
   "Block skipping is a huge-row experiment, not a resize variant",
+);
+assert.ok(
+  options.variant !== "fixed" || (rendering && options.scenario === "table"),
+  "Fixed layout requires the constrained-table rendering scenario",
 );
 assert.ok(
   !options.diagnostic || ((structures || paging || rendering) && !options.url),
@@ -116,7 +120,7 @@ const report = {
 };
 const geometryExpression =
   "({x:screenX,y:screenY,outerWidth,outerHeight,innerWidth,innerHeight,dpr:devicePixelRatio})";
-const fixturePath = `/scripts/firefox-profile/fixtures/${rendering ? "rendering-workload" : structures ? "data-structures" : paging ? "paging-structures" : "runtime-retention"}.html`;
+const fixturePath = `/scripts/firefox-profile/fixtures/${rendering ? (options.scenario === "table" ? "table-layout" : "rendering-workload") : structures ? "data-structures" : paging ? "paging-structures" : "runtime-retention"}.html`;
 const fixtureAPI = rendering
   ? "__renderingWorkload"
   : structures
@@ -289,9 +293,11 @@ try {
   await checkpoint("empty");
   if (rendering) {
     const modes =
-      options.scenario === "huge"
-        ? ["ordinary", "blocks", "code", "table"]
-        : ["uniform", "mixed", "spike"];
+      options.scenario === "table"
+        ? ["table-ordinary", "table-long", "table-images"]
+        : options.scenario === "huge"
+          ? ["ordinary", "blocks", "code", "table"]
+          : ["uniform", "mixed", "spike"];
     for (const mode of modes) {
       check();
       if (options.diagnostic) {

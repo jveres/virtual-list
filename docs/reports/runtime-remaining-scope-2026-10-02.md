@@ -84,6 +84,11 @@ column widths and wrapping rules; arbitrary Markdown tables do not promise
 those semantics. Renderer changes belong in the owning repository, with its
 regression, release, tag, and dependency-pin workflow.
 
+The subsequent [constrained-table comparison](constrained-table-layout-2026-10-02.md)
+closes that table question for the tested cases. With identical column geometry
+and content, fixed layout supplies no useful CPU or timing gain against the
+automatic baseline and restored control. Production CSS stays unchanged.
+
 ## Conditional design experiments
 
 Two web-research alternatives remain unmeasured. Each requires a workload that

@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 constrained table layout
+
+The [constrained-table comparison](constrained-table-layout-2026-10-02.md)
+finds no useful fixed-layout gain against automatic layout with the same column
+widths, wrapping, images, and live edits. A restored control confirms the
+rejection. Fixtures preserve exact content and geometry across all three
+engines; production CSS is unchanged.
+
 ## October 2 longer measured paging
 
 The [480-cycle measured-paging control](runtime-measured-paging-duration-2026-10-02.md)

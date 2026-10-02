@@ -383,6 +383,28 @@ in the regression; `RENDERING_BROWSER` can select a single engine.
 The [rendering and allocation report](reports/runtime-rendering-allocation-2026-10-02.md)
 records tested conditions, rejected candidates, and source revisions.
 
+## Compare constrained table algorithms
+
+The table fixture gives both variants explicit column widths and wrapping
+rules. It covers ordinary cells, long unbroken text, and decorative images,
+with repeated traversal, width changes, and live cell edits:
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=table --variant=plain --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/table-layout-baseline
+node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=table --variant=fixed --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/table-layout-fixed
+pnpm run test:regression -- --group=runtime --match=table-layout
+```
+
+The candidate changes only `table-layout` from `auto` to `fixed`. These are
+host-owned tables with a declared column policy; they do not represent the
+renderer’s default content-sized Markdown tables. Checks verify every cell's
+overflow, complete text selection, edit-content hashes, row geometry, actual
+movement, and disposal. Geometry validation runs outside timed phases and the
+animation-frame sampler. Use a restored `plain` control before deciding whether
+a measured difference justifies an implementation.
+The [October 2 comparison](reports/constrained-table-layout-2026-10-02.md)
+rejects a production change for these cases.
+
 ## Preserve reproducibility
 
 Each run keeps `summary.json`, `reproduce.json`, and `reproduce.patch` under ignored
