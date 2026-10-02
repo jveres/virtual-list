@@ -89,4 +89,41 @@ test("retention CLI help is portable and does not launch a browser", () => {
   );
   assert.match(output, /GC\+CC/);
   assert.match(output, /--workload=lifecycle\|structures\|structures-natural/);
+  assert.match(output, /mixed-natural/);
+  assert.match(output, /--allocations/);
+});
+
+test("retention CLI rejects oversized allocation traces and irrelevant skipping controls before launch", () => {
+  for (const [args, message] of [
+    [
+      [
+        "--workload=mixed-natural",
+        "--diagnostic",
+        "--allocations",
+        "--cycles=44",
+      ],
+      /cycles must be 4\.\.40/,
+    ],
+    [
+      ["--workload=rendering", "--scenario=resize", "--variant=skip"],
+      /Block skipping is a huge-row experiment/,
+    ],
+    [
+      ["--workload=mixed-natural", "--allocations"],
+      /JS allocation sampling requires/,
+    ],
+  ]) {
+    assert.throws(
+      () =>
+        execFileSync(
+          process.execPath,
+          ["scripts/firefox-profile/runtime-retention.mjs", ...args],
+          { stdio: "pipe" },
+        ),
+      (error) => {
+        assert.match(error.stderr.toString(), message);
+        return true;
+      },
+    );
+  }
 });

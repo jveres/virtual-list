@@ -321,6 +321,68 @@ headless results establish correctness only. The
 [investigation record](reports/runtime-investigations-2026-10-02.md) tracks the
 installed-Firefox measurements for this workload.
 
+## Sample allocations during measured streaming
+
+Use `mixed-natural` for 480- and 2,000-item measured lists. It keeps the paging
+overlap, cancellation, reversal, and eviction checks, and adds six live text
+edits per cycle, asynchronously sized inline SVG images, and a width change
+every fourth cycle. The fixture verifies decoded image dimensions and mounted
+row heights. Its animation-frame sampler reads timestamps only.
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=mixed-natural --cycles=40 --diagnostic --allocations --display=LU28R55 --output=browser-artifacts/measured-streaming-allocations
+node scripts/firefox-profile/runtime-retention.mjs --workload=mixed-natural --cycles=120 --display=LU28R55 --output=browser-artifacts/measured-streaming-control
+```
+
+`--allocations` requires `mixed-natural` and `--diagnostic`. It enables Firefox's
+sampled JavaScript-object allocation markers and limits runs to 40 cycles to
+reduce trace-buffer overflow. Compact summaries retain counts,
+the sum of sampled object sizes, classes, and nearest page/runtime call sites
+inside marked workload phases. These are not all allocated bytes, retained
+memory, or object lifetimes. A runtime caller can include host allocations
+beneath it; compare the nearest page frame before attributing ownership.
+The capture fails if allocation sampling produces no markers.
+
+Allocation profiling changes execution and memory use. Use ordinary matched
+controls for performance comparisons. Omitting `--allocations` but keeping
+`--diagnostic` retains JavaScript samples, approximate content-main-thread CPU,
+rendering markers, and GC/CC slices. Native allocation tracking requires Firefox
+Nightly; this runner uses the installed release browser and does not install
+another build. See [Firefox's allocation documentation](https://raw.githubusercontent.com/firefox-devtools/profiler/main/docs-user/memory-allocations.md)
+for the different sampling scopes.
+
+The paging regression also covers these two measured cases in all three
+engines. For a focused fixture check, set `PAGING_WORKLOAD=measured`; optionally
+set `PAGING_BROWSER=firefox`, `chromium`, or `webkit`. These headless checks
+remain correctness checks, not performance evidence.
+
+## Measure huge rows and unequal resize work
+
+Use the rendering fixture to investigate work inside a measured row or the
+cost of resizing rows with different amounts of content:
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=huge --variant=plain --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/huge-rows
+node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=resize --variant=plain --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/uneven-resize
+pnpm run test:regression -- --group=runtime --match=rendering-workload
+```
+
+The huge-row cases use the demo Markdown renderer for ordinary and very large
+multi-block rows, a 3,000-line code fence, and a 1,200-row table. The resize cases
+compare uniform rows, a mixture of small and large rows, and one giant row.
+Assertions cover prefix geometry, content, selection, actual movement, and
+cleanup. Creation timing starts after module initialization and does not replace
+`profile:boot`. Traversals use instant API offsets and do not model native
+gesture release or physical presentation.
+
+The experimental `--variant=skip` applies block-level `content-visibility: auto`
+after exact measurement. It is intentionally separate from the default control
+and currently fails full-row selection in installed Firefox. Treat that run as
+invalid for speedup claims. `RENDERING_VARIANT=skip` reproduces the experiment
+in the regression; `RENDERING_BROWSER` can select a single engine.
+The [rendering and allocation report](reports/runtime-rendering-allocation-2026-10-02.md)
+records tested conditions, rejected candidates, and source revisions.
+
 ## Preserve reproducibility
 
 Each run keeps `summary.json`, `reproduce.json`, and `reproduce.patch` under ignored

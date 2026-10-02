@@ -179,12 +179,12 @@ export async function launchFirefox(directory, { profiler = false } = {}) {
       build: session.capabilities["moz:buildID"],
       processes: () => descendants(child.pid),
       close,
-      startProfile: () => {
+      startProfile: ({ features = ["js"] } = {}) => {
         assert.ok(profiler, "Profiler was not enabled");
         return command("moz:profiler.start", {
           entries: 8388608,
           interval: 2,
-          features: ["js"],
+          features,
           threads: ["GeckoMain"],
           activeContext: context,
         });

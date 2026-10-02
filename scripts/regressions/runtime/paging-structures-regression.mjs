@@ -3,7 +3,15 @@ import assert from "node:assert/strict";
 import { chromium, firefox, webkit } from "playwright";
 
 const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
-for (const engine of [firefox, chromium, webkit]) {
+const engines = { firefox, chromium, webkit };
+const selected = process.env.PAGING_BROWSER;
+assert.ok(!selected || engines[selected], "Unknown paging regression browser");
+const workload = process.env.PAGING_WORKLOAD;
+assert.ok(
+  !workload || workload === "measured",
+  "Unknown paging regression workload",
+);
+for (const engine of selected ? [engines[selected]] : Object.values(engines)) {
   const browser = await engine.launch();
   try {
     const page = await browser.newPage({
@@ -19,7 +27,9 @@ for (const engine of [firefox, chromium, webkit]) {
       ["stacked", 480],
       ["positioned", 2000],
       ["stacked", 10000],
-    ]) {
+      ["measured", 480],
+      ["measured", 2000],
+    ].filter(([mode]) => !workload || mode === workload)) {
       await page.evaluate(
         ({ mode, budget }) => __pagingStructures.prepare(mode, budget),
         { mode, budget },
@@ -31,6 +41,13 @@ for (const engine of [firefox, chromium, webkit]) {
       assert.equal(result.cycles, 12);
       assert.equal(result.cancelled, 3);
       assert.equal(result.completedReaches, 3);
+      if (mode === "measured") {
+        assert.equal(result.streamUpdates, 72);
+        assert.equal(result.widthChanges, 3);
+        assert.equal(result.calls.height, 0);
+        assert.ok(result.imageLoads > 12);
+        assert.ok(result.frameGaps.count > 12);
+      }
       assert.ok(result.evicted >= budget);
       assert.ok(result.activeItems <= budget && result.activeItems > 0);
       assert.ok(
@@ -44,7 +61,7 @@ for (const engine of [firefox, chromium, webkit]) {
     }
     assert.deepEqual(errors, []);
     console.log(
-      `${engine.name()}: paging overlap, cancellation, live edits and eviction passed`,
+      `${engine.name()}: paging overlap, cancellation, measured streaming, images, widths and eviction passed`,
     );
   } finally {
     await browser.close();

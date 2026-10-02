@@ -74,3 +74,9 @@ the ownership failures before their respective fixes and pass afterward.
 No measured candidate remains queued for implementation. Future investigation
 should start from a new profile, reproduced regression, or materially different
 workload rather than reopening the rejected prototypes without new evidence.
+
+The subsequent [rendering and allocation follow-up](runtime-rendering-allocation-2026-10-02.md)
+tests three such workloads: huge completed rows, uneven width-resize costs,
+and measured-height streaming with paging and images. It rejects block
+skipping, a one-row resize cap, and a temporary-allocation prototype. The
+additional measurements do not justify changing the released v0.4.12 runtime.

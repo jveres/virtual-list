@@ -7,6 +7,15 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 large rows, uneven reflow, and measured streaming
+
+The [rendering and allocation follow-up](runtime-rendering-allocation-2026-10-02.md)
+rejects block skipping after a Firefox selection failure, confirms that one-row
+resize batching cannot divide a giant row's layout stall, and rejects a
+temporary-allocation prototype after ordinary timing and memory comparisons.
+The runtime remains v0.4.12. New fixtures cover completed Markdown rows,
+heterogeneous reflow, measured paging, live text, images, and width changes.
+
 ## October 2 observer ownership and completed investigations
 
 The [observer ownership comparison](runtime-observer-ownership-2026-10-02.md)

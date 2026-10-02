@@ -4,6 +4,7 @@ import { createVirtualList } from "/src/virtual-list.ts";
 const viewport = document.querySelector("#viewport");
 const status = document.querySelector("#status");
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const frame = () => new Promise(requestAnimationFrame);
 const documentId = crypto.randomUUID();
 const errors = [];
 let list = null;
@@ -24,6 +25,10 @@ let previousTop = 0;
 let sourceGate = null;
 let busy = false;
 let timings = [];
+let imageLoads = 0;
+let streamUpdates = 0;
+let widthChanges = 0;
+let frameGaps = [];
 const calls = {
   key: 0,
   height: 0,
@@ -33,6 +38,51 @@ const calls = {
   project: 0,
 };
 const rowHeight = (id) => 40 + (id % 8) * 0.25;
+const imageHeight = (item) => 24 + ((item.id + item.edit) % 4) * 12;
+function renderMeasured(item, existing) {
+  const row = existing ?? document.createElement("div");
+  row.className = "row measured";
+  row.dataset.id = String(item.id);
+  if (!existing) {
+    row.append(document.createElement("p"), document.createElement("p"));
+    const image = document.createElement("img");
+    image.alt = "Synthetic inline image";
+    image.addEventListener("load", () => imageLoads++);
+    row.append(image);
+  }
+  row.children[0].textContent = `${item.id} / ${item.edit}: ${"Measured streaming text wraps as the source and viewport change. ".repeat(
+    1 + (item.id % 3) + (item.edit % 6),
+  )}`;
+  row.children[1].textContent = item.payload.slice(0, 120);
+  // No reserved height: decode changes the measured row after the live edit.
+  row.lastElementChild.src = `data:image/svg+xml,${encodeURIComponent(
+    `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="${imageHeight(item)}"><rect width="96" height="100%" fill="#abc"/></svg>`,
+  )}`;
+  return row;
+}
+async function settleMeasured() {
+  const start = performance.now();
+  let stable = 0;
+  while (performance.now() - start < 10000) {
+    await frame();
+    stable = list.state.held ? 0 : stable + 1;
+    if (stable >= 8 && performance.now() - start > 300) return;
+  }
+  throw new Error("Measured work did not settle");
+}
+async function verifyMeasured(item) {
+  const element = list.elementOf(`k${item.id}`);
+  require(element?.isConnected, "Measured target is not mounted");
+  const image = element.lastElementChild;
+  await image.decode();
+  await frame();
+  await frame();
+  require(image.naturalHeight === imageHeight(item), "Image did not update");
+  require(Math.abs(
+    element.getBoundingClientRect().height -
+      list.positionOf(`k${item.id}`).height,
+  ) < 1.05, "Measured row height differs");
+}
 const keyOf = (item) => {
   calls.key++;
   return `k${item.id}`;
@@ -79,7 +129,9 @@ function release() {
 async function prepare(nextMode, maxItems) {
   require(!busy, "Operation already running");
   release();
-  require(["stacked", "positioned"].includes(nextMode), "Unknown paging mode");
+  require(["stacked", "positioned", "measured"].includes(
+    nextMode,
+  ), "Unknown paging mode");
   require(Number.isInteger(maxItems) &&
     maxItems >= 480 &&
     maxItems <= 10000, "Invalid item budget");
@@ -91,15 +143,21 @@ async function prepare(nextMode, maxItems) {
   scrolls = ends = distance = 0;
   previousTop = viewport.scrollTop;
   timings = [];
+  imageLoads = streamUpdates = widthChanges = 0;
+  frameGaps = [];
+  viewport.style.width = "1100px";
   for (const name of Object.keys(calls)) calls[name] = 0;
   const initial = pageFor(100);
   list = createVirtualList(viewport, {
     items: initial.items,
     key: keyOf,
-    height: (item) => {
-      calls.height++;
-      return rowHeight(item.id);
-    },
+    height:
+      mode === "measured"
+        ? undefined
+        : (item) => {
+            calls.height++;
+            return rowHeight(item.id);
+          },
     position:
       mode === "positioned"
         ? (item) => {
@@ -109,6 +167,7 @@ async function prepare(nextMode, maxItems) {
         : undefined,
     render: (item, existing) => {
       if (!existing) calls.render++;
+      if (mode === "measured") return renderMeasured(item, existing);
       const row = existing ?? document.createElement("div");
       row.className = "row";
       row.style.height = `${rowHeight(item.id)}px`;
@@ -151,10 +210,19 @@ async function prepare(nextMode, maxItems) {
   status.textContent = `${mode}: ${budget} retained items`;
   await list.scrollTo("end");
   await pause(80);
+  if (mode === "measured") await verifyMeasured(pager.items.at(-1));
 }
 async function cycle(totalCycles) {
   require(!busy && pager && list, "No idle paging workload");
   busy = true;
+  let previousFrame = null;
+  let frameHandle = 0;
+  const sample = (now) => {
+    if (previousFrame !== null) frameGaps.push(now - previousFrame);
+    previousFrame = now;
+    frameHandle = requestAnimationFrame(sample);
+  };
+  if (mode === "measured") frameHandle = requestAnimationFrame(sample);
   const label = `structure:paging-${mode}:${budget}:cycle-${cycles}`;
   performance.mark(`${label}:start`);
   try {
@@ -185,12 +253,19 @@ async function cycle(totalCycles) {
     }
     const boundary = edge === "end" ? pager.items.at(-1) : pager.items[0];
     const key = `k${boundary.id}`;
-    const edit = boundary.edit + 1;
+    const updates = mode === "measured" ? 6 : 1;
+    const edit = boundary.edit + updates;
     const editStart = performance.now();
-    require(await pager.updateItemLive(key, (item) => ({
-      ...item,
-      edit,
-    })), "Live edit failed");
+    for (let update = 0; update < updates; update++) {
+      require(await pager.updateItemLive(key, (item) => ({
+        ...item,
+        edit: item.edit + 1,
+      })), "Live edit failed");
+      if (mode === "measured") {
+        streamUpdates++;
+        await frame();
+      }
+    }
     const editMs = performance.now() - editStart;
     const loadStart = performance.now();
     require(await pager.load(edge), "Page load failed");
@@ -211,9 +286,27 @@ async function cycle(totalCycles) {
       `k${pager.items[Math.floor(pager.items.length / 2)].id}`,
     );
     await pause(40);
-    timings.push({ editMs, loadMs, trimMs, items: pager.items.length });
+    let resizeMs = 0;
+    if (mode === "measured") {
+      if (cycles % 4 === 3) {
+        const resizeStart = performance.now();
+        viewport.style.width = widthChanges % 2 ? "1100px" : "650px";
+        widthChanges++;
+        await settleMeasured();
+        resizeMs = performance.now() - resizeStart;
+      }
+      await verifyMeasured(pager.items[Math.floor(pager.items.length / 2)]);
+    }
+    timings.push({
+      editMs,
+      loadMs,
+      trimMs,
+      resizeMs,
+      items: pager.items.length,
+    });
     cycles++;
   } finally {
+    cancelAnimationFrame(frameHandle);
     performance.mark(`${label}:end`);
     busy = false;
   }
@@ -238,6 +331,18 @@ globalThis.__pagingStructures = {
     distance,
     calls: { ...calls },
     timings: [...timings],
+    imageLoads,
+    streamUpdates,
+    widthChanges,
+    frameGaps: (() => {
+      const sorted = frameGaps.toSorted((a, b) => a - b);
+      return {
+        count: sorted.length,
+        p95: sorted[Math.floor(sorted.length * 0.95)] ?? null,
+        max: sorted.at(-1) ?? null,
+        over25: sorted.filter((x) => x > 25).length,
+      };
+    })(),
     errors: [...errors],
     activeItems: list?.state.count ?? 0,
     mountedRows: viewport.querySelectorAll(".row").length,
