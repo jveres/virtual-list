@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 longer measured paging
+
+The [480-cycle measured-paging control](runtime-measured-paging-duration-2026-10-02.md)
+shows the small case's early process-memory growth reversing naturally, with
+bounded active items and balanced disposal in both cases. It closes the
+120-cycle duration question for the tested workload without a runtime change
+or a claim about unlimited-duration bounds.
+
 ## October 2 cleanup and remaining scope
 
 The [cleanup and scope audit](runtime-remaining-scope-2026-10-02.md) removes

@@ -175,6 +175,10 @@ at its cutoff, and its forced-collection drop shows collectable data, not a
 finite-duration plateau. Neither result establishes unlimited-duration memory
 bounds. All captures preserve bounded active items and balanced row disposal.
 
+The subsequent [480-cycle control](runtime-measured-paging-duration-2026-10-02.md)
+observes natural memory recovery in the small case beyond this cutoff. It
+closes the duration question for that workload without changing the runtime.
+
 ## Measurement conditions
 
 Installed Firefox 157.0, build `20260924084938`, macOS 27.0; fresh temporary

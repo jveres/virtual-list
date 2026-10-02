@@ -57,6 +57,11 @@ Keep collection outside the cycle sequence and inspect checkpoints for natural
 recovery, sustained growth, and bounded ownership. This is a new duration
 question, not a reason to repeat the rejected allocation comparison.
 
+The subsequent [480-cycle control](runtime-measured-paging-duration-2026-10-02.md)
+closes this question for the tested duration: small-case process footprint
+falls naturally after cycle 120 and stays between 135.64 and 142.13 MiB over
+cycles 160–480. No runtime patch follows from that result.
+
 ### Large-row rendering and indivisible layout
 
 The [large-row fixture](runtime-rendering-allocation-2026-10-02.md#large-completed-rows)
