@@ -755,6 +755,8 @@ export function createVirtualList<T>(
   function destroyRow(row: Row<T>): void {
     if (row.dead) return;
     row.dead = true;
+    // Retained host elements must not keep retired row data through this index.
+    if (rowOf.get(row.element) === row) rowOf.delete(row.element);
     if (row.place === "mounted") unmountRow(row);
     detachRow(row);
     dirtyRows.delete(row);
@@ -3067,6 +3069,7 @@ export function createVirtualList<T>(
     controller.dispose();
     document.removeEventListener("visibilitychange", onVisibilityChange);
     if (observeFrame !== 0) cancelAnimationFrame(observeFrame);
+    pendingObserves.length = 0;
     if (remeasureFrame !== 0) cancelAnimationFrame(remeasureFrame);
     clearTimeout(staleTimer);
     cancelAnimationFrame(staleFrame);

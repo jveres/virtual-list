@@ -26,7 +26,7 @@ const { values: options } = parseArgs({
 });
 if (options.help) {
   console.log(
-    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--workload=lifecycle|structures|structures-natural|paging-natural] [--diagnostic] [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory. Lifecycle measures weak item/node counts for replacement, paging, and disposal; structures measures geometry and list API operations at 1k, 10k, and 100k items. structures-natural additionally records post-operation memory before requesting collection. paging-natural runs overlapping pages, cancellation, live edits and eviction without forced collection between cycles; use --cycles=120 for a sustained workload (maximum 240). --diagnostic requires structures or paging-natural and an owned server; adds GC/sample attribution and, for structures, gap/overlap queries, tree-build controls, and a buffer-accounting probe. No native gesture timing claims.",
+    "Usage: node scripts/firefox-profile/runtime-retention.mjs [--workload=lifecycle|structures|structures-natural|paging-natural] [--diagnostic] [--cycles=12] [--display=LU28R55] [--output=browser-artifacts/runtime-retention] [--url=http://127.0.0.1:4193]\nInstalled macOS Firefox, fresh profile, closed DevTools. Collects before/after GC+CC memory. Lifecycle measures weak item/node counts for replacement, paging, and disposal; structures measures geometry and list API operations at 1k, 10k, and 100k items. structures-natural additionally records post-operation memory before requesting collection. paging-natural runs overlapping pages, cancellation, live edits and eviction without forced collection between cycles; use --cycles=120 for a sustained workload (maximum 240 with --diagnostic, 960 without). --diagnostic requires structures or paging-natural and an owned server; adds GC/sample attribution and, for structures, gap/overlap queries, tree-build controls, and a buffer-accounting probe. No native gesture timing claims.",
   );
   process.exit(0);
 }
@@ -43,12 +43,15 @@ assert.ok(
   !options.diagnostic || ((structures || paging) && !options.url),
   "Diagnostic capture requires structures or paging-natural and an owned server",
 );
+// Longer unprofiled controls can reach natural collection without wrapping a trace.
+const pagingCycleLimit = options.diagnostic ? 240 : 960;
+const cycleLimit = paging ? pagingCycleLimit : 24;
 assert.ok(
   Number.isInteger(cycles) &&
     cycles >= 4 &&
-    cycles <= (paging ? 240 : 24) &&
+    cycles <= cycleLimit &&
     cycles % 4 === 0,
-  `cycles must be 4..${paging ? 240 : 24} in groups of four`,
+  `cycles must be 4..${cycleLimit} in groups of four`,
 );
 assert.equal(
   process.platform,
@@ -348,7 +351,14 @@ try {
       }
     }
   } else
-    for (const mode of ["replace", "paging", "dispose-drop", "dispose-keep"]) {
+    for (const mode of [
+      "replace",
+      "paging",
+      "dispose-drop",
+      "dispose-keep",
+      "retained-nodes",
+      "dispose-delivery",
+    ]) {
       check();
       await browser.evaluate(
         `__runtimeRetention.begin(${JSON.stringify(mode)})`,

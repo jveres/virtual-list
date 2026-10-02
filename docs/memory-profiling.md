@@ -159,8 +159,11 @@ notifications.
 
 The separate lifecycle diagnostic checks replacement within one list, paging
 with eviction, disposal with API handles released, and disposal with old API
-handles deliberately retained. It uses synthetic source items and measured
-rows, without the Markdown renderer, storage, or remote assets.
+handles deliberately retained. It also keeps empty retired elements while
+replacing source data, and disposes lists during a resize callback after new
+observer registrations are queued. These cases distinguish host DOM ownership
+from stale runtime references. The fixture uses synthetic source items and
+measured rows, without the Markdown renderer, storage, or remote assets.
 
 ```sh
 node scripts/firefox-profile/runtime-retention.mjs --cycles=12 --display=LU28R55
@@ -185,7 +188,9 @@ Compact summaries and reproduction patches remain under ignored
 `browser-artifacts/runtime-retention/`. Per-run profiles, native helpers,
 compiler caches, and servers are removed. No raw heap snapshot is saved.
 The [October 1 comparison](reports/runtime-retention-2026-10-01.md) records
-the measured source-retention fixes and their limits.
+the measured source-retention fixes and their limits. The
+[October 2 observer comparison](reports/runtime-observer-ownership-2026-10-02.md)
+covers retained elements and canceled registration queues.
 
 Run the portable fixture regression with:
 
@@ -285,11 +290,25 @@ bounded ownership, actual movement, scroll-end events, and row disposal.
 The runner forces collection before and after each case, but never between its
 cycles. It samples process footprints every twenty cycles and at the end,
 without opening diagnostic tabs during the cycle sequence. The default is
-twelve cycles; the supported range is 4–240 in multiples of four. The optional
-profile records per-cycle JavaScript samples and GC/CC slices. Edit, load, and
+twelve cycles; the supported range is 4–960 in multiples of four without
+profiling, or 4–240 with `--diagnostic`. The shorter profiled limit preserves
+the recorded workload markers. The optional profile records per-cycle
+JavaScript samples and GC/CC slices. Edit, load, and
 reconcile timings include awaited work and are wall times, not exclusive CPU.
 Lifetime process peaks can include earlier cases and diagnostics. This workload
 doesn't measure native input or physical presentation.
+
+If a short control ends while memory is still rising, use a longer sequence
+without profiling to check whether growth reverses naturally:
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=paging-natural --cycles=960 --display=LU28R55 --output=browser-artifacts/paging-natural-long-control
+```
+
+Compare matching durations for before/after claims. Changing the duration also
+changes when the workload reverses direction. The
+[paging and memory comparison](reports/runtime-paging-memory-2026-10-02.md)
+records the rejected pager prototypes and the 240/960-cycle controls.
 
 Run the fixture's correctness regression with:
 

@@ -7,14 +7,27 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
-## October 2 pixel-ratio reads and remaining investigations
+## October 2 observer ownership and completed investigations
+
+The [observer ownership comparison](runtime-observer-ownership-2026-10-02.md)
+fixes source retention through host-kept retired elements and canceled resize
+registrations. With 1,152 empty retired roots deliberately retained, reported
+window storage falls from 62.54 to 7.71–7.72 MiB. Disposal during resize delivery
+also releases 20 previously retained items and elements across four handles.
+
+The [paging and sustained-memory investigation](runtime-paging-memory-2026-10-02.md)
+rejects two pager allocation prototypes after matched comparisons. Longer
+unprofiled controls show that early process-memory growth reverses while source
+ownership remains bounded. The
+[investigation record](runtime-investigations-2026-10-02.md) closes the audit's
+candidate queue and records its workload and presentation limits.
+
+## October 2 pixel-ratio reads
 
 The [pixel-ratio comparison](runtime-pixel-ratio-2026-10-02.md) confirms an 8%
 improvement for large positioned edits and 4–6% shorter positioned structural
-batches by sharing device-grid reads within synchronous passes. The
-[investigation record](runtime-investigations-2026-10-02.md) tracks compact
-declared-item snapshots, bulk paging, and sustained natural collection. The
-new paging fixture passes installed-Firefox validation at 120 cycles per case.
+batches by sharing device-grid reads within synchronous passes. Subsequent
+comparisons cover declared snapshots, paging, and observer ownership.
 
 ## October 2 compact declared snapshots
 

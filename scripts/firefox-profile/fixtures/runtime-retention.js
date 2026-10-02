@@ -6,6 +6,7 @@ const status = document.querySelector("#status");
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const cohorts = [];
 const retained = [];
+const retainedNodes = [];
 const errors = [];
 let generation = 0;
 let list = null;
@@ -20,6 +21,9 @@ let ends = 0;
 let distance = 0;
 let previousTop = 0;
 let busy = false;
+let replaceOnResize = false;
+let disposeOnMount = false;
+let deliveryDisposals = 0;
 const documentId = crypto.randomUUID();
 
 function require(value, message) {
@@ -58,6 +62,10 @@ function itemsFor(count) {
   });
 }
 
+function retainedClick(event) {
+  event.currentTarget.title = event.currentTarget.dataset.key ?? "";
+}
+
 function render(item) {
   renders++;
   const row = document.createElement("article");
@@ -67,9 +75,11 @@ function render(item) {
     paragraph.textContent = `${item.id} / ${i}: ${item.payload.slice(i * 180, (i + 1) * 180)}`;
     row.append(paragraph);
   }
-  row.addEventListener("click", () => {
-    row.title = item.id;
-  });
+  if (mode === "retained-nodes") row.addEventListener("click", retainedClick);
+  else
+    row.addEventListener("click", () => {
+      row.title = item.id;
+    });
   cohorts
     .find((entry) => entry.generation === item.generation)
     .nodes.push(new WeakRef(row));
@@ -80,8 +90,26 @@ function createList(items) {
     items,
     key: (item) => item.id,
     render,
-    onDestroy: () => {
+    onDestroy: (element) => {
       destroyed++;
+      if (mode === "retained-nodes") {
+        // The host retains empty reusable roots, with no item-capturing listener.
+        element.replaceChildren();
+        element.removeAttribute("data-key");
+        retainedNodes.push(element);
+      }
+    },
+    onState: () => {
+      if (!replaceOnResize) return;
+      replaceOnResize = false;
+      disposeOnMount = true;
+      list.setItems(itemsFor(96), { anchor: "none", interrupt: true });
+    },
+    onMount: () => {
+      if (!disposeOnMount) return;
+      disposeOnMount = false;
+      dispose(true);
+      deliveryDisposals++;
     },
     boot: "start",
     pinning: false,
@@ -129,14 +157,23 @@ async function begin(nextMode) {
   require(!busy, "Operation already running");
   dispose();
   retained.length = 0;
+  retainedNodes.length = 0;
   cohorts.length = 0;
   mode = nextMode;
   cycles = renders = destroyed = evicted = scrolls = ends = distance = 0;
+  replaceOnResize = disposeOnMount = false;
+  deliveryDisposals = 0;
   previousTop = viewport.scrollTop;
-  require(["replace", "paging", "dispose-drop", "dispose-keep"].includes(
-    mode,
-  ), "Unknown mode");
-  if (mode === "replace") list = createList(itemsFor(96));
+  require([
+    "replace",
+    "paging",
+    "dispose-drop",
+    "dispose-keep",
+    "retained-nodes",
+    "dispose-delivery",
+  ].includes(mode), "Unknown mode");
+  if (mode === "replace" || mode === "retained-nodes")
+    list = createList(itemsFor(96));
   if (mode === "paging") {
     const initial = pageFor(0);
     list = createList(initial.items);
@@ -149,7 +186,7 @@ async function cycle() {
   require(!busy, "Operation already running");
   busy = true;
   try {
-    if (mode === "replace") {
+    if (mode === "replace" || mode === "retained-nodes") {
       list.setItems(itemsFor(96), { anchor: "none", interrupt: true });
       await travel();
       require(list.state.count === 96, "Replacement did not commit");
@@ -162,6 +199,17 @@ async function cycle() {
       await pager.reconcile();
       require(pager.items.length <= 96, "Page budget did not settle");
       require(list.state.count === pager.items.length, "Pager/runtime differ");
+    } else if (mode === "dispose-delivery") {
+      list = createList(itemsFor(96));
+      await travel();
+      const row = viewport.querySelector("article");
+      require(row, "No row to resize");
+      replaceOnResize = true;
+      row.style.height = `${row.getBoundingClientRect().height + 32}px`;
+      for (let attempt = 0; list && attempt < 100; attempt++) await pause(20);
+      require(!list &&
+        deliveryDisposals === cycles + 1, "Resize disposal did not complete");
+      require(renders === destroyed, "Resize disposal left live rows");
     } else {
       list = createList(itemsFor(96));
       await travel();
@@ -178,8 +226,10 @@ globalThis.__runtimeRetention = {
   begin,
   cycle,
   release() {
+    replaceOnResize = disposeOnMount = false;
     dispose();
     retained.length = 0;
+    retainedNodes.length = 0;
   },
   // Call only after a separate browser collection task. WeakRef reads keep
   // referents alive for the current JavaScript job, never across checkpoints.
@@ -195,6 +245,8 @@ globalThis.__runtimeRetention = {
       ends,
       distance,
       retainedHandles: retained.length,
+      retainedNodes: retainedNodes.length,
+      deliveryDisposals,
       activeItems: list?.state.count ?? 0,
       mountedRows: viewport.querySelectorAll("article").length,
       canvasCount: viewport.childElementCount,

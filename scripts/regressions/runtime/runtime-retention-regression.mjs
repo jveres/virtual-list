@@ -15,7 +15,14 @@ for (const engine of [firefox, chromium, webkit]) {
       `${base}/scripts/firefox-profile/fixtures/runtime-retention.html`,
     );
     await page.waitForFunction(() => !!globalThis.__runtimeRetention);
-    for (const mode of ["replace", "paging", "dispose-drop", "dispose-keep"]) {
+    for (const mode of [
+      "replace",
+      "paging",
+      "dispose-drop",
+      "dispose-keep",
+      "retained-nodes",
+      "dispose-delivery",
+    ]) {
       await page.evaluate((mode) => __runtimeRetention.begin(mode), mode);
       for (let i = 0; i < 4; i++)
         await page.evaluate(() => __runtimeRetention.cycle());
@@ -23,10 +30,18 @@ for (const engine of [firefox, chromium, webkit]) {
       assert.deepEqual(state.errors, []);
       assert.equal(state.cycles, 4);
       assert.ok(state.scrolls > 4 && state.ends > 0 && state.distance > 10000);
+      assert.equal(state.retainedNodes, mode === "retained-nodes" ? 384 : 0);
+      assert.equal(
+        state.deliveryDisposals,
+        mode === "dispose-delivery" ? 4 : 0,
+      );
       if (mode.startsWith("dispose")) {
         assert.equal(state.renders, state.destroyed);
         assert.equal(state.canvasCount, 0);
-        assert.equal(state.retainedHandles, mode === "dispose-keep" ? 4 : 0);
+        assert.equal(
+          state.retainedHandles,
+          mode === "dispose-keep" || mode === "dispose-delivery" ? 4 : 0,
+        );
       } else {
         assert.equal(state.activeItems, 96);
         assert.equal(state.renders - state.destroyed, 96);
@@ -44,13 +59,14 @@ for (const engine of [firefox, chromium, webkit]) {
         );
         assert.equal(
           collected.cohorts.reduce((sum, row) => sum + row.aliveNodes, 0),
-          collected.activeItems,
+          collected.activeItems + collected.retainedNodes,
           `${mode}: retired row DOM remains reachable`,
         );
       }
       await page.evaluate(() => __runtimeRetention.release());
       const released = await page.evaluate(() => __runtimeRetention.snapshot());
       assert.equal(released.retainedHandles, 0);
+      assert.equal(released.retainedNodes, 0);
       assert.equal(released.renders, released.destroyed);
       assert.equal(released.canvasCount, 0);
       if (gc) {
