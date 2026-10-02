@@ -89,6 +89,13 @@ closes that table question for the tested cases. With identical column geometry
 and content, fixed layout supplies no useful CPU or timing gain against the
 automatic baseline and restored control. Production CSS stays unchanged.
 
+The subsequent [large-table staging comparison](large-table-staging-2026-10-02.md)
+retains table-only preparation in the demo hook: a 1,200-row table's worst
+preparation gap falls from 50.6 to 18.1–18.3 ms, with later readiness and more
+total CPU. Code-block staging is rejected; its synchronous HTML generation
+remains expensive. The experiment closes nested first-layout slicing, without
+claiming a renderer-wide solution to arbitrarily large content.
+
 ## Conditional design experiments
 
 Two web-research alternatives remain unmeasured. Each requires a workload that

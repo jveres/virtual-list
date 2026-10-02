@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 large table preparation
+
+The [large-table staging comparison](large-table-staging-2026-10-02.md)
+retains a demo preparation change that reduces a 1,200-row table's largest
+frame gap from 50.6 to 18.1–18.3 ms. Readiness increases by 189 ms and sampled
+CPU by 33–35 ms. Code-block staging is rejected because a long synchronous
+rendering pause remains while total readiness more than triples.
+
 ## October 2 constrained table layout
 
 The [constrained-table comparison](constrained-table-layout-2026-10-02.md)

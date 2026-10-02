@@ -405,6 +405,29 @@ a measured difference justifies an implementation.
 The [October 2 comparison](reports/constrained-table-layout-2026-10-02.md)
 rejects a production change for these cases.
 
+## Compare large-row preparation
+
+The construction fixture uses the demo's Markdown renderer and staging hook
+for many independent blocks, one large code fence, and one large table. It
+measures readiness after module initialization, not demo boot. Timestamp-only
+frame sampling starts before rendering and DOM creation.
+
+```sh
+node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=construction --variant=plain --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/row-construction
+node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=construction --variant=nested --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/row-construction-nested
+pnpm run test:regression -- --group=runtime --match=row-construction
+pnpm run test:regression -- --group=runtime --match=staged-row
+```
+
+`plain` uses the current production hook. `nested` retains the exploratory
+code/table slicing control; it is not a production recommendation. To compare
+the old hook, restore its recorded revision and source patch from the
+[October 2 report](reports/large-table-staging-2026-10-02.md). Current `plain`
+already stages large tables. Compare the worst preparation gap, total readiness,
+and CPU together. The `markup` and `dom` phases are inside `prepare`; do not
+sum them with the parent phase. Correctness checks cover selection after width
+changes, complete markup, node identity, geometry, cancellation, and disposal.
+
 ## Preserve reproducibility
 
 Each run keeps `summary.json`, `reproduce.json`, and `reproduce.patch` under ignored

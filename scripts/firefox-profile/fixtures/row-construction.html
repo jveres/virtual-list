@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Large row construction workload</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/20px system-ui; background: #edf1f5; }
+  #status { height: 40px; padding: 10px; }
+  #viewport { width: 1100px; max-width: 100%; height: calc(100vh - 40px); overflow: auto; overscroll-behavior: contain; }
+  article { background: white; padding: 12px; border-bottom: 1px solid #ccd; contain: layout style; }
+  .compact { min-height: 80px; }
+  .markdown { display: flow-root; }
+</style>
+</head>
+<body>
+<div id="status">Completed row construction and nested staging</div>
+<div id="viewport"></div>
+<script type="module" src="./row-construction.js"></script>
+</body>
+</html>
