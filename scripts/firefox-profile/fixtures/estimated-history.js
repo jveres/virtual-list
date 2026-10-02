@@ -180,10 +180,16 @@ async function exactAdapter() {
     overscanPx: 0,
     pinning: false,
   });
-  require(await list.updateWindow(() => ({
-    items,
-    anchor: "none",
-  })), "Exact preparation canceled");
+  try {
+    require(await list.updateWindow(() => ({
+      items,
+      anchor: "none",
+    })), "Exact preparation canceled");
+  } catch (error) {
+    // prepare() cannot own this adapter until its asynchronous work succeeds.
+    list.dispose();
+    throw error;
+  }
   return {
     total: () => list.state.totalSize,
     busy: () => list.state.held,
@@ -222,13 +228,18 @@ async function phase(label, operation) {
   })();
   performance.mark(`structure:${mode}:${label}:start`);
   const start = performance.now();
-  await operation();
-  const workMs = performance.now() - start;
-  await settle();
-  const settledMs = performance.now() - start;
-  performance.mark(`structure:${mode}:${label}:end`);
-  sampling = false;
-  await sampler;
+  let workMs;
+  let settledMs;
+  try {
+    await operation();
+    workMs = performance.now() - start;
+    await settle();
+    settledMs = performance.now() - start;
+  } finally {
+    performance.mark(`structure:${mode}:${label}:end`);
+    sampling = false;
+    await sampler;
+  }
   result.phases.push({
     label,
     workMs,

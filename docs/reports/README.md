@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 2 clean code audit
+
+The [clean code audit](clean-code-audit-2026-10-02.md) closes four medium-priority
+findings across three passes: failed benchmark cleanup, an obsolete translation
+probe, duplicated profiler cleanup, and borrowed Safari session ownership.
+Unused internal exports and a duplicate license notice are removed. The final
+reachability check reports zero issues; intentional repetition is documented.
+
 ## October 2 exploration closeout
 
 The [closeout](runtime-exploration-closeout-2026-10-02.md) reconciles the full

@@ -690,8 +690,6 @@ html[data-theme="dark"] .np-body {
    token set over the shell (mono labels, panel surfaces, category accents) and
    ships both a light and a dark palette, so it follows the theme toggle like the
    rest of the demo. The three-rule pattern below mirrors the paper palette above,
-   both a light and a dark palette, so it follows the theme toggle like the rest
-   of the demo. The three-rule pattern below mirrors the paper palette above,
    with [data-variant="radar"] appended for specificity.
    ============================================================================ */
 

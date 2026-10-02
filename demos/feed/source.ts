@@ -2,7 +2,7 @@ import type { Page } from "../../src/paging";
 
 export type FeedSource = "bsky" | "lemmy";
 export type FeedCursor = { endpoint: string; token: string };
-export type FeedMedia = {
+type FeedMedia = {
   preview: string;
   url: string;
   alt: string;

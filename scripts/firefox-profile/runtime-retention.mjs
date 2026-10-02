@@ -10,7 +10,7 @@ import { writeReproduction } from "./artifacts.mjs";
 import { parseFootprints } from "./memory-analysis.mjs";
 import { delay, launchFirefox } from "./memory-browser.mjs";
 import { summarizeRetentionMemory } from "./retention-analysis.mjs";
-import { validateDisplay } from "./safari-validation.mjs";
+import { cleanupCapture, validateDisplay } from "./safari-validation.mjs";
 import { summarizeStructureProfile } from "./structure-analysis.mjs";
 
 const { values: options } = parseArgs({
@@ -507,40 +507,28 @@ try {
   console.error(error);
 } finally {
   report.cleanupErrors = [];
-  for (const [name, action] of [
-    ["browser", () => browser?.close()],
-    ["server", () => server?.close()],
-    [
-      "sleep assertion",
-      async () => {
-        if (awake && awake.exitCode === null && awake.signalCode === null) {
-          const exited = once(awake, "exit");
-          awake.kill("SIGTERM");
-          await exited;
-        }
-      },
-    ],
-    [
-      "temporary files",
-      async () => {
-        for (const name of [
-          "native",
-          "footprint",
-          "swift-cache",
-          "vite-cache",
-          "profile",
-        ])
-          await rm(join(directory, name), { recursive: true, force: true });
-      },
-    ],
-  ]) {
-    try {
-      await action();
-    } catch (error) {
-      report.cleanupErrors.push(`${name}: ${error}`);
-    }
-  }
-  if (report.cleanupErrors.length) {
+  const cleaned = await cleanupCapture(report, {
+    browser: () => browser?.close(),
+    server: () => server?.close(),
+    "sleep assertion": async () => {
+      if (awake && awake.exitCode === null && awake.signalCode === null) {
+        const exited = once(awake, "exit");
+        awake.kill("SIGTERM");
+        await exited;
+      }
+    },
+    "temporary files": async () => {
+      for (const name of [
+        "native",
+        "footprint",
+        "swift-cache",
+        "vite-cache",
+        "profile",
+      ])
+        await rm(join(directory, name), { recursive: true, force: true });
+    },
+  });
+  if (!cleaned) {
     report.status = "invalid";
     process.exitCode = 1;
   }

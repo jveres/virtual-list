@@ -192,7 +192,7 @@ export function attributeProfile(profile, { filter = "/src/", top = 25 } = {}) {
   return results;
 }
 
-export async function attributeDirectory(directory, options) {
+async function attributeDirectory(directory, options) {
   let bytes;
   try {
     bytes = await readFile(resolve(directory, "profile.json"));

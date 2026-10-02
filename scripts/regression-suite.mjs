@@ -104,7 +104,7 @@ export async function runCase(test, { url, timeout, signal }) {
   });
 }
 
-export async function main(args = process.argv.slice(2)) {
+async function main(args = process.argv.slice(2)) {
   const config = options(args);
   if (config.help) {
     console.log(

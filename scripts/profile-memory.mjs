@@ -23,7 +23,10 @@ import {
   memoryPageState,
   startMemoryCycle,
 } from "./firefox-profile/memory-workload.mjs";
-import { validateDisplay } from "./firefox-profile/safari-validation.mjs";
+import {
+  cleanupCapture,
+  validateDisplay,
+} from "./firefox-profile/safari-validation.mjs";
 
 const { values: options } = parseArgs({
   args: process.argv.slice(process.argv[2] === "--" ? 3 : 2),
@@ -553,36 +556,23 @@ try {
   process.exitCode = 1;
   console.error(error);
 } finally {
-  const cleanupErrors = [];
-  for (const [name, action] of [
-    ["browser", () => browser?.close()],
-    ["server", () => server?.close()],
-    [
-      "sleep assertion",
-      async () => {
-        if (awake && awake.exitCode === null && awake.signalCode === null) {
-          const exited = once(awake, "exit");
-          awake.kill("SIGTERM");
-          await exited;
-        }
-      },
-    ],
-    [
-      "temporary files",
-      async () => {
-        for (const name of ["native", "footprint", "vite-cache", "profile"])
-          await rm(join(directory, name), { recursive: true, force: true });
-      },
-    ],
-  ]) {
-    try {
-      await action();
-    } catch (error) {
-      cleanupErrors.push(`${name}: ${error}`);
-    }
-  }
-  report.cleanupErrors = cleanupErrors;
-  if (cleanupErrors.length) {
+  report.cleanupErrors = [];
+  const cleaned = await cleanupCapture(report, {
+    browser: () => browser?.close(),
+    server: () => server?.close(),
+    "sleep assertion": async () => {
+      if (awake && awake.exitCode === null && awake.signalCode === null) {
+        const exited = once(awake, "exit");
+        awake.kill("SIGTERM");
+        await exited;
+      }
+    },
+    "temporary files": async () => {
+      for (const name of ["native", "footprint", "vite-cache", "profile"])
+        await rm(join(directory, name), { recursive: true, force: true });
+    },
+  });
+  if (!cleaned) {
     report.status = "invalid";
     process.exitCode = 1;
   }

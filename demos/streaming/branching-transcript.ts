@@ -6,7 +6,7 @@ import {
   transcriptMarkdown,
 } from "./transcript.js";
 
-export interface TranscriptNode<M extends TranscriptMessage = StoredTurn> {
+interface TranscriptNode<M extends TranscriptMessage = StoredTurn> {
   id: number;
   /** Zero denotes the root sentinel, which has no message. */
   parentId: number;

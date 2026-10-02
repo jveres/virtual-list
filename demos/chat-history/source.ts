@@ -16,7 +16,7 @@ export interface HistoryMessage {
   markdown: string;
 }
 
-export interface HistoryHeader {
+interface HistoryHeader {
   kind: "header";
   key: string;
   group: number;

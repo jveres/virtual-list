@@ -1002,7 +1002,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     closeButton.type = "button";
     closeButton.className = "photo-viewer-close";
     closeButton.setAttribute("aria-label", "Close photo");
-    // Lucide's x icon: https://lucide.dev/icons/x (see lucide-license.txt).
+    // Lucide's x icon: https://lucide.dev/icons/x (see public/lucide-license.txt).
     closeButton.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg"
       width="20" height="20" viewBox="0 0 24 24" fill="none"
       stroke="currentColor" stroke-width="1.5" stroke-linecap="round"

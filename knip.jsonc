@@ -1,0 +1,45 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": [
+    // Supported consumer entry points retain their public exports.
+    "src/index.ts",
+    "src/companions/index.ts",
+    "integrations/index.ts",
+    "index.html",
+    "demos/**/index.html",
+    "examples/**/index.html",
+    // Standalone tools, dynamically discovered regressions, and injected setups.
+    "scripts/*.mjs",
+    "scripts/firefox-profile/*.checks.mjs",
+    "scripts/firefox-profile/{analyze,attribute,bursts,cpu,input-cadence,ipad-scroll-trace,chrome-scroll-top,chrome-presentation,imported-send,run-image-source,image-source-server,runtime-audit-server,runtime-revision-server,runtime-retention,safari-scroll,version-anchor}.mjs",
+    "scripts/firefox-profile/fixtures/*.js",
+    "scripts/regressions/**/*-{regression,probe}.mjs",
+    "scripts/regressions/fixtures/*.js"
+  ],
+  "project": [
+    "src/**/*.ts",
+    "integrations/**/*.ts",
+    "demos/**/*.ts",
+    "examples/**/*.ts",
+    "scripts/**/*.{mjs,js,ts}",
+    "tests/**/*.ts",
+    "*.{ts,mjs}"
+  ],
+  // Browser evaluate/import calls resolve from Vite's document root.
+  "paths": {
+    "/src/*": ["src/*"],
+    "/demos/*": ["demos/*"],
+    "/scripts/*": ["scripts/*"],
+    "/integrations/*": ["integrations/*"]
+  },
+  // The viewer owns loom; Vitest names it only for dependency inlining.
+  "ignoreDependencies": ["loom"],
+  "ignoreBinaries": [
+    "osascript",
+    "swift",
+    "swiftc",
+    "sample",
+    "screencapture",
+    "pgrep"
+  ]
+}

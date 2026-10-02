@@ -77,13 +77,11 @@ diagnostic is not a screenshot/presentation test or a CPU-neutrality claim.
 The unchanged Firefox DOM result is not evidence of a reproduced physical
 jitter fix in that browser.
 
-The tracked `scripts/firefox-profile/fixtures/imported-chat-top.js` preserves
-the diagnostic. Stage the source under ignored `browser-artifacts/`, then
-run it with a `profile-transcript` query parameter pointing to that local
-file. Use `--warmup-ms=10000 --manual-seconds=15 --live --layout=none` and the
-external display. Here `manual-seconds` is only the runner's timed capture
-mode; the fixture activates both buttons. Each original run retains its
-exact setup expression and metadata locally.
+The original slot-translation diagnostic was retired in the 2026-10-02
+cleanup. It cannot observe the current native-flow rows in Firefox or
+Chromium. Use the `chat-prepend-anchor` regression above for current geometry
+checks, including the optional local transcript. Each original capture retains
+its exact setup expression and metadata locally for historical reproduction.
 
 Earlier native-wheel captures did not reproduce the button-specific report:
 `run-7nvcg4` used synthetic rich content, `run-iZcwAS` used chat-history, and

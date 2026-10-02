@@ -7,7 +7,7 @@ import { chromium } from "playwright";
 import { SafariMcp } from "./safari-mcp.mjs";
 
 export const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-export function processes() {
+function processes() {
   return execFileSync("/bin/ps", ["-axo", "pid=,ppid=,comm="], {
     encoding: "utf8",
   })
@@ -23,7 +23,7 @@ export function processes() {
       };
     });
 }
-export function descendants(pid, all = processes()) {
+function descendants(pid, all = processes()) {
   const ids = new Set([pid]);
   let changed = true;
   while (changed) {

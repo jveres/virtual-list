@@ -1,5 +1,5 @@
 // Native Safari diagnostic. Start safaridriver separately, then run this script.
-// Only its automation session is closed; normal Safari tabs are not touched.
+// Only a session created here is closed; SAFARI_SESSION_ID remains caller-owned.
 import assert from "node:assert/strict";
 import { mkdir, writeFile } from "node:fs/promises";
 import { bandColors } from "../shared/trail-pixels.mjs";
@@ -19,8 +19,9 @@ async function request(path, body, method = "POST") {
   if (!response.ok || value?.error) throw new Error(JSON.stringify(value));
   return value;
 }
+const suppliedSession = process.env.SAFARI_SESSION_ID;
 const session =
-  process.env.SAFARI_SESSION_ID ??
+  suppliedSession ??
   (
     await request("/session", {
       capabilities: { alwaysMatch: { browserName: "safari" } },
@@ -119,5 +120,6 @@ try {
     );
   }
 } finally {
-  await request(`/session/${session}`, undefined, "DELETE");
+  if (suppliedSession === undefined)
+    await request(`/session/${session}`, undefined, "DELETE");
 }

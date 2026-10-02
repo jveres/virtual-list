@@ -57,6 +57,79 @@ for (const engine of [firefox, chromium, webkit]) {
         );
       }
     }
+    // Fail after the runtime has prepared rows, before the fixture owns its
+    // adapter. Both the partial list and the frame sampler must be released.
+    await page.route("**/src/virtual-list.ts", (route) =>
+      route.fulfill({
+        contentType: "text/javascript",
+        body: `
+          import { createVirtualList as create } from "/src/virtual-list.ts?audit-original";
+          export function createVirtualList(...args) {
+            const list = create(...args);
+            const update = list.updateWindow;
+            list.updateWindow = async (...args) => {
+              await update(...args);
+              throw new Error("Injected preparation failure");
+            };
+            return list;
+          }
+        `,
+      }),
+    );
+    await page.addInitScript(() => {
+      const request = window.requestAnimationFrame;
+      const cancel = window.cancelAnimationFrame;
+      const pending = new Set();
+      window.requestAnimationFrame = (callback) => {
+        const id = request.call(window, (time) => {
+          pending.delete(id);
+          callback(time);
+        });
+        pending.add(id);
+        return id;
+      };
+      window.cancelAnimationFrame = (id) => {
+        pending.delete(id);
+        cancel.call(window, id);
+      };
+      window.pendingAuditFrames = () => pending.size;
+    });
+    await page.reload();
+    await page.waitForFunction(() => !!globalThis.__renderingWorkload);
+    const failure = await page.evaluate(async () => {
+      let preparationError;
+      let releaseError;
+      try {
+        await __renderingWorkload.prepare("history-1000", "plain");
+      } catch (error) {
+        preparationError = error.message;
+      }
+      try {
+        __renderingWorkload.release();
+      } catch (error) {
+        releaseError = error.message;
+      }
+      return { preparationError, releaseError };
+    });
+    assert.deepEqual(
+      {
+        ...failure,
+        pendingFrames: await page.evaluate(() => pendingAuditFrames()),
+      },
+      {
+        preparationError: "Injected preparation failure",
+        releaseError: undefined,
+        pendingFrames: 0,
+      },
+    );
+    const failed = await page.evaluate(() => __renderingWorkload.snapshot());
+    assert.equal(failed.renders, failed.destroyed);
+    assert.equal(failed.activeItems, 0);
+    assert.equal(failed.completed, false);
+    assert.deepEqual(failed.result.phases, []);
+    console.log(
+      `${engine.name()}: failed preparation releases rows and frames`,
+    );
   } finally {
     await browser.close();
   }

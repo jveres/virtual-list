@@ -11,7 +11,7 @@ export interface Photo {
 }
 
 /** A photo placed in a justified row. */
-export interface Placed extends Photo {
+interface Placed extends Photo {
   width: number;
 }
 
