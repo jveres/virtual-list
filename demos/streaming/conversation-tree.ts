@@ -42,7 +42,8 @@ const DOT_CENTER = 22;
  * so the content stays under the fingers. */
 const PINCH_GAIN = 2.5;
 const ICONS = {
-  assistant: "M5 2h9l5 5v15H5zM14 2v6h5M8 12h8M8 16h8",
+  // Lucide CornerDownRight: a reply continuing from its prompt above.
+  reply: "M15 10l5 5-5 5M4 4v7a4 4 0 0 0 4 4h12",
   image: "M3 3h18v18H3zM3 17l6-6 4 4 3-3 5 5M15 7h.01",
   images: "M3 7v14h14M7 3h14v14H7zM7 13l4-4 4 4 2-2 4 4M16 6h.01",
   attachment:
@@ -1076,13 +1077,15 @@ export function createConversationTree(options: TreeOptions): {
               ? entry.imageCount > 1
                 ? ICONS.images
                 : ICONS.image
-              : ICONS.assistant,
+              : ICONS.reply,
           ),
         );
-      else if (entry.hasImages || entry.fileCount > 0) {
-        // Beside the dot: a prompt's attachments or a message's images.
+      // Leading the label's first line, like the reply line's icon: a
+      // prompt's attachments or a standalone message's images.
+      let indicator: HTMLElement | null = null;
+      if (!entry.attached && (entry.hasImages || entry.fileCount > 0)) {
         const userAttachments = entry.role === "user";
-        const indicator = document.createElement("span");
+        indicator = document.createElement("span");
         indicator.className = userAttachments
           ? "conversation-tree-attachment-indicator"
           : "conversation-tree-image-indicator";
@@ -1096,7 +1099,6 @@ export function createConversationTree(options: TreeOptions): {
                 : ICONS.image,
           ),
         );
-        glyph.append(indicator);
       }
       const included: string[] = [];
       if (entry.hasImages)
@@ -1117,8 +1119,18 @@ export function createConversationTree(options: TreeOptions): {
       const label = document.createElement("span");
       label.className = "conversation-tree-label";
       label.textContent = entry.label;
+      // Inline, so wrapped lines return to the column edge beneath it.
+      if (indicator) label.prepend(indicator);
       text.append(label);
-      button.append(glyph, text);
+      // A text reply's arrow leads its first line, so a wrapped second line
+      // returns to the column edge; a thumbnail stays beside the text.
+      if (
+        entry.attached &&
+        !glyph.classList.contains("conversation-tree-thumb")
+      ) {
+        label.prepend(glyph);
+        button.append(text);
+      } else button.append(glyph, text);
       buttons.set(entry.id, button);
       if (entry.attached) {
         turns.set(entry.id, entry.parentId);

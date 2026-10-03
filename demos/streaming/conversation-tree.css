@@ -341,19 +341,22 @@
   width: 12px;
   height: 12px;
 }
-/* In the node's left padding, so marking a dot never shifts its label. */
+/* A marked label's first line starts with its icon, spaced like a reply
+ * line's; later lines wrap back to the column edge. */
 .conversation-tree-image-indicator,
 .conversation-tree-attachment-indicator {
-  position: absolute;
-  top: -1px;
-  right: calc(100% + 5px);
-  display: grid;
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: -1px;
   color: var(--fg-muted);
 }
-.conversation-tree-glyph > .conversation-tree-image-indicator > svg,
-.conversation-tree-glyph > .conversation-tree-attachment-indicator > svg {
-  width: 11px;
-  height: 11px;
+:is(.conversation-tree-image-indicator, .conversation-tree-attachment-indicator)
+  > svg {
+  display: block;
+  width: 12px;
+  height: 12px;
 }
 .conversation-tree-label {
   display: -webkit-box;
@@ -366,10 +369,10 @@
   padding-top: 5px;
   min-width: 0;
 }
-/* A turn's only reply: one muted line under the prompt, aligned with its
+/* A turn's only reply: up to two muted lines under the prompt, aligned with its
  * label. The prompt's glyph and spine stand for the whole turn. */
 .conversation-tree-reply {
-  align-items: center;
+  align-items: flex-start;
   gap: 6px;
   padding: 0 0 8px 49px;
   color: var(--fg-muted);
@@ -399,8 +402,17 @@
 .conversation-tree-reply .conversation-tree-text {
   padding-top: 0;
 }
-.conversation-tree-reply .conversation-tree-label {
-  -webkit-line-clamp: 1;
+.conversation-tree-node.conversation-tree-reply
+  .conversation-tree-label
+  > .conversation-tree-glyph {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  vertical-align: -1px;
+}
+.conversation-tree-label > .conversation-tree-glyph > svg {
+  display: block;
 }
 .conversation-tree-toc {
   position: absolute;

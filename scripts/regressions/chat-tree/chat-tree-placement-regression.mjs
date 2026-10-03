@@ -63,7 +63,7 @@ for (const engine of [firefox, webkit, chromium]) {
                 .querySelector(".conversation-tree-glyph")
                 .getBoundingClientRect().left -
               origin.left -
-              turn.labelLeft;
+              turn.textLeft;
             byId.set(node.dataset.messageId, {
               id: node.dataset.messageId,
               x: turn.x,
@@ -100,6 +100,12 @@ for (const engine of [firefox, webkit, chromium]) {
             role: node.dataset.role,
             labelLeft: label.left - origin.left,
             labelRight: label.right - origin.left,
+            // Where a prompt's text column starts: its label, or the
+            // attachment icon leading it, as the reply icon leads the reply.
+            textLeft:
+              node
+                .querySelector(".conversation-tree-text")
+                .getBoundingClientRect().left - origin.left,
           };
           byId.set(item.id, item);
           const siblings = rows.get(node.dataset.row) ?? [];
@@ -176,7 +182,7 @@ for (const engine of [firefox, webkit, chromium]) {
           if (node.replyOffset !== undefined)
             assert.ok(
               Math.abs(node.replyOffset) < 0.1,
-              "a reply line starts under its prompt's label",
+              "a reply line starts under its prompt's text column",
             );
           if (index > 0)
             assert.ok(
@@ -796,8 +802,8 @@ for (const engine of [firefox, webkit, chromium]) {
         .getBoundingClientRect();
       return { height: label.height, gap: toc.top - label.bottom };
     });
-    // A turn's reply stays one ellipsized line under its prompt.
-    assert.equal(wrappedClearance.height, 16);
+    // A turn's reply wraps to at most two lines under its prompt.
+    assert.equal(wrappedClearance.height, 32);
     assert.ok(Math.abs(wrappedClearance.gap - 4) < 0.01);
     assert.deepEqual(errors, []);
     console.log(
