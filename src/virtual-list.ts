@@ -1700,7 +1700,16 @@ export function createVirtualList<T>(
       else repositionMounted();
       if (smoothFollow && !o.keepFollow && takingOver === null)
         follow.resolveCommit(policy, target);
-      if (!glideFollow && moves) {
+      // Engine anchoring can move the viewport during the edit itself:
+      // Chromium prefers a focused control as its anchor, and replacing that
+      // control's row shifts the offset. The landing owns the position, so
+      // a writable commit corrects it even when the target did not move.
+      const engineMoved =
+        native &&
+        o.write !== false &&
+        !glideFollow &&
+        Math.abs(viewport.scrollTop - target) > EPSILON_PX;
+      if (!glideFollow && (moves || engineMoved)) {
         if (o.write !== false) writeScrollTop(target);
         // Mid-phase, the engine moves the viewport: expect it, so the settle
         // sensor never reads the adjustment as user input.
