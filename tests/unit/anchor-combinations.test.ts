@@ -74,7 +74,11 @@ it.each(cases)(
     const result = geometry.resolve(captured);
 
     const normalized = Math.abs(offset - inset) < 1 ? inset : offset;
-    const expected = normalized + nextHeight <= inset ? inset : normalized;
+    const expected =
+      normalized + nextHeight <= inset ||
+      (normalized < inset && nextHeight + reply <= viewport - inset)
+        ? inset
+        : normalized;
     expect(geometry.offsetOf(key) - result.scrollTop).toBe(expected);
     const settled = geometry.resolve(
       geometry.capture(

@@ -880,11 +880,11 @@ describe("host-named anchor", () => {
     expect(geometry.reserve).toBe(285);
   });
   it.each([
-    { offset: -24, height: 148, expected: -24 },
+    { offset: -24, height: 148, expected: 40 },
     { offset: -24, height: 64, expected: 40 },
     { offset: -500, height: 100, expected: 40 },
     { offset: 30, height: 10, expected: 40 },
-    { offset: 30, height: 100, expected: 30 },
+    { offset: 30, height: 100, expected: 40 },
     { offset: 650, height: 100, expected: 40 },
   ])(
     "should retain or reveal a measured replacement: $offset / $height",
@@ -909,6 +909,38 @@ describe("host-named anchor", () => {
           geometry.capture(viewport(result.scrollTop), "viewport"),
         ).scrollTop,
       ).toBe(result.scrollTop);
+    },
+  );
+  it.each([
+    { replyHeight: 100, inset: 0, expected: 0 },
+    { replyHeight: 100, inset: 40, expected: 40 },
+    { replyHeight: 412, inset: 40, expected: 40 },
+    { replyHeight: 413, inset: 40, expected: -24 },
+    { replyHeight: 900, inset: 40, expected: -24 },
+  ])(
+    "should reveal a clipped replacement when its remaining tail fits: $replyHeight / $inset",
+    ({ replyHeight, inset, expected }) => {
+      const geometry = new Geometry(100);
+      const prefix = keysRange(0, 10);
+      seed(geometry, [...prefix, "expanded", "old-reply"]);
+      geometry.measure("expanded", 1000);
+      geometry.pin("expanded", inset);
+      const target = { key: "short", offset: -24, visibilityInset: inset };
+      const capture = geometry.capture(viewport(1024), "viewport", target);
+
+      geometry.setKeys([...prefix, "short", "new-reply"], target);
+      geometry.measure("short", 148);
+      geometry.measure("new-reply", replyHeight);
+      const result = geometry.resolve(capture);
+
+      expect(geometry.offsetOf("short") - result.scrollTop).toBe(expected);
+      expect(
+        geometry.resolve(
+          geometry.capture(viewport(result.scrollTop), "viewport"),
+        ).scrollTop,
+      ).toBe(result.scrollTop);
+      if (expected === inset)
+        expect(geometry.maxScrollTop(VIEWPORT_H)).toBe(1000 - inset);
     },
   );
   it.each([0, 44, 144])(

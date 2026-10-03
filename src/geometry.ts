@@ -37,7 +37,7 @@ export type AnchorPolicy = "auto" | "viewport" | "end" | "none";
 export interface ExplicitAnchor {
   key: string;
   offset: number;
-  /** If the measured replacement would be hidden, reveal its top at this inset. */
+  /** Reveal a hidden replacement, or its clipped top when the remaining content fits. */
   visibilityInset?: number;
 }
 /**
@@ -492,6 +492,7 @@ export class Geometry {
     // A host-named anchor, when its key exists.
     const target = capture.target;
     if (target !== null && this.indexByKey.has(target.key)) {
+      const top = this.offsetOf(target.key);
       let offset = target.offset;
       if (target.visibilityInset !== undefined) {
         const inset = Math.min(
@@ -500,11 +501,15 @@ export class Geometry {
         );
         if (
           offset + this.heightOf(target.key) <= inset ||
-          offset >= capture.viewport.height
+          offset >= capture.viewport.height ||
+          // Do not preserve a clipped top by adding blank space below a
+          // replacement whose entire remaining content fits on screen.
+          (offset < inset &&
+            this.contentSize - top <= capture.viewport.height - inset)
         )
           offset = inset;
       }
-      return this.offsetOf(target.key) - offset;
+      return top - offset;
     }
     const anchor = capture.anchor;
     if (anchor === null) return null;

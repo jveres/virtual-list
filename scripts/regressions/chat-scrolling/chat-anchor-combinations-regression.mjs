@@ -89,6 +89,7 @@ for (const [engine, type] of Object.entries(engines)) {
           top: viewport.scrollTop,
           max: viewport.scrollHeight - viewport.clientHeight,
           canonicalEnd,
+          contentEnd,
           height: viewport.clientHeight,
         };
       });
@@ -180,9 +181,15 @@ for (const [engine, type] of Object.entries(engines)) {
           if (old.top < before.height && old.top + old.height > 40) {
             const restoresPin =
               action === "toggle" && state.expanded && old.top < 0;
+            const revealsShortTail =
+              action !== "toggle" &&
+              old.top < 40 &&
+              after.contentEnd - (after.top + next.top) <= after.height - 40;
             if (old.top + next.height > 40)
               assert.ok(
-                Math.abs(next.top - (restoresPin ? 40 : old.top)) <= 1,
+                Math.abs(
+                  next.top - (restoresPin || revealsShortTail ? 40 : old.top),
+                ) <= 1,
                 `${label}: reading jump ${JSON.stringify({ before, after })}`,
               );
             else

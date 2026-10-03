@@ -6800,6 +6800,25 @@ describe("host-named anchor", () => {
     expect(h.viewport.scrollTop).toBe(1856);
   });
 
+  it("should reveal a clipped version replacement when its measured prompt and reply fit", () => {
+    const h = mount(range(0, 22), {
+      itemHeight: (item) => (item.id === 20 ? 1000 : 100),
+    });
+    void h.list.scrollTo("m20", { align: "start", offset: 40 });
+    h.userScroll(2024);
+
+    h.list.setItems([...range(0, 20), message(30), message(31)], {
+      anchor: { key: "m30", offset: -24, visibilityInset: 40 },
+      interrupt: true,
+    });
+
+    expect(h.list.positionOf("m30")?.top).toBe(2000);
+    expect(h.viewport.scrollTop).toBe(1960);
+    expect(h.list.state.totalSize).toBe(2560);
+    h.settle();
+    expect(h.viewport.scrollTop).toBe(1960);
+  });
+
   it("should preserve a held anchor when its caller reuses the object", () => {
     const initial = range(0, 50);
     const h = mount(initial);
