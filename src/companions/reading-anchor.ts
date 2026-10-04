@@ -44,7 +44,7 @@ export function captureItemPlacement(
   };
 }
 
-/** Preserve the first visible replacement; reveal it when hidden or its clipped tail fits. */
+/** Preserve the first visible replacement within the content's scroll range and pin. */
 export function replacementAnchor(
   list: PositionedList,
   viewport: Viewport,

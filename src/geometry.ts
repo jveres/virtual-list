@@ -37,7 +37,7 @@ export type AnchorPolicy = "auto" | "viewport" | "end" | "none";
 export interface ExplicitAnchor {
   key: string;
   offset: number;
-  /** Reveal a hidden replacement, or its clipped top when the remaining content fits. */
+  /** Reveal a hidden replacement at this inset, bounded by the content end and pin. */
   visibilityInset?: number;
 }
 /**
@@ -501,13 +501,19 @@ export class Geometry {
         );
         if (
           offset + this.heightOf(target.key) <= inset ||
-          offset >= capture.viewport.height ||
-          // Do not preserve a clipped top by adding blank space below a
-          // replacement whose entire remaining content fits on screen.
-          (offset < inset &&
-            this.contentSize - top <= capture.viewport.height - inset)
+          offset >= capture.viewport.height
         )
           offset = inset;
+        // Replacement reading anchors cannot invent trailing space to keep
+        // an old coordinate. Clamp to the measured content end, allowing
+        // only the reserve required by an intentional pin. This reveals a
+        // shorter pinned row and bottom-aligns a shorter unpinned tail.
+        const end = Math.max(
+          0,
+          this.contentSize - capture.viewport.height,
+          this.pinTop ?? 0,
+        );
+        return Math.min(top - offset, end);
       }
       return top - offset;
     }

@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { replacementAnchor } from "../../src/companions/reading-anchor";
 import { Geometry } from "../../src/geometry";
 import { createPagedWindow, type Page } from "../../src/paging";
 import {
@@ -6817,6 +6818,40 @@ describe("host-named anchor", () => {
     expect(h.list.state.totalSize).toBe(2560);
     h.settle();
     expect(h.viewport.scrollTop).toBe(1960);
+  });
+
+  it("should keep a shorter final version at the content end after reading a longer version", () => {
+    const prefix = range(0, 21);
+    const h = mount([...prefix, message(31)], {
+      itemHeight: (item) =>
+        item.id === 20
+          ? 400
+          : item.id === 31
+            ? 200
+            : item.id === 32
+              ? 1200
+              : 100,
+    });
+    void h.list.scrollTo("m20", { align: "start", offset: 40 });
+    let previous = 31;
+    for (const next of [32, 31, 32, 31]) {
+      h.userScroll(h.list.state.totalSize - VIEWPORT_H);
+      const anchor = replacementAnchor(
+        h.list,
+        h.viewport,
+        [{ from: `m${previous}`, to: `m${next}` }],
+        40,
+      );
+      expect(anchor).toBeDefined();
+      h.list.setItems([...prefix, message(next)], { anchor, interrupt: true });
+      h.settle();
+      if (next === 31) {
+        expect(h.viewport.scrollTop).toBe(2000);
+        expect(h.list.state.totalSize).toBe(2600);
+        expect(h.list.positionOf("m31")).toEqual({ top: 2400, height: 200 });
+      }
+      previous = next;
+    }
   });
 
   it("should preserve a held anchor when its caller reuses the object", () => {

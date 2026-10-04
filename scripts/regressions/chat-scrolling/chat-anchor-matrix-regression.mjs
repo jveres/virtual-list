@@ -118,6 +118,7 @@ try {
                   .filter((r) => Number(r.dataset.key) >= 20)
                   .map((r) => ({
                     key: r.dataset.key,
+                    role: r.classList.contains("user") ? "user" : "assistant",
                     top:
                       r.getBoundingClientRect().top -
                       vp.getBoundingClientRect().top,
@@ -161,12 +162,23 @@ try {
             const newTop = after.rows.find(
               (r) => r.key === String(anchorKey),
             )?.top;
-            assert.ok(
-              Math.abs(newTop - anchorOffset) < 1,
-              `${layout.name}/${role}/${placement}/${nextKey}: ${anchorOffset} → ${newTop}`,
+            const prompt = after.rows.findLast((r) => r.role === "user");
+            const last = after.rows.at(-1);
+            const end = Math.max(
+              0,
+              after.scrollTop + last.top + last.height - after.height,
+              after.scrollTop + prompt.top - inset,
             );
-            // Every short/empty replacement must leave enough scroll surface
-            // for the named coordinate, including space after the last row.
+            const expectedOffset = Math.max(
+              anchorOffset,
+              after.scrollTop + newTop - end,
+            );
+            assert.ok(
+              Math.abs(newTop - expectedOffset) < 1,
+              `${layout.name}/${role}/${placement}/${nextKey}: ${expectedOffset} → ${newTop}`,
+            );
+            // Replacement anchoring must not invent space past the content/pin end.
+            assert.ok(after.scrollTop <= end + 1);
             assert.ok(after.total - after.height >= after.scrollTop - 1);
             expected = after.rows.find((r) => r.key === String(nextKey)).top;
             currentKey = nextKey;

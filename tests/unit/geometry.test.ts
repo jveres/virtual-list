@@ -880,12 +880,12 @@ describe("host-named anchor", () => {
     expect(geometry.reserve).toBe(285);
   });
   it.each([
-    { offset: -24, height: 148, expected: 40 },
-    { offset: -24, height: 64, expected: 40 },
-    { offset: -500, height: 100, expected: 40 },
-    { offset: 30, height: 10, expected: 40 },
-    { offset: 30, height: 100, expected: 40 },
-    { offset: 650, height: 100, expected: 40 },
+    { offset: -24, height: 148, expected: 352 },
+    { offset: -24, height: 64, expected: 436 },
+    { offset: -500, height: 100, expected: 400 },
+    { offset: 30, height: 10, expected: 490 },
+    { offset: 30, height: 100, expected: 400 },
+    { offset: 650, height: 100, expected: 400 },
   ])(
     "should retain or reveal a measured replacement: $offset / $height",
     ({ offset, height, expected }) => {
@@ -915,7 +915,7 @@ describe("host-named anchor", () => {
     { replyHeight: 100, inset: 0, expected: 0 },
     { replyHeight: 100, inset: 40, expected: 40 },
     { replyHeight: 412, inset: 40, expected: 40 },
-    { replyHeight: 413, inset: 40, expected: -24 },
+    { replyHeight: 413, inset: 40, expected: 39 },
     { replyHeight: 900, inset: 40, expected: -24 },
   ])(
     "should reveal a clipped replacement when its remaining tail fits: $replyHeight / $inset",
@@ -941,6 +941,56 @@ describe("host-named anchor", () => {
       ).toBe(result.scrollTop);
       if (expected === inset)
         expect(geometry.maxScrollTop(VIEWPORT_H)).toBe(1000 - inset);
+    },
+  );
+  it.each([0, 40])(
+    "should bottom-align a shorter final replacement without extra reading space (inset %i)",
+    (inset) => {
+      const geometry = new Geometry(100);
+      const prefix = keysRange(0, 10);
+      seed(geometry, [...prefix, "lead", "short"]);
+      geometry.measure("lead", 400);
+      geometry.measure("short", 200);
+      geometry.pin("lead", inset);
+      let before = geometry.resolve(geometry.capture(viewport(0), "end"));
+
+      for (const [from, to, height] of [
+        ["short", "long", 1200],
+        ["long", "short", 200],
+        ["short", "long", 1200],
+        ["long", "short", 200],
+      ] as const) {
+        const target = {
+          key: to,
+          offset: geometry.offsetOf(from) - before.scrollTop,
+          visibilityInset: inset,
+        };
+        const capture = geometry.capture(
+          viewport(before.scrollTop),
+          "viewport",
+          target,
+        );
+        geometry.setKeys([...prefix, "lead", to], target);
+        geometry.measure(to, height);
+        const result = geometry.resolve(capture);
+
+        if (to === "short") {
+          expect(result.scrollTop).toBe(1000);
+          expect(geometry.offsetOf(to) + height - result.scrollTop).toBe(
+            VIEWPORT_H,
+          );
+          expect(geometry.reserve).toBe(0);
+          expect(
+            geometry.resolve(
+              geometry.capture(viewport(result.scrollTop), "viewport"),
+            ).scrollTop,
+          ).toBe(1000);
+        }
+        // Read to the bottom of each version before switching back.
+        before = geometry.resolve(
+          geometry.capture(viewport(result.scrollTop), "end"),
+        );
+      }
     },
   );
   it.each([0, 44, 144])(

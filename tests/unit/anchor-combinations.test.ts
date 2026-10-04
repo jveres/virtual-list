@@ -74,12 +74,13 @@ it.each(cases)(
     const result = geometry.resolve(captured);
 
     const normalized = Math.abs(offset - inset) < 1 ? inset : offset;
-    const expected =
-      normalized + nextHeight <= inset ||
-      (normalized < inset && nextHeight + reply <= viewport - inset)
-        ? inset
-        : normalized;
-    expect(geometry.offsetOf(key) - result.scrollTop).toBe(expected);
+    const readingOffset = normalized + nextHeight <= inset ? inset : normalized;
+    const end = Math.max(
+      0,
+      1000 + nextHeight + reply - viewport,
+      pin ? 1000 - inset : 0,
+    );
+    expect(result.scrollTop).toBe(Math.min(1000 - readingOffset, end));
     const settled = geometry.resolve(
       geometry.capture(
         { scrollTop: result.scrollTop, height: viewport },
@@ -90,11 +91,6 @@ it.each(cases)(
     // Moving away releases reading-only reserve, while retaining the actual pin.
     const away = geometry.resolve(
       geometry.capture({ scrollTop: 0, height: viewport }, "none"),
-    );
-    const end = Math.max(
-      0,
-      geometry.contentSize - viewport,
-      pin ? 1000 - inset : 0,
     );
     expect(away.scrollTop).toBe(0);
     expect(geometry.maxScrollTop(viewport)).toBe(end);
