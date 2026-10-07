@@ -9,7 +9,15 @@ for (const engine of [chromium, firefox, webkit]) {
       viewport: { width: 700, height: 650 },
     });
     const errors = [];
+    const markdownLogs = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (
+        /^(\[hljs\]|Morph:|Throttle:|Streaming complete:)/.test(message.text())
+      ) {
+        markdownLogs.push(message.text());
+      }
+    });
     await page.goto(`${base}/examples/streaming-markdown/`);
     await page.waitForFunction(
       () => document.querySelector("#status").value === "Ready",
@@ -37,6 +45,7 @@ for (const engine of [chromium, firefox, webkit]) {
     assert.equal(await page.locator("article.assistant li").count(), 30);
     assert.equal(await page.locator("article.assistant .cursor").count(), 0);
     assert.deepEqual(errors, []);
+    assert.deepEqual(markdownLogs, [], "Markdown logging is off by default");
     console.log(
       `${engine.name()}: standalone Markdown rendering, finalization, and composer sizing passed`,
     );
