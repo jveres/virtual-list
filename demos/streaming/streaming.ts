@@ -3191,55 +3191,51 @@ async function selectAttachments(files: File[]): Promise<void> {
   }
 }
 
-function animateRowsClass(
+const ROW_ENTRANCES = {
+  fly: [{ opacity: 0, transform: "translateY(2em)" }, {}],
+  fade: [{ opacity: 0 }, {}],
+} satisfies Record<string, Keyframe[]>;
+
+// Script animations keep document time while a row waits offscreen: a sent
+// prompt that mounts mid-glide joins its entrance in progress, never
+// restarting it from transparent (a CSS animation restarts on connection).
+function animateRows(
   ids: readonly number[],
-  className: string,
+  entrance: keyof typeof ROW_ENTRANCES,
   abort: StreamAbort,
 ): Promise<void> {
-  const targets = ids
+  if (abort.cancelled) return Promise.resolve();
+  const animations = ids
     .map((id) => rowById.get(String(id)))
     .filter((row): row is HTMLElement => row !== undefined)
-    .map((row) => row.querySelector<HTMLElement>(".message-content") ?? row);
-  if (targets.length === 0) return Promise.resolve();
-
+    .map((row) =>
+      (row.querySelector<HTMLElement>(".message-content") ?? row).animate(
+        ROW_ENTRANCES[entrance],
+        250,
+      ),
+    );
+  if (animations.length === 0) return Promise.resolve();
+  const cancel = () => {
+    for (const animation of animations) animation.cancel();
+  };
+  abort.onCancel.add(cancel);
   return Promise.all(
-    targets.map(
-      (target) =>
-        new Promise<void>((resolve) => {
-          let done = false;
-          let cleanupTimer = 0;
-          const cleanup = () => {
-            if (done) return;
-            done = true;
-            target.classList.remove(className);
-            target.removeEventListener("animationend", cleanup);
-            target.removeEventListener("animationcancel", cleanup);
-            abort.onCancel.delete(cleanup);
-            window.clearTimeout(cleanupTimer);
-            resolve();
-          };
-
-          target.classList.add(className);
-          target.addEventListener("animationend", cleanup);
-          target.addEventListener("animationcancel", cleanup);
-          abort.onCancel.add(cleanup);
-          cleanupTimer = window.setTimeout(cleanup, 300);
-          if (abort.cancelled) cleanup();
-        }),
-    ),
-  ).then(() => undefined);
+    animations.map((animation) => animation.finished.catch(() => undefined)),
+  ).then(() => {
+    abort.onCancel.delete(cancel);
+  });
 }
 
 function flyInRows(ids: readonly number[], abort: StreamAbort): Promise<void> {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
     return Promise.resolve();
   }
-  return animateRowsClass(ids, "fly", abort);
+  return animateRows(ids, "fly", abort);
 }
 
 function fadeInRows(ids: readonly number[], abort: StreamAbort): void {
   if (matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  void animateRowsClass(ids, "fade", abort);
+  void animateRows(ids, "fade", abort);
 }
 
 type SendAction =

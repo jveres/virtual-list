@@ -521,29 +521,6 @@ p.ai-settings-note {
   will-change: auto;
 }
 
-@keyframes fly-in {
-  from {
-    opacity: 0;
-    transform: translateY(2em);
-  }
-}
-
-@keyframes fade-in {
-  from {
-    opacity: 0;
-  }
-}
-
-.fly {
-  animation: fly-in 250ms;
-  will-change: transform, opacity;
-}
-
-.fade {
-  animation: fade-in 250ms;
-  will-change: opacity;
-}
-
 .message.user {
   justify-content: flex-end;
 }
