@@ -146,6 +146,58 @@ describe("FenwickTree.add", () => {
   });
 });
 
+describe("FenwickTree.append", () => {
+  it("extends a tree across a power-of-two boundary", () => {
+    const t = tree([10, 20, 30]);
+    t.append(Float64Array.from([40, 50, 60, 70, 80]));
+    const values = [10, 20, 30, 40, 50, 60, 70, 80];
+    expect(t.size).toBe(8);
+    expect(t.total()).toBe(360);
+    for (let count = 0; count <= values.length; count++)
+      expect(t.prefix(count)).toBe(oraclePrefix(values, count));
+    expect(t.indexAt(100)).toBe(4);
+    expect(t.lowerBound(101)).toBe(5);
+  });
+
+  it("appends to an empty tree and one element at a time", () => {
+    const t = tree([]);
+    const values: number[] = [];
+    for (const value of [5, 15, 25, 35, 45, 55]) {
+      t.append(Float64Array.from([value]));
+      values.push(value);
+      expect(t.total()).toBe(oraclePrefix(values, values.length));
+      expect(t.indexAt(t.total() - 1)).toBe(values.length - 1);
+    }
+  });
+
+  it("rejects non-finite values and leaves the tree intact", () => {
+    const t = tree([10, 20]);
+    expect(() => t.append(Float64Array.from([Number.NaN]))).toThrow(/finite/);
+    expect(t.size).toBe(2);
+    expect(t.total()).toBe(30);
+  });
+
+  it("matches a fresh tree after random appends", () => {
+    const rng = mulberry32(0xabcd_1234);
+    const randInt = (bound: number): number => Math.floor(rng() * bound);
+    const values: number[] = [];
+    const t = tree([]);
+    for (let round = 0; round < 12; round++) {
+      const batch = Array.from({ length: 1 + randInt(9) }, () => randInt(90));
+      t.append(Float64Array.from(batch));
+      values.push(...batch);
+      const fresh = tree(values);
+      expect(t.size).toBe(values.length);
+      expect(t.total()).toBe(fresh.total());
+      for (let count = 0; count <= values.length; count += 3)
+        expect(t.prefix(count)).toBe(fresh.prefix(count));
+      const offset = randInt(Math.max(1, t.total()));
+      expect(t.indexAt(offset)).toBe(fresh.indexAt(offset));
+      expect(t.lowerBound(offset)).toBe(fresh.lowerBound(offset));
+    }
+  });
+});
+
 describe("FenwickTree edge cases", () => {
   it.each([[], [0], [0, 0, 0], [0, 0.5, 0, 1.5, 0]])(
     "should preserve inclusive and exclusive search boundaries for %j",

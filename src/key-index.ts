@@ -25,4 +25,26 @@ export class KeyIndex {
       if (keys[index] !== this.keys[index]) return false;
     return true;
   }
+
+  /**
+   * The index for `keys` when they strictly extend this order (the old keys
+   * are an unchanged prefix); null otherwise. The positions map is copied
+   * natively and only the new keys are inserted, so appending to a large
+   * order costs the copy, not a full rebuild. A duplicate among the new
+   * keys throws, as in the constructor.
+   */
+  extend(keys: readonly string[]): KeyIndex | null {
+    if (keys.length <= this.keys.length) return null;
+    for (let index = 0; index < this.keys.length; index++)
+      if (keys[index] !== this.keys[index]) return null;
+    const positions = new Map(this.positions);
+    for (let index = this.keys.length; index < keys.length; index++) {
+      const key = keys[index] as string;
+      if (positions.has(key)) throw new Error(`duplicate key: "${key}"`);
+      positions.set(key, index);
+    }
+    const extended = Object.create(KeyIndex.prototype) as KeyIndex;
+    Object.assign(extended, { keys: [...keys], positions });
+    return extended;
+  }
 }

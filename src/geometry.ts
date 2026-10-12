@@ -329,6 +329,33 @@ export class Geometry {
     nextKeys: readonly string[] | KeyIndex,
     replacementAnchor: ExplicitAnchor | null = null,
   ): void {
+    // Fast paths that keep the previous state fully intact on failure: an
+    // unchanged order is a no-op, and a pure append (the old keys are an
+    // unchanged prefix — streaming growth, the common key change) extends
+    // the heights and the tree instead of rebuilding them. The pin always
+    // survives an append, so no pin transfer can apply.
+    if (nextKeys instanceof KeyIndex) {
+      if (nextKeys === this.order) return;
+      if (this.order.matches(nextKeys.keys)) {
+        this.order = nextKeys;
+        this.keys = nextKeys.keys;
+        this.indexByKey = nextKeys.positions;
+        return;
+      }
+      if (this.isExtension(nextKeys.keys)) {
+        this.appendKeys(nextKeys, nextKeys.keys);
+        return;
+      }
+    } else {
+      if (this.order.matches(nextKeys)) return;
+      const extended = this.isExtension(nextKeys)
+        ? this.order.extend(nextKeys)
+        : null;
+      if (extended !== null) {
+        this.appendKeys(extended, nextKeys);
+        return;
+      }
+    }
     // Build and validate the entire candidate state first — a throwing
     // estimator or a duplicate key must leave the previous geometry fully
     // intact, never a half-updated one.
@@ -378,6 +405,41 @@ export class Geometry {
     this.tree = tree;
     this.heights = heights;
     this.pin(pinned, pinnedInset);
+  }
+
+  /** Whether `keys` strictly extends the current order by appending. */
+  private isExtension(keys: readonly string[]): boolean {
+    // A tail larger than the whole order rebuilds faster than it extends.
+    if (
+      this.keys.length === 0 ||
+      keys.length <= this.keys.length ||
+      keys.length - this.keys.length > this.keys.length
+    )
+      return false;
+    for (let index = 0; index < this.keys.length; index++)
+      if (keys[index] !== this.keys[index]) return false;
+    return true;
+  }
+
+  /**
+   * Land an append: learned heights carry over by typed copy, only the new
+   * keys consult the estimator, and the tree grows in place. Estimates are
+   * all read before any state moves, so a throwing estimator leaves the
+   * previous geometry fully intact.
+   */
+  private appendKeys(order: KeyIndex, keys: readonly string[]): void {
+    const oldLength = this.keys.length;
+    const added = keys.length - oldLength;
+    const sizes = new Float64Array(added);
+    for (let index = 0; index < added; index++)
+      sizes[index] = this.estimate(keys[oldLength + index] as string);
+    const heights = new Float64Array(keys.length);
+    heights.set(this.heights);
+    this.tree.append(sizes);
+    this.heights = heights;
+    this.order = order;
+    this.keys = order.keys;
+    this.indexByKey = order.positions;
   }
 
   /**

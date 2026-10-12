@@ -49,6 +49,19 @@ export class DeclaredItems<T> {
       : data.items[position - data.leading];
   }
 
+  /** Snapshot entry at ordinal `at`; undefined in patch mode or out of range. */
+  snapshotEntry(
+    at: number,
+  ): { key: string; item: T; height: number } | undefined {
+    const data = this.snapshot;
+    if (!data || at < 0 || at >= data.items.length) return undefined;
+    return {
+      key: data.index.keys[at + data.leading] as string,
+      item: data.items[at] as T,
+      height: data.heights[at] as number,
+    };
+  }
+
   get(key: string): Declared<T> | undefined {
     if (!this.snapshot) return this.patch.get(key);
     const height = this.heightOf(key);

@@ -365,10 +365,21 @@ export function createVirtualList<T>(
    * is exact; it matches the inner height within rounding only without
    * borders, a scrollbar, or a scaling transform, so otherwise keep rounding.
    */
+  /**
+   * The exact height memo for the open pass. One transaction (I4) sees one
+   * viewport height, and re-reading it after the commit's DOM writes would
+   * force a synchronous layout per read. Outside a pass — and at the next
+   * pass, which a scroll event can start before the resize delivery — the
+   * height is always read fresh.
+   */
+  let heightMemo: number | null = null;
   function clientHeight(): number {
+    if (heightMemo !== null && scope !== null) return heightMemo;
     const rounded = viewport.clientHeight;
     const exact = viewport.getBoundingClientRect().height;
-    return Math.abs(exact - rounded) < 1 ? exact : rounded;
+    const height = Math.abs(exact - rounded) < 1 ? exact : rounded;
+    if (scope !== null) heightMemo = height;
+    return height;
   }
 
   function viewportState(): GeometryViewport {
@@ -429,6 +440,7 @@ export function createVirtualList<T>(
       return;
     }
     const mark = outer === null ? 0 : failures.length;
+    if (outer === null) heightMemo = null;
     const own: Task[] = [];
     scope = own;
     openScopes.push(own);
@@ -459,6 +471,7 @@ export function createVirtualList<T>(
     } finally {
       openScopes.pop();
       scope = outer;
+      if (outer === null) heightMemo = null;
     }
   }
 
@@ -1147,7 +1160,9 @@ export function createVirtualList<T>(
       ? geometry.keyIndex
       : desiredIndex.matches(keys)
         ? desiredIndex
-        : new KeyIndex(keys);
+        : (desiredIndex.extend(keys) ??
+          geometry.keyIndex.extend(keys) ??
+          new KeyIndex(keys));
     return {
       index,
       keys: index.keys,
@@ -1637,7 +1652,23 @@ export function createVirtualList<T>(
           geometry.pin(p.pinKey ?? null, committedPinOffset);
         }
         if (p.declared) {
+          // A snapshot entry unchanged at the same ordinal (same key, item,
+          // and height as the previous snapshot) already holds its height in
+          // the geometry and its row: skip its per-key lookups entirely.
+          const previousDeclared = p.patch ? null : declaredItems;
+          let ordinal = 0;
           p.declared.forEach((item, height, key) => {
+            const at = ordinal++;
+            if (previousDeclared) {
+              const before = previousDeclared.snapshotEntry(at);
+              if (
+                before !== undefined &&
+                before.key === key &&
+                before.item === item &&
+                before.height === height
+              )
+                return;
+            }
             const row = rows.get(key);
             if (row && row.item === item) commitHeight(row, height);
             else if (declaredItems.heightOf(key) !== height)

@@ -162,6 +162,67 @@ describe("input invariants", () => {
   });
 });
 
+describe("append fast path", () => {
+  it("consults the estimator only for appended keys", () => {
+    const estimated: string[] = [];
+    const geometry = new Geometry((key) => {
+      estimated.push(key);
+      return 100;
+    });
+    seed(geometry, keysRange(0, 10));
+    // Measure the anchor row so the next capture does not estimate it.
+    transact(geometry, viewport(0), "none", () => geometry.measure("m0", 100));
+    estimated.length = 0;
+    transact(geometry, viewport(0), "none", () =>
+      geometry.setKeys(keysRange(0, 13)),
+    );
+    expect(estimated).toEqual(["m10", "m11", "m12"]);
+    expect(geometry.count).toBe(13);
+    expect(geometry.offsetOf("m12")).toBe(1200);
+  });
+
+  it("matches a fresh geometry after appends by array and by KeyIndex", () => {
+    const appended = new Geometry(100);
+    const fresh = new Geometry(100);
+    seed(appended, keysRange(0, 10));
+    transact(appended, viewport(0), "none", () => appended.measure("m4", 250));
+    transact(appended, viewport(0), "none", () =>
+      appended.setKeys(keysRange(0, 25)),
+    );
+    transact(appended, viewport(0), "none", () =>
+      appended.setKeys(new KeyIndex(keysRange(0, 40))),
+    );
+    seed(fresh, keysRange(0, 40));
+    transact(fresh, viewport(0), "none", () => fresh.measure("m4", 250));
+    expect(appended.contentSize).toBe(fresh.contentSize);
+    for (const key of keysRange(0, 40)) {
+      expect(appended.offsetOf(key)).toBe(fresh.offsetOf(key));
+      expect(appended.heightOf(key)).toBe(fresh.heightOf(key));
+      expect(appended.indexOf(key)).toBe(fresh.indexOf(key));
+    }
+    expect(appended.window(viewport(1234), 300)).toEqual(
+      fresh.window(viewport(1234), 300),
+    );
+    expect(appended.anchorAt(viewport(1234))).toEqual(
+      fresh.anchorAt(viewport(1234)),
+    );
+  });
+
+  it("rejects duplicates in the appended tail and leaves geometry intact", () => {
+    const geometry = new Geometry(100);
+    seed(geometry, keysRange(0, 10));
+    expect(() => geometry.setKeys([...keysRange(0, 10), "m3"])).toThrow(
+      /duplicate key/,
+    );
+    expect(() => geometry.setKeys([...keysRange(0, 10), "x", "x"])).toThrow(
+      /duplicate key/,
+    );
+    expect(geometry.count).toBe(10);
+    expect(geometry.contentSize).toBe(1000);
+    expect(geometry.indexOf("x")).toBe(-1);
+  });
+});
+
 describe("offsets and totals", () => {
   it("matches the naive oracle through appends, prepends, and measures", () => {
     const geometry = new Geometry(100);

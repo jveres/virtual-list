@@ -8,7 +8,7 @@
  */
 
 export class FenwickTree {
-  private readonly tree: Float64Array;
+  private tree: Float64Array;
   private logicalSize: number;
   private searchBit: number;
   private totalValue: number;
@@ -39,6 +39,47 @@ export class FenwickTree {
     let maxBit = 1;
     while (maxBit << 1 <= this.logicalSize) maxBit <<= 1;
     this.searchBit = maxBit;
+  }
+
+  /**
+   * Extend the tree with new trailing values in O(added · log size). Existing
+   * nodes cover ranges that end at or before the old size, so they stay
+   * valid; each new node is the sum of its range, read from the old tree's
+   * prefixes plus the new values' own prefix sums.
+   */
+  append(values: Float64Array): void {
+    for (let i = 0; i < values.length; i++) {
+      if (!Number.isFinite(values[i]))
+        throw new RangeError("FenwickTree: values must be finite");
+    }
+    if (values.length === 0) return;
+    const oldSize = this.logicalSize;
+    const newSize = oldSize + values.length;
+    const oldTree = this.tree;
+    const oldPrefix = (count: number): number => {
+      let sum = 0;
+      for (let i = Math.min(count, oldSize); i > 0; i -= i & -i)
+        sum += oldTree[i] ?? 0;
+      return sum;
+    };
+    const addedPrefix = new Float64Array(values.length + 1);
+    for (let i = 0; i < values.length; i++)
+      addedPrefix[i + 1] = (addedPrefix[i] as number) + (values[i] as number);
+    const tree = new Float64Array(newSize + 1);
+    tree.set(oldTree);
+    for (let index = oldSize + 1; index <= newSize; index++) {
+      const rangeStart = index - (index & -index);
+      const oldPart =
+        oldPrefix(Math.min(index, oldSize)) - oldPrefix(rangeStart);
+      const newPart =
+        (addedPrefix[index - oldSize] as number) -
+        (addedPrefix[Math.max(0, rangeStart - oldSize)] as number);
+      tree[index] = oldPart + newPart;
+    }
+    this.tree = tree;
+    this.logicalSize = newSize;
+    this.totalValue += addedPrefix[values.length] as number;
+    while (this.searchBit << 1 <= newSize) this.searchBit <<= 1;
   }
 
   add(index: number, delta: number): void {
