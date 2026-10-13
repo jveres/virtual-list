@@ -7,6 +7,18 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 13 runtime architecture and hot-path follow-up
+
+The [architecture and hot-path follow-up](runtime-architecture-hot-path-2026-10-13.md)
+separates structural commits from height-only commits (`structureEpoch`), adds
+indexed `Geometry` and `DeclaredItems` accessors (`heightAt`, `offsetAt`,
+`anchorIndexAt`, `shiftsBefore`), fast-paths native-flow window transitions and
+`PositionedGeometry` construction, and removes transient staging allocations. In
+Firefox, 5,000-item measured `setItems` improves by 46–48%, 10,000-item
+mid-list declared `setItems` by 61–62%, `PositionedGeometry` construction and
+queries by 54–56%, `Geometry` capture/resolve by 33–50%, native-flow scroll
+steps by 10–14%, and declared `updateItem` commits by 12–14%.
+
 ## October 13 runtime hot-path review
 
 The [hot-path review](runtime-hot-path-review-2026-10-13.md) profiles streaming

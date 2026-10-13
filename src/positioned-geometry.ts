@@ -25,7 +25,7 @@ export interface GeometryWindow {
 interface Lane {
   indices: number[];
   /** Prefix maxima also cover overlapping intervals within a lane. */
-  bottoms: number[];
+  bottoms: Float64Array;
   start: number;
   end: number;
 }
@@ -46,41 +46,65 @@ export class PositionedGeometry {
     this.tops = new Float64Array(items.length);
     this.bottoms = new Float64Array(items.length);
     let total = 0;
-    items.forEach(({ top, height, lane }, index) => {
+    for (let index = 0; index < items.length; index++) {
+      const { top, height, lane } = items[index] as PositionedItem;
+      const itemBottom = top + height;
       if (
         !Number.isFinite(top) ||
         top < 0 ||
         !Number.isFinite(height) ||
         height <= 0 ||
-        !Number.isFinite(top + height) ||
+        !Number.isFinite(itemBottom) ||
         !Number.isSafeInteger(lane) ||
         lane < 0
       )
         throw new RangeError(
           "positioned items need finite non-negative tops, positive heights and non-negative integer lanes",
         );
-      const indices = lanes.get(lane) ?? [];
-      if (!lanes.has(lane)) lanes.set(lane, indices);
+      let indices = lanes.get(lane);
+      if (indices === undefined) {
+        indices = [];
+        lanes.set(lane, indices);
+      }
       indices.push(index);
-      total = Math.max(total, top + height);
+      if (itemBottom > total) total = itemBottom;
       this.tops[index] = top;
-      this.bottoms[index] = top + height;
-    });
+      this.bottoms[index] = itemBottom;
+    }
     this.totalSize = total;
-    this.lanes = [...lanes.values()].map((indices) => {
-      indices.sort((a, b) => this.top(a) - this.top(b) || a - b);
+    this.lanes = [];
+    for (const indices of lanes.values()) {
+      let sorted = true;
+      for (let i = 1; i < indices.length; i++) {
+        if (
+          (this.tops[indices[i] as number] as number) <
+          (this.tops[indices[i - 1] as number] as number)
+        ) {
+          sorted = false;
+          break;
+        }
+      }
+      if (!sorted) {
+        indices.sort(
+          (a, b) =>
+            (this.tops[a] as number) - (this.tops[b] as number) || a - b,
+        );
+      }
+      const laneBottoms = new Float64Array(indices.length);
       let bottom = 0;
-      return {
+      for (let i = 0; i < indices.length; i++) {
+        const b = this.bottoms[indices[i] as number] as number;
+        if (b < bottom) this.orderedBottoms = false;
+        if (b > bottom) bottom = b;
+        laneBottoms[i] = bottom;
+      }
+      this.lanes.push({
         indices,
         start: 0,
         end: 0,
-        bottoms: indices.map((index) => {
-          if (this.bottom(index) < bottom) this.orderedBottoms = false;
-          bottom = Math.max(bottom, this.bottom(index));
-          return bottom;
-        }),
-      };
-    });
+        bottoms: laneBottoms,
+      });
+    }
   }
 
   top(index: number): number {
@@ -128,11 +152,17 @@ export class PositionedGeometry {
       lane.end = i;
     }
     indices.sort((a, b) => a - b);
-    if (
-      this.cached?.indices?.length === indices.length &&
-      indices.every((index, i) => this.cached?.indices?.[i] === index)
-    )
-      return this.cached;
+    const prevIndices = this.cached?.indices;
+    if (prevIndices && prevIndices.length === indices.length) {
+      let same = true;
+      for (let i = 0; i < indices.length; i++) {
+        if (prevIndices[i] !== indices[i]) {
+          same = false;
+          break;
+        }
+      }
+      if (same && this.cached) return this.cached;
+    }
     this.cached = {
       start: indices[0] ?? this.tops.length,
       end: indices.length ? (indices.at(-1) as number) + 1 : this.tops.length,

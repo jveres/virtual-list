@@ -69,6 +69,7 @@ interface Capture {
   readonly target: ExplicitAnchor | null;
   readonly retainViewportReserve: boolean;
   readonly atEnd: boolean;
+  readonly oldOrder: KeyIndex;
   readonly oldKeys: readonly string[];
   readonly anchor: {
     key: string;
@@ -137,11 +138,17 @@ export class Geometry {
     return this.indexByKey.get(key) ?? -1;
   }
 
+  /** Learned height at `index`, or the (validated) estimate for unseen keys. */
+  heightAt(index: number): number {
+    const key = this.keys[index];
+    if (key === undefined) return 0;
+    return (this.heights[index] as number) || this.estimate(key);
+  }
+
   /** Learned height, or the (validated) estimate for unseen keys. */
   heightOf(key: string): number {
     const index = this.indexByKey.get(key);
-    const learned = index === undefined ? 0 : (this.heights[index] as number);
-    return learned || this.estimate(key);
+    return index === undefined ? this.estimate(key) : this.heightAt(index);
   }
 
   private estimate(key: string): number {
@@ -159,12 +166,17 @@ export class Geometry {
     return index !== undefined && this.heights[index] !== 0;
   }
 
+  /** Content-space top of the item at `index`; out-of-range indices yield -1. */
+  offsetAt(index: number): number {
+    return index < 0 || index >= this.keys.length
+      ? -1
+      : (this.positioned?.top(index) ?? this.tree.prefix(index));
+  }
+
   /** Content-space top of the item; `indexOf(key) === -1` yields -1. */
   offsetOf(key: string): number {
     const index = this.indexByKey.get(key);
-    return index === undefined
-      ? -1
-      : (this.positioned?.top(index) ?? this.tree.prefix(index));
+    return index === undefined ? -1 : this.offsetAt(index);
   }
 
   get contentSize(): number {
@@ -198,20 +210,14 @@ export class Geometry {
     return Math.max(0, this.totalSize - viewportHeight);
   }
 
-  /** The item owning the viewport top, and how far into it the top sits. */
-  anchorAt(viewport: GeometryViewport): { key: string; offset: number } | null {
-    if (this.keys.length === 0) return null;
-    const top = Math.max(0, Math.min(viewport.scrollTop, this.contentSize));
+  private locateAnchorIndex(top: number): number {
+    if (this.keys.length === 0) return -1;
     if (this.positioned) {
-      const index = this.positioned.anchorAt(
+      return this.positioned.anchorAt(
         top,
         (i) => this.neverAnchor(this.keys[i] as string),
         this.anchorExclusionIsPure,
       );
-      const key = this.keys[index];
-      return key === undefined
-        ? null
-        : { key, offset: top - this.positioned.top(index) };
     }
     let index = this.tree.indexAt(top); // Clamped to the last index.
     // A row with less than EPSILON left below the viewport top is not what
@@ -239,12 +245,29 @@ export class Geometry {
         ) {
           previous -= 1;
         }
-        if (previous < 0) return null;
+        if (previous < 0) return -1;
         index = previous;
       }
     }
-    const key = this.keys[index] as string;
-    return { key, offset: top - this.tree.prefix(index) };
+    return index;
+  }
+
+  /** Index of the item owning the viewport top, or `-1` when none can anchor. */
+  anchorIndexAt(viewport: GeometryViewport): number {
+    if (this.keys.length === 0) return -1;
+    const top = Math.max(0, Math.min(viewport.scrollTop, this.contentSize));
+    return this.locateAnchorIndex(top);
+  }
+
+  /** The item owning the viewport top, and how far into it the top sits. */
+  anchorAt(viewport: GeometryViewport): { key: string; offset: number } | null {
+    if (this.keys.length === 0) return null;
+    const top = Math.max(0, Math.min(viewport.scrollTop, this.contentSize));
+    const index = this.locateAnchorIndex(top);
+    const key = this.keys[index];
+    return key === undefined
+      ? null
+      : { key, offset: top - this.offsetAt(index) };
   }
 
   /** Mounted index range covering the viewport plus overscan. */
@@ -295,21 +318,25 @@ export class Geometry {
     const maxTop = this.maxScrollTop(viewport.height);
     const scrollTop = Math.max(0, Math.min(viewport.scrollTop, maxTop));
     const clamped = { scrollTop, height: viewport.height };
-    const anchor = this.anchorAt(clamped);
+    const anchorTop = Math.max(0, Math.min(scrollTop, this.contentSize));
+    const anchorIndex = this.locateAnchorIndex(anchorTop);
+    const anchorKey = this.keys[anchorIndex];
     return {
       viewport: clamped,
       policy,
       target,
       retainViewportReserve,
       atEnd: maxTop - scrollTop <= AT_END_EPSILON,
+      oldOrder: this.order,
       oldKeys: this.keys,
       anchor:
-        anchor === null
+        anchorKey === undefined
           ? null
           : {
-              ...anchor,
-              oldIndex: this.indexByKey.get(anchor.key) as number,
-              height: this.heightOf(anchor.key),
+              key: anchorKey,
+              offset: anchorTop - this.offsetAt(anchorIndex),
+              oldIndex: anchorIndex,
+              height: this.heightAt(anchorIndex),
             },
     };
   }
@@ -375,10 +402,17 @@ export class Geometry {
     if (pinned !== null && !indexByKey.has(pinned)) {
       const index = this.indexByKey.get(pinned) ?? -1;
       const replacement = index >= 0 ? keys[index] : undefined;
+      let prefixMatches = true;
+      for (let i = 0; i < index; i += 1) {
+        if (keys[i] !== this.keys[i]) {
+          prefixMatches = false;
+          break;
+        }
+      }
       const inPlace =
         replacement !== undefined &&
         !this.indexByKey.has(replacement) &&
-        this.keys.slice(0, index).every((key, i) => keys[i] === key);
+        prefixMatches;
       pinned = inPlace ? (replacement as string) : null;
       // A host-named replacement is authoritative even when separators or
       // other prefix rows changed. Preserve the pin, not just this commit's
@@ -521,53 +555,55 @@ export class Geometry {
     // list carrying streaming measurements). Prepends, reorders, and
     // replacements preserve the viewport even at the end.
     if (!capture.atEnd) return "anchor";
-    const oldKeys = capture.oldKeys;
-    if (oldKeys === this.keys) return "end";
-    const endCompatible =
-      this.keys.length >= oldKeys.length &&
-      oldKeys.every((key, index) => this.keys[index] === key);
-    return endCompatible ? "end" : "anchor";
+    return capture.oldOrder === this.order ||
+      capture.oldOrder.prefixes(this.keys)
+      ? "end"
+      : "anchor";
   }
 
   private anchorTarget(capture: Capture): number | null {
     // A host-named anchor, when its key exists.
     const target = capture.target;
-    if (target !== null && this.indexByKey.has(target.key)) {
-      const top = this.offsetOf(target.key);
-      let offset = target.offset;
-      if (target.visibilityInset !== undefined) {
-        const inset = Math.min(
-          target.visibilityInset,
-          Math.max(0, capture.viewport.height - 1),
-        );
-        if (
-          offset + this.heightOf(target.key) <= inset ||
-          offset >= capture.viewport.height
-        )
-          offset = inset;
-        // Replacement reading anchors cannot invent trailing space to keep
-        // an old coordinate. Clamp to the measured content end, allowing
-        // only the reserve required by an intentional pin. This reveals a
-        // shorter pinned row and bottom-aligns a shorter unpinned tail.
-        const end = Math.max(
-          0,
-          this.contentSize - capture.viewport.height,
-          this.pinTop ?? 0,
-        );
-        return Math.min(top - offset, end);
+    if (target !== null) {
+      const targetIndex = this.indexByKey.get(target.key);
+      if (targetIndex !== undefined) {
+        const top = this.offsetAt(targetIndex);
+        let offset = target.offset;
+        if (target.visibilityInset !== undefined) {
+          const inset = Math.min(
+            target.visibilityInset,
+            Math.max(0, capture.viewport.height - 1),
+          );
+          if (
+            offset + this.heightAt(targetIndex) <= inset ||
+            offset >= capture.viewport.height
+          )
+            offset = inset;
+          // Replacement reading anchors cannot invent trailing space to keep
+          // an old coordinate. Clamp to the measured content end, allowing
+          // only the reserve required by an intentional pin. This reveals a
+          // shorter pinned row and bottom-aligns a shorter unpinned tail.
+          const end = Math.max(
+            0,
+            this.contentSize - capture.viewport.height,
+            this.pinTop ?? 0,
+          );
+          return Math.min(top - offset, end);
+        }
+        return top - offset;
       }
-      return top - offset;
     }
     const anchor = capture.anchor;
     if (anchor === null) return null;
 
-    if (this.indexByKey.has(anchor.key)) {
+    const anchorIndex = this.indexByKey.get(anchor.key);
+    if (anchorIndex !== undefined) {
       // The in-row offset is kept while the row still reaches it. A row
       // that shrank under the viewport's offset into it keeps the slice the
       // user saw — its bottom — at the same distance from the viewport top,
       // so the rows below hold their place (the row's own top moves, as it
       // must: the content that was above the viewport is gone).
-      const height = this.heightOf(anchor.key);
+      const height = this.heightAt(anchorIndex);
       const pinTop = this.pinTop;
       // Collapsing the clipped pinned row must reveal its top, including
       // between the pin and the end. Keeping the expanded reading offset
@@ -585,24 +621,30 @@ export class Geometry {
         anchor.offset <= height
           ? anchor.offset
           : Math.max(0, height - (anchor.height - anchor.offset));
-      return this.offsetOf(anchor.key) + offset;
+      return this.offsetAt(anchorIndex) + offset;
     }
     // First surviving successor, inheriting the removed anchor's in-row
     // offset: the content under the viewport was replaced; the position
     // should feel like replacement, not backwards navigation.
     for (let i = anchor.oldIndex + 1; i < capture.oldKeys.length; i++) {
       const key = capture.oldKeys[i];
-      if (key !== undefined && this.indexByKey.has(key)) {
-        const offset = Math.min(anchor.offset, this.heightOf(key));
-        return this.offsetOf(key) + offset;
+      if (key !== undefined) {
+        const nextIndex = this.indexByKey.get(key);
+        if (nextIndex !== undefined) {
+          const offset = Math.min(anchor.offset, this.heightAt(nextIndex));
+          return this.offsetAt(nextIndex) + offset;
+        }
       }
     }
     // No successor: predecessor, end-aligned (its bottom at the viewport
     // top would show removed space; align the viewport top to its bottom).
     for (let i = anchor.oldIndex - 1; i >= 0; i--) {
       const key = capture.oldKeys[i];
-      if (key !== undefined && this.indexByKey.has(key)) {
-        return this.offsetOf(key) + this.heightOf(key);
+      if (key !== undefined) {
+        const prevIndex = this.indexByKey.get(key);
+        if (prevIndex !== undefined) {
+          return this.offsetAt(prevIndex) + this.heightAt(prevIndex);
+        }
       }
     }
     return null;
@@ -617,14 +659,11 @@ export class Geometry {
   private recomputeReserve(viewportHeight: number, scrollTop: number): void {
     const content = this.contentSize;
     let target = 0;
-    if (this.pinnedKey !== null) {
-      const pinnedTop = this.offsetOf(this.pinnedKey);
-      const targetTop = Math.max(0, pinnedTop - this.pinnedInsetPx);
-      // Reaching the start needs no new reserve, but doesn't release the
-      // pin: later prepends or height changes can move the same key again.
-      if (targetTop > EPSILON) {
-        target = Math.max(0, targetTop + viewportHeight - content);
-      }
+    const targetTop = this.pinTop;
+    // Reaching the start needs no new reserve, but doesn't release the
+    // pin: later prepends or height changes can move the same key again.
+    if (targetTop !== null && targetTop > EPSILON) {
+      target = Math.max(0, targetTop + viewportHeight - content);
     }
     const viewportNeeds = Math.max(
       0,

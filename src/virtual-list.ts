@@ -295,6 +295,8 @@ export function createVirtualList<T>(
   let positionedNow = false;
   /** Advances on every commit; reconciliation and publication key on it. */
   let epoch = 0;
+  /** Advances when committed keys or staged row instances change. */
+  let structureEpoch = 0;
   /** One committed offscreen row kept laid out between its updates. */
   let resident: Row<T> | null = null;
 
@@ -602,8 +604,10 @@ export function createVirtualList<T>(
 
   const connected = (row: Row<T>): boolean => row.place !== "detached";
   const mounted = (row: Row<T>): boolean => row.place === "mounted";
-  const committedPoint = (key: string): Node | null =>
-    insertionPoint(committedKeys, geometry.indexOf(key));
+  const committedPoint = (
+    key: string,
+    index = geometry.indexOf(key),
+  ): Node | null => insertionPoint(committedKeys, index);
 
   /**
    * Connect a measured row to the canvas: laid out, never painted, hit,
@@ -645,9 +649,12 @@ export function createVirtualList<T>(
   }
 
   /** Move a slot to its committed offset (a no-op when unchanged). */
-  function placeRow(row: Row<T>): void {
+  function placeRow(row: Row<T>, index?: number): void {
     if (native) return; // The flow places it.
-    const offset = geometry.offsetOf(row.key);
+    const offset =
+      index === undefined
+        ? geometry.offsetOf(row.key)
+        : geometry.offsetAt(index);
     if (offset < 0 || row.offset === offset) return;
     row.offset = offset;
     if (row.slot === row.element) row.slot.style.translate = `0 ${offset}px`;
@@ -663,10 +670,12 @@ export function createVirtualList<T>(
       row.offset = Number.NaN;
     }
     if (hidden) unhide(row);
+    const index = geometry.indexOf(row.key);
     // Placed before it connects: a mount hook never sees a provisional zero.
-    placeRow(row);
-    if (native) flowInsert(row);
-    else if (!hidden) canvas.insertBefore(row.slot, committedPoint(row.key));
+    placeRow(row, index);
+    if (native) flowInsert(row, index);
+    else if (!hidden)
+      canvas.insertBefore(row.slot, committedPoint(row.key, index));
     row.place = "mounted";
     mountedRows.add(row);
     // The viewport never keeps a height of the old width.
@@ -688,9 +697,16 @@ export function createVirtualList<T>(
    * after its mounted predecessor and before its mounted successor. A slot
    * staged elsewhere moves (a relayout) only when it is out of place.
    */
-  function flowInsert(row: Row<T>): void {
-    const index = geometry.indexOf(row.key);
+  function flowInsert(row: Row<T>, index = geometry.indexOf(row.key)): void {
     const previous = rowIn(committedKeys, index - 1);
+    if (previous && mounted(previous)) {
+      const next = previous.slot.nextSibling;
+      if (next === row.slot) return;
+      if (!row.slot.isConnected) {
+        canvas.insertBefore(row.slot, next);
+        return;
+      }
+    }
     const after =
       previous && mounted(previous) ? previous.slot : (topSpacer as Node);
     const before =
@@ -714,12 +730,9 @@ export function createVirtualList<T>(
     let top = 0;
     let bottom = geometry.totalSize;
     if (last >= 0) {
-      const lastKey = geometry.keyAt(last) as string;
-      top = geometry.offsetOf(geometry.keyAt(first) as string);
+      top = geometry.offsetAt(first);
       bottom =
-        geometry.totalSize -
-        geometry.offsetOf(lastKey) -
-        geometry.heightOf(lastKey);
+        geometry.totalSize - geometry.offsetAt(last) - geometry.heightAt(last);
     }
     const topHeight = `${top}px`;
     const bottomHeight = `${Math.max(0, bottom)}px`;
@@ -731,6 +744,16 @@ export function createVirtualList<T>(
 
   /** The first and last list index of the mounted rows (last -1: none). */
   function mountedSpan(): [number, number] {
+    if (mountedRows.size === 0) return [Number.POSITIVE_INFINITY, -1];
+    if (
+      !heldRetirements &&
+      lastReconcile.structure === structureEpoch &&
+      !lastRange.indices
+    ) {
+      return lastRange.end > lastRange.start
+        ? [lastRange.start, lastRange.end - 1]
+        : [Number.POSITIVE_INFINITY, -1];
+    }
     let first = Number.POSITIVE_INFINITY;
     let last = -1;
     for (const row of mountedRows) {
@@ -1106,7 +1129,6 @@ export function createVirtualList<T>(
   // --- Staging: the desired state -------------------------------------------
   function indexItems(items: readonly T[], withHeights: boolean) {
     const keys: string[] = [];
-    const byKey = new Map<string, T>();
     const heights =
       withHeights && declared ? new Float64Array(items.length) : null;
     let seen: Set<string> | null = null;
@@ -1114,23 +1136,20 @@ export function createVirtualList<T>(
     const leading = desiredLeading;
     // Use one device grid within this synchronous declaration pass.
     const ratio = heights ? pixelRatio() : undefined;
-    for (const item of items) {
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i] as T;
       const key = keyOf(item);
       if (isSlotKey(key))
         throw new Error(`item key "${key}" uses the reserved edge-slot prefix`);
       // A matching prefix of the owned key order is already unique. Build a
       // validation set only when the new order first departs from that prefix.
-      if (heights && !seen && priorKeys[keys.length + leading] !== key)
-        seen = new Set(keys);
-      if (heights ? seen?.has(key) : byKey.has(key))
-        throw new Error(`duplicate key "${key}"`);
+      if (!seen && priorKeys[i + leading] !== key) seen = new Set(keys);
+      if (seen?.has(key)) throw new Error(`duplicate key "${key}"`);
       keys.push(key);
-      if (heights) {
-        seen?.add(key);
-        heights[keys.length - 1] = declaredHeight(item, ratio);
-      } else byKey.set(key, item);
+      seen?.add(key);
+      if (heights) heights[i] = declaredHeight(item, ratio);
     }
-    return { keys, byKey, heights };
+    return { keys, heights, samePrefix: seen === null };
   }
 
   /** Omitted anchors inherit the held intent; explicit ones replace it. */
@@ -1140,13 +1159,18 @@ export function createVirtualList<T>(
     previous: Pending<T> | null,
   ): Pending<T> {
     const named = typeof requested === "object" ? requested : null;
-    const index = geometry.keyIndex.matches(keys)
-      ? geometry.keyIndex
-      : desiredIndex.matches(keys)
-        ? desiredIndex
-        : (desiredIndex.extend(keys) ??
-          geometry.keyIndex.extend(keys) ??
-          new KeyIndex(keys));
+    const index =
+      keys === geometry.keyIndex.keys
+        ? geometry.keyIndex
+        : keys === desiredIndex.keys
+          ? desiredIndex
+          : geometry.keyIndex.matches(keys)
+            ? geometry.keyIndex
+            : desiredIndex.matches(keys)
+              ? desiredIndex
+              : (desiredIndex.extend(keys) ??
+                geometry.keyIndex.extend(keys) ??
+                new KeyIndex(keys));
     return {
       index,
       keys: index.keys,
@@ -1243,8 +1267,9 @@ export function createVirtualList<T>(
     const built: Row<T>[] = [];
     const fresh: Row<T>[] = [];
     const touched: Row<T>[] = [];
-    const inPlace: [Row<T>, T][] = [];
-    const adopted = new Set<string>();
+    const inPlace: Row<T>[] = [];
+    const adopted =
+      previous && previous.staged.size > 0 ? new Set<string>() : null;
     /** `nativeFree()`, read once: it reads layout, and renders write it. */
     let freeOnce: boolean | undefined;
     const free = (): boolean => {
@@ -1276,7 +1301,7 @@ export function createVirtualList<T>(
       touched.push(row);
       const element = renderInto(row, item);
       if (element === row.element) {
-        inPlace.push([row, item]);
+        inPlace.push(row);
         return null;
       }
       return create(row.key, item, element);
@@ -1288,7 +1313,7 @@ export function createVirtualList<T>(
       if (!spec) return;
       const before = previous?.staged.get(key);
       if (before?.spec === spec) {
-        adopted.add(key);
+        adopted?.add(key);
         p.staged.set(key, before);
         return;
       }
@@ -1314,12 +1339,12 @@ export function createVirtualList<T>(
           const before = previous?.staged.get(key);
           const committed = rows.get(key);
           if (before) {
-            adopted.add(key);
+            adopted?.add(key);
             if (before.shown === item && !before.broken) {
               p.staged.set(key, before);
             } else {
               const replacement = rerender(before, item);
-              if (replacement) adopted.delete(key);
+              if (replacement) adopted?.delete(key);
               p.staged.set(key, replacement ?? before);
             }
           } else if (!committed) {
@@ -1377,16 +1402,16 @@ export function createVirtualList<T>(
       if (error instanceof Abort) return false;
       throw error;
     }
-    for (const [row, item] of inPlace) {
-      row.item = item;
+    for (const row of inPlace) {
+      row.item = row.shown;
       // A declared height lands with the snapshot; a measured one is re-read.
       if (!declared) markDirty(row);
     }
-    if (previous) {
+    if (previous && previous.staged.size > 0) {
       const keys = full ? [...previous.staged.keys()] : stageKeys;
       for (const key of keys) {
         const row = previous.staged.get(key);
-        if (row && !adopted.has(key)) destroyRow(row);
+        if (row && !adopted?.has(key)) destroyRow(row);
       }
     }
     return !disposed;
@@ -1398,33 +1423,61 @@ export function createVirtualList<T>(
     jobRows?: Map<string, Row<T>>,
   ): Pending<T> | null {
     const previous = pending;
-    const { keys, heights } = indexItems(items, true);
+    const { keys, heights, samePrefix } = indexItems(items, true);
     const start = edgeSlots.start;
     const end = edgeSlots.end;
     const leading = start ? 1 : 0;
-    if (start) keys.unshift(slotKey("start", start.key));
-    if (end) keys.push(slotKey("end", end.key));
-    const p = newPending(keys, requested, previous);
+    const trailing = end ? 1 : 0;
+    const startKey = start ? slotKey("start", start.key) : undefined;
+    const endKey = end ? slotKey("end", end.key) : undefined;
+    const priorKeys = desiredIndex.keys;
+    let nextKeys: readonly string[];
+    if (
+      samePrefix &&
+      items.length + leading + trailing === priorKeys.length &&
+      (!start || priorKeys[0] === startKey) &&
+      (!end || priorKeys[priorKeys.length - 1] === endKey)
+    ) {
+      nextKeys = priorKeys;
+    } else {
+      if (startKey !== undefined) keys.unshift(startKey);
+      if (endKey !== undefined) keys.push(endKey);
+      nextKeys = keys;
+    }
+    const p = newPending(nextKeys, requested, previous);
     p.declared = heights
       ? new DeclaredItems(p.index, leading, items, heights)
       : null;
     p.positioned = preparePositioned(p.declared);
     selectPin(p, items);
-    let stageKeys = p.keys;
+    let stageKeys: readonly string[] = p.keys;
     if (declared) {
       // Unrendered declared items need geometry only. Prepare retained rows
       // and slots in source order so host render calls keep their ordering.
-      const retained = new Set(rows.keys());
-      for (const key of previous?.staged.keys() ?? []) retained.add(key);
-      if (start) retained.add(p.keys[0] as string);
-      if (end) retained.add(p.keys[p.keys.length - 1] as string);
-      stageKeys = [...retained]
-        .filter((key) => p.index.positions.has(key))
-        .sort(
-          (a, b) =>
-            (p.index.positions.get(a) as number) -
-            (p.index.positions.get(b) as number),
-        );
+      const positions = p.index.positions;
+      const toStage: [number, string][] = [];
+      for (const [key, row] of rows) {
+        if (isSlotKey(key) || previous?.staged.has(key)) continue;
+        const pos = positions.get(key);
+        if (pos === undefined) continue;
+        if (row.broken || row.shown !== items[pos - leading]) {
+          toStage.push([pos, key]);
+        }
+      }
+      if (previous && previous.staged.size > 0) {
+        for (const key of previous.staged.keys()) {
+          if (isSlotKey(key)) continue;
+          const pos = positions.get(key);
+          if (pos !== undefined) toStage.push([pos, key]);
+        }
+      }
+      if (toStage.length > 1) toStage.sort((a, b) => a[0] - b[0]);
+      const ordered: string[] = [];
+      if (start) ordered.push(p.keys[0] as string);
+      for (let i = 0; i < toStage.length; i++)
+        ordered.push(toStage[i]?.[1] as string);
+      if (end) ordered.push(p.keys[p.keys.length - 1] as string);
+      stageKeys = ordered;
     }
     const ok = prepare(
       p,
@@ -1444,9 +1497,9 @@ export function createVirtualList<T>(
    */
   function confined(p: Pending<T>): boolean {
     if (positionedNow || p.positioned) return false;
-    const anchor = geometry.anchorAt(viewportState());
-    if (anchor === null) return true;
-    const anchorIndex = geometry.indexOf(anchor.key);
+    const anchorIndex = geometry.anchorIndexAt(viewportState());
+    if (anchorIndex < 0) return true;
+    const anchorKey = geometry.keyAt(anchorIndex) as string;
     for (const row of dirtyRows) {
       if (geometry.indexOf(row.key) < anchorIndex) return false;
     }
@@ -1454,16 +1507,7 @@ export function createVirtualList<T>(
       for (const key of p.staged.keys()) {
         if (geometry.indexOf(key) < anchorIndex) return false;
       }
-      let shifted = false;
-      p.declared?.forEach((_, height, key) => {
-        if (
-          !shifted &&
-          geometry.indexOf(key) < anchorIndex &&
-          geometry.heightOf(key) !== height
-        )
-          shifted = true;
-      });
-      return !shifted;
+      return !(p.declared?.shiftsBefore(anchorIndex, geometry) ?? false);
     }
     for (let index = 0; index < anchorIndex; index++) {
       const key = geometry.keyAt(index);
@@ -1474,9 +1518,9 @@ export function createVirtualList<T>(
     }
     // The anchor row may change in place, be replaced at its index, or be
     // removed — unless its surviving successor moves down (a prepend).
-    if (p.keys[anchorIndex] !== anchor.key) {
+    if (p.keys[anchorIndex] !== anchorKey) {
       const nextIndex = p.index.positions;
-      if (nextIndex.has(anchor.key)) return false;
+      if (nextIndex.has(anchorKey)) return false;
       for (let index = anchorIndex + 1; index < geometry.count; index++) {
         const moved = nextIndex.get(geometry.keyAt(index) as string);
         if (moved === undefined) continue;
@@ -1599,25 +1643,26 @@ export function createVirtualList<T>(
         for (const [key, row] of rows) {
           if (next.has(key)) continue;
           rows.delete(key);
+          dirtyRows.delete(row);
           doomed.push(row);
         }
       }
       for (const [key, row] of p.staged) {
         const old = rows.get(key);
         rows.set(key, row);
-        if (old && old !== row) doomed.push(old);
+        if (old && old !== row) {
+          dirtyRows.delete(old);
+          doomed.push(old);
+        }
+        if (row.dirty && !row.spec) dirtyRows.add(row);
       }
       if (p.staged.size > 0) sweep = true;
     }
     // Every height this commit lands is read before its first DOM write.
     // Rows that waited for a settle are read again (an image decoded).
-    const gone = new Set(doomed);
-    const toMeasure = new Set<Row<T>>();
-    for (const row of p?.staged.values() ?? [])
-      if (row.dirty) toMeasure.add(row);
-    for (const row of dirtyRows) if (!gone.has(row)) toMeasure.add(row);
-    const measured = [...toMeasure];
+    const measured = dirtyRows.size > 0 ? [...dirtyRows] : [];
     const heights = readHeights(measured);
+    const structural = keysChanged || (p?.staged.size ?? 0) > 0;
     let glideFollow = false;
     // Native flow: host hooks wait until the window is whole again (F5).
     holdHooks(() => {
@@ -1636,31 +1681,30 @@ export function createVirtualList<T>(
           // A snapshot entry unchanged at the same ordinal (same key, item,
           // and height as the previous snapshot) already holds its height in
           // the geometry and its row: skip its per-key lookups entirely.
-          const previousDeclared = p.patch ? null : declaredItems;
-          let at = 0;
+          const previousDeclared = p.patch ? undefined : declaredItems;
           p.declared.forEach((item, height, key) => {
-            if (previousDeclared?.holdsAt(at++, key, item, height)) return;
             const row = rows.get(key);
             if (row && row.item === item) commitHeight(row, height);
             else if (declaredItems.heightOf(key) !== height)
               geometry.measure(key, height);
             if (p.patch) declaredItems.set(key, { item, height });
-          });
+          }, previousDeclared);
           // A snapshot replaces its columns: removed keys drop out.
           if (!p.patch) declaredItems = p.declared;
         }
         for (const row of p.staged.values()) {
-          if (!toMeasure.has(row)) commitHeight(row, row.height);
+          if (!row.dirty) commitHeight(row, row.height);
         }
         if (place) {
           geometry.setPositioned(p.positioned);
           positionedNow = p.positioned !== null;
         }
       }
-      measured.forEach((row, index) => {
-        commitHeight(row, heights[index] as number);
-      });
+      for (let i = 0; i < measured.length; i++) {
+        commitHeight(measured[i] as Row<T>, heights[i] as number);
+      }
       epoch += 1;
+      if (structural) structureEpoch += 1;
 
       const result = geometry.resolve(capture);
       syncCanvasHeight(result.totalSize, !native || o.write !== false);
@@ -1679,11 +1723,6 @@ export function createVirtualList<T>(
       // at the top) moves the end by exactly the anchor row's shift. Landing
       // there at once keeps the screen still; a glide would scroll visibly.
       const anchor = capture.anchor;
-      const anchorOnly =
-        anchor !== null &&
-        geometry.indexOf(anchor.key) >= 0 &&
-        // The end target rounds up to a whole pixel; the engine clamps it.
-        Math.abs(geometry.offsetOf(anchor.key) + anchor.offset - target) < 1;
       glideFollow =
         !o.instant &&
         !booting &&
@@ -1692,13 +1731,25 @@ export function createVirtualList<T>(
         result.mode === "end" &&
         takingOver === null &&
         moves &&
-        !anchorOnly;
+        !(
+          anchor !== null &&
+          (() => {
+            const anchorIndex = geometry.indexOf(anchor.key);
+            return (
+              anchorIndex >= 0 &&
+              // The end target rounds up to a whole pixel; the engine clamps it.
+              Math.abs(
+                geometry.offsetAt(anchorIndex) + anchor.offset - target,
+              ) < 1
+            );
+          })()
+        );
       // Native flow: the rows on screen stay mounted in the new geometry, so
       // the engine can measure how far its anchor node moved and follow it.
       // Restore the flow before follow policy reads the viewport height: an
       // interim layout with the old tail removed can clamp the scroll offset
       // and its later scroll event would cancel follow as apparent input.
-      if (native) holdWindow(keysChanged || (p?.staged.size ?? 0) > 0);
+      if (native) holdWindow(structural);
       else repositionMounted();
       if (smoothFollow && !o.keepFollow && takingOver === null)
         follow.resolveCommit(policy, target);
@@ -1707,6 +1758,7 @@ export function createVirtualList<T>(
       // control's row shifts the offset. The landing owns the position, so
       // a writable commit corrects it even when the target did not move.
       const engineMoved =
+        !moves &&
         native &&
         o.write !== false &&
         !glideFollow &&
@@ -1741,9 +1793,7 @@ export function createVirtualList<T>(
       let committed = false;
       try {
         while (dirtyRows.size > 0) {
-          const anchor = geometry.anchorAt(vp);
-          const anchorIndex =
-            anchor === null ? 0 : geometry.indexOf(anchor.key);
+          const anchorIndex = Math.max(0, geometry.anchorIndexAt(vp));
           const everything = nativeFree();
           const ready: Row<T>[] = [];
           for (const row of dirtyRows) {
@@ -1792,7 +1842,12 @@ export function createVirtualList<T>(
     else for (const row of mountedRows) placeRow(row);
   }
 
-  let lastReconcile = { top: Number.NaN, height: Number.NaN, epoch: -1 };
+  let lastReconcile = {
+    top: Number.NaN,
+    height: Number.NaN,
+    epoch: -1,
+    structure: -1 as number | undefined,
+  };
   let lastRange: GeometryWindow = { start: 0, end: 0 };
   /** Native commands keep departing rows until settle (Safari paint stability). */
   let holdLanding = false;
@@ -1809,7 +1864,8 @@ export function createVirtualList<T>(
       lastReconcile.epoch === epoch
     )
       return lastRange;
-    const unchanged = !heldRetirements && lastReconcile.epoch === epoch;
+    const unchanged =
+      !heldRetirements && lastReconcile.structure === structureEpoch;
     const range = geometry.window(vp, overscanPx);
     const previous = lastRange;
     const stacked = !range.indices && !previous.indices;
@@ -1821,7 +1877,9 @@ export function createVirtualList<T>(
           range.start === previous.start &&
           range.end === previous.end))
     ) {
-      lastReconcile = { top: vp.scrollTop, height: vp.height, epoch };
+      lastReconcile.top = vp.scrollTop;
+      lastReconcile.height = vp.height;
+      lastReconcile.epoch = epoch;
       return range;
     }
     const delta =
@@ -1831,6 +1889,12 @@ export function createVirtualList<T>(
     const kept = unchanged && stacked ? previous : undefined;
     lastRange = range;
     heldRetirements = false;
+    lastReconcile = {
+      top: vp.scrollTop,
+      height: vp.height,
+      epoch: -1,
+      structure: -1,
+    };
     // Native flow: rebuild the window and its spacers before any hook runs.
     return holdHooks(() => {
       try {
@@ -1905,6 +1969,17 @@ export function createVirtualList<T>(
         const row = rows.get(geometry.keyAt(index) ?? "");
         if (row) retire(row);
       }
+    } else if (kept) {
+      const topEnd = Math.min(kept.end, range.start);
+      for (let index = kept.start; index < topEnd; index++) {
+        const row = rows.get(geometry.keyAt(index) ?? "");
+        if (row?.place === "mounted") retire(row);
+      }
+      const bottomStart = Math.max(kept.start, range.end);
+      for (let index = bottomStart; index < kept.end; index++) {
+        const row = rows.get(geometry.keyAt(index) ?? "");
+        if (row?.place === "mounted") retire(row);
+      }
     } else {
       const visible = range.indices ? new Set(range.indices) : null;
       const leaving: [number, Row<T>][] = [];
@@ -1942,9 +2017,15 @@ export function createVirtualList<T>(
       if (row.place !== "mounted") mountRow(row);
     }
     if (sweep) sweepHidden();
-    lastReconcile = complete
-      ? { top: vp.scrollTop, height: vp.height, epoch }
-      : { ...lastReconcile, epoch: -1 };
+    if (complete) {
+      lastReconcile.top = vp.scrollTop;
+      lastReconcile.height = vp.height;
+      lastReconcile.epoch = epoch;
+      lastReconcile.structure = structureEpoch;
+    } else {
+      lastReconcile.epoch = -1;
+      lastReconcile.structure = -1;
+    }
     return range;
   }
 
@@ -2711,8 +2792,12 @@ export function createVirtualList<T>(
               j.source = context.items;
             }
             if (!j && !declared && pending === null) {
-              const { keys, byKey } = indexItems(snapshot, false);
-              const fresh = [...byKey].filter(([key]) => !rows.has(key));
+              const { keys } = indexItems(snapshot, false);
+              const fresh: [string, T][] = [];
+              for (let i = 0; i < keys.length; i++) {
+                const key = keys[i] as string;
+                if (!rows.has(key)) fresh.push([key, snapshot[i] as T]);
+              }
               if (ended()) return;
               if (
                 fresh.length > JOB_MIN_ROWS ||
@@ -3237,8 +3322,12 @@ export function createVirtualList<T>(
     setEdgeSlot,
     setFollowMode,
     positionOf(key) {
-      if (geometry.indexOf(key) < 0) return null;
-      return { top: geometry.offsetOf(key), height: geometry.heightOf(key) };
+      const index = geometry.indexOf(key);
+      if (index < 0) return null;
+      return {
+        top: geometry.offsetAt(index),
+        height: geometry.heightAt(index),
+      };
     },
     elementOf(key) {
       const row = rows.get(key);

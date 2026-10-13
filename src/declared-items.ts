@@ -87,19 +87,69 @@ export class DeclaredItems<T> {
     data.heights[at] = entry.height;
   }
 
-  forEach(visit: (item: T, height: number, key: string) => void): void {
+  forEach(
+    visit: (item: T, height: number, key: string) => void,
+    unchanged?: DeclaredItems<T>,
+  ): void {
     const data = this.snapshot;
     if (!data) {
       for (const [key, entry] of this.patch)
         visit(entry.item, entry.height, key);
       return;
     }
-    for (let at = 0; at < data.items.length; at++)
-      visit(
-        data.items[at] as T,
-        data.heights[at] as number,
-        data.index.keys[at + data.leading] as string,
-      );
+    const prev = unchanged?.snapshot ?? null;
+    const sameOrder =
+      prev !== null &&
+      prev.index === data.index &&
+      prev.leading === data.leading &&
+      prev.items.length === data.items.length;
+    for (let at = 0; at < data.items.length; at++) {
+      const item = data.items[at] as T;
+      const height = data.heights[at] as number;
+      const key = data.index.keys[at + data.leading] as string;
+      if (
+        prev !== null &&
+        at < prev.items.length &&
+        prev.items[at] === item &&
+        prev.heights[at] === height &&
+        (sameOrder || prev.index.keys[at + prev.leading] === key)
+      )
+        continue;
+      visit(item, height, key);
+    }
+  }
+
+  /**
+   * Whether any declared height before `anchorIndex` differs from `geometry`'s
+   * current height. Snapshot mode uses indexed lookups without Map probes.
+   */
+  shiftsBefore(
+    anchorIndex: number,
+    geometry: {
+      indexOf(key: string): number;
+      heightAt(index: number): number;
+    },
+  ): boolean {
+    if (anchorIndex <= 0) return false;
+    const data = this.snapshot;
+    if (!data) {
+      for (const [key, entry] of this.patch) {
+        const index = geometry.indexOf(key);
+        if (
+          index >= 0 &&
+          index < anchorIndex &&
+          geometry.heightAt(index) !== entry.height
+        )
+          return true;
+      }
+      return false;
+    }
+    const limit = Math.min(data.items.length, anchorIndex - data.leading);
+    for (let at = 0; at < limit; at++) {
+      if (geometry.heightAt(at + data.leading) !== data.heights[at])
+        return true;
+    }
+    return false;
   }
 
   clear(): void {

@@ -1145,4 +1145,22 @@ describe("host-named anchor", () => {
       geometry.offsetOf("x4") + 10,
     );
   });
+
+  it("exposes indexed heightAt, offsetAt, and anchorIndexAt consistent with keyed accessors", () => {
+    const geometry = new Geometry(100);
+    expect(geometry.anchorIndexAt(viewport(0))).toBe(-1);
+    expect(geometry.heightAt(0)).toBe(0);
+    expect(geometry.offsetAt(-1)).toBe(-1);
+    expect(geometry.offsetAt(0)).toBe(-1);
+
+    seed(geometry, ["a", "b", "c"]);
+    geometry.measure("b", 140);
+    expect(geometry.heightAt(0)).toBe(geometry.heightOf("a"));
+    expect(geometry.heightAt(1)).toBe(geometry.heightOf("b"));
+    expect(geometry.heightAt(3)).toBe(0);
+    expect(geometry.offsetAt(0)).toBe(geometry.offsetOf("a"));
+    expect(geometry.offsetAt(2)).toBe(geometry.offsetOf("c"));
+    expect(geometry.offsetAt(3)).toBe(-1);
+    expect(geometry.anchorIndexAt(viewport(120))).toBe(1);
+  });
 });

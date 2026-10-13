@@ -58,6 +58,37 @@ describe("declared snapshot ownership", () => {
       expect(committed.holdsAt(2, "b", original[1] as { id: string }, 50)).toBe(
         false,
       );
+
+      const changedKeys: string[] = [];
+      pending.forEach((_, __, key) => {
+        changedKeys.push(key);
+      }, committed);
+      expect(changedKeys).toEqual(["b"]);
     },
   );
+
+  it("checks whether declared heights shift before an anchor index in snapshot and patch modes", () => {
+    const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
+    const index = new KeyIndex(["start-slot", "a", "b", "c"]);
+    const snapshot = new DeclaredItems(
+      index,
+      1,
+      items,
+      Float64Array.from([40, 60, 80]),
+    );
+    const geometry = {
+      indexOf: (key: string) => index.positions.get(key) ?? -1,
+      heightAt: (at: number) => [24, 40, 50, 80][at] ?? 0,
+    };
+
+    expect(snapshot.shiftsBefore(0, geometry)).toBe(false);
+    expect(snapshot.shiftsBefore(2, geometry)).toBe(false);
+    expect(snapshot.shiftsBefore(3, geometry)).toBe(true);
+
+    const patch = new DeclaredItems<{ id: string }>();
+    patch.set("c", { item: items[2] as { id: string }, height: 90 });
+    expect(patch.shiftsBefore(3, geometry)).toBe(false);
+    patch.set("b", { item: items[1] as { id: string }, height: 60 });
+    expect(patch.shiftsBefore(3, geometry)).toBe(true);
+  });
 });
