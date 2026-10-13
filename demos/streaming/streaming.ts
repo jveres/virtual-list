@@ -3647,6 +3647,13 @@ async function scrollToLatest(): Promise<boolean> {
       }
     }
   }
+  if (loadingTop || activeLoad) {
+    activeLoad = null;
+    loadingTop = false;
+    setEdgeState("hidden");
+    resetPaging();
+    syncMetrics();
+  }
   // Landing at the end resumes automatic stream following.
   return list.scrollTo("end", { behavior: "smooth" });
 }

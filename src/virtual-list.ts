@@ -2616,18 +2616,28 @@ export function createVirtualList<T>(
           const started = performance.now();
           let last: Row<T> | null = null;
           let count = 0;
-          const limit = !deadline && idle() ? JOB_REST_ROWS : JOB_MIN_ROWS;
+          const budgetMs = interrupt ? 50 : 3;
+          const limit = interrupt
+            ? j.fresh.length
+            : !deadline && idle()
+              ? JOB_REST_ROWS
+              : JOB_MIN_ROWS;
           while (j.cursor < j.fresh.length && count < limit) {
             if (deadline && deadline.timeRemaining() < IDLE_SLICE_MIN_MS) break;
             if (j.partial) {
               const partial = j.partial;
               last = partial.row;
-              if (partial.steps.next().done) {
-                j.partial = null;
-                j.cursor += 1;
-              }
+              do {
+                if (partial.steps.next().done) {
+                  j.partial = null;
+                  j.cursor += 1;
+                  count += 1;
+                  break;
+                }
+              } while (interrupt && performance.now() - started < budgetMs);
               // The browser lays out this chunk before the next one arrives.
-              break;
+              if (!interrupt || j.partial) break;
+              continue;
             }
             const [key, item] = j.fresh[j.cursor] as [string, T];
             const row = createRow(key, item, render(item), 1);
@@ -2646,10 +2656,16 @@ export function createVirtualList<T>(
               row,
               insertionPoint(j.order, j.index.get(key) as number, j.rows),
             );
-            if (!steps) j.cursor += 1;
-            count += 1;
+            if (!steps) {
+              j.cursor += 1;
+              count += 1;
+            }
             last = row;
-            if (steps || (!deadline && performance.now() - started >= 3)) break;
+            if (
+              (steps && !interrupt) ||
+              (!deadline && performance.now() - started >= budgetMs)
+            )
+              break;
           }
           last?.element.getBoundingClientRect();
           if (ended()) return;
@@ -2698,7 +2714,7 @@ export function createVirtualList<T>(
             else if (!j.ready) idleHandle = requestIdleCallback(stageIdle);
           });
         }
-        if (j.ready && !finished && nativeFree()) run();
+        if (j.ready && !finished && (nativeFree() || interruptAtCommit)) run();
       };
       const runFrame = (): void => {
         frame = 0;
@@ -2741,9 +2757,15 @@ export function createVirtualList<T>(
             // Nothing lands mid-phase: a ready job waits for the settle.
             if (prepareOnly && j) return;
             const context = protectedContext(protectPin);
+            const exposed =
+              j !== null &&
+              interruptAtCommit &&
+              j.protectedKeys.size > 0 &&
+              [...j.protectedKeys].every((key) => j.index.has(key)) &&
+              context.protectedItems.some((item) => !j.index.has(keyOf(item)));
             // Items replaced in place since staging (a streamed token): ask
             // the updater again. Its rows stay adoptable by item identity.
-            const stale = j !== null && !sourceCurrent(j);
+            const stale = j !== null && (!sourceCurrent(j) || exposed);
             const next = j && !stale ? j.next : update(context);
             if (!next) {
               if (j) cancel();
@@ -2753,15 +2775,24 @@ export function createVirtualList<T>(
             const snapshot = j && !stale ? j.snapshot : [...next.items];
             if (
               stale &&
-              (snapshot.length !== j.order.length ||
-                snapshot.some((item, index) => keyOf(item) !== j.order[index]))
+              (exposed
+                ? !declared &&
+                  snapshot.some((item) => {
+                    const key = keyOf(item);
+                    return !rows.has(key) && !j.rows.has(key);
+                  })
+                : snapshot.length !== j.order.length ||
+                  snapshot.some(
+                    (item, index) => keyOf(item) !== j.order[index],
+                  ))
             ) {
               cancel();
               return;
             }
             if (!protectPin) {
               // Opt-in trimming releases only the pin's extra protection.
-              const keys = j?.index ?? new Set(snapshot.map(keyOf));
+              const keys =
+                j && !exposed ? j.index : new Set(snapshot.map(keyOf));
               const target =
                 typeof next.anchor === "object" ? next.anchor : null;
               if (
@@ -2936,9 +2967,22 @@ export function createVirtualList<T>(
         const next = update(context);
         if (!next) return null;
         destinationKeys = new Set(next.items.map(keyOf));
-        const outgoing = context.items.filter(
-          (item) => !destinationKeys.has(keyOf(item)),
+        const visibleRange = geometry.window(viewportState(), 0);
+        const visibleKeys = new Set(
+          visibleRange.indices
+            ? visibleRange.indices.map(
+                (index) => committedKeys[index] as string,
+              )
+            : committedKeys.slice(visibleRange.start, visibleRange.end),
         );
+        const retainedKeys =
+          visibleKeys.size > 0
+            ? visibleKeys
+            : new Set(context.protectedItems.map(keyOf));
+        const outgoing = context.items.filter((item) => {
+          const key = keyOf(item);
+          return retainedKeys.has(key) && !destinationKeys.has(key);
+        });
         return {
           ...next,
           items:

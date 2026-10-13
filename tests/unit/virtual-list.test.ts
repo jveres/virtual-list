@@ -1371,6 +1371,42 @@ describe("incremental window preparation", () => {
       h.list.dispose();
     },
   );
+
+  it("should prepare interrupting window navigation in one frame and trim offscreen outgoing rows before gliding", async () => {
+    let clock = 0;
+    const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => clock);
+    const h = mount(range(0, 72), {
+      boot: "start",
+      onRender: (item) => {
+        if (item.id >= 72) clock += 1;
+      },
+    });
+
+    const navigation = h.list.updateWindow(
+      () => ({ items: range(72, 102) }),
+      undefined,
+      { scroll: { target: "end", behavior: "smooth" } },
+    );
+
+    // Frame 1 stages all 30 destination rows in one slice; Frame 2 commits.
+    await vi.advanceTimersByTimeAsync(16);
+    expect(h.list.state.count).toBe(72);
+    nowSpy.mockRestore();
+    await vi.advanceTimersByTimeAsync(16);
+    expect(h.list.state.count).toBe(36);
+    expect(h.list.state.totalSize).toBe(3600);
+    expect(h.list.positionOf("m0")).toEqual({ top: 0, height: 100 });
+    expect(h.list.positionOf("m6")).toBeNull();
+    expect(h.list.positionOf("m72")).toEqual({ top: 600, height: 100 });
+
+    advanceFramesUntil(() => h.viewport.scrollTop === 3000);
+    h.settle();
+    await expect(navigation).resolves.toBe(true);
+    expect(h.list.state.count).toBe(30);
+    expect(h.list.positionOf("m0")).toBeNull();
+    expect(h.list.positionOf("m72")).toEqual({ top: 0, height: 100 });
+    h.list.dispose();
+  });
 });
 
 describe("positioned declared items", () => {
