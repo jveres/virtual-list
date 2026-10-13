@@ -49,17 +49,16 @@ export class DeclaredItems<T> {
       : data.items[position - data.leading];
   }
 
-  /** Snapshot entry at ordinal `at`; undefined in patch mode or out of range. */
-  snapshotEntry(
-    at: number,
-  ): { key: string; item: T; height: number } | undefined {
+  /** Whether this snapshot holds exactly this entry at ordinal `at`. */
+  holdsAt(at: number, key: string, item: T, height: number): boolean {
     const data = this.snapshot;
-    if (!data || at < 0 || at >= data.items.length) return undefined;
-    return {
-      key: data.index.keys[at + data.leading] as string,
-      item: data.items[at] as T,
-      height: data.heights[at] as number,
-    };
+    return (
+      data !== null &&
+      at < data.items.length &&
+      data.items[at] === item &&
+      data.heights[at] === height &&
+      data.index.keys[at + data.leading] === key
+    );
   }
 
   get(key: string): Declared<T> | undefined {
@@ -101,19 +100,6 @@ export class DeclaredItems<T> {
         data.heights[at] as number,
         data.index.keys[at + data.leading] as string,
       );
-  }
-
-  *[Symbol.iterator](): IterableIterator<[string, Declared<T>]> {
-    const data = this.snapshot;
-    if (!data) {
-      yield* this.patch;
-      return;
-    }
-    for (let at = 0; at < data.items.length; at++)
-      yield [
-        data.index.keys[at + data.leading] as string,
-        { item: data.items[at] as T, height: data.heights[at] as number },
-      ];
   }
 
   clear(): void {

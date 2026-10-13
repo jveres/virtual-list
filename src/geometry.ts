@@ -292,22 +292,16 @@ export class Geometry {
     // Capture the old legal range before measurements change it; otherwise
     // streaming growth can retain spare reserve under a bottom bounce and
     // permanently move the end farther down after each gesture.
-    viewport = {
-      ...viewport,
-      scrollTop: Math.max(
-        0,
-        Math.min(viewport.scrollTop, this.maxScrollTop(viewport.height)),
-      ),
-    };
-    const anchor = this.anchorAt(viewport);
+    const maxTop = this.maxScrollTop(viewport.height);
+    const scrollTop = Math.max(0, Math.min(viewport.scrollTop, maxTop));
+    const clamped = { scrollTop, height: viewport.height };
+    const anchor = this.anchorAt(clamped);
     return {
-      viewport: { ...viewport },
+      viewport: clamped,
       policy,
       target,
       retainViewportReserve,
-      atEnd:
-        this.maxScrollTop(viewport.height) - viewport.scrollTop <=
-        AT_END_EPSILON,
+      atEnd: maxTop - scrollTop <= AT_END_EPSILON,
       oldKeys: this.keys,
       anchor:
         anchor === null
@@ -342,17 +336,15 @@ export class Geometry {
         this.indexByKey = nextKeys.positions;
         return;
       }
-      if (this.isExtension(nextKeys.keys)) {
-        this.appendKeys(nextKeys, nextKeys.keys);
+      if (this.order.prefixes(nextKeys.keys)) {
+        this.appendKeys(nextKeys);
         return;
       }
     } else {
       if (this.order.matches(nextKeys)) return;
-      const extended = this.isExtension(nextKeys)
-        ? this.order.extend(nextKeys)
-        : null;
+      const extended = this.order.extend(nextKeys);
       if (extended !== null) {
-        this.appendKeys(extended, nextKeys);
+        this.appendKeys(extended);
         return;
       }
     }
@@ -407,27 +399,14 @@ export class Geometry {
     this.pin(pinned, pinnedInset);
   }
 
-  /** Whether `keys` strictly extends the current order by appending. */
-  private isExtension(keys: readonly string[]): boolean {
-    // A tail larger than the whole order rebuilds faster than it extends.
-    if (
-      this.keys.length === 0 ||
-      keys.length <= this.keys.length ||
-      keys.length - this.keys.length > this.keys.length
-    )
-      return false;
-    for (let index = 0; index < this.keys.length; index++)
-      if (keys[index] !== this.keys[index]) return false;
-    return true;
-  }
-
   /**
    * Land an append: learned heights carry over by typed copy, only the new
    * keys consult the estimator, and the tree grows in place. Estimates are
    * all read before any state moves, so a throwing estimator leaves the
    * previous geometry fully intact.
    */
-  private appendKeys(order: KeyIndex, keys: readonly string[]): void {
+  private appendKeys(order: KeyIndex): void {
+    const keys = order.keys;
     const oldLength = this.keys.length;
     const added = keys.length - oldLength;
     const sizes = new Float64Array(added);

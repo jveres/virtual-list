@@ -206,6 +206,14 @@ interface CommitOptions {
   instant?: boolean;
 }
 
+/** Internal reflow: keep the reading position, leave follow intent as found. */
+const reflow = (policy: CapturePolicy = "viewport"): CommitOptions => ({
+  policy,
+  keepFollow: true,
+  instant: true,
+  retainViewportReserve: false,
+});
+
 type Task = { run: () => void; discard?: () => void };
 
 const EMPTY_STATE: VirtualListState = {
@@ -358,21 +366,20 @@ export function createVirtualList<T>(
   /** A resize during a phase commits at the settle with this stance (I5). */
   let resizeHeld: "pin" | "viewport" | null = null;
 
+  /** The exact height memo for the open pass. */
+  let heightMemo: number | null = null;
   /**
    * The viewport's exact inner height. `clientHeight` rounds, and a rounded-up
    * height puts the computed end short of the engine's fractional maximum:
    * landing there leaves the content a device pixel off the bottom. The rect
    * is exact; it matches the inner height within rounding only without
    * borders, a scrollbar, or a scaling transform, so otherwise keep rounding.
+   *
+   * One transaction (I4) sees one viewport height: re-reading it after the
+   * commit's DOM writes would force a synchronous layout per read. Outside a
+   * pass — and at the next pass, which a scroll event can start before the
+   * resize delivery — the height is always read fresh.
    */
-  /**
-   * The exact height memo for the open pass. One transaction (I4) sees one
-   * viewport height, and re-reading it after the commit's DOM writes would
-   * force a synchronous layout per read. Outside a pass — and at the next
-   * pass, which a scroll event can start before the resize delivery — the
-   * height is always read fresh.
-   */
-  let heightMemo: number | null = null;
   function clientHeight(): number {
     if (heightMemo !== null && scope !== null) return heightMemo;
     const rounded = viewport.clientHeight;
@@ -803,13 +810,7 @@ export function createVirtualList<T>(
     clearTimeout(staleTimer);
     staleTimer = 0;
     flushStale();
-    if (dirtyRows.size > 0 && idle())
-      commit(null, {
-        policy: "viewport",
-        keepFollow: true,
-        instant: true,
-        retainViewportReserve: false,
-      });
+    if (dirtyRows.size > 0 && idle()) commit(null, reflow());
   }
 
   /** Drain once the width has been quiet; a newer change restarts the wait. */
@@ -846,12 +847,7 @@ export function createVirtualList<T>(
           markDirty(row);
           if (++count === WIDTH_DRAIN_ROWS) break;
         }
-        commit(null, {
-          policy: "viewport",
-          keepFollow: true,
-          instant: true,
-          retainViewportReserve: false,
-        });
+        commit(null, reflow());
       });
     } finally {
       // A host callback can dispose, drain, or start a newer width's wait.
@@ -866,12 +862,7 @@ export function createVirtualList<T>(
     staleMounted = false;
     if (dirtyRows.size === 0) return false;
     if (!idle()) return liveCommit();
-    commit(null, {
-      policy: "viewport",
-      keepFollow: true,
-      instant: true,
-      retainViewportReserve: false,
-    });
+    commit(null, reflow());
     return true;
   }
 
@@ -895,9 +886,13 @@ export function createVirtualList<T>(
     row.dirty = false;
     dirtyRows.delete(row);
     staleRows.delete(row);
-    row.height = height;
-    if (row.place === "mounted" || row.slot === row.element)
+    // A shown slot always carries `row.height`: an unchanged height writes nothing.
+    if (
+      height !== row.height &&
+      (row.place === "mounted" || row.slot === row.element)
+    )
       row.slot.style.height = `${height}px`;
+    row.height = height;
     geometry.measure(row.key, height);
   }
 
@@ -1044,12 +1039,7 @@ export function createVirtualList<T>(
           ? glideToPin
           : Math.abs(lastObservedTop - pinTop) <= AT_EDGE_PX);
       if (idle()) {
-        commit(null, {
-          policy: stoodOnPin ? "pin" : "viewport",
-          retainViewportReserve: false,
-          keepFollow: true,
-          instant: true,
-        });
+        commit(null, reflow(stoodOnPin ? "pin" : "viewport"));
         if (!disposed) lastObservedTop = viewport.scrollTop;
       } else {
         if (resizeHeld !== "pin") resizeHeld = stoodOnPin ? "pin" : "viewport";
@@ -1094,13 +1084,7 @@ export function createVirtualList<T>(
       return;
     pass(() => {
       invalidateHeights();
-      if (idle())
-        commit(null, {
-          policy: "viewport",
-          keepFollow: true,
-          instant: true,
-          retainViewportReserve: false,
-        });
+      if (idle()) commit(null, reflow());
       else if (!liveCommit()) publish();
     });
   }
@@ -1414,15 +1398,12 @@ export function createVirtualList<T>(
     jobRows?: Map<string, Row<T>>,
   ): Pending<T> | null {
     const previous = pending;
-    const { keys: itemKeys, heights } = indexItems(items, true);
+    const { keys, heights } = indexItems(items, true);
     const start = edgeSlots.start;
     const end = edgeSlots.end;
     const leading = start ? 1 : 0;
-    const keys = [
-      ...(start ? [slotKey("start", start.key)] : []),
-      ...itemKeys,
-      ...(end ? [slotKey("end", end.key)] : []),
-    ];
+    if (start) keys.unshift(slotKey("start", start.key));
+    if (end) keys.push(slotKey("end", end.key));
     const p = newPending(keys, requested, previous);
     p.declared = heights
       ? new DeclaredItems(p.index, leading, items, heights)
@@ -1456,10 +1437,6 @@ export function createVirtualList<T>(
     return ok ? p : null;
   }
 
-  function sameKeys(keys: readonly string[]): boolean {
-    return geometry.keyIndex.matches(keys);
-  }
-
   /**
    * Whether landing `p` (with every dirty measurement) changes nothing above
    * the viewport's anchor row: then it needs no scroll write (I1 by
@@ -1477,12 +1454,16 @@ export function createVirtualList<T>(
       for (const key of p.staged.keys()) {
         if (geometry.indexOf(key) < anchorIndex) return false;
       }
-      for (const [key, entry] of p.declared ?? []) {
-        const index = geometry.indexOf(key);
-        if (index < anchorIndex && geometry.heightOf(key) !== entry.height)
-          return false;
-      }
-      return true;
+      let shifted = false;
+      p.declared?.forEach((_, height, key) => {
+        if (
+          !shifted &&
+          geometry.indexOf(key) < anchorIndex &&
+          geometry.heightOf(key) !== height
+        )
+          shifted = true;
+      });
+      return !shifted;
     }
     for (let index = 0; index < anchorIndex; index++) {
       const key = geometry.keyAt(index);
@@ -1520,7 +1501,7 @@ export function createVirtualList<T>(
       p.declared === null &&
       (!pinPolicy ||
         (p.pinKey === geometry.pinned && p.pinOffset === committedPinOffset)) &&
-      sameKeys(p.keys);
+      geometry.keyIndex.matches(p.keys);
     if (noop) {
       // In-place renders wait as dirty rows; nothing structural is held.
       pending = null;
@@ -1609,7 +1590,7 @@ export function createVirtualList<T>(
     );
     // Adopt the staged rows; a key removed or replaced dies after it left
     // the map, so a host disposing from onDestroy cannot destroy it twice.
-    const keysChanged = p !== null && !sameKeys(p.keys);
+    const keysChanged = p !== null && !geometry.keyIndex.matches(p.keys);
     const doomed: Row<T>[] = [];
     if (p) {
       if (p.deferred.size > 0) renderDeferred(p);
@@ -1656,19 +1637,9 @@ export function createVirtualList<T>(
           // and height as the previous snapshot) already holds its height in
           // the geometry and its row: skip its per-key lookups entirely.
           const previousDeclared = p.patch ? null : declaredItems;
-          let ordinal = 0;
+          let at = 0;
           p.declared.forEach((item, height, key) => {
-            const at = ordinal++;
-            if (previousDeclared) {
-              const before = previousDeclared.snapshotEntry(at);
-              if (
-                before !== undefined &&
-                before.key === key &&
-                before.item === item &&
-                before.height === height
-              )
-                return;
-            }
+            if (previousDeclared?.holdsAt(at++, key, item, height)) return;
             const row = rows.get(key);
             if (row && row.item === item) commitHeight(row, height);
             else if (declaredItems.heightOf(key) !== height)
@@ -2234,12 +2205,7 @@ export function createVirtualList<T>(
         commit(null, { policy: "pin", keepFollow: true, instant: true });
       else commit(null, { policy: explicit });
     } else if (resizeHeld !== null) {
-      commit(null, {
-        policy: resizeHeld,
-        keepFollow: true,
-        instant: true,
-        retainViewportReserve: false,
-      });
+      commit(null, reflow(resizeHeld));
     } else if (heldRetirements) reconcileAndPublish();
     else publish();
     resizeHeld = null;

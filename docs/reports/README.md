@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 13 runtime hot-path review
+
+The [hot-path review](runtime-hot-path-review-2026-10-13.md) profiles streaming
+commits, scroll events, and declared snapshots. Layout at required read points
+dominates the first two, and no redundant read remains. Allocation-free
+declared scans make declared `setItems` 10% faster at rest and 15% faster
+during a scroll phase, and duplicated kernel and option code is removed.
+
 ## October 2 clean code audit
 
 The [clean code audit](clean-code-audit-2026-10-02.md) closes four medium-priority

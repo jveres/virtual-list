@@ -44,7 +44,20 @@ describe("declared snapshot ownership", () => {
       expect(pending.heightOf("b")).toBe(70.5);
       expect(committed.has("start-slot")).toBe(false);
       expect(committed.has("end-slot")).toBe(false);
-      expect([...pending].map(([key]) => key)).toEqual(["a", "b"]);
+      const keys: string[] = [];
+      pending.forEach((_, __, key) => {
+        keys.push(key);
+      });
+      expect(keys).toEqual(["a", "b"]);
+      expect(committed.holdsAt(1, "b", original[1] as { id: string }, 50)).toBe(
+        true,
+      );
+      expect(pending.holdsAt(1, "b", original[1] as { id: string }, 50)).toBe(
+        false,
+      );
+      expect(committed.holdsAt(2, "b", original[1] as { id: string }, 50)).toBe(
+        false,
+      );
     },
   );
 });

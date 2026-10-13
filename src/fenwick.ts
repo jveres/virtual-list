@@ -3,8 +3,8 @@
  * offset engine. `prefix(i)` is the content-space top of index i, `total()`
  * the full item height, `indexAt(offset)` maps a pixel offset back to the row
  * that owns it, `lowerBound(offset)` finds the exclusive item count at a
- * boundary, and `add` applies a measured height delta. The kernel rebuilds the
- * tree on every key change, so there is no append path.
+ * boundary, `add` applies a measured height delta, and `append` grows the tree
+ * for a pure append; any other key change rebuilds it.
  */
 
 export class FenwickTree {
@@ -42,10 +42,9 @@ export class FenwickTree {
   }
 
   /**
-   * Extend the tree with new trailing values in O(added · log size). Existing
-   * nodes cover ranges that end at or before the old size, so they stay
-   * valid; each new node is the sum of its range, read from the old tree's
-   * prefixes plus the new values' own prefix sums.
+   * Extend the tree with new trailing values in O(added + log size): the
+   * constructor's linear fold, continued. Old nodes are complete; those whose
+   * parent is new lie on the old size's prefix path, and fold in first.
    */
   append(values: Float64Array): void {
     for (let i = 0; i < values.length; i++) {
@@ -54,32 +53,23 @@ export class FenwickTree {
     }
     if (values.length === 0) return;
     const oldSize = this.logicalSize;
-    const newSize = oldSize + values.length;
-    const oldTree = this.tree;
-    const oldPrefix = (count: number): number => {
-      let sum = 0;
-      for (let i = Math.min(count, oldSize); i > 0; i -= i & -i)
-        sum += oldTree[i] ?? 0;
-      return sum;
-    };
-    const addedPrefix = new Float64Array(values.length + 1);
-    for (let i = 0; i < values.length; i++)
-      addedPrefix[i + 1] = (addedPrefix[i] as number) + (values[i] as number);
-    const tree = new Float64Array(newSize + 1);
-    tree.set(oldTree);
-    for (let index = oldSize + 1; index <= newSize; index++) {
-      const rangeStart = index - (index & -index);
-      const oldPart =
-        oldPrefix(Math.min(index, oldSize)) - oldPrefix(rangeStart);
-      const newPart =
-        (addedPrefix[index - oldSize] as number) -
-        (addedPrefix[Math.max(0, rangeStart - oldSize)] as number);
-      tree[index] = oldPart + newPart;
+    const size = oldSize + values.length;
+    const tree = new Float64Array(size + 1);
+    tree.set(this.tree);
+    for (let i = oldSize; i > 0; i -= i & -i) {
+      const parent = i + (i & -i);
+      if (parent <= size) tree[parent] = (tree[parent] ?? 0) + (tree[i] ?? 0);
+    }
+    for (let i = oldSize + 1; i <= size; i++) {
+      const value = values[i - oldSize - 1] as number;
+      tree[i] = (tree[i] ?? 0) + value;
+      this.totalValue += value;
+      const parent = i + (i & -i);
+      if (parent <= size) tree[parent] = (tree[parent] ?? 0) + (tree[i] ?? 0);
     }
     this.tree = tree;
-    this.logicalSize = newSize;
-    this.totalValue += addedPrefix[values.length] as number;
-    while (this.searchBit << 1 <= newSize) this.searchBit <<= 1;
+    this.logicalSize = size;
+    while (this.searchBit << 1 <= size) this.searchBit <<= 1;
   }
 
   add(index: number, delta: number): void {
