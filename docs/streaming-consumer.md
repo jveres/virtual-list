@@ -177,61 +177,29 @@ window update or `setItems` APIs.
 of your archive. It does not fetch a missing destination. If the latest page
 is already retained, call `scrollTo("end", { behavior: "smooth" })` directly.
 
-For an evicted latest page, the application replaces the retained window
-before it requests movement. A window is the contiguous group of source
-items currently supplied to the list. Use this sequence from a user action:
+For an evicted latest page, select or fetch a bounded source window that
+includes the archive's latest item. If fetching is asynchronous, discard
+results superseded by another navigation or conversation change. Dispose the
+old pager and clear its application reference before requesting navigation so
+runtime callbacks cannot reuse it.
 
-1. Select or fetch a bounded window that includes the archive's latest item.
-   If fetching is asynchronous, discard results superseded by another
-   navigation or conversation change.
-2. Dispose the old pager before replacing its items.
-   Clear its application reference so runtime callbacks cannot reuse it.
-3. Submit the projected rows through `setItems` with `interrupt: true` and
-   an explicit starting `anchor: { key: firstMessageKey, offset: 0 }`.
-   Use the first message's runtime key in the replacement window, not a
-   removed key or a separator key.
-4. Create the replacement pager from the same source items and their
-   `start` and `end` continuations.
-   Keep its projection, live-update adapter, and trimming policy consistent.
-5. Request `scrollTo("end", { behavior: "smooth" })` after replacement.
-   Handle rejected promises and treat `false` as an interrupted or incomplete
-   command, not permission to force another scroll.
+To restore an evicted tail while preserving the current view, use
+`updateWindow(updater, signal, { scroll: { target: "end" } })`. Return the
+destination rows and recreate the pager in `onCommit`. The runtime prepares
+the destination while retaining the current viewport, scrolls smoothly from
+that position, and releases outgoing rows after landing. Don't issue a second
+`scrollTo` command. Fresh input cancels pending preparation or motion; see the
+[runtime boundary](bounded-paging.md#runtime-boundary) for retained rows after
+interruption.
 
-The starting anchor determines the initial view, not the final destination.
-An `"end"` snapshot anchor reaches the destination before animation starts.
-A `"viewport"` anchor also fails to guarantee travel when the windows have
-no shared rows. The old offset can exceed the replacement's height and
-clamp directly to its end. Use a retained reading anchor instead when your
-product requires continuity and that anchor survives the replacement.
-
-This sequence applies to an event handler outside runtime callbacks.
-`setItems` returns `void` and can defer work during a runtime transaction.
-For a replacement that needs a commit result, use
-`updateWindow(updater, signal, { interrupt: true })` and await `true` before
-navigating. Recreate the pager from the committed source in `onCommit`.
-The [runtime boundary](bounded-paging.md#runtime-boundary) defines cancellation
-and errors for that path.
-
-To respond immediately when restoring an evicted tail, first request native
-smooth scrolling to the current window's end. Prepare the replacement with
-`updateWindow(updater, signal, { interrupt: "commit" })`. It stages rows during
-that motion, then takes over and commits the replacement when ready. After a
-successful commit, request the new end. Fresh input cancels the pending
-replacement. A current window already at its end has no approach distance;
-show loading feedback while preparation finishes.
-
-The animation crosses only the restored window, not every evicted page in
-the archive. The window replacement can change the visible content before
-the animation starts. If its content fits within the viewport, no scroll
-distance exists. With `followBehavior: "smooth"`, a successful end landing
-rearms following. Page restoration alone does not rearm it.
-
-Source selection and the starting view remain application policy. The runtime
-owns measurement, clamping, animation, interruption, and following. Do not
-add viewport scroll writes or a second animation loop for this sequence.
+The animation crosses the retained and restored windows, without loading every
+evicted page between them. With `followBehavior: "smooth"`, a successful end
+landing rearms following. Source selection remains application policy. The
+runtime owns the starting view, measurement, clamping, animation, interruption,
+and following. Don't add viewport scroll writes or a second animation loop.
 The [paged-history regression](../scripts/regressions/chat-scrolling/chat-paged-history-regression.mjs)
 covers two top-page loads followed by smooth bottom navigation and restoration
-from older history. The fix is recorded in commit `6fc4434`.
+from older history, including continuity of the reading row at animation start.
 
 ## Sticky headers and replacements
 

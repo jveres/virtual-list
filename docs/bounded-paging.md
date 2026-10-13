@@ -46,6 +46,23 @@ preparation. The updater runs before takeover, so this mode is for a deliberate
 replacement from authoritative source data; cancel any competing page requests
 first. A structural change or width change during preparation resolves `false`.
 
+To scroll into a replacement edge window without losing the current view, pass
+`{ scroll: { target: "end", behavior: "smooth" } }` as the third argument.
+Use `"start"` for an earlier window. The runtime prepares the destination,
+retains outgoing rows on the opposite side, preserves the reading position,
+and starts one native scroll. After landing, it removes outgoing rows while
+preserving the destination's position. This option overrides `anchor` and
+defaults to `interrupt: "commit"`. It supports measured and declared-height
+ordered lists, but not explicitly positioned layouts.
+
+With `scroll`, `onCommit` runs when the combined window commits, before motion.
+The promise resolves `true` after landing and releasing outgoing rows. Input,
+an aborted signal, or a competing replacement can resolve it `false` after
+commit. Interrupted navigation retains outgoing rows until another window
+update so cancellation doesn't remove content the reader still sees. During
+that interval, runtime item counts and update contexts include those rows.
+Source paging still belongs to the host; cancel competing requests first.
+
 The updater must remain synchronous. Fetch before scheduling it. Don't mutate
 the context arrays or synchronously dispatch input from the updater.
 

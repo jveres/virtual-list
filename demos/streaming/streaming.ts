@@ -3597,9 +3597,8 @@ async function scrollToLatest(): Promise<boolean> {
     setBottomLoading(true);
     syncMetrics();
     try {
-      // Prepare the final destination before starting native motion. An
-      // approach through the old window would be cancelled at replacement,
-      // resetting the browser's easing halfway through this navigation.
+      // The runtime retains the reading window while preparing and scrolling
+      // to this destination, then releases the outgoing rows after landing.
       const committed = await list.updateWindow(
         () => {
           if (controller.signal.aborted || epoch !== conversationEpoch)
@@ -3609,14 +3608,11 @@ async function scrollToLatest(): Promise<boolean> {
             transcript.length,
           );
           const snapshot = transcript.slice(start, end);
-          const first = snapshot[0];
-          if (!first) return null;
+          if (snapshot.length === 0) return null;
           const topSlot =
             edgeLoaderMode === "slot" && (start > 0 || topBoundaryLoadSeen);
           return {
             items: rowsForRuntime(snapshot),
-            // Keep room for the native end animation after restoration.
-            anchor: { key: String(first.id), offset: 0 },
             edgeSlots: { start: topSlot ? edgeSlotSpec : null, end: null },
             onCommit: () => {
               loadedStart = start;
@@ -3640,7 +3636,7 @@ async function scrollToLatest(): Promise<boolean> {
           };
         },
         controller.signal,
-        { interrupt: "commit" },
+        { interrupt: "commit", scroll: { target: "end", behavior: "smooth" } },
       );
       if (
         !committed ||
@@ -3649,6 +3645,7 @@ async function scrollToLatest(): Promise<boolean> {
         virtualList !== list
       )
         return false;
+      return true;
     } finally {
       if (windowNavigation === controller) {
         windowNavigation = null;

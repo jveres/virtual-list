@@ -140,6 +140,14 @@ export interface VirtualList<T> {
       /** `commit` keeps existing motion during preparation, then takes over. */
       interrupt?: boolean | "commit";
       protectPin?: boolean;
+      /**
+       * Prepare an edge destination without replacing the visible window,
+       * then scroll there. Outgoing rows stay before/after the new window
+       * until landing. Interruption retains them for the next window update.
+       * Overrides anchor; resolves after navigation, onCommit runs before it.
+       * Not supported for explicitly positioned layouts.
+       */
+      scroll?: { target: "start" | "end"; behavior?: "auto" | "smooth" };
     },
   ): Promise<boolean>;
   scrollTo(target: ScrollTarget, options?: ScrollOptions): Promise<boolean>;

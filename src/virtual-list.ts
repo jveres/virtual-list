@@ -2092,6 +2092,7 @@ export function createVirtualList<T>(
   let followGlide = false;
   let glideToPin = false;
   let inputEpoch = 0;
+  let commandEpoch = 0;
   /** A landed command resolves at its settle, against final geometry. */
   let parked: {
     done: (completed: boolean) => void;
@@ -2261,6 +2262,7 @@ export function createVirtualList<T>(
   }
 
   function takeover(): void {
+    commandEpoch += 1;
     follow.stop();
     settleParked(false);
     const wasGliding = glide !== null;
@@ -2415,8 +2417,9 @@ export function createVirtualList<T>(
   function updateWindow(
     update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
     signal?: AbortSignal,
-    o: { interrupt?: boolean | "commit"; protectPin?: boolean } = {},
+    o: NonNullable<Parameters<VirtualList<T>["updateWindow"]>[2]> = {},
   ): Promise<boolean> {
+    if (o.scroll) return navigateWindow(update, signal, o);
     const interrupt = o.interrupt === true || o.interrupt === "commit";
     const interruptAtCommit = o.interrupt === "commit";
     const protectPin = o.protectPin !== false;
@@ -2833,6 +2836,89 @@ export function createVirtualList<T>(
       )
         schedule();
     });
+  }
+
+  async function navigateWindow(
+    update: (context: WindowUpdateContext<T>) => WindowUpdate<T> | null,
+    signal: AbortSignal | undefined,
+    o: NonNullable<Parameters<VirtualList<T>["updateWindow"]>[2]>,
+  ): Promise<boolean> {
+    if (options.position)
+      throw new TypeError("window navigation requires ordered rows");
+    const { target, behavior = "smooth" } = o.scroll!;
+    let destinationKeys = new Set<string>();
+    let committedStructure = -1;
+    let committedInput = -1;
+    let committedCommand = -1;
+    const committed = await updateWindow(
+      (context) => {
+        const next = update(context);
+        if (!next) return null;
+        destinationKeys = new Set(next.items.map(keyOf));
+        const outgoing = context.items.filter(
+          (item) => !destinationKeys.has(keyOf(item)),
+        );
+        return {
+          ...next,
+          items:
+            target === "end"
+              ? [...outgoing, ...next.items]
+              : [...next.items, ...outgoing],
+          anchor: "viewport",
+          onCommit: () => {
+            committedStructure = structure;
+            committedInput = inputEpoch;
+            committedCommand = commandEpoch;
+            next.onCommit?.();
+          },
+        };
+      },
+      signal,
+      { ...o, scroll: undefined, interrupt: o.interrupt ?? "commit" },
+    );
+    if (
+      !committed ||
+      disposed ||
+      signal?.aborted ||
+      structure !== committedStructure ||
+      inputEpoch !== committedInput ||
+      commandEpoch !== committedCommand
+    )
+      return false;
+    let ownedCommand = commandEpoch;
+    const abort = (): void => {
+      if (!disposed && commandEpoch === ownedCommand) pass(takeover);
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    try {
+      const navigation = scrollTo(target, { behavior });
+      ownedCommand = commandEpoch;
+      const landed = await navigation;
+      // A newer snapshot owns the list. Never restore stale destination data
+      // over it, or remove the reader's rows after an interrupted glide.
+      if (
+        !landed ||
+        disposed ||
+        signal?.aborted ||
+        structure !== committedStructure ||
+        inputEpoch !== committedInput ||
+        commandEpoch !== ownedCommand
+      )
+        return false;
+      // Read current objects so tokens received during the glide survive.
+      pass(() => {
+        const snapshot = lastItems.filter((item) =>
+          destinationKeys.has(keyOf(item)),
+        );
+        const p = stageSnapshot(snapshot, "viewport");
+        if (!p || disposed) return;
+        adoptItems(snapshot, p.index);
+        commit(p, { keepFollow: true });
+      });
+      return true;
+    } finally {
+      signal?.removeEventListener("abort", abort);
+    }
   }
 
   // --- Commands -------------------------------------------------------------

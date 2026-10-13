@@ -13,6 +13,16 @@ const base = process.env.BROWSER_MATRIX_URL ?? "http://localhost:5173";
 async function smoothBottom(page) {
   const result = await page.evaluate(async () => {
     const viewport = document.querySelector("#viewport");
+    const bounds = viewport.getBoundingClientRect();
+    const readingRow = [...viewport.querySelectorAll("article.message")].find(
+      (row) => {
+        const rect = row.getBoundingClientRect();
+        return rect.bottom > bounds.top + 60 && rect.top < bounds.bottom;
+      },
+    );
+    const readingTop = readingRow?.getBoundingClientRect().top;
+    let readingTopAtStart;
+    let readingConnected;
     let lastTop = viewport.scrollTop;
     let initial = null;
     let maximum = null;
@@ -32,6 +42,8 @@ async function smoothBottom(page) {
         initial = viewport.scrollTop;
         maximum = viewport.scrollHeight - viewport.clientHeight;
         lastTop = initial;
+        readingConnected = readingRow?.isConnected;
+        readingTopAtStart = readingRow?.getBoundingClientRect().top;
       }
       if (options.behavior === "smooth")
         legs.push({ from: viewport.scrollTop, to: options.top, positions: [] });
@@ -61,6 +73,9 @@ async function smoothBottom(page) {
         tailRenderedSynchronously,
         initialWindow,
         firstRequestWindow,
+        readingTop,
+        readingTopAtStart,
+        readingConnected,
         final: viewport.scrollTop,
         finalMaximum: viewport.scrollHeight - viewport.clientHeight,
       };
@@ -76,6 +91,11 @@ async function smoothBottom(page) {
     "restoration yields before rendering the evicted tail",
   );
   assert.notEqual(result.initial, null, "restoration starts native animation");
+  assert.equal(result.readingConnected, true, "reading row survives staging");
+  assert.ok(
+    Math.abs(result.readingTopAtStart - result.readingTop) <= 1,
+    "the glide starts from the original reading position",
+  );
   assert.notEqual(
     result.firstRequestWindow,
     result.initialWindow,
