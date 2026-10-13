@@ -104,7 +104,7 @@ The follow-up also resolves the two conditional web-research alternatives.
 | Alternative | Follow-up decision |
 | --- | --- |
 | [Scroll-seek placeholders](virtualization-web-research-2026-10-01.md#3-use-cheaper-content-during-fast-travel-if-acceptable) | Closed by the [bottleneck review](runtime-exploration-closeout-2026-10-02.md#why-placeholders-do-not-earn-a-patch). The measured workloads do not justify replacing readable content and adding restoration work. No placeholder speedup is claimed. |
-| [Estimated geometry for much larger histories](virtualization-web-research-2026-10-01.md#5-estimate-geometry-for-much-larger-loaded-histories) | The [TanStack reference](history-preparation-2026-10-02.md) measures large deferred-work savings, accurate targets, and restored width anchors, but provisional total geometry. It remains development-only tooling. The exact baseline exposes a separate preparation-cap improvement, retained without estimates. |
+| [Estimated geometry for much larger histories](virtualization-web-research-2026-10-01.md#5-estimate-geometry-for-much-larger-loaded-histories) | The [TanStack reference](history-preparation-2026-10-02.md) measures large deferred-work savings, accurate targets, and restored width anchors, but provisional total geometry. The development-only comparison tooling was removed on October 13, 2026. The exact baseline exposes a separate preparation-cap improvement, retained without estimates. |
 
 Cross-item pooling, smaller resize batches, pager allocation substitutions, and
 the measured transient-allocation prototype already have negative comparisons.

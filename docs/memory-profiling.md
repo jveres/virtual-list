@@ -428,30 +428,6 @@ and CPU together. The `markup` and `dom` phases are inside `prepare`; do not
 sum them with the parent phase. Correctness checks cover selection after width
 changes, complete markup, node identity, geometry, cancellation, and disposal.
 
-## Compare exact and estimated history preparation
-
-The history fixture compares exact `updateWindow` preparation against a pinned
-TanStack reference with provisional geometry. Both use the same deterministic
-content, renderer, dimensions, zero overscan, and row retention by key. This
-measures loaded-history preparation after module initialization, not demo boot.
-
-```sh
-node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=history --variant=plain --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/history-exact
-node scripts/firefox-profile/runtime-retention.mjs --workload=rendering --scenario=history --variant=estimated --cycles=4 --diagnostic --display=LU28R55 --output=browser-artifacts/history-estimated
-pnpm run test:regression -- --group=runtime --match=estimated-history
-```
-
-Compare completion, sampled CPU, frame gaps, exact total-height error, target
-accuracy, reading anchors, and measured-row counts together. The reference's
-width-change adapter explicitly restores the reading anchor. Its size formula
-is a fixture estimate, never a declared runtime height. A full-layout oracle
-runs after timing, so whole-run peaks include validation allocations.
-
-Current `plain` includes the retained at-rest preparation change. Restore the
-baseline patch from the [October 2 report](reports/history-preparation-2026-10-02.md)
-to compare the old eight-row cap. The reference dependency is development-only;
-its pinned version and integrity are recorded in the lockfile.
-
 ## Preserve reproducibility
 
 Each run keeps `summary.json`, `reproduce.json`, and `reproduce.patch` under ignored

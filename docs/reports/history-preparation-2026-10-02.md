@@ -1,5 +1,9 @@
 # Large-history preparation, October 2, 2026
 
+The TanStack comparison fixture, regression, dependency, and profiler options
+were removed on October 13, 2026. This report preserves the historical findings;
+reproducing them requires the recorded revision and patches.
+
 Keep a larger preparation slice while the list is at rest. Against v0.4.15's
 eight-row cap, preparing 5,000 measured rows falls from 10.46 seconds to
 2.66–2.67 seconds, with 64–66% less sampled preparation CPU. Geometry stays
@@ -10,8 +14,8 @@ worst pause or physical presentation.
 The separate TanStack reference confirms that estimated geometry can defer
 almost all initial content work. Its initial extent is 500 px too large in
 this fixture, so that saving does not preserve the current exact-geometry
-contract. Keep the reference as development-only tooling, without adding an
-estimated mode to the production runtime.
+contract. The reference was development-only tooling; no estimated mode was
+added to the production runtime.
 
 ## Exact preparation change
 
@@ -100,7 +104,7 @@ estimates need not populate that cache. Do not compare those two counters.
 describes incremental measured extents and estimated unvisited rows. It also
 describes measurement snapshots and scroll corrections. Those mechanisms are
 useful when a host accepts provisional geometry. They cannot silently replace
-this repository's measured/declared height promise. The pinned dependency is
+this repository's measured/declared height promise. The pinned dependency was
 used only by the benchmark fixture and regression, never by the runtime or
 demos. Documentation and package metadata were checked on October 2, 2026.
 
@@ -138,9 +142,8 @@ Compact evidence, source patches, commands, and geometry remain under:
 - `browser-artifacts/history-exact-rest32-repeat/run-C3U9PC/`
 
 All captures complete with empty cleanup-error arrays and retain only summary,
-reproduction metadata, and source patch files. The
-[history workflow](../memory-profiling.md#compare-exact-and-estimated-history-preparation)
-explains how to restore the old baseline and run each control.
+reproduction metadata, and source patch files. The recorded commands apply to
+the historical source, before the comparison tooling was removed.
 
 Static checks, a direct strict check of the edited unit test, all 5,656 unit
 tests, 195 portable profiler checks, and both isolated consumer builds pass.

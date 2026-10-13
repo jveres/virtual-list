@@ -59,8 +59,8 @@ The [large-history comparison](history-preparation-2026-10-02.md) retains a
 larger preparation slice at rest: 5,000 exact rows complete in 2.66–2.67 seconds
 instead of 10.46 seconds, using 64–66% less sampled preparation CPU. Active
 scrolling keeps the original limit. A TanStack reference confirms large savings
-from deferring unvisited rows, but retains estimated geometry and remains a
-benchmark control rather than a production mode.
+from deferring unvisited rows with estimated geometry. That comparison tooling
+was removed on October 13, 2026; the report preserves its historical findings.
 
 ## October 2 large table preparation
 
