@@ -130,8 +130,11 @@ The runtime lives under `src/`:
   settle (or mid-gesture under native scroll anchoring, away from the scroll
   edges). It reconciles the mounted window on every scroll and runs
   commands.
-- `geometry.ts` + `fenwick.ts` — the pure keyed geometry kernel: capture →
-  mutate → resolve transactions, anchor policies, the pin-to-top reserve.
+- `geometry.ts` + `fenwick.ts` + `key-index.ts` — the pure keyed geometry
+  kernel: capture → mutate → resolve transactions, shared immutable key orders,
+  anchor policies, and the pin-to-top reserve.
+- `declared-items.ts` — snapshot and patch storage for declared-height items,
+  sharing the key index and supporting allocation-free prefix and diff scans.
 - `positioned-geometry.ts` — geometry for host-positioned (masonry) layouts
   with declared placement.
 - `follow.ts` — chat follow intent, reply-start limits, and catch-up policy
@@ -231,7 +234,7 @@ Explicit bottom navigation still follows the end for the current reply.
   `"native"` forces the browser, and `"runtime"` forces settle-gated runtime
   scroll writes. Positioned (masonry) layouts always use the runtime. The
   canvas records the chosen mode in its `data-anchoring` attribute.
-  WebKit touch scrolling, including momentum, defers changes above the reader
+  WebKit gestures, including momentum, defer changes above the reader
   until settle even in native mode, so the runtime can preserve the reading
   position if the browser does not apply its anchor adjustment.
 - `updateItem(key, item, { anchor? })` replaces one item's data. The key must

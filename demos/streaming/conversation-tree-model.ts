@@ -14,7 +14,7 @@ export interface ConversationNode {
   selectedChildIndex: number;
 }
 
-export interface TreeEntry {
+interface TreeEntry {
   id: number;
   parentId: number;
   row: number;

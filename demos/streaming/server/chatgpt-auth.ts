@@ -18,7 +18,7 @@ export interface CredentialStore {
   save(credentials: ChatGPTCredentials | null): Promise<void>;
 }
 
-function record(value: unknown): value is Record<string, unknown> {
+export function record(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -80,7 +80,7 @@ interface PendingLogin {
   expires: number;
 }
 
-export interface ChatGPTAuthStatus {
+interface ChatGPTAuthStatus {
   authenticated: boolean;
   login?: {
     userCode: string;

@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream } from "node:stream/web";
-import type { ChatGPTAuth } from "./chatgpt-auth.js";
+import { type ChatGPTAuth, record } from "./chatgpt-auth.js";
 
 const BACKEND = "https://chatgpt.com/backend-api/codex";
 // Older compatibility versions can return only hidden catalog entries.
@@ -17,10 +17,6 @@ class HTTPError extends Error {
   ) {
     super(message);
   }
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function authorized(request: IncomingMessage): boolean {

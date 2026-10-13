@@ -47,6 +47,7 @@ import {
   bindThemeButtons,
   downloadBlob,
   mustGet,
+  readStoredObject,
   refreshTheme,
   setHiddenIfChanged,
   setTextIfChanged,
@@ -255,20 +256,7 @@ interface ChatOptions {
   trail: TrailMode;
 }
 function loadChatOptions(): ChatOptions {
-  const stored: { [K in keyof ChatOptions]?: unknown } = (() => {
-    try {
-      const parsed: unknown = JSON.parse(
-        localStorage.getItem(OPTIONS_KEY) ?? "{}",
-      );
-      return parsed !== null &&
-        typeof parsed === "object" &&
-        !Array.isArray(parsed)
-        ? parsed
-        : {};
-    } catch {
-      return {};
-    }
-  })();
+  const stored = readStoredObject(OPTIONS_KEY);
   const trail = demoParams.get("trail") ?? stored.trail;
   return {
     edge: parseEdge(stored.edge),
@@ -724,17 +712,23 @@ function treeSnapshot<M extends StoredTurn>(
   };
 }
 
-function activeLeafId(): number {
-  let id = TREE_ROOT_ID;
+function walkActivePath(visit: (id: number, node: TreeNode) => boolean): void {
   let node = tree.get(TREE_ROOT_ID);
   while (node) {
     const childId = selectedChildId(node);
     if (childId === undefined) break;
     const child = tree.get(childId);
-    if (!child) break;
-    id = childId;
+    if (!child || !visit(childId, child)) break;
     node = child;
   }
+}
+
+function activeLeafId(): number {
+  let id = TREE_ROOT_ID;
+  walkActivePath((childId) => {
+    id = childId;
+    return true;
+  });
   return id;
 }
 
@@ -743,15 +737,11 @@ function activeLeafId(): number {
 function rebuildActiveTranscript(): void {
   refreshConversationTree();
   transcript.length = 0;
-  let node = tree.get(TREE_ROOT_ID);
-  while (node) {
-    const childId = selectedChildId(node);
-    if (childId === undefined) break;
-    const child = tree.get(childId);
-    if (!child?.message) break;
+  walkActivePath((_id, child) => {
+    if (!child.message) return false;
     transcript.push(child.message);
-    node = child;
-  }
+    return true;
+  });
 }
 
 // Version metadata for the navigator: a message has versions when its parent

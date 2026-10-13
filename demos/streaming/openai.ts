@@ -1,6 +1,6 @@
 import { EMBEDDED_IMAGE_PATTERN as GENERATED_IMAGE_PATTERN } from "../../integrations/index.js";
 import type { ChatToolCall } from "../shared/chat-ui.js";
-import { mustGet } from "../shared/utils.js";
+import { isRecord, mustGet } from "../shared/utils.js";
 import {
   attachmentInput,
   type ChatAttachment,
@@ -62,7 +62,7 @@ export interface ResponseState {
   output: Record<string, unknown>[];
 }
 
-export interface ResponseContext {
+interface ResponseContext {
   input: Record<string, unknown>[];
   fallbackInput: Record<string, unknown>[];
   previousResponseId?: string;
@@ -219,10 +219,6 @@ function defaultSettings(): AISettings {
     tools: defaultToolSettings(),
     reasoningSummary: true,
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function storedToolSettings(value: unknown): AIToolSettings {
@@ -465,7 +461,7 @@ type RemoteHistory =
 const sessionHistories = new Map<RemoteProvider, RemoteHistory>();
 
 function validateRemoteHistory(value: unknown): ImportedTranscript {
-  if (isRecord(value) && !Array.isArray(value)) {
+  if (isRecord(value)) {
     return (
       validateStoredTranscriptTree(value.tree) ?? {
         turns: validateStoredTurns(value.turns),
@@ -612,7 +608,7 @@ interface SimulatedProgress {
   selection?: unknown;
 }
 
-export type SimulatedHistory = SimulatedContent & SimulatedProgress;
+type SimulatedHistory = SimulatedContent & SimulatedProgress;
 
 // A separate record preserves the simulated version tree without touching
 // the real-provider history or requiring an IndexedDB schema migration.

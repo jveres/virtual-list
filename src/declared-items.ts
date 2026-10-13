@@ -1,6 +1,6 @@
 import type { KeyIndex } from "./key-index";
 
-export interface Declared<T> {
+interface Declared<T> {
   item: T;
   height: number;
 }
@@ -47,18 +47,6 @@ export class DeclaredItems<T> {
     return position === undefined
       ? undefined
       : data.items[position - data.leading];
-  }
-
-  /** Whether this snapshot holds exactly this entry at ordinal `at`. */
-  holdsAt(at: number, key: string, item: T, height: number): boolean {
-    const data = this.snapshot;
-    return (
-      data !== null &&
-      at < data.items.length &&
-      data.items[at] === item &&
-      data.heights[at] === height &&
-      data.index.keys[at + data.leading] === key
-    );
   }
 
   get(key: string): Declared<T> | undefined {

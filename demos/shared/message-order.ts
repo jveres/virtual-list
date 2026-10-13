@@ -5,7 +5,7 @@ export interface OrderedMessage {
   toolCalls?: ChatToolCall[];
 }
 
-export type MessagePart =
+type MessagePart =
   | { kind: "text"; key: string; text: string }
   | { kind: "tool"; key: string; call: ChatToolCall };
 

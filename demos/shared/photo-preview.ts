@@ -1205,10 +1205,14 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         touch.clientY,
       );
     };
-    const onSwipeTouchMove = (event: TouchEvent) => {
+    const activeSwipeTouch = (event: TouchEvent): Touch | null => {
       const state = view.swipeState;
-      if (state?.input !== "touch") return;
-      const touch = changedTouchById(event, state.pointerId);
+      return state?.input === "touch"
+        ? changedTouchById(event, state.pointerId)
+        : null;
+    };
+    const onSwipeTouchMove = (event: TouchEvent) => {
+      const touch = activeSwipeTouch(event);
       if (!touch) return;
       if (
         updatePhotoSwipe(
@@ -1222,9 +1226,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
         event.preventDefault();
     };
     const onSwipeTouchEnd = (event: TouchEvent) => {
-      const state = view.swipeState;
-      if (state?.input !== "touch") return;
-      const touch = changedTouchById(event, state.pointerId);
+      const touch = activeSwipeTouch(event);
       if (!touch) return;
       if (endPhotoSwipe(view, "touch", touch.identifier))
         event.preventDefault();

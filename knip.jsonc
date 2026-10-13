@@ -32,14 +32,5 @@
     "/scripts/*": ["scripts/*"],
     "/integrations/*": ["integrations/*"]
   },
-  // The viewer owns loom; Vitest names it only for dependency inlining.
-  "ignoreDependencies": ["loom"],
-  "ignoreBinaries": [
-    "osascript",
-    "swift",
-    "swiftc",
-    "sample",
-    "screencapture",
-    "pgrep"
-  ]
+  "ignoreBinaries": ["osascript", "swiftc", "pgrep"]
 }

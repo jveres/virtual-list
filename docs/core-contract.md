@@ -123,8 +123,8 @@ The following rules govern preparation, scrolling, and commits:
      stale scroll limit, and an early `scrollend` live;
    - during a glide, which heads for a target in the committed geometry, so
      held work waits for its landing;
-   - during WebKit touch input and its momentum tail, until the whole scroll
-     phase settles, even when the viewport stops short of an edge.
+   - during a WebKit scroll gesture and its momentum tail, until the whole
+     scroll phase settles, even when the viewport stops short of an edge.
 
    Positioned (masonry) layouts always use runtime anchoring and can't
    prove by index that a change stays below the anchor, so their structural

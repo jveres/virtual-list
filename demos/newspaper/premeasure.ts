@@ -10,7 +10,7 @@
 // undecoded images or pending fonts. The demo keeps its article geometry
 // fixed so that the measured height stays correct.
 
-export interface ItemMeasurer {
+interface ItemMeasurer {
   /** Measure elements together and hand them back detached. */
   measureMany(elements: readonly HTMLElement[]): number[];
   dispose(): void;

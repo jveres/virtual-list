@@ -1,6 +1,6 @@
 import type { Photo } from "./layout.js";
 
-export interface LayoutStrategy<Plan, Result> {
+interface LayoutStrategy<Plan, Result> {
   minimumDensity: number;
   plan(photos: readonly Photo[], density: number, complete: boolean): Plan;
   place(plan: Plan, width: number, target: number, gap: number): Result;

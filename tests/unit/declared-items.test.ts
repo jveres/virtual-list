@@ -49,15 +49,6 @@ describe("declared snapshot ownership", () => {
         keys.push(key);
       });
       expect(keys).toEqual(["a", "b"]);
-      expect(committed.holdsAt(1, "b", original[1] as { id: string }, 50)).toBe(
-        true,
-      );
-      expect(pending.holdsAt(1, "b", original[1] as { id: string }, 50)).toBe(
-        false,
-      );
-      expect(committed.holdsAt(2, "b", original[1] as { id: string }, 50)).toBe(
-        false,
-      );
 
       const changedKeys: string[] = [];
       pending.forEach((_, __, key) => {

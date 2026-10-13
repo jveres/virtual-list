@@ -14,6 +14,19 @@ export function setTextIfChanged(element: HTMLElement, text: string): void {
   if (element.textContent !== text) element.textContent = text;
 }
 
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+export function readStoredObject(key: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");
+    return isRecord(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 export {
   setAttributeIfChanged,
   setHiddenIfChanged,

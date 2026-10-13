@@ -1,14 +1,10 @@
-import { mustGet } from "../shared/utils.js";
+import { isRecord, mustGet } from "../shared/utils.js";
 
 // A custom header prevents cross-origin form/fetch requests without a CORS
 // preflight. The dev relay separately validates Origin, Host, and Fetch Metadata.
 export const CHATGPT_RELAY_HEADERS = {
   "x-virtual-list-client": "streaming-demo",
 };
-
-function record(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 async function request(
   path: string,
@@ -21,9 +17,11 @@ async function request(
     signal,
   });
   const value: unknown = await response.json().catch(() => null);
-  if (!response.ok || !record(value)) {
+  if (!response.ok || !isRecord(value)) {
     const error =
-      record(value) && record(value.error) ? value.error.message : undefined;
+      isRecord(value) && isRecord(value.error)
+        ? value.error.message
+        : undefined;
     throw new Error(
       typeof error === "string"
         ? error
@@ -76,7 +74,7 @@ export function initChatGPTSettings(): { open(): void; close(): void } {
         action === "status" ? "GET" : "POST",
       );
       if (active.signal.aborted) return;
-      const pending = record(value.login) ? value.login : null;
+      const pending = isRecord(value.login) ? value.login : null;
       link.hidden = !pending;
       code.textContent = "";
       if (pending && typeof pending.userCode === "string") {

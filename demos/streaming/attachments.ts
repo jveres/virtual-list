@@ -1,3 +1,5 @@
+import { isRecord } from "../shared/utils.js";
+
 /** Local file bytes travel with the turn, including offline history/export. */
 export interface ChatAttachment {
   name: string;
@@ -110,7 +112,7 @@ export function storedAttachments(value: unknown): ChatAttachment[] {
   if (!Array.isArray(value) || value.length > MAX_ATTACHMENTS) return [];
   const result: ChatAttachment[] = [];
   for (const entry of value) {
-    if (typeof entry !== "object" || entry === null) return [];
+    if (!isRecord(entry)) return [];
     const { name, mimeType, size, dataUrl } = entry;
     if (
       typeof name !== "string" ||

@@ -22,7 +22,7 @@ export interface LoaderMetrics {
   concurrency: number;
 }
 
-export interface ImageLoader {
+interface ImageLoader {
   /** Queue an image for its source; an already fetched source needs no download. */
   add(img: HTMLImageElement, src: string): void;
   /** Apply subscription changes together, then measure priorities and start downloads once. */

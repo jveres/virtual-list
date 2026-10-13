@@ -1,3 +1,4 @@
+import { isRecord } from "../shared/utils.js";
 import { type StoredTurn, validateStoredTurns } from "./openai.js";
 import {
   parseTranscriptMarkdown,
@@ -114,10 +115,6 @@ export function validateStoredTranscriptTree(
 
 function invalid(reason: string): never {
   throw new Error(`Invalid transcript version tree: ${reason}.`);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isId(value: unknown): value is number {

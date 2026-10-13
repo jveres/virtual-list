@@ -13,7 +13,11 @@ import {
   createPhotoPreview,
   type PhotoPreviewItem,
 } from "../shared/photo-preview.js";
-import { mustGet, setTextIfChanged } from "../shared/utils.js";
+import {
+  mustGet,
+  readStoredObject,
+  setTextIfChanged,
+} from "../shared/utils.js";
 import { createImageLoader, type LoaderMetrics } from "./image-loader.js";
 import { createImageReveal } from "./image-reveal.js";
 import {
@@ -115,24 +119,7 @@ const concurrencySelect = mustGet("concurrency", HTMLSelectElement);
 
 // Layout, size, and concurrency persist in this browser.
 const OPTIONS_KEY = "virtual-list:gallery-options";
-const stored = ((): {
-  layout?: unknown;
-  size?: unknown;
-  concurrency?: unknown;
-} => {
-  try {
-    const parsed: unknown = JSON.parse(
-      localStorage.getItem(OPTIONS_KEY) ?? "{}",
-    );
-    return parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-      ? parsed
-      : {};
-  } catch {
-    return {};
-  }
-})();
+const stored = readStoredObject(OPTIONS_KEY);
 let layout: Layout = stored.layout === "masonry" ? "masonry" : "rows";
 let size: Size = stored.size === "s" || stored.size === "l" ? stored.size : "m";
 let concurrency =

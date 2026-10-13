@@ -1846,7 +1846,7 @@ export function createVirtualList<T>(
     top: Number.NaN,
     height: Number.NaN,
     epoch: -1,
-    structure: -1 as number | undefined,
+    structure: -1,
   };
   let lastRange: GeometryWindow = { start: 0, end: 0 };
   /** Native commands keep departing rows until settle (Safari paint stability). */
@@ -2246,7 +2246,6 @@ export function createVirtualList<T>(
       }),
     // Only the glide's own completion ends its phase.
     noSmoothScrollInFlight: () => glide === null,
-    onGestureStarted: () => {},
     onGestureSettled: () => {
       holdLanding = false;
       for (const run of [...windowJobs]) run();
@@ -2260,9 +2259,6 @@ export function createVirtualList<T>(
         }
       });
     },
-    // Gesture boundaries are not velocity boundaries: a fresh touchpad
-    // contact can start while the preceding momentum is still fast.
-    onGestureReset: () => {},
     onScrollEventObserved: () => {
       if (disposed || scope !== null) return;
       pass(onScrolled);

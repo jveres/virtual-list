@@ -7,6 +7,16 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 13 clean code audit
+
+The [clean code audit](clean-code-audit-2026-10-13.md) removes unused runtime
+methods and state (`DeclaredItems.holdsAt`, `isTouchScrollPhase`), unexports
+internal-only interfaces across `src/` and `demos/`, deduplicates demo storage
+and tree-walk helpers, clears Knip and Biome configuration warnings, and updates
+devDependencies. Knip, Biome, TypeScript, and the `8 lines / 65 tokens`
+TypeScript clone scan across `src/`, `integrations/`, `demos/`, and `examples/`
+all report zero issues.
+
 ## October 13 runtime architecture and hot-path follow-up
 
 The [architecture and hot-path follow-up](runtime-architecture-hot-path-2026-10-13.md)

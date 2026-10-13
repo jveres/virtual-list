@@ -1,4 +1,4 @@
-import { downloadBlob } from "../shared/utils.js";
+import { downloadBlob, isRecord } from "../shared/utils.js";
 
 /** Remote artifacts or inert UTF-8 files, never executable URLs. */
 export interface GeneratedFile {
@@ -10,10 +10,6 @@ export interface GeneratedFile {
 
 // Allows a 10 MiB attachment's base64 plus the generated text template.
 export const MAX_LOCAL_FILE_BYTES = 16 * 1024 * 1024;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
-}
 
 function validId(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_-]+$/.test(value);

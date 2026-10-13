@@ -154,15 +154,19 @@ header .choices {
   margin-left: 16px;
 }
 
-header .choices button {
-  min-width: 30px;
-  padding: 3px 8px;
+header .choices button,
+header .concurrency select {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--bg-panel);
   color: var(--fg);
   font: inherit;
   font-size: 12px;
+}
+
+header .choices button {
+  min-width: 30px;
+  padding: 3px 8px;
   cursor: pointer;
 }
 
@@ -180,12 +184,6 @@ header .concurrency {
 
 header .concurrency select {
   padding: 2px 4px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-panel);
-  color: var(--fg);
-  font: inherit;
-  font-size: 12px;
 }
 
 #loader-metrics {

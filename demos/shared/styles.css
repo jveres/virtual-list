@@ -395,8 +395,9 @@ p.ai-settings-note {
 
 .streaming-viewport[data-debug-compositing~="no-canvas-layer"]
   > [data-anchoring] {
-  /* Diagnostic override of the runtime's inline canvas hints. */
+  /* biome-ignore lint/complexity/noImportantStyles: diagnostic override of the runtime's inline canvas hints */
   transform: none !important;
+  /* biome-ignore lint/complexity/noImportantStyles: diagnostic override of the runtime's inline canvas hints */
   transform-style: flat !important;
 }
 
