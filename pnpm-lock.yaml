@@ -21,8 +21,8 @@ importers:
         specifier: ^0.19.0
         version: 0.19.0
       markdown-viewer:
-        specifier: github:jveres/markdown-viewer#v0.9.1
-        version: git+https://github.com/jveres/markdown-viewer.git#b77dc447ac5d11e3cace8b3fee5a19c91e2d7fc6
+        specifier: github:jveres/markdown-viewer#v0.9.2
+        version: git+https://github.com/jveres/markdown-viewer.git#942c845520318f9de1af9a27f0b27185fc644634
       playwright:
         specifier: ^1.64.0
         version: 1.64.0
@@ -591,9 +591,9 @@ packages:
   magic-string@1.4.3:
     resolution: {integrity: sha512-z12OxmaPGE0F4xlpGdjuAUckipLpQlTAuAmyGhNoD7ODpYUzvDfvtxUbjM/jwznyP178oju/KDdyi220wNJ0RQ==}
 
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#b77dc447ac5d11e3cace8b3fee5a19c91e2d7fc6:
-    resolution: {commit: b77dc447ac5d11e3cace8b3fee5a19c91e2d7fc6, repo: https://github.com/jveres/markdown-viewer.git, type: git}
-    version: 0.9.1
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#942c845520318f9de1af9a27f0b27185fc644634:
+    resolution: {commit: 942c845520318f9de1af9a27f0b27185fc644634, repo: https://github.com/jveres/markdown-viewer.git, type: git}
+    version: 0.9.2
 
   mdn-data@2.27.1:
     resolution: {integrity: sha512-9Yubnt3e8A0OKwxYSXyhLymGW4sCufcLG6VdiDdUGVkPhpqLxlvP5vl1983gQjJl3tqbrM731mjaZaP68AgosQ==}
@@ -1182,7 +1182,7 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#b77dc447ac5d11e3cace8b3fee5a19c91e2d7fc6:
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#942c845520318f9de1af9a27f0b27185fc644634:
     dependencies:
       comrak-wasm: https://codeload.github.com/jveres/comrak-wasm/tar.gz/c8fd8ad9e51bf01ded78ab1073ee288c1a7b8cd3
       highlight.js: 11.12.0
