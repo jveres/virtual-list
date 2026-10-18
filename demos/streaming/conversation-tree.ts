@@ -1014,15 +1014,6 @@ export function createConversationTree(options: TreeOptions): {
         ] as const;
       }),
     );
-    const entriesByRow = new Map<number, typeof entries>();
-    for (const entry of entries) {
-      const siblings = entriesByRow.get(entry.row) ?? [];
-      siblings.push(entry);
-      entriesByRow.set(entry.row, siblings);
-    }
-    // Depth-first order inserts rows by depth, each listed left to right.
-    // Selection changes the blue path, not where a branch sits.
-    const displayRows = Array.from(entriesByRow.values());
     const childEntries = new Map<number, typeof entries>();
     for (const entry of entries) {
       const siblings = childEntries.get(entry.parentId) ?? [];
@@ -1229,13 +1220,76 @@ export function createConversationTree(options: TreeOptions): {
       }
       if (fitting) stableCanvasHeight = 0;
       layoutWidth = availableWidth;
+      // Each turn starts below its own parent turn, not below the tallest
+      // node at its depth, so alternative paths keep their own heights.
+      // Depth-first order places every parent before its children.
+      const tops = new Map<number, number>();
+      const steps = new Map<number, number>();
+      const tocOffsets = new Map<number, number>();
+      let canvasHeight = 0;
+      for (const entry of entries) {
+        // A reply is placed beneath its prompt's label, in the same band.
+        if (entry.attached) continue;
+        const top =
+          (tops.get(entry.parentId) ?? 0) + (steps.get(entry.parentId) ?? 0);
+        const button = buttons.get(entry.id);
+        let bottom = Math.max(36, 13 + (labelHeights.get(entry.id) ?? 0));
+        let height = Math.max(48, bottom);
+        const reply = replies.get(entry.id);
+        const replyButton = reply && buttons.get(reply.id);
+        if (reply && replyButton) {
+          const replyTop = 17 + (labelHeights.get(entry.id) ?? 0);
+          const replyHeight = Math.max(
+            labelHeights.get(reply.id) ?? 0,
+            reply.hasImages && options.thumbnail ? THUMBNAIL_HEIGHT : 0,
+          );
+          replyButton.style.top = `${top + replyTop}px`;
+          replyButton.style.height = `${replyHeight + 8}px`;
+          height = replyTop;
+          bottom = Math.max(36, replyTop + replyHeight);
+          turnBottoms.set(entry.id, top + replyTop + replyHeight);
+        } else
+          turnBottoms.set(
+            entry.id,
+            top + TEXT_TOP + (labelHeights.get(entry.id) ?? 0),
+          );
+        if (button) {
+          button.style.top = `${top}px`;
+          button.style.height = `${height}px`;
+        }
+        const turn = reply ? [entry.id, reply.id] : [entry.id];
+        const headingCount = Math.max(
+          ...turn.map((id) => headings.get(id)?.length ?? 0),
+        );
+        const tocOffset = bottom > 36 ? bottom + 4 : 36;
+        // Fork connectors turn sideways below the turn and need the room.
+        const forks = childEntries.get((reply ?? entry).id)?.length ?? 0;
+        const gap = forks > 1 ? 24 : 8;
+        const step = headingCount
+          ? tocOffset + headingCount * HEADING_ROW_HEIGHT + gap
+          : Math.max(48, bottom + gap);
+        for (const id of turn) {
+          tops.set(id, top);
+          steps.set(id, step);
+          tocOffsets.set(id, tocOffset);
+        }
+        canvasHeight = Math.max(canvasHeight, top + step);
+      }
       // Each subtree records its occupied extent per row, relative to its
-      // own spine. Siblings pack against those contours with one gutter and
-      // center under their parent; a single child keeps the parent's spine
-      // and shares its contour, so linear chats stay linear time.
-      const contours = new Map<number, { left: number[]; right: number[] }>();
+      // own spine, with the row's vertical span. Rows of different subtrees
+      // need not align, so siblings pack against every row they overlap
+      // vertically, with one gutter, and center under their parent; a single
+      // child keeps the parent's spine and shares its contour, so linear
+      // chats stay linear time.
+      type Contour = {
+        left: number[];
+        right: number[];
+        top: number[];
+        bottom: number[];
+      };
+      const contours = new Map<number, Contour>();
       const shifts = new Map<number, number>();
-      const pack = (parentId: number): { left: number[]; right: number[] } => {
+      const pack = (parentId: number): Contour => {
         const children = childEntries.get(parentId) ?? [];
         const only = children.length === 1 ? children[0] : undefined;
         const onlyContour = only && contours.get(only.id);
@@ -1243,24 +1297,46 @@ export function createConversationTree(options: TreeOptions): {
           shifts.set(only.id, 0);
           return onlyContour;
         }
-        const merged: { left: number[]; right: number[] } = {
-          left: [],
-          right: [],
-        };
+        const merged: Contour = { left: [], right: [], top: [], bottom: [] };
         const placed = children.map((child) => {
           const contour = contours.get(child.id);
           if (!contour) return 0;
           let shift = 0;
           for (let row = child.row; row < contour.left.length; row++) {
-            const right = merged.right[row];
             const left = contour.left[row];
-            if (right !== undefined && left !== undefined)
-              shift = Math.max(shift, right + BAND_GAP - left);
+            const top = contour.top[row];
+            const bottom = contour.bottom[row];
+            if (left === undefined || top === undefined || bottom === undefined)
+              continue;
+            // A row's highest top grows with depth, so later rows start
+            // below this one once a top passes its bottom.
+            for (let other = child.row; other < merged.right.length; other++) {
+              const right = merged.right[other];
+              const otherTop = merged.top[other];
+              const otherBottom = merged.bottom[other];
+              if (
+                right === undefined ||
+                otherTop === undefined ||
+                otherBottom === undefined
+              )
+                continue;
+              if (otherTop >= bottom) break;
+              if (otherBottom > top)
+                shift = Math.max(shift, right + BAND_GAP - left);
+            }
           }
           for (let row = child.row; row < contour.left.length; row++) {
             const left = contour.left[row];
             const right = contour.right[row];
-            if (left === undefined || right === undefined) continue;
+            const top = contour.top[row];
+            const bottom = contour.bottom[row];
+            if (
+              left === undefined ||
+              right === undefined ||
+              top === undefined ||
+              bottom === undefined
+            )
+              continue;
             merged.left[row] = Math.min(
               merged.left[row] ?? left + shift,
               left + shift,
@@ -1269,6 +1345,8 @@ export function createConversationTree(options: TreeOptions): {
               merged.right[row] ?? right + shift,
               right + shift,
             );
+            merged.top[row] = Math.min(merged.top[row] ?? top, top);
+            merged.bottom[row] = Math.max(merged.bottom[row] ?? bottom, bottom);
           }
           return shift;
         });
@@ -1301,6 +1379,10 @@ export function createConversationTree(options: TreeOptions): {
         const contour = pack(entry.id);
         contour.left[entry.row] = -26;
         contour.right[entry.row] = -26 + (bandWidths.get(entry.id) ?? 0);
+        // The span starts above the turn to keep its incoming elbow clear.
+        const top = tops.get(entry.id) ?? 0;
+        contour.top[entry.row] = top - 16;
+        contour.bottom[entry.row] = top + (steps.get(entry.id) ?? 0);
         contours.set(entry.id, contour);
       }
       pack(0);
@@ -1331,7 +1413,7 @@ export function createConversationTree(options: TreeOptions): {
         if (band === undefined) continue;
         const x = layoutOrigin + band;
         const left = x - 26;
-        positions.set(entry.id, { x, y: 0 });
+        positions.set(entry.id, { x, y: tops.get(entry.id) ?? 0 });
         const button = buttons.get(entry.id);
         if (button) {
           button.style.left = `${left}px`;
@@ -1341,58 +1423,6 @@ export function createConversationTree(options: TreeOptions): {
           toc.style.left = `${x - 6}px`;
         }
       }
-      const tocOffsets = new Map<number, number>();
-      let canvasHeight = 0;
-      displayRows.forEach((row, rowIndex) => {
-        let contentBottom = 36;
-        let headingCount = 0;
-        for (const entry of row) {
-          headingCount = Math.max(
-            headingCount,
-            headings.get(entry.id)?.length ?? 0,
-          );
-          const position = positions.get(entry.id);
-          if (position) position.y = canvasHeight;
-          // A reply is placed beneath its prompt's label, in the same band.
-          if (entry.attached) continue;
-          const button = buttons.get(entry.id);
-          let bottom = Math.max(36, 13 + (labelHeights.get(entry.id) ?? 0));
-          let height = Math.max(48, bottom);
-          const reply = replies.get(entry.id);
-          const replyButton = reply && buttons.get(reply.id);
-          if (reply && replyButton) {
-            const replyTop = 17 + (labelHeights.get(entry.id) ?? 0);
-            const replyHeight = Math.max(
-              labelHeights.get(reply.id) ?? 0,
-              reply.hasImages && options.thumbnail ? THUMBNAIL_HEIGHT : 0,
-            );
-            replyButton.style.top = `${canvasHeight + replyTop}px`;
-            replyButton.style.height = `${replyHeight + 8}px`;
-            height = replyTop;
-            bottom = Math.max(36, replyTop + replyHeight);
-            turnBottoms.set(entry.id, canvasHeight + replyTop + replyHeight);
-          } else
-            turnBottoms.set(
-              entry.id,
-              canvasHeight + TEXT_TOP + (labelHeights.get(entry.id) ?? 0),
-            );
-          contentBottom = Math.max(contentBottom, bottom);
-          if (button) {
-            button.style.top = `${canvasHeight}px`;
-            button.style.height = `${height}px`;
-          }
-        }
-        const tocOffset = contentBottom > 36 ? contentBottom + 4 : 36;
-        for (const entry of row) tocOffsets.set(entry.id, tocOffset);
-        // Fork connectors turn sideways between rows and need the room.
-        const nextRowBranches = displayRows[rowIndex + 1]?.some(
-          (entry) => (childEntries.get(entry.parentId)?.length ?? 0) > 1,
-        );
-        const gap = nextRowBranches ? 24 : 8;
-        canvasHeight += headingCount
-          ? tocOffset + headingCount * HEADING_ROW_HEIGHT + gap
-          : Math.max(48, contentBottom + gap);
-      });
       stableCanvasHeight = Math.max(stableCanvasHeight, canvasHeight);
       canvas.style.height = `${stableCanvasHeight}px`;
       edges.setAttribute("width", "100%");
