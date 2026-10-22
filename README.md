@@ -74,10 +74,11 @@ pnpm run dev
   The built-in simulated history is dated through yesterday; new sends use
   the current time, so the first new turn starts a **Today** section.
   Each provider preserves its separate history across reloads. The simulated
-  provider also preserves branch selection. The floating conversation tree uses equal-width
-  version bands, response-section links, and smooth reveal for clipped tree
-  items. See [conversation tree navigation](docs/conversation-tree-navigation.md)
-  for layout rules, the runtime-owned bottom position, and browser regressions.
+  provider also preserves branch selection. The floating conversation tree uses
+  content-sized version bands, response-section links, and smooth reveal for
+  clipped tree items. Each turn sits below its own parent; sibling branches
+  pack around their occupied widths and heights. See
+  [conversation tree navigation](docs/conversation-tree-navigation.md) for layout rules, the runtime-owned bottom position, and browser regressions.
 
 - `/demos/gallery/index.html` — the gallery: the same photos as
   justified rows or individually positioned whole-photo masonry items, with
@@ -90,6 +91,12 @@ pnpm run dev
   header shows its metrics. A soft 480-photo window trims distant pages and
   restores them on backward scrolling. See [bounded paging](docs/bounded-paging.md)
   for the reusable companion and layout-continuity contract.
+
+- `/demos/feed/index.html` — Bluesky Discover and Lemmy posts with measured
+  rows, bounded paging, and fresh-head loading.
+
+- `/demos/newspaper/index.html` — four editorial layouts with premeasured
+  blocks and viewport-prioritized images.
 
 - `/demos/chat-history/index.html` — 10,000 numbered messages with day
   headers and bounded, two-way paging. The simulated indexed source creates

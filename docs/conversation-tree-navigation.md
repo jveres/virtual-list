@@ -12,7 +12,10 @@ the spine. Cards and outlines shrink to their content, with a panel-derived
 maximum width shared at every depth. Sibling positions follow those measured
 widths, leaving only a 12-pixel gutter instead of empty fixed-width slots.
 A single child stays on its parent's branch instead of returning to the root
-spine.
+spine. Each turn starts below its own parent turn, so a tall response in one
+branch does not push down turns in another branch. Sibling subtrees reserve
+space against every row they overlap vertically, rather than sharing one
+height for an entire depth.
 Selecting a version never reorders its siblings. Both user and assistant
 labels sit to the right of their glyphs and use natural left alignment.
 The active path has a continuous, faint blue ribbon behind its spine and

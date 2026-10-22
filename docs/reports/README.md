@@ -7,6 +7,14 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## October 22 clean code audit
+
+The [post-Highlights audit](clean-code-audit-2026-10-22.md) corrects current
+consumer, tree-layout, and demo documentation. Normal and production Knip
+scans find no unused implementation or dependency; the review retains public
+types and tested compatibility fields. Checks, 5,674 tests, portable tooling
+checks, builds, and targeted three-browser regressions pass.
+
 ## October 13 clean code audit
 
 The [clean code audit](clean-code-audit-2026-10-13.md) removes unused runtime

@@ -46,8 +46,8 @@ they aren't runtime dependencies of the copied core.
 | `integrations/collapse.css` | Collapsed-message layout and toggle positioning. |
 
 The core and companions do not import a Markdown renderer. Copy
-`integrations/` separately if you use its UI helpers. Legacy demo helper
-paths remain compatibility wrappers, not the supported import path.
+`integrations/` separately if you use its UI helpers. Import these helpers
+through `integrations/index.ts`; the earlier demo helper modules were removed.
 
 Run `pnpm run test:consumer` to build copied basic and paged consumers in a fresh
 temporary directory with no demo files or workspace links. This is a source
@@ -268,6 +268,21 @@ your own visual button styling. The
 [UI verification report](reports/streaming-ui-verification-2026-09-13.md) records
 installed-Safari composer and scoped-typography checks. Its tested scenarios
 are integration evidence, not implicit guarantees for every renderer or style.
+
+Syntax highlighting uses `@pierre/highlights` through `markdown-viewer` v0.10.0.
+The renderer loads one shared WASM module on demand. Await
+`loadLanguages(["typescript"])` before a synchronous static render. The live
+example also preloads its language before creating the list. Live viewers can
+re-highlight when
+a requested language becomes ready. Import `markdown-viewer/styles.css` for
+syntax colors and customize its `--color-prettylights-syntax-*` variables.
+
+Highlight.js grammars and `.hljs-*` themes no longer apply. Custom languages
+use `registerLanguage(name, code => html)` callbacks that return trusted HTML;
+escape source text before including it. INI, Nginx, and Vim fences fall back to
+escaped plain text. JSX, TSX, Vue, HTML, and JSON5 have dedicated lexers. ANSI
+terminal rendering is unchanged. These changes belong to the renderer;
+applications copying only the core or companions do not need a highlighter.
 
 For an optional text fade, pass `streamingTrail: { durationMs: 1200 }` to the
 Markdown viewer. It defaults off. The renderer owns text tracking, overlay
