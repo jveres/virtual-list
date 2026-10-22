@@ -38,7 +38,7 @@ One call covers the full CommonMark + GFM spec — everything from \`inline code
   },
   {
     role: "assistant",
-    markdown: `That's built in. markdown-viewer highlights code with **highlight.js** — the same library GitHub uses — lazy-loading a grammar per language. You just preload the languages your content uses so \`renderToHtml\` emits highlighted code synchronously:
+    markdown: `That's built in. markdown-viewer highlights code with **@pierre/highlights**, with a shared WASM module loaded on demand. You just preload the languages your content uses so \`renderToHtml\` emits highlighted code synchronously:
 
 \`\`\`typescript
 import { loadLanguages, renderToHtml } from "markdown-viewer";
@@ -152,7 +152,7 @@ The streaming flow collapses to:
 - \`background: #161920\`
 - Rounded corners (10px)
 - Subtle top border for language badge
-- Highlighted by highlight.js with a GitHub-style theme
+- Highlighted by @pierre/highlights with a GitHub-style theme
 
 This creates a clear visual hierarchy where assistant responses feel like *reading an article* while user messages feel like *sending a text*.`,
   },
@@ -168,7 +168,7 @@ This creates a clear visual hierarchy where assistant responses feel like *readi
 1. **Architecture layers**
    - Parsing layer
      - Markdown tokenization (comrak)
-     - Syntax highlighting (highlight.js)
+     - Syntax highlighting (@pierre/highlights)
      - Math rendering (KaTeX)
    - Virtualization layer
      - Height prediction
@@ -181,7 +181,7 @@ This creates a clear visual hierarchy where assistant responses feel like *readi
 
 2. **Build pipeline**
    - \`comrak\` → Rust → WASM (900KB)
-   - \`highlight.js\` → per-language grammars → highlighted HTML
+   - \`@pierre/highlights\` → WASM lexers → highlighted HTML
    - \`vite\` → ES modules → tree-shaken bundle
 
 And a task list for our implementation:
@@ -189,7 +189,7 @@ And a task list for our implementation:
 - [x] Set up Vite project with markdown-viewer
 - [x] Create dark theme CSS
 - [x] Implement two-lane message layout
-- [x] Add highlight.js syntax highlighting
+- [x] Add @pierre/highlights syntax highlighting
 - [x] Wire up markdown-viewer streaming mode
 - [x] Build sample conversation data
 - [ ] Add virtualization for 10k+ messages
@@ -258,7 +258,7 @@ done
 echo "Done! Rendered $(ls docs/*.html | wc -l) files."
 \`\`\`
 
-All three languages get proper syntax highlighting through highlight.js's language grammars.`,
+All three languages get proper syntax highlighting through the built-in lexers in @pierre/highlights.`,
   },
   {
     role: "user",
@@ -336,10 +336,10 @@ The recursive nature of this conversation — markdown rendered by a markdown re
     role: "assistant",
     markdown: `Done. The full demo renders this entire conversation as a scrollable, dark-themed chat — every code block highlighted, every table aligned, every alert styled.
 
-It's all **markdown-viewer** — comrak-wasm for the parse, highlight.js for code, KaTeX for math, plus a streaming mode that heals partial markdown and shows a cursor. No server, no build step beyond Vite.
+It's all **markdown-viewer** — comrak-wasm for the parse, @pierre/highlights for code, KaTeX for math, plus a streaming mode that heals partial markdown and shows a cursor. No server, no build step beyond Vite.
 
 \`\`\`
-markdown-viewer → rendering (comrak-wasm · highlight.js · KaTeX)
+markdown-viewer → rendering (comrak-wasm · @pierre/highlights · KaTeX)
 vite → dev server + bundling
 \`\`\`
 

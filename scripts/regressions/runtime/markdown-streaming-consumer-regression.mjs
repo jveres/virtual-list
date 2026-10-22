@@ -13,7 +13,9 @@ for (const engine of [chromium, firefox, webkit]) {
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
       if (
-        /^(\[hljs\]|Morph:|Throttle:|Streaming complete:)/.test(message.text())
+        /^(\[highlights\]|Morph:|Throttle:|Streaming complete:)/.test(
+          message.text(),
+        )
       ) {
         markdownLogs.push(message.text());
       }
@@ -37,6 +39,14 @@ for (const engine of [chromium, firefox, webkit]) {
     assert.match(
       await page.locator("article.assistant pre").innerText(),
       /const answer = 42/,
+    );
+    assert.ok(
+      (await page
+        .locator(
+          'article.assistant pre code [style*="--color-prettylights-syntax-keyword"]',
+        )
+        .count()) > 0,
+      "Code is highlighted by Highlights",
     );
     assert.equal(
       await page.locator("article.assistant table tbody tr").count(),

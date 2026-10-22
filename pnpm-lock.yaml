@@ -21,8 +21,8 @@ importers:
         specifier: ^0.19.0
         version: 0.19.0
       markdown-viewer:
-        specifier: github:jveres/markdown-viewer#v0.9.2
-        version: git+https://github.com/jveres/markdown-viewer.git#942c845520318f9de1af9a27f0b27185fc644634
+        specifier: github:jveres/markdown-viewer#v0.10.0
+        version: git+https://github.com/jveres/markdown-viewer.git#e6c57be01860d2a0e174ecc3b805ce5d7da619a4
       playwright:
         specifier: ^1.64.0
         version: 1.64.0
@@ -173,6 +173,9 @@ packages:
 
   '@oxc-project/types@0.153.0':
     resolution: {integrity: sha512-jSNrRIyvPVLL5E1z/tS5zLAprosGz/FuI1PWwEOz59j3E4TTTzSpqKb/RDGqJhhW0QHYISGXxq582wGx6T11Tw==}
+
+  '@pierre/highlights@0.2.0':
+    resolution: {integrity: sha512-hTpcOU1EzDAP4bYtEhxmMu2jwMvtkUydRUBUpWMSHTs3dw0IaC3Ld5ansMy18L0GE3b6Vfl2OGkLK+pWWpnBmw==}
 
   '@rolldown/binding-android-arm-eabi@1.2.13':
     resolution: {integrity: sha512-Vu/NICrgdRvUOeaJZIyB2FP63s6fO/4ud5l8dXmxDx9yDyn+mN0y+gsvsVviSli+T361Aqo0h46EuMoobrwawA==}
@@ -482,10 +485,6 @@ packages:
     engines: {node: ^8.16.0 || ^10.6.0 || >=11.0.0}
     os: [darwin]
 
-  highlight.js@11.12.0:
-    resolution: {integrity: sha512-nbfWpyRMcMrPMmDwJB+dhX/eiaPKtc2RB+0QZskqJ3WjRA/FDS0e9hZrx8EC/lbEv8gXy98FcDbNa/dspAaJMg==}
-    engines: {node: '>=12.0.0'}
-
   html-encoding-sniffer@7.0.0:
     resolution: {integrity: sha512-UikN5yr7xsCDAq87Or5or0PAlD3HJJOKVzM05az588WnpDJ4Ux7a2A53Qi6gofGg2/EtvF/H4hCi/TXfCW4Y6w==}
     engines: {node: ^22.13.0 || >=24.0.0}
@@ -591,9 +590,9 @@ packages:
   magic-string@1.4.3:
     resolution: {integrity: sha512-z12OxmaPGE0F4xlpGdjuAUckipLpQlTAuAmyGhNoD7ODpYUzvDfvtxUbjM/jwznyP178oju/KDdyi220wNJ0RQ==}
 
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#942c845520318f9de1af9a27f0b27185fc644634:
-    resolution: {commit: 942c845520318f9de1af9a27f0b27185fc644634, repo: https://github.com/jveres/markdown-viewer.git, type: git}
-    version: 0.9.2
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#e6c57be01860d2a0e174ecc3b805ce5d7da619a4:
+    resolution: {commit: e6c57be01860d2a0e174ecc3b805ce5d7da619a4, repo: https://github.com/jveres/markdown-viewer.git, type: git}
+    version: 0.10.0
 
   mdn-data@2.27.1:
     resolution: {integrity: sha512-9Yubnt3e8A0OKwxYSXyhLymGW4sCufcLG6VdiDdUGVkPhpqLxlvP5vl1983gQjJl3tqbrM731mjaZaP68AgosQ==}
@@ -910,6 +909,8 @@ snapshots:
 
   '@oxc-project/types@0.153.0': {}
 
+  '@pierre/highlights@0.2.0': {}
+
   '@rolldown/binding-android-arm-eabi@1.2.13':
     optional: true
 
@@ -1086,8 +1087,6 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  highlight.js@11.12.0: {}
-
   html-encoding-sniffer@7.0.0:
     dependencies:
       '@exodus/bytes': 1.15.1
@@ -1182,10 +1181,10 @@ snapshots:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.6.0
 
-  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#942c845520318f9de1af9a27f0b27185fc644634:
+  markdown-viewer@git+https://github.com/jveres/markdown-viewer.git#e6c57be01860d2a0e174ecc3b805ce5d7da619a4:
     dependencies:
+      '@pierre/highlights': 0.2.0
       comrak-wasm: https://codeload.github.com/jveres/comrak-wasm/tar.gz/c8fd8ad9e51bf01ded78ab1073ee288c1a7b8cd3
-      highlight.js: 11.12.0
       katex: 0.19.0
       loom: https://codeload.github.com/jveres/loom/tar.gz/d3fbed8b48ffa32309fe84b14ccc5fd5b5749cdb
       parse5: 8.0.1
