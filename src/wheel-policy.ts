@@ -83,11 +83,10 @@ export class FirefoxWheelPolicy {
     });
   }
 
-  cancelCommit(): boolean {
-    if (!this.commitFrame) return false;
+  cancelCommit(): void {
+    if (!this.commitFrame) return;
     cancelAnimationFrame(this.commitFrame);
     this.commitFrame = 0;
-    return true;
   }
 }
 

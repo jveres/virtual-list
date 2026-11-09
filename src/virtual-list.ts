@@ -966,8 +966,7 @@ export function createVirtualList<T>(
     return heights;
   }
 
-  function measureRows(toMeasure: Iterable<Row<T>>): void {
-    const list = [...toMeasure];
+  function measureRows(list: readonly Row<T>[]): void {
     const heights = readHeights(list);
     list.forEach((row, index) => {
       commitHeight(row, heights[index] as number);
@@ -1131,22 +1130,40 @@ export function createVirtualList<T>(
     const keys: string[] = [];
     const heights =
       withHeights && declared ? new Float64Array(items.length) : null;
-    let seen: Set<string> | null = null;
-    const priorKeys = desiredIndex.keys;
+    const prior = desiredIndex;
     const leading = desiredLeading;
+    /** The keys added once the order departs from the owned one. */
+    let seen: Set<string> | null = null;
+    /** How many leading items match the owned order, key for key. */
+    let matched = 0;
     // Use one device grid within this synchronous declaration pass.
     const ratio = heights ? pixelRatio() : undefined;
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as T;
       const key = keyOf(item);
-      if (isSlotKey(key))
-        throw new Error(`item key "${key}" uses the reserved edge-slot prefix`);
-      // A matching prefix of the owned key order is already unique. Build a
-      // validation set only when the new order first departs from that prefix.
-      if (!seen && priorKeys[i + leading] !== key) seen = new Set(keys);
-      if (seen?.has(key)) throw new Error(`duplicate key "${key}"`);
+      // A matching prefix of the owned key order is already valid and
+      // unique. Later keys are checked against that prefix through its
+      // index, and against each other: an append validates only its tail.
+      if (seen || prior.keys[i + leading] !== key) {
+        if (isSlotKey(key))
+          throw new Error(
+            `item key "${key}" uses the reserved edge-slot prefix`,
+          );
+        if (!seen) {
+          seen = new Set();
+          matched = i;
+        }
+        const before = matched > 0 ? prior.get(key) : undefined;
+        const size = seen.size;
+        if (
+          (before !== undefined &&
+            before >= leading &&
+            before - leading < matched) ||
+          seen.add(key).size === size
+        )
+          throw new Error(`duplicate key "${key}"`);
+      }
       keys.push(key);
-      seen?.add(key);
       if (heights) heights[i] = declaredHeight(item, ratio);
     }
     return { keys, heights, samePrefix: seen === null };
@@ -1331,7 +1348,7 @@ export function createVirtualList<T>(
 
     try {
       for (const key of stageKeys) {
-        at = contiguous ? at + 1 : (p.index.positions.get(key) ?? -1);
+        at = contiguous ? at + 1 : (p.index.get(key) ?? -1);
         if (isSlotKey(key)) {
           stageSlot(key);
         } else {
@@ -1454,7 +1471,7 @@ export function createVirtualList<T>(
     if (declared) {
       // Unrendered declared items need geometry only. Prepare retained rows
       // and slots in source order so host render calls keep their ordering.
-      const positions = p.index.positions;
+      const positions = p.index;
       const toStage: [number, string][] = [];
       for (const [key, row] of rows) {
         if (isSlotKey(key) || previous?.staged.has(key)) continue;
@@ -1519,7 +1536,7 @@ export function createVirtualList<T>(
     // The anchor row may change in place, be replaced at its index, or be
     // removed — unless its surviving successor moves down (a prepend).
     if (p.keys[anchorIndex] !== anchorKey) {
-      const nextIndex = p.index.positions;
+      const nextIndex = p.index;
       if (nextIndex.has(anchorKey)) return false;
       for (let index = anchorIndex + 1; index < geometry.count; index++) {
         const moved = nextIndex.get(geometry.keyAt(index) as string);
@@ -1638,8 +1655,9 @@ export function createVirtualList<T>(
     const doomed: Row<T>[] = [];
     if (p) {
       if (p.deferred.size > 0) renderDeferred(p);
-      if (keysChanged) {
-        const next = p.index.positions;
+      // An append removes no row.
+      if (keysChanged && !geometry.keyIndex.precedes(p.index)) {
+        const next = p.index;
         for (const [key, row] of rows) {
           if (next.has(key)) continue;
           rows.delete(key);
@@ -1677,20 +1695,24 @@ export function createVirtualList<T>(
           committedPinOffset = p.pinOffset ?? 0;
           geometry.pin(p.pinKey ?? null, committedPinOffset);
         }
-        if (p.declared) {
-          // A snapshot entry unchanged at the same ordinal (same key, item,
-          // and height as the previous snapshot) already holds its height in
-          // the geometry and its row: skip its per-key lookups entirely.
-          const previousDeclared = p.patch ? undefined : declaredItems;
+        if (p.declared && p.patch) {
           p.declared.forEach((item, height, key) => {
             const row = rows.get(key);
             if (row && row.item === item) commitHeight(row, height);
-            else if (declaredItems.heightOf(key) !== height)
-              geometry.measure(key, height);
-            if (p.patch) declaredItems.set(key, { item, height });
-          }, previousDeclared);
-          // A snapshot replaces its columns: removed keys drop out.
-          if (!p.patch) declaredItems = p.declared;
+            else geometry.measure(key, height);
+            declaredItems.set(key, { item, height });
+          });
+        } else if (p.declared) {
+          // A snapshot lands its heights by position, in one pass, and
+          // replaces its columns: removed keys drop out.
+          declaredItems = p.declared;
+          declaredItems.land(geometry);
+          for (const row of rows.values()) {
+            if (row.spec || declaredItems.itemOf(row.key) !== row.item)
+              continue;
+            const height = declaredItems.heightOf(row.key) as number;
+            if (height !== row.height) commitHeight(row, height);
+          }
         }
         for (const row of p.staged.values()) {
           if (!row.dirty) commitHeight(row, row.height);
@@ -2419,7 +2441,7 @@ export function createVirtualList<T>(
     const anchor = ownAnchor(o.anchor);
     if (defer(() => updateItem(key, item, { anchor }))) return;
     if (isSlotKey(key)) return;
-    const position = desiredIndex.positions.get(key);
+    const position = desiredIndex.get(key);
     if (position === undefined) return;
     const index = position - desiredLeading;
     if (keyOf(item) !== key)

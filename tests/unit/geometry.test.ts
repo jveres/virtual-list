@@ -223,6 +223,60 @@ describe("append fast path", () => {
   });
 });
 
+describe("bulk declaration", () => {
+  const offsets = (geometry: Geometry, keys: readonly string[]): number[] =>
+    keys.map((key) => geometry.offsetOf(key));
+
+  it.each([
+    ["every height (a rebuild)", 1],
+    ["one height in forty (in place)", 40],
+  ])("should match per-key measurement when declaring %s", (_, stride) => {
+    const keys = ["slot", ...keysRange(0, 200), "tail"];
+    const heights = Float64Array.from({ length: 200 }, (_, at) =>
+      at % stride === 0 ? 30 + (at % 7) * 4.5 : 20,
+    );
+    const bulk = new Geometry(20);
+    const single = new Geometry(20);
+    for (const geometry of [bulk, single]) {
+      geometry.setKeys(keys);
+      geometry.measure("slot", 64);
+      for (const key of keysRange(0, 200)) geometry.measure(key, 20);
+    }
+
+    bulk.declare(heights, 1);
+    keysRange(0, 200).forEach((key, at) => {
+      single.measure(key, heights[at] as number);
+    });
+
+    expect(offsets(bulk, keys)).toEqual(offsets(single, keys));
+    expect(bulk.totalSize).toBe(single.totalSize);
+    expect(bulk.heightOf("slot")).toBe(64);
+    expect(bulk.isMeasured("tail")).toBe(false);
+    expect(bulk.heightOf("tail")).toBe(20);
+    // Later measurements build on the declared state.
+    bulk.measure("m100", 91);
+    single.measure("m100", 91);
+    expect(offsets(bulk, keys)).toEqual(offsets(single, keys));
+  });
+
+  it("should leave geometry intact when an estimate fails during a rebuild", () => {
+    let poisoned = false;
+    const geometry = new Geometry((key) =>
+      poisoned && key === "tail" ? Number.NaN : 20,
+    );
+    geometry.setKeys(["a", "b", "tail"]);
+    poisoned = true;
+
+    expect(() => geometry.declare(Float64Array.from([50, 60]), 0)).toThrow(
+      /estimate/,
+    );
+
+    poisoned = false;
+    expect(geometry.isMeasured("a")).toBe(false);
+    expect(geometry.totalSize).toBe(60);
+  });
+});
+
 describe("offsets and totals", () => {
   it("matches the naive oracle through appends, prepends, and measures", () => {
     const geometry = new Geometry(100);

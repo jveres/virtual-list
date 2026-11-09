@@ -304,8 +304,8 @@ export function createScrollSettleController(
     settleFrame = 0;
   }
 
-  function cancelFirefoxEdgeCommitFrame(): boolean {
-    return firefox?.cancelCommit() ?? false;
+  function cancelFirefoxEdgeCommitFrame(): void {
+    firefox?.cancelCommit();
   }
 
   /** Touch and scrollbar input is deliberate; it is never a wheel tail. */

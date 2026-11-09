@@ -34,7 +34,7 @@ export class DeclaredItems<T> {
   heightOf(key: string): number | undefined {
     const data = this.snapshot;
     if (!data) return this.patch.get(key)?.height;
-    const position = data.index.positions.get(key);
+    const position = data.index.get(key);
     return position === undefined
       ? undefined
       : data.heights[position - data.leading];
@@ -43,7 +43,7 @@ export class DeclaredItems<T> {
   itemOf(key: string): T | undefined {
     const data = this.snapshot;
     if (!data) return this.patch.get(key)?.item;
-    const position = data.index.positions.get(key);
+    const position = data.index.get(key);
     return position === undefined
       ? undefined
       : data.items[position - data.leading];
@@ -67,7 +67,7 @@ export class DeclaredItems<T> {
       this.patch.set(key, entry);
       return;
     }
-    const position = data.index.positions.get(key);
+    const position = data.index.get(key);
     const at = position === undefined ? -1 : position - data.leading;
     if (at < 0 || at >= data.items.length)
       throw new Error("declared snapshot cannot add an item");
@@ -75,36 +75,27 @@ export class DeclaredItems<T> {
     data.heights[at] = entry.height;
   }
 
-  forEach(
-    visit: (item: T, height: number, key: string) => void,
-    unchanged?: DeclaredItems<T>,
-  ): void {
+  forEach(visit: (item: T, height: number, key: string) => void): void {
     const data = this.snapshot;
     if (!data) {
       for (const [key, entry] of this.patch)
         visit(entry.item, entry.height, key);
       return;
     }
-    const prev = unchanged?.snapshot ?? null;
-    const sameOrder =
-      prev !== null &&
-      prev.index === data.index &&
-      prev.leading === data.leading &&
-      prev.items.length === data.items.length;
-    for (let at = 0; at < data.items.length; at++) {
-      const item = data.items[at] as T;
-      const height = data.heights[at] as number;
-      const key = data.index.keys[at + data.leading] as string;
-      if (
-        prev !== null &&
-        at < prev.items.length &&
-        prev.items[at] === item &&
-        prev.heights[at] === height &&
-        (sameOrder || prev.index.keys[at + prev.leading] === key)
-      )
-        continue;
-      visit(item, height, key);
-    }
+    for (let at = 0; at < data.items.length; at++)
+      visit(
+        data.items[at] as T,
+        data.heights[at] as number,
+        data.index.keys[at + data.leading] as string,
+      );
+  }
+
+  /** Land a snapshot's heights on a geometry that holds the same key order. */
+  land(geometry: {
+    declare(heights: Float64Array, leading: number): void;
+  }): void {
+    const data = this.snapshot;
+    if (data) geometry.declare(data.heights, data.leading);
   }
 
   /**

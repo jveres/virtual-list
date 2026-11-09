@@ -7,6 +7,16 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## November 9 runtime snapshot audit
+
+The [snapshot performance and clean code audit](runtime-snapshot-audit-2026-11-09.md)
+removes per-change work that grew with the list: append chains share one key
+map, appended keys validate against the tail only, and declared snapshots land
+their heights in one pass. In Firefox, measured appends improve by 44%,
+declared page appends by 66%, declared boot by 33%, and mid-list declared
+changes by 20%; streaming and scrolling are unchanged. Reachability and clone
+scans stay clean, and the A/B harness is now a repository tool.
+
 ## October 22 clean code audit
 
 The [post-Highlights audit](clean-code-audit-2026-10-22.md) corrects current

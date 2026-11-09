@@ -50,13 +50,27 @@ describe("declared snapshot ownership", () => {
       });
       expect(keys).toEqual(["a", "b"]);
 
-      const changedKeys: string[] = [];
-      pending.forEach((_, __, key) => {
-        changedKeys.push(key);
-      }, committed);
-      expect(changedKeys).toEqual(["b"]);
+      const landed: [number[], number][] = [];
+      pending.land({
+        declare: (heights, leading) => landed.push([[...heights], leading]),
+      });
+      expect(landed).toEqual([[[40, 70.5], Number(start)]]);
     },
   );
+
+  it("should land nothing from a patch", () => {
+    const patch = new DeclaredItems<{ id: string }>();
+    patch.set("a", { item: { id: "a" }, height: 40 });
+    let landed = 0;
+
+    patch.land({
+      declare: () => {
+        landed += 1;
+      },
+    });
+
+    expect(landed).toBe(0);
+  });
 
   it("checks whether declared heights shift before an anchor index in snapshot and patch modes", () => {
     const items = [{ id: "a" }, { id: "b" }, { id: "c" }];
@@ -68,7 +82,7 @@ describe("declared snapshot ownership", () => {
       Float64Array.from([40, 60, 80]),
     );
     const geometry = {
-      indexOf: (key: string) => index.positions.get(key) ?? -1,
+      indexOf: (key: string) => index.get(key) ?? -1,
       heightAt: (at: number) => [24, 40, 50, 80][at] ?? 0,
     };
 

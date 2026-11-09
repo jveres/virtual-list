@@ -7379,6 +7379,39 @@ describe("declared heights", () => {
     },
   );
 
+  it.each([
+    ["twice in the appended tail", [message(6), message(7), message(6)], "m6"],
+    ["after a reordered tail", [message(7), message(5), message(2)], "m2"],
+  ])(
+    "should reject a key repeated %s and keep accepting appends",
+    (_, tail, duplicate) => {
+      const items = range(0, 6);
+      const h = mount(items, { boot: "start", itemHeight: () => 100 });
+
+      expect(() => h.list.setItems([...items.slice(0, 5), ...tail])).toThrow(
+        `duplicate key "${duplicate}"`,
+      );
+
+      expect(h.list.state.count).toBe(6);
+      h.list.setItems([...items, message(6), message(7)]);
+      expect(h.list.state.count).toBe(8);
+      expect(h.list.positionOf("m7")).toEqual({ top: 700, height: 100 });
+      h.list.dispose();
+    },
+  );
+
+  it("should accept a tail key that the replaced tail of the previous order held", () => {
+    const items = range(0, 6);
+    const h = mount(items, { boot: "start", itemHeight: () => 100 });
+
+    h.list.setItems([...items.slice(0, 3), message(5), message(4)]);
+
+    expect(h.list.state.count).toBe(5);
+    expect(h.list.positionOf("m5")).toEqual({ top: 300, height: 100 });
+    expect(h.list.positionOf("m4")).toEqual({ top: 400, height: 100 });
+    h.list.dispose();
+  });
+
   it.each([false, true])(
     "should reject duplicate snapshot keys before rendering and preserve committed data (declared=%s)",
     (declared) => {

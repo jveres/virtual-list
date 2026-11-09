@@ -141,7 +141,8 @@ The runtime lives under `src/`:
   kernel: capture → mutate → resolve transactions, shared immutable key orders,
   anchor policies, and the pin-to-top reserve.
 - `declared-items.ts` — snapshot and patch storage for declared-height items,
-  sharing the key index and supporting allocation-free prefix and diff scans.
+  sharing the key index and landing snapshot heights on the geometry in one
+  pass.
 - `positioned-geometry.ts` — geometry for host-positioned (masonry) layouts
   with declared placement.
 - `follow.ts` — chat follow intent, reply-start limits, and catch-up policy

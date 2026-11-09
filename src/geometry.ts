@@ -83,11 +83,12 @@ interface Capture {
 const EPSILON = 0.5;
 /** "At the end" tolerance; matches the runtime's AT_EDGE_PX. */
 const AT_END_EPSILON = 1;
+/** A bulk declaration changing more than one height in this many rebuilds the offsets. */
+const REBUILD_RATIO = 16;
 
 export class Geometry {
   private order = new KeyIndex([]);
   private keys = this.order.keys;
-  private indexByKey = this.order.positions;
   private tree = new FenwickTree(new Float64Array(0));
   private positioned: PositionedGeometry | null = null;
   /** Learned heights at the current key indices; zero means unmeasured. */
@@ -135,7 +136,7 @@ export class Geometry {
   }
 
   indexOf(key: string): number {
-    return this.indexByKey.get(key) ?? -1;
+    return this.order.get(key) ?? -1;
   }
 
   /** Learned height at `index`, or the (validated) estimate for unseen keys. */
@@ -147,7 +148,7 @@ export class Geometry {
 
   /** Learned height, or the (validated) estimate for unseen keys. */
   heightOf(key: string): number {
-    const index = this.indexByKey.get(key);
+    const index = this.order.get(key);
     return index === undefined ? this.estimate(key) : this.heightAt(index);
   }
 
@@ -162,7 +163,7 @@ export class Geometry {
   }
 
   isMeasured(key: string): boolean {
-    const index = this.indexByKey.get(key);
+    const index = this.order.get(key);
     return index !== undefined && this.heights[index] !== 0;
   }
 
@@ -175,7 +176,7 @@ export class Geometry {
 
   /** Content-space top of the item; `indexOf(key) === -1` yields -1. */
   offsetOf(key: string): number {
-    const index = this.indexByKey.get(key);
+    const index = this.order.get(key);
     return index === undefined ? -1 : this.offsetAt(index);
   }
 
@@ -360,10 +361,9 @@ export class Geometry {
       if (this.order.matches(nextKeys.keys)) {
         this.order = nextKeys;
         this.keys = nextKeys.keys;
-        this.indexByKey = nextKeys.positions;
         return;
       }
-      if (this.order.prefixes(nextKeys.keys)) {
+      if (this.order.precedes(nextKeys)) {
         this.appendKeys(nextKeys);
         return;
       }
@@ -380,12 +380,12 @@ export class Geometry {
     // intact, never a half-updated one.
     const order =
       nextKeys instanceof KeyIndex ? nextKeys : new KeyIndex(nextKeys);
-    const { keys, positions: indexByKey } = order;
+    const keys = order.keys;
     const sizes = new Float64Array(keys.length);
     const heights = new Float64Array(keys.length);
     for (let index = 0; index < keys.length; index++) {
       const key = keys[index] as string;
-      const previous = this.indexByKey.get(key);
+      const previous = this.order.get(key);
       const learned =
         previous === undefined ? 0 : (this.heights[previous] as number);
       heights[index] = learned;
@@ -399,8 +399,8 @@ export class Geometry {
     // index) drops the pin.
     let pinned = this.pinnedKey;
     const pinnedInset = this.pinnedInsetPx;
-    if (pinned !== null && !indexByKey.has(pinned)) {
-      const index = this.indexByKey.get(pinned) ?? -1;
+    if (pinned !== null && !order.has(pinned)) {
+      const index = this.order.get(pinned) ?? -1;
       const replacement = index >= 0 ? keys[index] : undefined;
       let prefixMatches = true;
       for (let i = 0; i < index; i += 1) {
@@ -411,13 +411,13 @@ export class Geometry {
       }
       const inPlace =
         replacement !== undefined &&
-        !this.indexByKey.has(replacement) &&
+        !this.order.has(replacement) &&
         prefixMatches;
       pinned = inPlace ? (replacement as string) : null;
       // A host-named replacement is authoritative even when separators or
       // other prefix rows changed. Preserve the pin, not just this commit's
       // scroll offset, so later shorter versions can regrow trailing space.
-      if (replacementAnchor && indexByKey.has(replacementAnchor.key)) {
+      if (replacementAnchor && order.has(replacementAnchor.key)) {
         // The reading offset can be lower than the pin's landing inset.
         // Preserve the latter so the replacement can still scroll to the
         // top even when the user switched it halfway down the viewport.
@@ -427,7 +427,6 @@ export class Geometry {
 
     this.order = order;
     this.keys = keys;
-    this.indexByKey = indexByKey;
     this.tree = tree;
     this.heights = heights;
     this.pin(pinned, pinnedInset);
@@ -452,7 +451,6 @@ export class Geometry {
     this.heights = heights;
     this.order = order;
     this.keys = order.keys;
-    this.indexByKey = order.positions;
   }
 
   /**
@@ -462,11 +460,52 @@ export class Geometry {
    * sub-pixel deltas) is the DOM runtime's concern, not the kernel's.
    */
   measure(key: string, height: number): void {
-    const index = this.indexByKey.get(key);
+    const index = this.order.get(key);
     if (index === undefined || !Number.isFinite(height) || height <= 0) return;
-    const delta = height - (this.heights[index] || this.estimate(key));
+    this.learn(index, height);
+  }
+
+  private learn(index: number, height: number): void {
+    const delta =
+      height -
+      (this.heights[index] || this.estimate(this.keys[index] as string));
     this.heights[index] = height;
     if (delta !== 0) this.tree.add(index, delta);
+  }
+
+  /**
+   * Commit the learned heights of the consecutive keys from `leading` on, in
+   * one pass. A few changes update the offsets in place; many rebuild them,
+   * which costs one linear fold instead of a tree walk per key. The caller
+   * validates the heights (finite and > 0).
+   */
+  declare(heights: Float64Array, leading: number): void {
+    const own = this.heights;
+    const count = Math.min(heights.length, own.length - leading);
+    let changed = 0;
+    for (let at = 0; at < count; at++)
+      if (own[at + leading] !== heights[at]) changed += 1;
+    if (changed === 0) return;
+    if (changed * REBUILD_RATIO < own.length) {
+      for (let at = 0; at < count; at++)
+        if (own[at + leading] !== heights[at])
+          this.learn(at + leading, heights[at] as number);
+      return;
+    }
+    // Estimates are read before any state moves, as in `setKeys`.
+    const sizes = new Float64Array(own.length);
+    for (let index = 0; index < own.length; index++) {
+      const at = index - leading;
+      sizes[index] =
+        at >= 0 && at < count
+          ? (heights[at] as number)
+          : own[index] || this.estimate(this.keys[index] as string);
+    }
+    this.tree = new FenwickTree(sizes);
+    own.set(
+      count === heights.length ? heights : heights.subarray(0, count),
+      leading,
+    );
   }
 
   /**
@@ -475,7 +514,7 @@ export class Geometry {
    * reserve then drains only once the viewport no longer stands on it (I5).
    */
   pin(key: string | null, inset = 0): void {
-    this.pinnedKey = key !== null && this.indexByKey.has(key) ? key : null;
+    this.pinnedKey = key !== null && this.order.has(key) ? key : null;
     this.pinnedInsetPx =
       this.pinnedKey !== null && Number.isFinite(inset) ? inset : 0;
   }
@@ -525,11 +564,11 @@ export class Geometry {
     if (
       mode === "anchor" &&
       target > this.maxScrollTop(viewport.height) &&
-      ((capture.target !== null && this.indexByKey.has(capture.target.key)) ||
+      ((capture.target !== null && this.order.has(capture.target.key)) ||
         (capture.policy === "viewport" &&
           capture.retainViewportReserve &&
           capture.anchor !== null &&
-          this.indexByKey.has(capture.anchor.key)))
+          this.order.has(capture.anchor.key)))
     ) {
       this.reservePx = Math.max(
         this.reservePx,
@@ -556,7 +595,7 @@ export class Geometry {
     // replacements preserve the viewport even at the end.
     if (!capture.atEnd) return "anchor";
     return capture.oldOrder === this.order ||
-      capture.oldOrder.prefixes(this.keys)
+      capture.oldOrder.precedes(this.order)
       ? "end"
       : "anchor";
   }
@@ -565,7 +604,7 @@ export class Geometry {
     // A host-named anchor, when its key exists.
     const target = capture.target;
     if (target !== null) {
-      const targetIndex = this.indexByKey.get(target.key);
+      const targetIndex = this.order.get(target.key);
       if (targetIndex !== undefined) {
         const top = this.offsetAt(targetIndex);
         let offset = target.offset;
@@ -596,7 +635,7 @@ export class Geometry {
     const anchor = capture.anchor;
     if (anchor === null) return null;
 
-    const anchorIndex = this.indexByKey.get(anchor.key);
+    const anchorIndex = this.order.get(anchor.key);
     if (anchorIndex !== undefined) {
       // The in-row offset is kept while the row still reaches it. A row
       // that shrank under the viewport's offset into it keeps the slice the
@@ -629,7 +668,7 @@ export class Geometry {
     for (let i = anchor.oldIndex + 1; i < capture.oldKeys.length; i++) {
       const key = capture.oldKeys[i];
       if (key !== undefined) {
-        const nextIndex = this.indexByKey.get(key);
+        const nextIndex = this.order.get(key);
         if (nextIndex !== undefined) {
           const offset = Math.min(anchor.offset, this.heightAt(nextIndex));
           return this.offsetAt(nextIndex) + offset;
@@ -641,7 +680,7 @@ export class Geometry {
     for (let i = anchor.oldIndex - 1; i >= 0; i--) {
       const key = capture.oldKeys[i];
       if (key !== undefined) {
-        const prevIndex = this.indexByKey.get(key);
+        const prevIndex = this.order.get(key);
         if (prevIndex !== undefined) {
           return this.offsetAt(prevIndex) + this.heightAt(prevIndex);
         }
