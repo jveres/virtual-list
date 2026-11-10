@@ -9,11 +9,7 @@ import {
 } from "./geometry";
 import { KeyIndex } from "./key-index";
 import { type Glide, startNativeGlide, stopNativeScroll } from "./native-glide";
-import {
-  type GeometryWindow,
-  PositionedGeometry,
-  type PositionedItem,
-} from "./positioned-geometry";
+import { type GeometryWindow, PositionedGeometry } from "./positioned-geometry";
 import { type Edge, ReachController } from "./reach";
 import {
   createScrollSettleController,
@@ -82,7 +78,8 @@ const INSERTION_SCAN = 64;
 
 const slotKey = (edge: Edge, key: string): string =>
   `${SLOT_PREFIX}${edge}:${key}`;
-const isSlotKey = (key: string): boolean => key.startsWith(SLOT_PREFIX);
+const isSlotKey = (key: string): boolean =>
+  key.charCodeAt(0) === 0 && key.startsWith(SLOT_PREFIX);
 
 function pixelRatio(): number {
   const ratio = globalThis.devicePixelRatio;
@@ -254,8 +251,11 @@ export function createVirtualList<T>(
       ? requestedOverscan
       : Math.max(MIN_OVERSCAN_PX, viewport.clientHeight);
 
+  let passRatio = 0;
+  const currentRatio = (): number => passRatio || pixelRatio();
+
   /** I0: whole CSS pixels at integral ratios, the device grid otherwise. */
-  function quantize(height: number, ratio = pixelRatio()): number {
+  function quantize(height: number, ratio = currentRatio()): number {
     if (!place && Number.isInteger(ratio))
       return Math.max(1, Math.ceil(height - HEIGHT_NOISE));
     return Math.max(
@@ -264,11 +264,11 @@ export function createVirtualList<T>(
     );
   }
 
-  function declaredHeight(item: T, ratio?: number): number {
+  function declaredHeight(item: T): number {
     const height = heightOf?.(item);
     if (height === undefined || !Number.isFinite(height) || height <= 0)
       throw new RangeError(`item height must be finite and > 0, got ${height}`);
-    return quantize(height, ratio);
+    return quantize(height);
   }
 
   // --- Committed state ------------------------------------------------------
@@ -306,7 +306,7 @@ export function createVirtualList<T>(
   let committing: Pending<T> | null = null;
   // Initial source ownership ends with this copy. Callbacks retain options,
   // so keeping its input array would pin the first snapshot after replacement.
-  let lastItems: T[] = [...initialItems];
+  let lastItems: T[] = initialItems.slice();
   let desiredIndex = geometry.keyIndex;
   let desiredLeading = 0;
   let revision = 0;
@@ -402,7 +402,10 @@ export function createVirtualList<T>(
    */
   function syncCanvasHeight(totalSize: number, floor: boolean): void {
     // A native canvas takes its height from its flow, for the same reason.
-    if (!native) canvas.style.height = `${totalSize}px`;
+    if (!native) {
+      const height = `${totalSize}px`;
+      if (canvas.style.height !== height) canvas.style.height = height;
+    }
     // The pin's shortfall grows in the same layout as its viewport.
     const pinTop = geometry.pinTop;
     const minHeight =
@@ -449,7 +452,10 @@ export function createVirtualList<T>(
       return;
     }
     const mark = outer === null ? 0 : failures.length;
-    if (outer === null) heightMemo = null;
+    if (outer === null) {
+      heightMemo = null;
+      passRatio = pixelRatio();
+    }
     const own: Task[] = [];
     scope = own;
     openScopes.push(own);
@@ -467,6 +473,7 @@ export function createVirtualList<T>(
       if (outer !== null) outer.push(...own);
       else {
         scope = null;
+        passRatio = 0;
         while (!disposed && own.length > 0) {
           const task = own.shift() as Task;
           try {
@@ -480,7 +487,10 @@ export function createVirtualList<T>(
     } finally {
       openScopes.pop();
       scope = outer;
-      if (outer === null) heightMemo = null;
+      if (outer === null) {
+        heightMemo = null;
+        passRatio = 0;
+      }
     }
   }
 
@@ -968,9 +978,9 @@ export function createVirtualList<T>(
 
   function measureRows(list: readonly Row<T>[]): void {
     const heights = readHeights(list);
-    list.forEach((row, index) => {
-      commitHeight(row, heights[index] as number);
-    });
+    for (let index = 0; index < list.length; index++) {
+      commitHeight(list[index] as Row<T>, heights[index] as number);
+    }
   }
 
   /** Detach hidden committed rows the window did not reveal. */
@@ -1126,47 +1136,111 @@ export function createVirtualList<T>(
   document.addEventListener("visibilitychange", onVisibilityChange);
 
   // --- Staging: the desired state -------------------------------------------
-  function indexItems(items: readonly T[], withHeights: boolean) {
-    const keys: string[] = [];
+  function indexItems(
+    items: readonly T[],
+    withHeights: boolean,
+    startKey?: string,
+    endKey?: string,
+  ) {
+    const leadingSlot = startKey !== undefined ? 1 : 0;
+    const trailingSlot = endKey !== undefined ? 1 : 0;
+    const keys = new Array<string>(items.length + leadingSlot + trailingSlot);
+    if (startKey !== undefined) keys[0] = startKey;
+    if (endKey !== undefined) keys[items.length + leadingSlot] = endKey;
     const heights =
       withHeights && declared ? new Float64Array(items.length) : null;
     const prior = desiredIndex;
-    const leading = desiredLeading;
-    /** The keys added once the order departs from the owned one. */
+    const priorKeys = prior.keys;
+    const priorLeading = desiredLeading;
+    const priorTrailing =
+      priorKeys.length > priorLeading &&
+      isSlotKey(priorKeys[priorKeys.length - 1] as string)
+        ? 1
+        : 0;
+    const priorContentLen = priorKeys.length - priorLeading - priorTrailing;
+    const canExtendPrior =
+      priorContentLen > 0 &&
+      priorTrailing === 0 &&
+      leadingSlot === priorLeading &&
+      (!leadingSlot || startKey === priorKeys[0]);
+    /** Appended tail validation when extending `prior` in place. */
     let seen: Set<string> | null = null;
-    /** How many leading items match the owned order, key for key. */
-    let matched = 0;
-    // Use one device grid within this synchronous declaration pass.
-    const ratio = heights ? pixelRatio() : undefined;
+    /** Full owned index map built directly on boot or non-append divergence. */
+    let positions: Map<string, number> | null = null;
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as T;
       const key = keyOf(item);
-      // A matching prefix of the owned key order is already valid and
-      // unique. Later keys are checked against that prefix through its
-      // index, and against each other: an append validates only its tail.
-      if (seen || prior.keys[i + leading] !== key) {
+      // A matching prefix of the owned key order is already valid and unique.
+      if (positions !== null) {
         if (isSlotKey(key))
           throw new Error(
             `item key "${key}" uses the reserved edge-slot prefix`,
           );
-        if (!seen) {
-          seen = new Set();
-          matched = i;
-        }
-        const before = matched > 0 ? prior.get(key) : undefined;
+        const pos = i + leadingSlot;
+        const size = positions.size;
+        positions.set(key, pos);
+        if (positions.size === size) throw new Error(`duplicate key "${key}"`);
+      } else if (seen !== null) {
+        if (isSlotKey(key))
+          throw new Error(
+            `item key "${key}" uses the reserved edge-slot prefix`,
+          );
+        const before = prior.get(key);
         const size = seen.size;
         if (
           (before !== undefined &&
-            before >= leading &&
-            before - leading < matched) ||
+            before >= priorLeading &&
+            before < priorLeading + priorContentLen) ||
           seen.add(key).size === size
         )
           throw new Error(`duplicate key "${key}"`);
+      } else if (i >= priorContentLen || priorKeys[i + priorLeading] !== key) {
+        if (isSlotKey(key))
+          throw new Error(
+            `item key "${key}" uses the reserved edge-slot prefix`,
+          );
+        if (i >= priorContentLen && canExtendPrior) {
+          seen = new Set();
+          const before = prior.get(key);
+          if (
+            before !== undefined &&
+            before >= priorLeading &&
+            before < priorLeading + priorContentLen
+          )
+            throw new Error(`duplicate key "${key}"`);
+          seen.add(key);
+        } else {
+          positions = new Map<string, number>();
+          if (startKey !== undefined) positions.set(startKey, 0);
+          for (let k = 0; k < i; k++)
+            positions.set(keys[k + leadingSlot] as string, k + leadingSlot);
+          const pos = i + leadingSlot;
+          const size = positions.size;
+          positions.set(key, pos);
+          if (positions.size === size)
+            throw new Error(`duplicate key "${key}"`);
+        }
       }
-      keys.push(key);
-      if (heights) heights[i] = declaredHeight(item, ratio);
+      keys[i + leadingSlot] = key;
+      if (heights) heights[i] = declaredHeight(item);
     }
-    return { keys, heights, samePrefix: seen === null };
+    if (positions !== null && endKey !== undefined) {
+      positions.set(endKey, items.length + leadingSlot);
+    }
+    const exactPrior =
+      positions === null &&
+      seen === null &&
+      items.length === priorContentLen &&
+      leadingSlot === priorLeading &&
+      trailingSlot === priorTrailing &&
+      (!leadingSlot || startKey === priorKeys[0]) &&
+      (!trailingSlot || endKey === priorKeys[priorKeys.length - 1]);
+    return {
+      keys: exactPrior ? priorKeys : keys,
+      heights,
+      positions,
+      ownedKeys: !exactPrior,
+    };
   }
 
   /** Omitted anchors inherit the held intent; explicit ones replace it. */
@@ -1174,20 +1248,27 @@ export function createVirtualList<T>(
     keys: readonly string[],
     requested: AnchorRequest | undefined,
     previous: Pending<T> | null,
+    positions: Map<string, number> | null = null,
+    ownedKeys = false,
   ): Pending<T> {
     const named = typeof requested === "object" ? requested : null;
-    const index =
-      keys === geometry.keyIndex.keys
-        ? geometry.keyIndex
-        : keys === desiredIndex.keys
-          ? desiredIndex
-          : geometry.keyIndex.matches(keys)
-            ? geometry.keyIndex
-            : desiredIndex.matches(keys)
-              ? desiredIndex
-              : (desiredIndex.extend(keys) ??
-                geometry.keyIndex.extend(keys) ??
-                new KeyIndex(keys));
+    let index: KeyIndex;
+    if (keys === geometry.keyIndex.keys) {
+      index = geometry.keyIndex;
+    } else if (keys === desiredIndex.keys) {
+      index = desiredIndex;
+    } else if (geometry.keyIndex.matches(keys)) {
+      index = geometry.keyIndex;
+    } else if (positions !== null) {
+      index = KeyIndex.fromOwned(keys, positions);
+    } else if (desiredIndex.matches(keys)) {
+      index = desiredIndex;
+    } else {
+      index =
+        desiredIndex.extend(keys, ownedKeys) ??
+        geometry.keyIndex.extend(keys, ownedKeys) ??
+        new KeyIndex(keys, undefined, ownedKeys);
+    }
     return {
       index,
       keys: index.keys,
@@ -1231,40 +1312,79 @@ export function createVirtualList<T>(
   function preparePositioned(
     entries: DeclaredItems<T> | null,
   ): PositionedGeometry | null {
-    if (!place || !entries?.size) return null;
-    const placed: PositionedItem[] = [];
-    const ratio = pixelRatio();
-    let origin = Number.POSITIVE_INFINITY;
-    entries.forEach((item, height) => {
-      const position = place(item);
-      if (position === null) return;
-      if (!Number.isFinite(position.top))
-        throw new RangeError("item top must be finite");
-      // Snap in the shared coordinate system, before rebasing (I0).
-      const top = toDevicePixel(position.top, ratio);
-      origin = Math.min(origin, top);
-      placed.push({ top, lane: position.lane, height });
-    });
-    if (placed.length === 0) return null;
-    if (placed.length !== entries.size)
-      throw new Error("a positioned snapshot must place every item or none");
-    origin = positionedOrigin(origin, ratio);
+    const count = entries?.size ?? 0;
+    if (!place || count === 0 || !entries) return null;
+    const ratio = currentRatio();
     const start = edgeSlots.start;
     const end = edgeSlots.end;
-    const leading = start ? quantize(start.height, ratio) : 0;
-    let bottom = leading;
-    for (const item of placed) {
-      item.top += leading - origin;
-      bottom = Math.max(bottom, item.top + item.height);
-    }
-    if (start) placed.unshift({ top: 0, height: leading, lane: 0 });
-    if (end)
-      placed.push({
-        top: bottom,
-        height: quantize(end.height, ratio),
-        lane: 0,
+    const leadingSlot = start ? 1 : 0;
+    const trailingSlot = end ? 1 : 0;
+    const totalCount = count + leadingSlot + trailingSlot;
+    const tops = new Float64Array(totalCount);
+    const heightsBuf = new Float64Array(totalCount);
+    const lanes = new Float64Array(totalCount);
+    let placedCount = 0;
+    let origin = Number.POSITIVE_INFINITY;
+    const cols = entries.columns();
+    if (cols) {
+      const { items, heights } = cols;
+      for (let i = 0; i < count; i++) {
+        const position = place(items[i] as T);
+        if (position === null) continue;
+        if (!Number.isFinite(position.top))
+          throw new RangeError("item top must be finite");
+        // Snap in the shared coordinate system, before rebasing (I0).
+        const top = toDevicePixel(position.top, ratio);
+        if (top < origin) origin = top;
+        const at = leadingSlot + placedCount;
+        tops[at] = top;
+        heightsBuf[at] = heights[i] as number;
+        lanes[at] =
+          typeof position.lane === "number" ? position.lane : Number.NaN;
+        placedCount += 1;
+      }
+    } else {
+      entries.forEach((item, height) => {
+        const position = place(item);
+        if (position === null) return;
+        if (!Number.isFinite(position.top))
+          throw new RangeError("item top must be finite");
+        const top = toDevicePixel(position.top, ratio);
+        if (top < origin) origin = top;
+        const at = leadingSlot + placedCount;
+        tops[at] = top;
+        heightsBuf[at] = height;
+        lanes[at] =
+          typeof position.lane === "number" ? position.lane : Number.NaN;
+        placedCount += 1;
       });
-    return new PositionedGeometry(placed);
+    }
+    if (placedCount === 0) return null;
+    if (placedCount !== count)
+      throw new Error("a positioned snapshot must place every item or none");
+    origin = positionedOrigin(origin, ratio);
+    const leading = start ? quantize(start.height) : 0;
+    const shift = leading - origin;
+    let bottom = leading;
+    const endPlaced = leadingSlot + placedCount;
+    for (let at = leadingSlot; at < endPlaced; at++) {
+      const top = (tops[at] as number) + shift;
+      tops[at] = top;
+      const itemBottom = top + (heightsBuf[at] as number);
+      if (itemBottom > bottom) bottom = itemBottom;
+    }
+    if (start) {
+      tops[0] = 0;
+      heightsBuf[0] = leading;
+      lanes[0] = 0;
+    }
+    if (end) {
+      const last = totalCount - 1;
+      tops[last] = bottom;
+      heightsBuf[last] = quantize(end.height);
+      lanes[last] = 0;
+    }
+    return PositionedGeometry.fromColumns(tops, heightsBuf, lanes);
   }
 
   /**
@@ -1394,9 +1514,9 @@ export function createVirtualList<T>(
       }
       // Every render first, then one layout for every read.
       const heights = readHeights(fresh);
-      fresh.forEach((row, index) => {
-        row.height = quantize(heights[index] as number);
-      });
+      for (let index = 0; index < fresh.length; index++) {
+        (fresh[index] as Row<T>).height = quantize(heights[index] as number);
+      }
       if (disposed) throw new Abort();
     } catch (error) {
       for (const row of built) destroyRow(row);
@@ -1440,28 +1560,18 @@ export function createVirtualList<T>(
     jobRows?: Map<string, Row<T>>,
   ): Pending<T> | null {
     const previous = pending;
-    const { keys, heights, samePrefix } = indexItems(items, true);
     const start = edgeSlots.start;
     const end = edgeSlots.end;
     const leading = start ? 1 : 0;
-    const trailing = end ? 1 : 0;
     const startKey = start ? slotKey("start", start.key) : undefined;
     const endKey = end ? slotKey("end", end.key) : undefined;
-    const priorKeys = desiredIndex.keys;
-    let nextKeys: readonly string[];
-    if (
-      samePrefix &&
-      items.length + leading + trailing === priorKeys.length &&
-      (!start || priorKeys[0] === startKey) &&
-      (!end || priorKeys[priorKeys.length - 1] === endKey)
-    ) {
-      nextKeys = priorKeys;
-    } else {
-      if (startKey !== undefined) keys.unshift(startKey);
-      if (endKey !== undefined) keys.push(endKey);
-      nextKeys = keys;
-    }
-    const p = newPending(nextKeys, requested, previous);
+    const { keys, heights, positions, ownedKeys } = indexItems(
+      items,
+      true,
+      startKey,
+      endKey,
+    );
+    const p = newPending(keys, requested, previous, positions, ownedKeys);
     p.declared = heights
       ? new DeclaredItems(p.index, leading, items, heights)
       : null;
@@ -1681,7 +1791,9 @@ export function createVirtualList<T>(
     const measured = dirtyRows.size > 0 ? [...dirtyRows] : [];
     const heights = readHeights(measured);
     const structural = keysChanged || (p?.staged.size ?? 0) > 0;
+    const hadDeferred = (p?.deferred.size ?? 0) > 0;
     let glideFollow = false;
+    let steadyViewport = false;
     // Native flow: host hooks wait until the window is whole again (F5).
     holdHooks(() => {
       for (const row of doomed) destroyRow(row);
@@ -1739,7 +1851,7 @@ export function createVirtualList<T>(
       const target =
         result.mode === "end"
           ? Math.ceil(resolvedTop)
-          : toDevicePixel(resolvedTop);
+          : toDevicePixel(resolvedTop, currentRatio());
       const moves = Math.abs(target - before.scrollTop) > EPSILON_PX;
       // Growth entirely above the reading position (a slot or row inserted
       // at the top) moves the end by exactly the anchor row's shift. Landing
@@ -1785,15 +1897,28 @@ export function createVirtualList<T>(
         o.write !== false &&
         !glideFollow &&
         Math.abs(viewport.scrollTop - target) > EPSILON_PX;
+      let wroteScroll = false;
       if (!glideFollow && (moves || engineMoved)) {
-        if (o.write !== false) writeScrollTop(target);
+        if (o.write !== false) {
+          writeScrollTop(target);
+          wroteScroll = true;
+        }
         // Mid-phase, the engine moves the viewport: expect it, so the settle
         // sensor never reads the adjustment as user input.
         else if (native) recordScrollAdjustment(target);
       }
+      steadyViewport =
+        !native &&
+        !wroteScroll &&
+        !moves &&
+        before.scrollTop >= 0 &&
+        before.scrollTop <= geometry.maxScrollTop(before.height) &&
+        doomed.length === 0 &&
+        !hadDeferred &&
+        (measured.length === 0 || !options.followStart);
     });
     if (disposed) return;
-    reconcileAndPublish();
+    reconcileAndPublish(steadyViewport ? before : undefined);
     if (disposed) return;
     if (glideFollow) startFollowGlide();
     else if (o.keepFollow && follow.armed)
@@ -2134,8 +2259,7 @@ export function createVirtualList<T>(
     host(() => reach.update(vp.scrollTop, maxTop));
   }
 
-  function reconcileAndPublish(): void {
-    const vp = viewportState();
+  function reconcileAndPublish(vp: GeometryViewport = viewportState()): void {
     const range = reconcileWindow(vp);
     if (!commitMounted()) publish(vp, range);
   }
@@ -2378,14 +2502,18 @@ export function createVirtualList<T>(
     if (index !== desiredIndex) {
       const leading = isSlotKey(index.keys[0] ?? "") ? 1 : 0;
       // An edge slot coming or going leaves the host's order as it was.
-      if (
-        snapshot.length !== lastItems.length ||
-        snapshot.some(
-          (_, at) =>
-            index.keys[at + leading] !== desiredIndex.keys[at + desiredLeading],
-        )
-      )
-        structure += 1;
+      let reordered = snapshot.length !== lastItems.length;
+      if (!reordered) {
+        const nextKeys = index.keys;
+        const prevKeys = desiredIndex.keys;
+        for (let at = 0; at < snapshot.length; at++) {
+          if (nextKeys[at + leading] !== prevKeys[at + desiredLeading]) {
+            reordered = true;
+            break;
+          }
+        }
+      }
+      if (reordered) structure += 1;
       desiredIndex = index;
       desiredLeading = leading;
     }
@@ -2425,7 +2553,7 @@ export function createVirtualList<T>(
     o: { anchor?: AnchorRequest; interrupt?: boolean } = {},
   ): void {
     if (disposed) return;
-    const snapshot = [...items];
+    const snapshot = items.slice();
     const anchor = ownAnchor(o.anchor);
     const interrupt = o.interrupt === true;
     if (defer(() => applyItems(snapshot, anchor, interrupt))) return;
@@ -2448,7 +2576,7 @@ export function createVirtualList<T>(
       throw new Error("updateItem cannot change an item's key");
     if (place) {
       // A positioned layout re-places every item.
-      const next = [...lastItems];
+      const next = lastItems.slice();
       next[index] = item;
       applyItems(next, anchor, false);
       return;
@@ -2505,7 +2633,7 @@ export function createVirtualList<T>(
       const item = declaredItems.itemOf(key) ?? rows.get(key)?.item;
       if (item !== undefined) protectedItems.push(item);
     }
-    return { items: [...lastItems], protectedItems };
+    return { items: lastItems.slice(), protectedItems };
   }
 
   /**
@@ -2841,7 +2969,7 @@ export function createVirtualList<T>(
               j.source = context.items;
             }
             if (!j && !declared && pending === null) {
-              const { keys } = indexItems(snapshot, false);
+              const { keys, positions } = indexItems(snapshot, false);
               const fresh: [string, T][] = [];
               for (let i = 0; i < keys.length; i++) {
                 const key = keys[i] as string;
@@ -2852,6 +2980,11 @@ export function createVirtualList<T>(
                 fresh.length > JOB_MIN_ROWS ||
                 (options.stage && fresh.length > 0)
               ) {
+                const indexMap = positions ?? new Map<string, number>();
+                if (!positions) {
+                  for (let i = 0; i < keys.length; i++)
+                    indexMap.set(keys[i] as string, i);
+                }
                 job = {
                   next: {
                     ...next,
@@ -2865,7 +2998,7 @@ export function createVirtualList<T>(
                   input: inputEpoch,
                   protectedKeys: new Set(context.protectedItems.map(keyOf)),
                   order: keys,
-                  index: new Map(keys.map((key, index) => [key, index])),
+                  index: indexMap,
                   fresh,
                   cursor: 0,
                   rows: new Map(),
@@ -3288,7 +3421,7 @@ export function createVirtualList<T>(
     if (disposed) return;
     const owned = ownSlot(slot);
     if (defer(() => setEdgeSlot(edge, owned))) return;
-    applyItems([...lastItems], undefined, false, {
+    applyItems(lastItems.slice(), undefined, false, {
       ...edgeSlots,
       [edge]: owned,
     });

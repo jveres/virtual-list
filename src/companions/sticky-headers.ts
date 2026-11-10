@@ -93,7 +93,8 @@ export function createStickyHeaders(
   let visible = false;
   let enabled = true;
   let disposed = false;
-  let hiddenInline: HTMLElement[] = [];
+  let hiddenActive: HTMLElement | null = null;
+  let hiddenIncoming: HTMLElement | null = null;
   let lastScroll: number | undefined;
 
   const headerTop = (ordinal: number): number => tops[ordinal] ?? 0;
@@ -132,9 +133,14 @@ export function createStickyHeaders(
   };
 
   const restoreInline = (): void => {
-    for (const element of hiddenInline)
-      element.classList.remove("vl-sticky-inline-hidden");
-    hiddenInline = [];
+    if (hiddenActive) {
+      hiddenActive.classList.remove("vl-sticky-inline-hidden");
+      hiddenActive = null;
+    }
+    if (hiddenIncoming) {
+      hiddenIncoming.classList.remove("vl-sticky-inline-hidden");
+      hiddenIncoming = null;
+    }
   };
 
   // Hide the pinned group's in-flow header (if mounted) so it doesn't show
@@ -145,21 +151,25 @@ export function createStickyHeaders(
     const incomingElement =
       next >= 0 ? (elementOf?.(keys[next] ?? "") ?? null) : null;
     if (disposed || !enabled) return;
-    if (
-      activeElement === (hiddenInline[0] ?? null) &&
-      incomingElement === (hiddenInline[1] ?? null)
-    )
+    if (activeElement === hiddenActive && incomingElement === hiddenIncoming)
       return;
-    const elements = [activeElement, incomingElement].filter(
-      (element): element is HTMLElement => element !== null,
-    );
-    for (const element of hiddenInline) {
-      if (!elements.includes(element))
-        element.classList.remove("vl-sticky-inline-hidden");
-    }
-    for (const element of elements)
-      element.classList.add("vl-sticky-inline-hidden");
-    hiddenInline = elements;
+    if (
+      hiddenActive &&
+      hiddenActive !== activeElement &&
+      hiddenActive !== incomingElement
+    )
+      hiddenActive.classList.remove("vl-sticky-inline-hidden");
+    if (
+      hiddenIncoming &&
+      hiddenIncoming !== activeElement &&
+      hiddenIncoming !== incomingElement
+    )
+      hiddenIncoming.classList.remove("vl-sticky-inline-hidden");
+    if (activeElement) activeElement.classList.add("vl-sticky-inline-hidden");
+    if (incomingElement)
+      incomingElement.classList.add("vl-sticky-inline-hidden");
+    hiddenActive = activeElement;
+    hiddenIncoming = incomingElement;
   };
 
   const show = (): void => {
@@ -247,27 +257,51 @@ export function createStickyHeaders(
     if (disposed) return;
     const scroll = scrollTop ?? viewport.scrollTop;
     // Missing runtime keys have no position. Keep them out of the ordered
-    // search while preserving the host's original rendering ordinals.
-    const headers = headerKeys().flatMap((key, ordinal) => {
+    // search while preserving the host's original rendering ordinals. Allocate
+    // replacement arrays only once a key, ordinal, or box actually differs.
+    const sourceKeys = headerKeys();
+    let nextKeys: string[] | null = null;
+    let nextTops: number[] | null = null;
+    let nextHeights: number[] | null = null;
+    let nextOrdinals: number[] | null = null;
+    let count = 0;
+    for (let ordinal = 0; ordinal < sourceKeys.length; ordinal++) {
+      const key = sourceKeys[ordinal] as string;
       const position = positionOf(key);
-      return position ? [{ key, ordinal, ...position }] : [];
-    });
-    const nextKeys = headers.map((header) => header.key);
-    const changed =
-      nextKeys.length !== keys.length ||
-      nextKeys.some(
-        (key, index) =>
-          key !== keys[index] ||
-          headers[index]?.ordinal !== ordinals[index] ||
-          headers[index]?.top !== tops[index] ||
-          headers[index]?.height !== heights[index],
-      );
-    if (changed) {
-      // The host can reuse and mutate its array between publications.
-      keys = [...nextKeys];
-      tops = headers.map((header) => header.top);
-      heights = headers.map((header) => header.height);
-      ordinals = headers.map((header) => header.ordinal);
+      if (!position) continue;
+      if (
+        nextKeys === null &&
+        (count >= keys.length ||
+          key !== keys[count] ||
+          ordinal !== ordinals[count] ||
+          position.top !== tops[count] ||
+          position.height !== heights[count])
+      ) {
+        nextKeys = keys.slice(0, count);
+        nextTops = tops.slice(0, count);
+        nextHeights = heights.slice(0, count);
+        nextOrdinals = ordinals.slice(0, count);
+      }
+      if (nextKeys !== null) {
+        nextKeys.push(key);
+        (nextTops as number[]).push(position.top);
+        (nextHeights as number[]).push(position.height);
+        (nextOrdinals as number[]).push(ordinal);
+      }
+      count += 1;
+    }
+    if (nextKeys === null && count !== keys.length) {
+      nextKeys = keys.slice(0, count);
+      nextTops = tops.slice(0, count);
+      nextHeights = heights.slice(0, count);
+      nextOrdinals = ordinals.slice(0, count);
+    }
+    if (nextKeys !== null) {
+      // Own fresh arrays so the host can reuse and mutate its key array.
+      keys = nextKeys;
+      tops = nextTops as number[];
+      heights = nextHeights as number[];
+      ordinals = nextOrdinals as number[];
       activeGroup = -1;
       clearIncoming();
     }

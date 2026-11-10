@@ -41,13 +41,66 @@ export class PositionedGeometry {
   private cachedBottom = Number.NaN;
   private orderedBottoms = true;
 
-  constructor(items: readonly PositionedItem[]) {
-    const lanes = new Map<number, number[]>();
-    this.tops = new Float64Array(items.length);
-    this.bottoms = new Float64Array(items.length);
+  constructor(items: readonly PositionedItem[]);
+  constructor(items: {
+    tops: Float64Array;
+    heights: Float64Array;
+    lanes: Float64Array;
+  });
+  constructor(
+    items:
+      | readonly PositionedItem[]
+      | { tops: Float64Array; heights: Float64Array; lanes: Float64Array },
+  ) {
+    let tops: Float64Array;
+    let heights: Float64Array;
+    let lanes: Float64Array;
+    if ("tops" in items) {
+      ({ tops, heights, lanes } = items);
+    } else {
+      const length = items.length;
+      tops = new Float64Array(length);
+      heights = new Float64Array(length);
+      lanes = new Float64Array(length);
+      for (let index = 0; index < length; index++) {
+        const item = items[index] as PositionedItem;
+        tops[index] = typeof item.top === "number" ? item.top : Number.NaN;
+        heights[index] =
+          typeof item.height === "number" ? item.height : Number.NaN;
+        lanes[index] = typeof item.lane === "number" ? item.lane : Number.NaN;
+      }
+    }
+    const built = PositionedGeometry.build(tops, heights, lanes);
+    this.tops = tops;
+    this.bottoms = heights;
+    this.lanes = built.lanes;
+    this.totalSize = built.totalSize;
+    this.orderedBottoms = built.orderedBottoms;
+  }
+
+  /** Build directly from owned columnar buffers (`heights` is overwritten with bottoms). */
+  static fromColumns(
+    tops: Float64Array,
+    heights: Float64Array,
+    lanes: Float64Array,
+  ): PositionedGeometry {
+    return new PositionedGeometry({ tops, heights, lanes });
+  }
+
+  private static build(
+    tops: Float64Array,
+    heightsOrBottoms: Float64Array,
+    laneNumbers: Float64Array,
+  ): { lanes: Lane[]; totalSize: number; orderedBottoms: boolean } {
+    const dense: (number[] | undefined)[] = [];
+    let sparse: Map<number, number[]> | null = null;
+    const groups: number[][] = [];
     let total = 0;
-    for (let index = 0; index < items.length; index++) {
-      const { top, height, lane } = items[index] as PositionedItem;
+    const length = tops.length;
+    for (let index = 0; index < length; index++) {
+      const top = tops[index] as number;
+      const height = heightsOrBottoms[index] as number;
+      const lane = laneNumbers[index] as number;
       const itemBottom = top + height;
       if (
         !Number.isFinite(top) ||
@@ -61,24 +114,36 @@ export class PositionedGeometry {
         throw new RangeError(
           "positioned items need finite non-negative tops, positive heights and non-negative integer lanes",
         );
-      let indices = lanes.get(lane);
-      if (indices === undefined) {
-        indices = [];
-        lanes.set(lane, indices);
+      let indices: number[] | undefined;
+      if (lane < 64) {
+        indices = dense[lane];
+        if (indices === undefined) {
+          indices = [];
+          dense[lane] = indices;
+          groups.push(indices);
+        }
+      } else {
+        sparse ??= new Map<number, number[]>();
+        indices = sparse.get(lane);
+        if (indices === undefined) {
+          indices = [];
+          sparse.set(lane, indices);
+          groups.push(indices);
+        }
       }
       indices.push(index);
       if (itemBottom > total) total = itemBottom;
-      this.tops[index] = top;
-      this.bottoms[index] = itemBottom;
+      heightsOrBottoms[index] = itemBottom;
     }
-    this.totalSize = total;
-    this.lanes = [];
-    for (const indices of lanes.values()) {
+    const lanes: Lane[] = [];
+    let orderedBottoms = true;
+    for (let g = 0; g < groups.length; g++) {
+      const indices = groups[g] as number[];
       let sorted = true;
       for (let i = 1; i < indices.length; i++) {
         if (
-          (this.tops[indices[i] as number] as number) <
-          (this.tops[indices[i - 1] as number] as number)
+          (tops[indices[i] as number] as number) <
+          (tops[indices[i - 1] as number] as number)
         ) {
           sorted = false;
           break;
@@ -86,25 +151,25 @@ export class PositionedGeometry {
       }
       if (!sorted) {
         indices.sort(
-          (a, b) =>
-            (this.tops[a] as number) - (this.tops[b] as number) || a - b,
+          (a, b) => (tops[a] as number) - (tops[b] as number) || a - b,
         );
       }
       const laneBottoms = new Float64Array(indices.length);
       let bottom = 0;
       for (let i = 0; i < indices.length; i++) {
-        const b = this.bottoms[indices[i] as number] as number;
-        if (b < bottom) this.orderedBottoms = false;
+        const b = heightsOrBottoms[indices[i] as number] as number;
+        if (b < bottom) orderedBottoms = false;
         if (b > bottom) bottom = b;
         laneBottoms[i] = bottom;
       }
-      this.lanes.push({
+      lanes.push({
         indices,
         start: 0,
         end: 0,
         bottoms: laneBottoms,
       });
     }
+    return { lanes, totalSize: total, orderedBottoms };
   }
 
   top(index: number): number {

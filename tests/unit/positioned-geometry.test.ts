@@ -557,4 +557,45 @@ describe("positioned geometry", () => {
       end: 1,
     });
   });
+
+  it("should build identical geometry from columnar buffers across dense and sparse lanes", () => {
+    const items = [
+      { top: 0, height: 80, lane: 0 },
+      { top: 10, height: 90, lane: 63 },
+      { top: 20, height: 70, lane: 64 },
+      { top: 30, height: 60, lane: 1000 },
+      { top: 90, height: 50, lane: 0 },
+      { top: 110, height: 40, lane: 1000 },
+    ];
+    const expected = new PositionedGeometry(items);
+    const fromCols = PositionedGeometry.fromColumns(
+      Float64Array.from(items.map((item) => item.top)),
+      Float64Array.from(items.map((item) => item.height)),
+      Float64Array.from(items.map((item) => item.lane)),
+    );
+
+    expect(fromCols.totalSize).toBe(expected.totalSize);
+    for (let index = 0; index < items.length; index++) {
+      expect(fromCols.top(index)).toBe(expected.top(index));
+    }
+    for (let top = 0; top <= 150; top += 15) {
+      expect(fromCols.window(top, top + 30).indices).toEqual(
+        expected.window(top, top + 30).indices,
+      );
+    }
+    expect(() =>
+      PositionedGeometry.fromColumns(
+        Float64Array.from([0]),
+        Float64Array.from([0]),
+        Float64Array.from([0]),
+      ),
+    ).toThrow(/height/);
+    expect(() =>
+      PositionedGeometry.fromColumns(
+        Float64Array.from([0]),
+        Float64Array.from([40]),
+        Float64Array.from([1.5]),
+      ),
+    ).toThrow(/lane/);
+  });
 });

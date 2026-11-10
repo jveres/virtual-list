@@ -24,7 +24,16 @@ export class DeclaredItems<T> {
     items: readonly T[] = [],
     heights = new Float64Array(0),
   ) {
-    if (index) this.snapshot = { index, leading, items: [...items], heights };
+    if (index)
+      this.snapshot = { index, leading, items: items.slice(), heights };
+  }
+
+  /** Direct columnar view when backed by a full snapshot. */
+  columns(): {
+    readonly items: readonly T[];
+    readonly heights: Float64Array;
+  } | null {
+    return this.snapshot;
   }
 
   get size(): number {
@@ -50,11 +59,15 @@ export class DeclaredItems<T> {
   }
 
   get(key: string): Declared<T> | undefined {
-    if (!this.snapshot) return this.patch.get(key);
-    const height = this.heightOf(key);
+    const data = this.snapshot;
+    if (!data) return this.patch.get(key);
+    const position = data.index.get(key);
+    if (position === undefined) return undefined;
+    const at = position - data.leading;
+    const height = data.heights[at];
     return height === undefined
       ? undefined
-      : { item: this.itemOf(key) as T, height };
+      : { item: data.items[at] as T, height };
   }
 
   has(key: string): boolean {

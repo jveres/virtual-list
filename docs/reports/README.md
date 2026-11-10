@@ -7,6 +7,19 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## November 10 runtime and companion hot-path audit
+
+The [runtime and companion hot-path audit](runtime-hot-path-audit-2026-11-10.md)
+profiles the core runtime and companions at `f18b0c6` and optimizes positioned
+columnar building, single-pass key indexing, sequential-run geometry splicing,
+indexed `createPagedWindow` retention, zero-allocation unchanged
+`createStickyHeaders` refreshes, and steady-viewport declared commits. In
+Firefox 157.0, live paging edits improve by 93%, declared prepends by 51%,
+positioned boots by 45%, declared boots by 30%, positioned updates and appends
+by 28–29%, declared appends by 27%, paging load/trims by 24%, mid-list declared
+edits by 22%, sticky headers by 20%, and declared single-item edits by 12%;
+sub-threshold scroll-mount bypassing (<1.5%) was reverted.
+
 ## November 9 runtime snapshot audit
 
 The [snapshot performance and clean code audit](runtime-snapshot-audit-2026-11-09.md)

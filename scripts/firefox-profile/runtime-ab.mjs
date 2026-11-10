@@ -87,12 +87,23 @@ export function summarize(trials) {
 async function runTrial(page, baselinePath, scenarios, rounds, warmup) {
   return page.evaluate(
     async ({ baselinePath, scenarios, rounds, warmup }) => {
-      const [baseline, candidate, fixture] = await Promise.all([
+      const [
+        baselineCore,
+        baselineCompanions,
+        candidateCore,
+        candidateCompanions,
+        fixture,
+      ] = await Promise.all([
         import(`${baselinePath}/virtual-list.ts`),
+        import(`${baselinePath}/companions/index.ts`).catch(() => ({})),
         import("/src/virtual-list.ts"),
+        import("/src/companions/index.ts").catch(() => ({})),
         import("/scripts/firefox-profile/fixtures/runtime-ab.js"),
       ]);
-      const modules = { baseline, candidate };
+      const modules = {
+        baseline: { ...baselineCore, ...baselineCompanions },
+        candidate: { ...candidateCore, ...candidateCompanions },
+      };
       const names =
         scenarios.length > 0 ? scenarios : Object.keys(fixture.scenarios);
       const samples = {};

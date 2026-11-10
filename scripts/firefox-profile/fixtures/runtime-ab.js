@@ -34,6 +34,24 @@ const declaredItems = (count) =>
     text: `Row ${i}`,
     height: 44 + (i % 5) * 12,
   }));
+const positionedRenderer = (item, existing) => {
+  const el = existing ?? document.createElement("div");
+  el.style.width = "160px";
+  el.style.left = `${item.lane * 170}px`;
+  el.textContent = item.text;
+  return el;
+};
+const positionedItems = (count, prefix = "p", offsetIndex = 0) =>
+  Array.from({ length: count }, (_, k) => {
+    const i = offsetIndex + k;
+    return {
+      id: `${prefix}-${i}`,
+      text: `Card ${i}`,
+      height: 100 + (i % 3) * 16,
+      top: Math.floor(i / 4) * 140 + (i % 4) * 7,
+      lane: i % 4,
+    };
+  });
 
 function measuredList(m, anchor, boot, count = 2000, extra = {}) {
   const v = makeHost(anchor);
@@ -350,6 +368,348 @@ export const scenarios = {
     const dt = performance.now() - start;
     list.dispose();
     v.remove();
+    return dt;
+  },
+  /** Ten boots of ten thousand positioned cards (gallery masonry). */
+  async "boot-positioned"(m) {
+    const items = positionedItems(10000);
+    const start = performance.now();
+    for (let k = 0; k < 10; k++) {
+      const v = makeHost("none");
+      const list = m.createVirtualList(v, {
+        items,
+        key: (it) => it.id,
+        height: (it) => it.height,
+        position: (it) => ({ top: it.top, lane: it.lane }),
+        render: positionedRenderer,
+        boot: "start",
+        settleStrategy: "default",
+      });
+      list.dispose();
+      v.remove();
+    }
+    return performance.now() - start;
+  },
+  /** Gallery paging: forty positioned cards appended per call. */
+  async "append-positioned"(m) {
+    const v = makeHost("none");
+    let next = positionedItems(10000);
+    const list = m.createVirtualList(v, {
+      items: next,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      position: (it) => ({ top: it.top, lane: it.lane }),
+      render: positionedRenderer,
+      boot: "start",
+      settleStrategy: "default",
+    });
+    const start = performance.now();
+    for (let k = 0; k < 50; k++) {
+      next = [...next, ...positionedItems(40, "p", 10000 + k * 40)];
+      list.setItems(next);
+    }
+    const dt = performance.now() - start;
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Positioned layout replaced wholesale (a column-count change). */
+  async "relayout-positioned"(m) {
+    const v = makeHost("none");
+    const items = positionedItems(10000);
+    const list = m.createVirtualList(v, {
+      items,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      position: (it) => ({ top: it.top, lane: it.lane }),
+      render: positionedRenderer,
+      boot: "start",
+      settleStrategy: "default",
+    });
+    v.scrollTop = 100000;
+    v.dispatchEvent(new Event("scroll"));
+    const start = performance.now();
+    for (let k = 0; k < 20; k++) {
+      const cols = k % 2 === 0 ? 5 : 3;
+      list.setItems(
+        items.map((it, i) => ({
+          ...it,
+          top: Math.floor(i / cols) * 140 + (i % cols) * 7,
+          lane: i % cols,
+        })),
+      );
+    }
+    const dt = performance.now() - start;
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Single-item content edits on a positioned card whose placement stays put. */
+  async "update-positioned"(m) {
+    const v = makeHost("none");
+    const items = positionedItems(5000);
+    const list = m.createVirtualList(v, {
+      items,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      position: (it) => ({ top: it.top, lane: it.lane }),
+      render: positionedRenderer,
+      boot: "start",
+      settleStrategy: "default",
+    });
+    const start = performance.now();
+    for (let k = 0; k < 50; k++) {
+      const it = items[10];
+      list.updateItem(it.id, { ...it, text: `Card 10 edit ${k}` });
+    }
+    const dt = performance.now() - start;
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Single-item edits on a positioned card whose height/top shifts. */
+  async "update-positioned-move"(m) {
+    const v = makeHost("none");
+    const items = positionedItems(5000);
+    const list = m.createVirtualList(v, {
+      items,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      position: (it) => ({ top: it.top, lane: it.lane }),
+      render: positionedRenderer,
+      boot: "start",
+      settleStrategy: "default",
+    });
+    const start = performance.now();
+    for (let k = 0; k < 50; k++) {
+      const it = items[10];
+      list.updateItem(it.id, {
+        ...it,
+        text: `Card 10 move ${k}`,
+        height: it.height + (k % 3) * 8,
+        top: it.top + (k % 2) * 4,
+      });
+    }
+    const dt = performance.now() - start;
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Single-item edits on declared rows, half changing height. */
+  async "update-declared"(m) {
+    const v = makeHost("none");
+    const items = declaredItems(10000);
+    const list = m.createVirtualList(v, {
+      items,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      render: declaredRenderer,
+      boot: "start",
+      settleStrategy: "default",
+    });
+    const start = performance.now();
+    for (let k = 0; k < 300; k++) {
+      const idx = k % 15;
+      list.updateItem(`d-${idx}`, {
+        id: `d-${idx}`,
+        text: `Row ${idx} v${k}`,
+        height: 44 + ((idx + (k >> 1)) % 5) * 12,
+      });
+    }
+    const dt = performance.now() - start;
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** History paging on a declared list: forty rows prepended per call. */
+  async "prepend-declared"(m) {
+    const v = makeHost("none");
+    let next = declaredItems(10000);
+    const list = m.createVirtualList(v, {
+      items: next,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      render: declaredRenderer,
+      boot: "end",
+      settleStrategy: "default",
+    });
+    const start = performance.now();
+    for (let k = 0; k < 30; k++) {
+      const page = Array.from({ length: 40 }, (_, i) => ({
+        id: `pre-${k}-${i}`,
+        text: "Pre",
+        height: 44 + (i % 5) * 12,
+      }));
+      next = [...page, ...next];
+      list.setItems(next, { anchor: "viewport" });
+    }
+    const dt = performance.now() - start;
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Conversation branch switches replacing the trailing forty measured rows. */
+  async "branch-switch-measured"(m) {
+    const v = makeHost("auto");
+    const prefix = measuredItems(1960, "base");
+    const branchA = measuredItems(40, "brA");
+    const branchB = measuredItems(40, "brB");
+    const setA = [...prefix, ...branchA];
+    const setB = [...prefix, ...branchB];
+    const list = m.createVirtualList(v, {
+      items: setA,
+      key: (i) => i.id,
+      render: measuredRenderer,
+      boot: "end",
+      settleStrategy: "default",
+    });
+    await frame();
+    const start = performance.now();
+    for (let k = 0; k < 40; k++) {
+      list.setItems(k % 2 === 0 ? setB : setA, { anchor: "viewport" });
+    }
+    const dt = performance.now() - start;
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Live item edits through createPagedWindow across four thousand retained rows. */
+  async "paging-live-edit"(m) {
+    const v = makeHost("none");
+    const pages = Array.from({ length: 10 }, (_, p) => ({
+      items: Array.from({ length: 400 }, (_, i) => ({
+        id: `pg-${p * 400 + i}`,
+        text: `Item ${p * 400 + i}`,
+        height: 48,
+      })),
+      start: p > 0 ? { available: true, cursor: p - 1 } : { available: false },
+      end: p < 9 ? { available: true, cursor: p + 1 } : { available: false },
+    }));
+    const list = m.createVirtualList(v, {
+      items: pages[0].items,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      render: declaredRenderer,
+      boot: "start",
+      settleStrategy: "default",
+    });
+    const pager = m.createPagedWindow({
+      list,
+      initial: pages[0],
+      maxItems: 5000,
+      key: (it) => it.id,
+      keysOf: (it) => [it.id],
+      project: (items) => items,
+      live: { project: (it) => it, key: (it) => it.id },
+      load: async ({ cursor }) => pages[cursor],
+    });
+    for (let c = 1; c < 10; c++) await pager.load("end");
+    const start = performance.now();
+    for (let k = 0; k < 200; k++) {
+      await pager.updateItemLive("pg-3999", (it) => ({
+        ...it,
+        text: `Item 3999 edit ${k}`,
+      }));
+    }
+    const dt = performance.now() - start;
+    pager.dispose();
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Overlapping page loads, jumps, and budget trims through createPagedWindow. */
+  async "paging-load-trim"(m) {
+    const v = makeHost("none");
+    const pageSize = 400;
+    const overlap = 40;
+    const makePage = (cursor) => {
+      const first = cursor * (pageSize - overlap);
+      return {
+        items: Array.from({ length: pageSize }, (_, i) => ({
+          id: `pg-${first + i}`,
+          text: `Item ${first + i}`,
+          height: 48,
+        })),
+        start:
+          cursor > 0
+            ? { available: true, cursor: cursor - 1 }
+            : { available: false },
+        end: { available: true, cursor: cursor + 1 },
+      };
+    };
+    const initial = makePage(50);
+    const list = m.createVirtualList(v, {
+      items: initial.items,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      render: declaredRenderer,
+      boot: "start",
+      settleStrategy: "default",
+    });
+    const pager = m.createPagedWindow({
+      list,
+      initial,
+      maxItems: 4000,
+      key: (it) => it.id,
+      keysOf: (it) => [it.id],
+      project: (items) => items,
+      load: async ({ cursor }) => makePage(cursor),
+    });
+    const start = performance.now();
+    for (let k = 0; k < 40; k++) {
+      await pager.load("end");
+      await list.scrollTo("end");
+      await pager.reconcile();
+    }
+    const dt = performance.now() - start;
+    pager.dispose();
+    list.dispose();
+    v.remove();
+    return dt;
+  },
+  /** Scrolling and state refreshes with createStickyHeaders over 100 groups. */
+  async "sticky-headers"(m) {
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "position:relative;width:700px;height:800px";
+    const v = document.createElement("div");
+    v.style.cssText =
+      "width:700px;height:800px;overflow:auto;overflow-anchor:none";
+    wrap.appendChild(v);
+    document.body.appendChild(wrap);
+    const items = declaredItems(2000);
+    const hKeys = [];
+    for (let i = 0; i < 2000; i += 20) hKeys.push(`d-${i}`);
+    let sticky = null;
+    const list = m.createVirtualList(v, {
+      items,
+      key: (it) => it.id,
+      height: (it) => it.height,
+      render: declaredRenderer,
+      boot: "start",
+      settleStrategy: "default",
+      onState: (_s, vp) => sticky?.refresh(vp.scrollTop),
+      onViewport: (vp) => sticky?.update(vp.scrollTop),
+    });
+    sticky = m.createStickyHeaders({
+      container: wrap,
+      viewport: v,
+      headerKeys: () => hKeys,
+      positionOf: (k) => list.positionOf(k),
+      elementOf: (k) => list.elementOf(k),
+      renderHeader: (slot, ord) => {
+        slot.textContent = `Group ${ord}`;
+      },
+    });
+    const start = performance.now();
+    for (let k = 1; k <= 600; k++) {
+      v.scrollTop = k * 80;
+      v.dispatchEvent(new Event("scroll"));
+      if (k % 15 === 0) sticky.refresh(v.scrollTop);
+    }
+    const dt = performance.now() - start;
+    sticky.destroy();
+    list.dispose();
+    wrap.remove();
     return dt;
   },
 };

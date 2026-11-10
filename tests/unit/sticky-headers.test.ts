@@ -526,4 +526,46 @@ describe("sticky headers", () => {
     expect(container.querySelector(".sticky-group")?.textContent).toBe("day 1");
     sticky.destroy();
   });
+
+  it("should hide and restore a mounted incoming inline header when the active header is unmounted", () => {
+    const container = document.createElement("div");
+    const viewport = document.createElement("div");
+    const incomingRow = document.createElement("div");
+    const positions = new Map([
+      ["day:0", { top: 0, height: 40 }],
+      ["day:1", { top: 200, height: 40 }],
+      ["day:2", { top: 400, height: 40 }],
+    ]);
+    const elements = new Map<string, HTMLElement>([["day:1", incomingRow]]);
+    const sticky = createCompanion({
+      container,
+      viewport,
+      headerKeys: () => ["day:0", "day:1", "day:2"],
+      positionOf: (key) => positions.get(key) ?? null,
+      elementOf: (key) => elements.get(key) ?? null,
+      renderHeader: (slot, ordinal) => {
+        slot.textContent = `day ${ordinal}`;
+      },
+    });
+    try {
+      // Handoff zone [160, 200): active day:0 is unmounted (null), incoming day:1 is mounted.
+      sticky.update(175);
+      expect(incomingRow.classList.contains("vl-sticky-inline-hidden")).toBe(
+        true,
+      );
+      sticky.refresh(180); // Unchanged header boxes: fast-path refresh keeps inline state exact.
+      expect(incomingRow.classList.contains("vl-sticky-inline-hidden")).toBe(
+        true,
+      );
+
+      // Once day:1 becomes active and day:1 is then unmounted or scrolled before day:2, restore cleanly.
+      elements.delete("day:1");
+      sticky.update(250);
+      expect(incomingRow.classList.contains("vl-sticky-inline-hidden")).toBe(
+        false,
+      );
+    } finally {
+      sticky.destroy();
+    }
+  });
 });

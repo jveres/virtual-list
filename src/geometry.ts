@@ -381,13 +381,23 @@ export class Geometry {
     const order =
       nextKeys instanceof KeyIndex ? nextKeys : new KeyIndex(nextKeys);
     const keys = order.keys;
+    const oldKeys = this.keys;
+    const oldLength = oldKeys.length;
+    const oldHeights = this.heights;
     const sizes = new Float64Array(keys.length);
     const heights = new Float64Array(keys.length);
+    // Prepends, trims, and splices preserve contiguous runs of `oldKeys`:
+    // check the expected next slot before probing the hash map.
+    let hint = 0;
     for (let index = 0; index < keys.length; index++) {
       const key = keys[index] as string;
-      const previous = this.order.get(key);
-      const learned =
-        previous === undefined ? 0 : (this.heights[previous] as number);
+      const previous =
+        hint < oldLength && oldKeys[hint] === key ? hint : this.order.get(key);
+      let learned = 0;
+      if (previous !== undefined) {
+        hint = previous + 1;
+        learned = oldHeights[previous] as number;
+      }
       heights[index] = learned;
       sizes[index] = learned || this.estimate(key);
     }

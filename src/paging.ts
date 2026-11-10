@@ -69,6 +69,14 @@ export interface PagedWindow<T, C> {
   dispose(): void;
 }
 
+interface RetainedPage<T, C> {
+  items: readonly T[];
+  keys: readonly string[];
+  indexByKey: Map<string, number>;
+  start: PageBoundary<C>;
+  end: PageBoundary<C>;
+}
+
 /**
  * A bounded, contiguous sequence of source pages. Cursors live only on retained
  * pages; restoring a discarded page is the source's job. A feed refresh is not
@@ -80,20 +88,31 @@ export function createPagedWindow<T, C, Row>({
 }: PagedWindowOptions<T, C, Row>): PagedWindow<T, C> {
   if (!Number.isSafeInteger(options.maxItems) || options.maxItems < 1)
     throw new Error("maxItems must be a positive safe integer");
-  const unique = (items: readonly T[]): T[] => {
-    const seen = new Set<string>();
-    return items.filter((item) => {
+  const indexPage = (page: Page<T, C>): RetainedPage<T, C> => {
+    const deduped: T[] = [];
+    const keys: string[] = [];
+    const indexByKey = new Map<string, number>();
+    for (let i = 0; i < page.items.length; i++) {
+      const item = page.items[i] as T;
       const key = options.key(item);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
+      if (indexByKey.has(key)) continue;
+      indexByKey.set(key, deduped.length);
+      deduped.push(item);
+      keys.push(key);
+    }
+    return {
+      items: deduped,
+      keys,
+      indexByKey,
+      start: page.start,
+      end: page.end,
+    };
   };
-  let pages: Page<T, C>[] = [
-    // Do not keep the initial page on the options captured by live methods.
-    { ...initial, items: unique(initial.items) },
-  ];
-  let items: readonly T[] = pages[0]?.items ?? [];
+  // Do not keep the initial page on the options captured by live methods.
+  const firstPage = indexPage(initial);
+  let pages: RetainedPage<T, C>[] = [firstPage];
+  let items: readonly T[] = firstPage.items;
+  let itemIndexByKey = new Map<string, number>(firstPage.indexByKey);
   let disposed = false;
   let request: AbortController | null = null;
   let trimEdge: Edge = "start";
@@ -111,7 +130,7 @@ export function createPagedWindow<T, C, Row>({
   }
 
   async function apply(
-    propose: () => Page<T, C>[] | null,
+    propose: () => RetainedPage<T, C>[] | null,
     edge: Edge,
     signal: AbortSignal,
     trim = true,
@@ -129,14 +148,17 @@ export function createPagedWindow<T, C, Row>({
           if (disposed || signal.aborted) return null;
           const candidate = propose();
           if (!candidate) return null;
-          const protectedKeys = new Set(
-            protectedItems.flatMap((row) => [...options.keysOf(row)]),
-          );
-          const retained = [...candidate];
+          const protectedKeys = new Set<string>();
+          for (let i = 0; i < protectedItems.length; i++) {
+            for (const key of options.keysOf(protectedItems[i] as Row))
+              protectedKeys.add(key);
+          }
+          const retained = candidate.slice();
           const owners = new Map<string, number>();
-          for (const page of retained) {
-            for (const item of page.items) {
-              const key = options.key(item);
+          for (let p = 0; p < retained.length; p++) {
+            const pageKeys = (retained[p] as RetainedPage<T, C>).keys;
+            for (let i = 0; i < pageKeys.length; i++) {
+              const key = pageKeys[i] as string;
               owners.set(key, (owners.get(key) ?? 0) + 1);
             }
           }
@@ -148,29 +170,43 @@ export function createPagedWindow<T, C, Row>({
             retained.length > 1
           ) {
             const page = edge === "start" ? retained[0] : retained.at(-1);
-            if (
-              !page ||
-              page.items.some((item) => {
-                const key = options.key(item);
-                return protectedKeys.has(key) && owners.get(key) === 1;
-              })
-            )
-              break;
+            if (!page) break;
+            let blocked = false;
+            for (let i = 0; i < page.keys.length; i++) {
+              const key = page.keys[i] as string;
+              if (protectedKeys.has(key) && owners.get(key) === 1) {
+                blocked = true;
+                break;
+              }
+            }
+            if (blocked) break;
             if (edge === "start") retained.shift();
             else retained.pop();
-            for (const item of page.items) {
-              const key = options.key(item);
+            for (let i = 0; i < page.keys.length; i++) {
+              const key = page.keys[i] as string;
               const remaining = (owners.get(key) ?? 1) - 1;
               if (remaining) owners.set(key, remaining);
               else {
                 owners.delete(key);
-                evicted.push(item);
+                evicted.push(page.items[i] as T);
               }
             }
           }
           if (candidate === pages && retained.length === pages.length)
             return null;
-          const nextItems = unique(retained.flatMap((page) => page.items));
+          const nextItems: T[] = [];
+          const nextIndexByKey = new Map<string, number>();
+          for (let p = 0; p < retained.length; p++) {
+            const page = retained[p] as RetainedPage<T, C>;
+            const pageItems = page.items;
+            const pageKeys = page.keys;
+            for (let i = 0; i < pageItems.length; i++) {
+              const key = pageKeys[i] as string;
+              if (nextIndexByKey.has(key)) continue;
+              nextIndexByKey.set(key, nextItems.length);
+              nextItems.push(pageItems[i] as T);
+            }
+          }
           const rows = options.project(nextItems);
           return {
             items: rows,
@@ -182,6 +218,7 @@ export function createPagedWindow<T, C, Row>({
             onCommit: () => {
               pages = retained;
               items = nextItems;
+              itemIndexByKey = nextIndexByKey;
               sourceRevision++;
               // Equal numeric ranges can describe different source pages after
               // a prepend/trim. A committed window permits a fresh retry.
@@ -217,21 +254,31 @@ export function createPagedWindow<T, C, Row>({
   function replaced(
     key: string,
     update: (item: T) => T,
-  ): { index: number; previous: T; next: T; pages: Page<T, C>[] } | null {
-    const index = items.findIndex((item) => options.key(item) === key);
-    if (index < 0) return null;
+  ): {
+    index: number;
+    previous: T;
+    next: T;
+    pages: RetainedPage<T, C>[];
+  } | null {
+    const index = itemIndexByKey.get(key);
+    if (index === undefined) return null;
     const previous = items[index] as T;
     const next = update(previous);
     if (options.key(next) !== key)
       throw new Error("updated item must keep its key");
     if (next === previous) return null;
-    const nextPages = pages.map((page) => {
-      const at = page.items.findIndex((item) => options.key(item) === key);
-      if (at < 0) return page;
-      const pageItems = [...page.items];
-      pageItems[at] = next;
-      return { ...page, items: pageItems };
-    });
+    const nextPages = new Array<RetainedPage<T, C>>(pages.length);
+    for (let p = 0; p < pages.length; p++) {
+      const page = pages[p] as RetainedPage<T, C>;
+      const at = page.indexByKey.get(key);
+      if (at === undefined) {
+        nextPages[p] = page;
+      } else {
+        const pageItems = page.items.slice();
+        pageItems[at] = next;
+        nextPages[p] = { ...page, items: pageItems };
+      }
+    }
     return { index, previous, next, pages: nextPages };
   }
 
@@ -259,7 +306,9 @@ export function createPagedWindow<T, C, Row>({
     // Source data is authoritative at submission, just like a host's immutable
     // store. Every overlapping page owner receives the same replacement.
     pages = change.pages;
-    items = items.map((item, itemIndex) => (itemIndex === index ? next : item));
+    const nextItems = items.slice();
+    nextItems[index] = next;
+    items = nextItems;
     sourceRevision++;
     try {
       submit(rowKey, row);
@@ -319,23 +368,37 @@ export function createPagedWindow<T, C, Row>({
       });
       if (!result || disposed || active.signal.aborted || request !== active)
         return false;
+      let cachedIncoming: RetainedPage<T, C> | null = null;
       return await apply(
         () => {
           // Merge at commit, after any queued trim or source edit has landed.
-          const existing = new Map(
-            items.map((item) => [options.key(item), item]),
-          );
-          const incoming = unique(result.items);
-          const candidate = [...pages];
-          if (incoming.some((item) => !existing.has(options.key(item)))) {
+          cachedIncoming ??= indexPage(result);
+          const incoming = cachedIncoming;
+          const candidate = pages.slice();
+          let addsNew = false;
+          for (let i = 0; i < incoming.keys.length; i++) {
+            if (!itemIndexByKey.has(incoming.keys[i] as string)) {
+              addsNew = true;
+              break;
+            }
+          }
+          if (addsNew) {
             // Keep source pages intact: a cursor cannot describe a sliced
             // overlap after its neighboring page is evicted. Deduplicate only
             // the exposed window, preserving local edits in every owner.
-            const page = {
-              ...result,
-              items: incoming.map(
-                (item) => existing.get(options.key(item)) ?? item,
-              ),
+            const mergedItems = new Array<T>(incoming.items.length);
+            for (let i = 0; i < incoming.items.length; i++) {
+              const existingIdx = itemIndexByKey.get(
+                incoming.keys[i] as string,
+              );
+              mergedItems[i] =
+                existingIdx !== undefined
+                  ? (items[existingIdx] as T)
+                  : (incoming.items[i] as T);
+            }
+            const page: RetainedPage<T, C> = {
+              ...incoming,
+              items: mergedItems,
             };
             if (edge === "start") candidate.unshift(page);
             else candidate.push(page);
@@ -408,46 +471,48 @@ export function createPagedWindow<T, C, Row>({
     canLoad: (edge) => !disposed && boundary(edge).available,
     load,
     updateItemLive,
-    refreshHead: (page, signal = lifetime.signal) =>
-      apply(
+    refreshHead: (page, signal = lifetime.signal) => {
+      let cachedFresh: RetainedPage<T, C> | null = null;
+      return apply(
         () => {
           if (request) return null;
-          const fresh = unique(page.items);
-          if (!fresh.length) return null;
-          const first = items[0];
-          const last = fresh.at(-1);
-          const overlap = last
-            ? items.findIndex((item) => options.key(item) === options.key(last))
-            : -1;
+          cachedFresh ??= indexPage(page);
+          const fresh = cachedFresh;
+          if (!fresh.items.length) return null;
+          const firstKey = itemIndexByKey.keys().next().value;
+          const lastKey = fresh.keys[fresh.keys.length - 1];
+          const overlap =
+            lastKey !== undefined ? (itemIndexByKey.get(lastKey) ?? -1) : -1;
           if (
-            first &&
-            (overlap < 0 ||
-              !fresh.some((item) => options.key(item) === options.key(first)))
+            firstKey !== undefined &&
+            (overlap < 0 || !fresh.indexByKey.has(firstKey))
           )
             return null;
-          const freshKeys = new Set(fresh.map(options.key));
-          if (
-            items
-              .slice(0, overlap + 1)
-              .some((item) => !freshKeys.has(options.key(item)))
-          )
-            return null;
-          const existing = new Map(
-            items.map((item) => [options.key(item), item]),
-          );
+          let checked = 0;
+          for (const key of itemIndexByKey.keys()) {
+            if (checked > overlap) break;
+            if (!fresh.indexByKey.has(key)) return null;
+            checked += 1;
+          }
           // Preserve local state such as expanded text on overlapping posts.
-          const head = {
-            ...page,
-            items: fresh.map((item) => existing.get(options.key(item)) ?? item),
-          };
+          const headItems = new Array<T>(fresh.items.length);
+          for (let i = 0; i < fresh.items.length; i++) {
+            const existingIdx = itemIndexByKey.get(fresh.keys[i] as string);
+            headItems[i] =
+              existingIdx !== undefined
+                ? (items[existingIdx] as T)
+                : (fresh.items[i] as T);
+          }
+          const head: RetainedPage<T, C> = { ...fresh, items: headItems };
           const tail = pages.filter((old) =>
-            old.items.some((item) => !freshKeys.has(options.key(item))),
+            old.keys.some((key) => !fresh.indexByKey.has(key)),
           );
           return [head, ...tail];
         },
         "end",
         AbortSignal.any([signal, lifetime.signal]),
-      ),
+      );
+    },
     updateItem: (key, update) =>
       apply(
         () => replaced(key, update)?.pages ?? null,
@@ -462,6 +527,7 @@ export function createPagedWindow<T, C, Row>({
       lifetime.abort();
       pages = [];
       items = [];
+      itemIndexByKey.clear();
     },
   };
 }

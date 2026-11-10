@@ -96,4 +96,33 @@ describe("declared snapshot ownership", () => {
     patch.set("b", { item: items[1] as { id: string }, height: 60 });
     expect(patch.shiftsBefore(3, geometry)).toBe(true);
   });
+
+  it("exposes columnar views on snapshots and single-probe entries across snapshots and patches", () => {
+    const items = [{ id: "a" }, { id: "b" }];
+    const index = new KeyIndex(["start-slot", "a", "b", "end-slot"]);
+    const snapshot = new DeclaredItems(
+      index,
+      1,
+      items,
+      Float64Array.from([44, 68]),
+    );
+    const updated = { id: "b", edited: true };
+    snapshot.set("b", { item: updated, height: 72 });
+
+    const cols = snapshot.columns();
+    expect(cols).not.toBeNull();
+    expect(cols?.items).toEqual([items[0], updated]);
+    expect([...(cols?.heights ?? [])]).toEqual([44, 72]);
+    expect(snapshot.get("a")).toEqual({ item: items[0], height: 44 });
+    expect(snapshot.get("b")).toEqual({ item: updated, height: 72 });
+    expect(snapshot.get("start-slot")).toBeUndefined();
+    expect(snapshot.get("end-slot")).toBeUndefined();
+    expect(snapshot.get("missing")).toBeUndefined();
+
+    const patch = new DeclaredItems<{ id: string }>();
+    expect(patch.columns()).toBeNull();
+    expect(patch.get("a")).toBeUndefined();
+    patch.set("a", { item: items[0] as { id: string }, height: 52 });
+    expect(patch.get("a")).toEqual({ item: items[0], height: 52 });
+  });
 });

@@ -98,4 +98,21 @@ describe("key index", () => {
       expect(extended.get("c")).toBe(3);
     },
   );
+
+  it("should adopt owned key arrays and pre-validated position maps", () => {
+    const keys = ["a", "b"];
+    const positions = new Map([
+      ["a", 0],
+      ["b", 1],
+    ]);
+    const base = KeyIndex.fromOwned(keys, positions);
+    const extendedKeys = ["a", "b", "c"];
+    const extended = base.extend(extendedKeys, true) as KeyIndex;
+
+    expect(base.keys).toBe(keys);
+    expect(extended.keys).toBe(extendedKeys);
+    expect(extended.get("c")).toBe(2);
+    expect(base.has("c")).toBe(false);
+    expect(base.precedes(extended)).toBe(true);
+  });
 });

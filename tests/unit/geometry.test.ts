@@ -1217,4 +1217,26 @@ describe("host-named anchor", () => {
     expect(geometry.offsetAt(3)).toBe(-1);
     expect(geometry.anchorIndexAt(viewport(120))).toBe(1);
   });
+
+  it("preserves learned heights and estimator call order across prepends, head-trims, and mid-list splices", () => {
+    const estimated: string[] = [];
+    const geometry = new Geometry((key) => {
+      estimated.push(key);
+      return 50;
+    });
+    geometry.setKeys(["k0", "k1", "k2", "k3", "k4"]);
+    geometry.measure("k1", 110);
+    geometry.measure("k3", 130);
+    estimated.length = 0;
+
+    // Prepend + head/tail sliding splice + mid-list insertion.
+    geometry.setKeys(["p0", "p1", "k1", "k2", "mid", "k3", "t0"]);
+
+    expect(estimated).toEqual(["p0", "p1", "k2", "mid", "t0"]);
+    expect(geometry.heightOf("k1")).toBe(110);
+    expect(geometry.heightOf("k3")).toBe(130);
+    expect(geometry.heightOf("p0")).toBe(50);
+    expect(geometry.heightOf("mid")).toBe(50);
+    expect(geometry.offsetOf("k3")).toBe(50 + 50 + 110 + 50 + 50);
+  });
 });

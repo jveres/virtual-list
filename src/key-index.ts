@@ -7,9 +7,13 @@ export class KeyIndex {
    */
   private readonly positions: Map<string, number>;
 
-  /** `positions` is trusted: only `extend` passes it. */
-  constructor(keys: readonly string[], positions?: Map<string, number>) {
-    this.keys = [...keys];
+  /** `positions` and `owned` are trusted: only internal factories pass them. */
+  constructor(
+    keys: readonly string[],
+    positions?: Map<string, number>,
+    owned = false,
+  ) {
+    this.keys = owned ? keys : keys.slice();
     if (positions) {
       this.positions = positions;
       return;
@@ -24,6 +28,14 @@ export class KeyIndex {
         seen.add(key);
       }
     }
+  }
+
+  /** Adopt pre-validated owned `keys` and `positions` without copying either. */
+  static fromOwned(
+    keys: readonly string[],
+    positions: Map<string, number>,
+  ): KeyIndex {
+    return new KeyIndex(keys, positions, true);
   }
 
   /** The key's index in this order; undefined when it has none. */
@@ -67,7 +79,7 @@ export class KeyIndex {
    * first. A duplicate among the new keys throws, as in the constructor, and
    * leaves the shared positions as they were.
    */
-  extend(keys: readonly string[]): KeyIndex | null {
+  extend(keys: readonly string[], owned = false): KeyIndex | null {
     if (!this.prefixes(keys)) return null;
     const length = this.keys.length;
     let positions = this.positions;
@@ -87,6 +99,6 @@ export class KeyIndex {
       if (first < length) positions.set(key, first);
       throw new Error(`duplicate key: "${key}"`);
     }
-    return new KeyIndex(keys, positions);
+    return new KeyIndex(keys, positions, owned);
   }
 }
