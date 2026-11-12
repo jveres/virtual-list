@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { describe, expect, it, vi } from "vitest";
+import { createVirtualList } from "../../src/virtual-list";
 import {
   type Harness,
   type Msg,
@@ -364,5 +365,68 @@ describe("targeted declared updates", () => {
     expect(h.rowElement("tall final").textContent).toBe("tall final");
     expect(h.rowElement("tall 6").textContent).toBe("tall 6");
     h.list.dispose();
+  });
+
+  it("evaluates positioned callbacks across the snapshot on updateItem for both isolated and cascading masonry edits", () => {
+    const viewport = document.createElement("div");
+    Object.defineProperties(viewport, {
+      clientHeight: { value: 400 },
+      clientWidth: { value: 600 },
+    });
+    document.body.append(viewport);
+
+    let positionCalls = 0;
+    let col0Cursor = 0;
+    let col1Cursor = 0;
+    let cascade = false;
+    const items = range(0, 20);
+    const list = createVirtualList(viewport, {
+      items,
+      key: (m) => `m${m.id}`,
+      height: heightOf,
+      boot: "start",
+      pinning: false,
+      position: (m) => {
+        positionCalls += 1;
+        if (!cascade) {
+          return { top: Math.floor(m.id / 2) * 240, lane: m.id % 2 };
+        }
+        if (m.id === 0) {
+          col0Cursor = 0;
+          col1Cursor = 0;
+        }
+        const lane = m.id % 2;
+        const top = lane === 0 ? col0Cursor : col1Cursor;
+        const h = heightOf(m);
+        if (lane === 0) col0Cursor = top + h;
+        else col1Cursor = top + h;
+        return { top, lane };
+      },
+      render: (m, existing) => {
+        const el = existing ?? document.createElement("div");
+        el.textContent = m.body;
+        return el;
+      },
+    });
+
+    positionCalls = 0;
+    // Isolated in-place edit within lane bounds (`matchesExcept` + `canUpdateInPlace`).
+    list.updateItem("m2", message(2, "tall 2"));
+    expect(positionCalls).toBe(20);
+    expect(list.positionOf("m2")).toEqual({ top: 240, height: TALL });
+    expect(list.positionOf("m4")).toEqual({ top: 480, height: ROW_H });
+
+    // Cascading masonry edit where growing m0 shifts every downstream lane-0 card.
+    cascade = true;
+    list.setItems(range(0, 20));
+    positionCalls = 0;
+    list.updateItem("m0", message(0, "tall 0"));
+    expect(positionCalls).toBe(20);
+    expect(list.positionOf("m0")).toEqual({ top: 0, height: TALL });
+    expect(list.positionOf("m2")).toEqual({ top: TALL, height: ROW_H });
+    expect(list.positionOf("m1")).toEqual({ top: 0, height: ROW_H });
+
+    list.dispose();
+    viewport.remove();
   });
 });

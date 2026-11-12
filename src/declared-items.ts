@@ -10,6 +10,7 @@ interface Snapshot<T> {
   leading: number;
   items: T[];
   heights: Float64Array;
+  heightsShared: boolean;
 }
 
 /** Full snapshots share the key index; small update patches own only touched keys. */
@@ -17,19 +18,34 @@ export class DeclaredItems<T> {
   private snapshot: Snapshot<T> | null = null;
   private readonly patch = new Map<string, Declared<T>>();
 
-  /** Own the fresh height buffer; copy items independently of desired state. */
+  /** Own the fresh height buffer; copy items unless caller passes an owned copy. */
   constructor(
     index?: KeyIndex,
     leading = 0,
     items: readonly T[] = [],
     heights = new Float64Array(0),
+    ownedItems = false,
   ) {
-    if (index)
-      this.snapshot = { index, leading, items: items.slice(), heights };
+    if (index) {
+      this.snapshot = {
+        index,
+        leading,
+        items: ownedItems ? (items as T[]) : items.slice(),
+        heights,
+        heightsShared: false,
+      };
+    }
+  }
+
+  /** Mark the snapshot's height buffer shared with Geometry (copy-on-write on `set`). */
+  markHeightsShared(): void {
+    if (this.snapshot) this.snapshot.heightsShared = true;
   }
 
   /** Direct columnar view when backed by a full snapshot. */
   columns(): {
+    readonly index: KeyIndex;
+    readonly leading: number;
     readonly items: readonly T[];
     readonly heights: Float64Array;
   } | null {
@@ -38,6 +54,38 @@ export class DeclaredItems<T> {
 
   get size(): number {
     return this.snapshot?.items.length ?? this.patch.size;
+  }
+
+  /** Direct $O(1)$ item lookup by `order` index without key hashing or allocation. */
+  itemAtIndex(index: number, order: KeyIndex, key: string): T | undefined {
+    const data = this.snapshot;
+    if (!data) return this.patch.get(key)?.item;
+    if (data.index === order) {
+      const at = index - data.leading;
+      return at >= 0 && at < data.items.length ? data.items[at] : undefined;
+    }
+    const position = data.index.get(key);
+    return position === undefined
+      ? undefined
+      : data.items[position - data.leading];
+  }
+
+  /** Direct $O(1)$ height lookup by `order` index without key hashing or allocation. */
+  heightAtIndex(
+    index: number,
+    order: KeyIndex,
+    key: string,
+  ): number | undefined {
+    const data = this.snapshot;
+    if (!data) return this.patch.get(key)?.height;
+    if (data.index === order) {
+      const at = index - data.leading;
+      return at >= 0 && at < data.heights.length ? data.heights[at] : undefined;
+    }
+    const position = data.index.get(key);
+    return position === undefined
+      ? undefined
+      : data.heights[position - data.leading];
   }
 
   heightOf(key: string): number | undefined {
@@ -84,6 +132,10 @@ export class DeclaredItems<T> {
     const at = position === undefined ? -1 : position - data.leading;
     if (at < 0 || at >= data.items.length)
       throw new Error("declared snapshot cannot add an item");
+    if (data.heightsShared) {
+      data.heights = data.heights.slice();
+      data.heightsShared = false;
+    }
     data.items[at] = entry.item;
     data.heights[at] = entry.height;
   }
@@ -105,10 +157,20 @@ export class DeclaredItems<T> {
 
   /** Land a snapshot's heights on a geometry that holds the same key order. */
   land(geometry: {
-    declare(heights: Float64Array, leading: number): void;
+    declare(
+      heights: Float64Array,
+      leading: number,
+      shareBuffer?: boolean,
+    ): void;
   }): void {
     const data = this.snapshot;
-    if (data) geometry.declare(data.heights, data.leading);
+    if (!data) return;
+    if (data.leading === 0) {
+      data.heightsShared = true;
+      geometry.declare(data.heights, 0, true);
+    } else {
+      geometry.declare(data.heights, data.leading);
+    }
   }
 
   /**

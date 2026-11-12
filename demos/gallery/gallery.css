@@ -59,6 +59,7 @@ header .ua {
 .tile {
   flex: none;
   overflow: hidden;
+  contain: strict;
   border-radius: 4px;
   background: color-mix(in srgb, var(--fg-dim) 12%, transparent);
 }

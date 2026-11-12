@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { KeyIndex } from "../../src/key-index";
+import { KeyIndex, KeyTable } from "../../src/key-index";
 
 describe("key index", () => {
   it("should index its keys and reject duplicates", () => {
@@ -114,5 +114,41 @@ describe("key index", () => {
     expect(extended.get("c")).toBe(2);
     expect(base.has("c")).toBe(false);
     expect(base.precedes(extended)).toBe(true);
+  });
+
+  it("should share positions across prefix truncation and same-chain re-extension", () => {
+    const full = new KeyIndex(["a", "b", "c", "d"]);
+    const trimmed = full.truncate(["a", "b"]) as KeyIndex;
+
+    expect(trimmed.keys).toEqual(["a", "b"]);
+    expect(trimmed.get("a")).toBe(0);
+    expect(trimmed.get("b")).toBe(1);
+    expect(trimmed.get("c")).toBeUndefined();
+    expect(trimmed.precedes(full)).toBe(true);
+    expect(full.truncate(["a", "b", "c", "d"])).toBeNull();
+    expect(full.truncate(["a", "x"])).toBeNull();
+
+    const reextended = trimmed.extend(["a", "b", "c"]) as KeyIndex;
+    expect(reextended.get("c")).toBe(2);
+    expect(reextended.get("d")).toBeUndefined();
+    expect(reextended.precedes(full)).toBe(true);
+  });
+
+  it("should preserve probe chains across wrapped Knuth Algorithm R deletions and table growth", () => {
+    const keys = Array.from({ length: 120 }, (_, i) => `key-${i}`);
+    const table = new KeyTable(keys, 4);
+    for (let i = 0; i < keys.length; i++) {
+      expect(table.insertUnique(keys[i] as string, i, keys)).toBe(true);
+    }
+    expect(table.insertUnique("key-42", 999, keys)).toBe(false);
+    expect(table.size).toBe(keys.length);
+
+    for (let i = 0; i < keys.length; i += 2) {
+      table.deleteKey(keys[i] as string, keys);
+    }
+    expect(table.size).toBe(keys.length / 2);
+    for (let i = 0; i < keys.length; i++) {
+      expect(table.get(keys[i] as string)).toBe(i % 2 === 0 ? undefined : i);
+    }
   });
 });

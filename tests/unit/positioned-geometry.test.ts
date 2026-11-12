@@ -598,4 +598,67 @@ describe("positioned geometry", () => {
       ),
     ).toThrow(/lane/);
   });
+
+  it("should match linear interval scans on nested overlapping lanes and gaps", () => {
+    const items: PositionedItem[] = [];
+    for (let i = 0; i < 180; i++) {
+      const lane = i % 3;
+      const top = i * 18 + (i % 7 === 0 ? 0 : 12);
+      const height = i % 11 === 0 ? 420 : 26 + (i % 5) * 9;
+      items.push({ top, height, lane });
+    }
+    const layout = new PositionedGeometry(items);
+
+    for (let y = 0; y <= layout.totalSize + 40; y += 29.5) {
+      const win = layout.window(y, y + 180);
+      const expected = items.flatMap((item, index) =>
+        item.top < y + 180 && item.top + item.height > y ? [index] : [],
+      );
+      expect(win.indices).toEqual(expected);
+
+      const anchor = layout.anchorAt(y, (index) => index % 4 === 0, true);
+      const covering = items.flatMap((item, index) =>
+        index % 4 !== 0 && item.top <= y && item.top + item.height > y
+          ? [index]
+          : [],
+      );
+      if (covering.length > 0) {
+        expect(anchor).toBe(covering[0]);
+      } else {
+        let bestAfter = -1;
+        let bestAfterTop = Infinity;
+        for (let i = 0; i < items.length; i++) {
+          if (i % 4 === 0) continue;
+          const item = items[i] as PositionedItem;
+          if (item.top + item.height > y && item.top < bestAfterTop) {
+            bestAfterTop = item.top;
+            bestAfter = i;
+          }
+        }
+        if (bestAfter >= 0) {
+          expect(anchor).toBe(bestAfter);
+        }
+      }
+    }
+  });
+
+  it("should update monotone single-card heights in place and reject order-breaking moves", () => {
+    const layout = new PositionedGeometry([
+      { top: 0, height: 80, lane: 0 },
+      { top: 0, height: 90, lane: 1 },
+      { top: 90, height: 80, lane: 0 },
+      { top: 100, height: 70, lane: 1 },
+    ]);
+
+    expect(layout.canUpdateInPlace(0, 0, 85, 0)).toBe(true);
+    // Changing lane or pushing bottom past successor's bottom must reject in-place update.
+    expect(layout.canUpdateInPlace(0, 0, 85, 1)).toBe(false);
+    expect(layout.canUpdateInPlace(0, 0, 180, 0)).toBe(false);
+    expect(layout.canUpdateInPlace(2, 95, 120, 0)).toBe(true);
+
+    layout.applyUpdateInPlace(2, 95, 120);
+    expect(layout.top(2)).toBe(95);
+    expect(layout.totalSize).toBe(215);
+    expect(layout.window(180, 210).indices).toEqual([2]);
+  });
 });

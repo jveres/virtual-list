@@ -1121,6 +1121,7 @@ p.ai-settings-note {
   justify-content: space-between;
   min-height: 31px;
   overflow: hidden;
+  contain: layout style paint;
   padding: 6px 20px;
   border-top: 1px solid var(--border);
   color: var(--fg-dim);

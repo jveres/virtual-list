@@ -970,4 +970,69 @@ describe("programmatic gestures", () => {
     );
     expect(harness.cancelledSmooth()).toBe(1);
   });
+
+  it("skips scrollHeight and clientHeight reads during interior wheel and scroll events when lowerBoundMaxScrollTop suffices", () => {
+    const viewport = document.createElement("div");
+    let scrollTop = 1200;
+    let scrollHeightReads = 0;
+    let clientHeightReads = 0;
+    Object.defineProperties(viewport, {
+      clientHeight: {
+        get: () => {
+          clientHeightReads += 1;
+          return VIEWPORT_HEIGHT;
+        },
+      },
+      scrollHeight: {
+        get: () => {
+          scrollHeightReads += 1;
+          return CONTENT_HEIGHT;
+        },
+      },
+      scrollTop: {
+        get: () => scrollTop,
+        set: (next: number) => {
+          scrollTop = next;
+        },
+      },
+    });
+    document.body.appendChild(viewport);
+
+    let settleCount = 0;
+    const controller = createScrollSettleController({
+      viewport,
+      strategy: "firefox-wheel",
+      measureEpsilon: 0.5,
+      isDisposed: () => false,
+      canLoadAtBoundary: () => true,
+      lowerBoundMaxScrollTop: () => CONTENT_HEIGHT - VIEWPORT_HEIGHT,
+      cancelActiveSmoothScroll: () => {},
+      noSmoothScrollInFlight: () => true,
+      onGestureStarted: () => {},
+      onGestureSettled: () => {
+        settleCount += 1;
+      },
+      onScrollEventObserved: () => {},
+    });
+    scrollHeightReads = 0;
+    clientHeightReads = 0;
+
+    for (let i = 0; i < 20; i++) {
+      viewport.dispatchEvent(new WheelEvent("wheel", { deltaY: 48 }));
+      scrollTop += 48;
+      viewport.dispatchEvent(new Event("scroll"));
+    }
+    expect(scrollHeightReads).toBe(0);
+    expect(clientHeightReads).toBe(0);
+
+    // Reaching the bottom boundary falls back to exact DOM geometry to confirm.
+    scrollTop = CONTENT_HEIGHT - VIEWPORT_HEIGHT;
+    viewport.dispatchEvent(new Event("scrollend"));
+    expect(scrollHeightReads).toBeGreaterThan(0);
+    vi.advanceTimersByTime(600);
+    expect(settleCount).toBe(1);
+
+    controller.dispose();
+    viewport.remove();
+  });
 });

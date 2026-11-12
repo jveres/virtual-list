@@ -90,9 +90,11 @@ export class Geometry {
   private order = new KeyIndex([]);
   private keys = this.order.keys;
   private tree = new FenwickTree(new Float64Array(0));
+  private treeDirty = false;
   private positioned: PositionedGeometry | null = null;
   /** Learned heights at the current key indices; zero means unmeasured. */
-  private heights = new Float64Array(0);
+  private heights: Float64Array = new Float64Array(0);
+  private heightsShared = false;
   private readonly estimateForKey: (key: string) => number;
   private pinnedKey: string | null = null;
   /** Space reserved above the pinned key for host chrome. */
@@ -167,11 +169,24 @@ export class Geometry {
     return index !== undefined && this.heights[index] !== 0;
   }
 
+  private ensureTree(): FenwickTree {
+    if (!this.treeDirty) return this.tree;
+    const len = this.keys.length;
+    const sizes = new Float64Array(len);
+    for (let i = 0; i < len; i++) {
+      sizes[i] =
+        (this.heights[i] as number) || this.estimate(this.keys[i] as string);
+    }
+    this.tree.rebuild(sizes);
+    this.treeDirty = false;
+    return this.tree;
+  }
+
   /** Content-space top of the item at `index`; out-of-range indices yield -1. */
   offsetAt(index: number): number {
     return index < 0 || index >= this.keys.length
       ? -1
-      : (this.positioned?.top(index) ?? this.tree.prefix(index));
+      : (this.positioned?.top(index) ?? this.ensureTree().prefix(index));
   }
 
   /** Content-space top of the item; `indexOf(key) === -1` yields -1. */
@@ -181,12 +196,13 @@ export class Geometry {
   }
 
   get contentSize(): number {
-    return this.positioned?.totalSize ?? this.tree.total();
+    return this.positioned?.totalSize ?? this.ensureTree().total();
   }
 
   /** Swap a prevalidated positioned snapshot inside the normal geometry commit. */
   setPositioned(layout: PositionedGeometry | null): void {
     this.positioned = layout;
+    if (layout === null && this.treeDirty) this.ensureTree();
   }
 
   get reserve(): number {
@@ -220,13 +236,14 @@ export class Geometry {
         this.anchorExclusionIsPure,
       );
     }
-    let index = this.tree.indexAt(top); // Clamped to the last index.
+    const tree = this.ensureTree();
+    let index = tree.indexAt(top); // Clamped to the last index.
     // A row with less than EPSILON left below the viewport top is not what
     // the user sees as the top row: anchoring it would let its own growth
     // push the visually top-aligned successor down by the full delta.
     // Anchor the successor instead, with a (slightly negative) offset that
     // keeps the exact coordinate.
-    const remaining = this.tree.prefix(index + 1) - top;
+    const remaining = tree.prefix(index + 1) - top;
     if (remaining <= EPSILON && index + 1 < this.keys.length) index += 1;
     if (this.neverAnchor(this.keys[index] as string)) {
       let next = index + 1;
@@ -296,8 +313,9 @@ export class Geometry {
         step > 0 ? Math.ceil(bottom / step) * step : bottom,
       );
     }
-    const start = this.tree.indexAt(top); // Clamped to the last index.
-    const end = this.tree.lowerBound(bottom);
+    const tree = this.ensureTree();
+    const start = tree.indexAt(top); // Clamped to the last index.
+    const end = tree.lowerBound(bottom);
     return { start, end };
   }
 
@@ -342,6 +360,46 @@ export class Geometry {
     };
   }
 
+  private transferPin(
+    order: KeyIndex,
+    replacementAnchor: ExplicitAnchor | null,
+  ): { pinned: string | null; pinnedInset: number } {
+    // A pinned row replaced in place (a version switch, an edit) passes
+    // its pin to the row that took its place — a new key at its index,
+    // everything before it unchanged — so the reserve keeps that position
+    // at the top (I5). A removal (a surviving row shifted up into the
+    // index) drops the pin.
+    let pinned = this.pinnedKey;
+    const pinnedInset = this.pinnedInsetPx;
+    if (pinned !== null && !order.has(pinned)) {
+      const index = this.order.get(pinned) ?? -1;
+      const keys = order.keys;
+      const replacement = index >= 0 ? keys[index] : undefined;
+      let prefixMatches = true;
+      for (let i = 0; i < index; i += 1) {
+        if (keys[i] !== this.keys[i]) {
+          prefixMatches = false;
+          break;
+        }
+      }
+      const inPlace =
+        replacement !== undefined &&
+        !this.order.has(replacement) &&
+        prefixMatches;
+      pinned = inPlace ? (replacement as string) : null;
+      // A host-named replacement is authoritative even when separators or
+      // other prefix rows changed. Preserve the pin, not just this commit's
+      // scroll offset, so later shorter versions can regrow trailing space.
+      if (replacementAnchor && order.has(replacementAnchor.key)) {
+        // The reading offset can be lower than the pin's landing inset.
+        // Preserve the latter so the replacement can still scroll to the
+        // top even when the user switched it halfway down the viewport.
+        pinned = replacementAnchor.key;
+      }
+    }
+    return { pinned, pinnedInset };
+  }
+
   /**
    * Replace the item order. Keys are identity: duplicates are rejected.
    * Learned heights survive by key; heights of removed keys are dropped; a
@@ -352,10 +410,8 @@ export class Geometry {
     replacementAnchor: ExplicitAnchor | null = null,
   ): void {
     // Fast paths that keep the previous state fully intact on failure: an
-    // unchanged order is a no-op, and a pure append (the old keys are an
-    // unchanged prefix — streaming growth, the common key change) extends
-    // the heights and the tree instead of rebuilding them. The pin always
-    // survives an append, so no pin transfer can apply.
+    // unchanged order is a no-op, a pure append extends the heights and tree,
+    // and a pure trailing trim slices them without rebuilding.
     if (nextKeys instanceof KeyIndex) {
       if (nextKeys === this.order) return;
       if (this.order.matches(nextKeys.keys)) {
@@ -367,11 +423,20 @@ export class Geometry {
         this.appendKeys(nextKeys);
         return;
       }
+      if (nextKeys.precedes(this.order)) {
+        this.truncateKeys(nextKeys, replacementAnchor);
+        return;
+      }
     } else {
       if (this.order.matches(nextKeys)) return;
       const extended = this.order.extend(nextKeys);
       if (extended !== null) {
         this.appendKeys(extended);
+        return;
+      }
+      const truncated = this.order.truncate(nextKeys);
+      if (truncated !== null) {
+        this.truncateKeys(truncated, replacementAnchor);
         return;
       }
     }
@@ -401,44 +466,250 @@ export class Geometry {
       heights[index] = learned;
       sizes[index] = learned || this.estimate(key);
     }
-    const tree = new FenwickTree(sizes);
-    // A pinned row replaced in place (a version switch, an edit) passes
-    // its pin to the row that took its place — a new key at its index,
-    // everything before it unchanged — so the reserve keeps that position
-    // at the top (I5). A removal (a surviving row shifted up into the
-    // index) drops the pin.
-    let pinned = this.pinnedKey;
-    const pinnedInset = this.pinnedInsetPx;
-    if (pinned !== null && !order.has(pinned)) {
-      const index = this.order.get(pinned) ?? -1;
-      const replacement = index >= 0 ? keys[index] : undefined;
-      let prefixMatches = true;
-      for (let i = 0; i < index; i += 1) {
-        if (keys[i] !== this.keys[i]) {
-          prefixMatches = false;
-          break;
-        }
-      }
-      const inPlace =
-        replacement !== undefined &&
-        !this.order.has(replacement) &&
-        prefixMatches;
-      pinned = inPlace ? (replacement as string) : null;
-      // A host-named replacement is authoritative even when separators or
-      // other prefix rows changed. Preserve the pin, not just this commit's
-      // scroll offset, so later shorter versions can regrow trailing space.
-      if (replacementAnchor && order.has(replacementAnchor.key)) {
-        // The reading offset can be lower than the pin's landing inset.
-        // Preserve the latter so the replacement can still scroll to the
-        // top even when the user switched it halfway down the viewport.
-        pinned = replacementAnchor.key;
-      }
-    }
-
+    const { pinned, pinnedInset } = this.transferPin(order, replacementAnchor);
+    this.tree.rebuild(sizes);
+    this.treeDirty = false;
     this.order = order;
     this.keys = keys;
-    this.tree = tree;
     this.heights = heights;
+    this.heightsShared = false;
+    this.pin(pinned, pinnedInset);
+  }
+
+  private writableHeights(): Float64Array {
+    if (this.heightsShared) {
+      this.heights = this.heights.slice();
+      this.heightsShared = false;
+    }
+    return this.heights;
+  }
+
+  private syncTreeToSharedPrefix(
+    oldHeights: Float64Array,
+    nextHeights: Float64Array,
+    length: number,
+  ): void {
+    if (length <= 0 || oldHeights === nextHeights) return;
+    let changed = 0;
+    for (let at = 0; at < length; at++) {
+      if (oldHeights[at] !== nextHeights[at]) changed += 1;
+    }
+    if (changed === 0) return;
+    if (changed * REBUILD_RATIO < nextHeights.length) {
+      for (let at = 0; at < length; at++) {
+        const next = nextHeights[at] as number;
+        const prev =
+          (oldHeights[at] as number) || this.estimate(this.keys[at] as string);
+        if (next !== oldHeights[at]) {
+          const delta = next - prev;
+          if (delta !== 0) this.tree.add(at, delta);
+        }
+      }
+      return;
+    }
+    this.tree.rebuild(nextHeights);
+  }
+
+  /**
+   * Combined key-order + declared-snapshot commit. Avoids probing `this.order`
+   * across `100k` content keys and avoids building an intermediate Fenwick tree
+   * that `declare` would immediately overwrite.
+   */
+  setKeysWithDeclared(
+    order: KeyIndex,
+    declaredHeights: Float64Array,
+    leading: number,
+    replacementAnchor: ExplicitAnchor | null = null,
+    skipTree = false,
+    shareHeights = false,
+  ): void {
+    const keys = order.keys;
+    const totalLen = keys.length;
+    if (shareHeights && leading === 0 && declaredHeights.length === totalLen) {
+      if (order === this.order || this.order.matches(keys)) {
+        if (skipTree) {
+          this.treeDirty = true;
+          if (this.tree.size > 0) this.tree.rebuild(new Float64Array(0));
+        } else if (!this.treeDirty) {
+          this.syncTreeToSharedPrefix(this.heights, declaredHeights, totalLen);
+        }
+        this.heights = declaredHeights;
+        this.heightsShared = true;
+        this.order = order;
+        this.keys = keys;
+        return;
+      }
+      if (this.order.precedes(order)) {
+        const oldLen = this.keys.length;
+        if (skipTree || this.treeDirty) {
+          this.treeDirty = true;
+          if (skipTree && this.tree.size > 0)
+            this.tree.rebuild(new Float64Array(0));
+        } else {
+          this.tree.append(declaredHeights.subarray(oldLen, totalLen));
+          this.syncTreeToSharedPrefix(this.heights, declaredHeights, oldLen);
+        }
+        this.heights = declaredHeights;
+        this.heightsShared = true;
+        this.order = order;
+        this.keys = keys;
+        return;
+      }
+      if (order.precedes(this.order)) {
+        let pinned = this.pinnedKey;
+        const pinnedInset = this.pinnedInsetPx;
+        if (pinned !== null && !order.has(pinned)) {
+          pinned =
+            replacementAnchor && order.has(replacementAnchor.key)
+              ? replacementAnchor.key
+              : null;
+        }
+        if (skipTree || this.treeDirty) {
+          this.treeDirty = true;
+          if (skipTree && this.tree.size > 0)
+            this.tree.rebuild(new Float64Array(0));
+        } else {
+          this.tree.truncate(totalLen);
+          this.syncTreeToSharedPrefix(this.heights, declaredHeights, totalLen);
+        }
+        this.heights = declaredHeights;
+        this.heightsShared = true;
+        this.order = order;
+        this.keys = keys;
+        this.pin(pinned, pinnedInset);
+        return;
+      }
+      const { pinned, pinnedInset } = this.transferPin(
+        order,
+        replacementAnchor,
+      );
+      if (skipTree) {
+        this.treeDirty = true;
+        if (this.tree.size > 0) this.tree.rebuild(new Float64Array(0));
+      } else {
+        this.tree.rebuild(declaredHeights);
+        this.treeDirty = false;
+      }
+      this.heights = declaredHeights;
+      this.heightsShared = true;
+      this.order = order;
+      this.keys = keys;
+      this.pin(pinned, pinnedInset);
+      return;
+    }
+    if (order === this.order || this.order.matches(keys)) {
+      this.order = order;
+      this.keys = keys;
+      if (skipTree) this.treeDirty = true;
+      this.declare(declaredHeights, leading);
+      return;
+    }
+    if (this.order.precedes(order)) {
+      const oldLen = this.keys.length;
+      const count = Math.max(
+        0,
+        Math.min(declaredHeights.length, totalLen - leading),
+      );
+      if (skipTree || this.treeDirty) {
+        this.treeDirty = true;
+        const heights = new Float64Array(totalLen);
+        if (leading > 0 && oldLen > 0) heights[0] = this.heights[0] as number;
+        if (count > 0) {
+          heights.set(
+            count === declaredHeights.length
+              ? declaredHeights
+              : declaredHeights.subarray(0, count),
+            leading,
+          );
+        }
+        this.heights = heights;
+        this.heightsShared = false;
+        this.order = order;
+        this.keys = keys;
+        return;
+      }
+      if (leading === 0 && count === totalLen) {
+        const heights = new Float64Array(totalLen);
+        heights.set(this.heights);
+        const tail = declaredHeights.subarray(oldLen, totalLen);
+        heights.set(tail, oldLen);
+        this.tree.append(tail);
+        this.heights = heights;
+        this.heightsShared = false;
+        this.order = order;
+        this.keys = keys;
+        if (oldLen > 0) this.declare(declaredHeights.subarray(0, oldLen), 0);
+        return;
+      }
+      this.appendKeys(order);
+      this.declare(declaredHeights, leading);
+      return;
+    }
+    if (order.precedes(this.order)) {
+      if (skipTree) this.treeDirty = true;
+      this.truncateKeys(order, replacementAnchor);
+      this.declare(declaredHeights, leading);
+      return;
+    }
+    const count = Math.max(
+      0,
+      Math.min(declaredHeights.length, totalLen - leading),
+    );
+    const oldHeights = this.heights;
+    let leadLearned = 0;
+    let leadSize = 0;
+    if (leading > 0 && totalLen > 0) {
+      const key = keys[0] as string;
+      const prev = this.order.get(key);
+      leadLearned = prev !== undefined ? (oldHeights[prev] as number) : 0;
+      leadSize = leadLearned || this.estimate(key);
+    }
+    const trailStart = leading + count;
+    let trailLearned = 0;
+    let trailSize = 0;
+    if (trailStart < totalLen) {
+      const key = keys[trailStart] as string;
+      const prev = this.order.get(key);
+      trailLearned = prev !== undefined ? (oldHeights[prev] as number) : 0;
+      trailSize = trailLearned || this.estimate(key);
+    }
+    const { pinned, pinnedInset } = this.transferPin(order, replacementAnchor);
+    const heights =
+      !this.heightsShared && oldHeights.length === totalLen
+        ? oldHeights
+        : new Float64Array(totalLen);
+    if (count > 0) {
+      heights.set(
+        count === declaredHeights.length
+          ? declaredHeights
+          : declaredHeights.subarray(0, count),
+        leading,
+      );
+    }
+    if (skipTree) {
+      if (leading > 0 && totalLen > 0) heights[0] = leadLearned;
+      if (trailStart < totalLen) heights[trailStart] = trailLearned;
+      this.treeDirty = true;
+      if (this.tree.size > 0) this.tree.rebuild(new Float64Array(0));
+    } else if (leading === 0 && count === totalLen) {
+      this.tree.rebuild(
+        count === declaredHeights.length
+          ? declaredHeights
+          : declaredHeights.subarray(0, count),
+      );
+      this.treeDirty = false;
+    } else {
+      if (leading > 0 && totalLen > 0) heights[0] = leadSize;
+      if (trailStart < totalLen) heights[trailStart] = trailSize;
+      this.tree.rebuild(heights);
+      if (leading > 0 && totalLen > 0) heights[0] = leadLearned;
+      if (trailStart < totalLen) heights[trailStart] = trailLearned;
+      this.treeDirty = false;
+    }
+    this.heights = heights;
+    this.heightsShared = false;
+    this.order = order;
+    this.keys = keys;
     this.pin(pinned, pinnedInset);
   }
 
@@ -452,6 +723,15 @@ export class Geometry {
     const keys = order.keys;
     const oldLength = this.keys.length;
     const added = keys.length - oldLength;
+    if (this.treeDirty) {
+      const heights = new Float64Array(keys.length);
+      heights.set(this.heights);
+      this.heights = heights;
+      this.heightsShared = false;
+      this.order = order;
+      this.keys = keys;
+      return;
+    }
     const sizes = new Float64Array(added);
     for (let index = 0; index < added; index++)
       sizes[index] = this.estimate(keys[oldLength + index] as string);
@@ -459,8 +739,31 @@ export class Geometry {
     heights.set(this.heights);
     this.tree.append(sizes);
     this.heights = heights;
+    this.heightsShared = false;
     this.order = order;
     this.keys = order.keys;
+  }
+
+  private truncateKeys(
+    order: KeyIndex,
+    replacementAnchor: ExplicitAnchor | null,
+  ): void {
+    const keys = order.keys;
+    const newLen = keys.length;
+    let pinned = this.pinnedKey;
+    const pinnedInset = this.pinnedInsetPx;
+    if (pinned !== null && !order.has(pinned)) {
+      pinned =
+        replacementAnchor && order.has(replacementAnchor.key)
+          ? replacementAnchor.key
+          : null;
+    }
+    this.heights = this.heights.slice(0, newLen);
+    this.heightsShared = false;
+    if (!this.treeDirty) this.tree.truncate(newLen);
+    this.order = order;
+    this.keys = keys;
+    this.pin(pinned, pinnedInset);
   }
 
   /**
@@ -476,10 +779,16 @@ export class Geometry {
   }
 
   private learn(index: number, height: number): void {
+    if (this.heights[index] === height) return;
+    const own = this.writableHeights();
+    if (this.treeDirty) {
+      own[index] = height;
+      return;
+    }
     const delta =
       height -
-      (this.heights[index] || this.estimate(this.keys[index] as string));
-    this.heights[index] = height;
+      ((own[index] as number) || this.estimate(this.keys[index] as string));
+    own[index] = height;
     if (delta !== 0) this.tree.add(index, delta);
   }
 
@@ -489,9 +798,29 @@ export class Geometry {
    * which costs one linear fold instead of a tree walk per key. The caller
    * validates the heights (finite and > 0).
    */
-  declare(heights: Float64Array, leading: number): void {
-    const own = this.heights;
+  declare(heights: Float64Array, leading: number, shareBuffer = false): void {
+    if (
+      shareBuffer &&
+      leading === 0 &&
+      heights.length === this.heights.length
+    ) {
+      if (!this.treeDirty) {
+        this.syncTreeToSharedPrefix(this.heights, heights, heights.length);
+      }
+      this.heights = heights;
+      this.heightsShared = true;
+      return;
+    }
+    const own = this.writableHeights();
     const count = Math.min(heights.length, own.length - leading);
+    if (count <= 0) return;
+    if (this.treeDirty) {
+      own.set(
+        count === heights.length ? heights : heights.subarray(0, count),
+        leading,
+      );
+      return;
+    }
     let changed = 0;
     for (let at = 0; at < count; at++)
       if (own[at + leading] !== heights[at]) changed += 1;
@@ -502,6 +831,13 @@ export class Geometry {
           this.learn(at + leading, heights[at] as number);
       return;
     }
+    const slice =
+      count === heights.length ? heights : heights.subarray(0, count);
+    if (leading === 0 && count === own.length) {
+      this.tree.rebuild(slice);
+      own.set(slice, 0);
+      return;
+    }
     // Estimates are read before any state moves, as in `setKeys`.
     const sizes = new Float64Array(own.length);
     for (let index = 0; index < own.length; index++) {
@@ -509,13 +845,10 @@ export class Geometry {
       sizes[index] =
         at >= 0 && at < count
           ? (heights[at] as number)
-          : own[index] || this.estimate(this.keys[index] as string);
+          : (own[index] as number) || this.estimate(this.keys[index] as string);
     }
-    this.tree = new FenwickTree(sizes);
-    own.set(
-      count === heights.length ? heights : heights.subarray(0, count),
-      leading,
-    );
+    this.tree.rebuild(sizes);
+    own.set(slice, leading);
   }
 
   /**

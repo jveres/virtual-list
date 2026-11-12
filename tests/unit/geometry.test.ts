@@ -1239,4 +1239,46 @@ describe("host-named anchor", () => {
     expect(geometry.heightOf("mid")).toBe(50);
     expect(geometry.offsetOf("k3")).toBe(50 + 50 + 110 + 50 + 50);
   });
+
+  it("isolates copy-on-write shared declared height buffers and rebuilds lazy trees on demand", () => {
+    const geometry = new Geometry(50);
+    const baseOrder = new KeyIndex(["a", "b", "c"]);
+    const sharedHeights = Float64Array.from([40, 60, 80]);
+
+    geometry.setKeysWithDeclared(
+      baseOrder,
+      sharedHeights,
+      0,
+      null,
+      false,
+      true,
+    );
+    expect(geometry.contentSize).toBe(180);
+    expect(geometry.offsetOf("c")).toBe(100);
+
+    // Subsequent in-place mutations on Geometry must copy-on-write without touching sharedHeights.
+    geometry.measure("b", 120);
+    expect(Array.from(sharedHeights)).toEqual([40, 60, 80]);
+    expect(geometry.heightOf("b")).toBe(120);
+    expect(geometry.offsetOf("c")).toBe(160);
+
+    // Lazy skipTree rebuilds accurately when queried after positioned mode clears.
+    const nextOrder = baseOrder.extend(["a", "b", "c", "d"]) as KeyIndex;
+    const nextShared = Float64Array.from([40, 60, 80, 100]);
+    geometry.setKeysWithDeclared(nextOrder, nextShared, 0, null, true, true);
+    expect(geometry.contentSize).toBe(280);
+    expect(geometry.offsetOf("d")).toBe(180);
+
+    const trimmedOrder = nextOrder.truncate(["a", "b"]) as KeyIndex;
+    geometry.setKeysWithDeclared(
+      trimmedOrder,
+      Float64Array.from([40, 50]),
+      0,
+      null,
+      false,
+      true,
+    );
+    expect(geometry.contentSize).toBe(90);
+    expect(geometry.offsetOf("b")).toBe(40);
+  });
 });

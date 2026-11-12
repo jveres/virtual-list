@@ -150,6 +150,11 @@ interface ScrollSettleHost {
   onGestureReset?(): void;
   /** A scroll event landed: reconcile the window; work that needs no scroll write may land. */
   onScrollEventObserved(): void;
+  /**
+   * Layout-free lower bound on `viewport.scrollHeight - viewport.clientHeight`
+   * when the committed scroll surface is up to date (`null` when unknown).
+   */
+  lowerBoundMaxScrollTop?(): number | null;
 }
 
 export interface ScrollSettleController {
@@ -195,8 +200,15 @@ export function createScrollSettleController(
     strategy === "chromium-wheel" ? new ChromiumWheelPolicy() : null;
   let settleFrame = 0;
   let settleTimer = 0;
+  let settleDeadline = 0;
+  let settleScheduledAt = 0;
+  let settleCallback: (() => void) | null = null;
   let wheelInputActive = false;
   let wheelInputTimer = 0;
+  let wheelIdleDeadline = 0;
+  let wheelIdleCallback: (() => void) | null = null;
+  let lastChromiumOutwardBoundary: ScrollBoundary | null = null;
+  let lastFirefoxProtectedEdge: ScrollBoundary | null = null;
   let chromiumQuietSettleTimer = 0;
   const activePointers = new Set<number>();
   let touchInputActive = false;
@@ -246,19 +258,39 @@ export function createScrollSettleController(
     const moved = Math.abs(nextScrollTop - previousScrollTop) > measureEpsilon;
     const programmaticScroll = consumeProgrammaticScrollWrite(nextScrollTop);
     // A viewport that grew (a window resize, an in-page composer) shrinks
-    // the scroll range, and the engine clamps the position to the new
-    // maximum, dispatching that scroll before or after the resize is
-    // observed. Layout moved the viewport, not the user: the height is
-    // sampled here, at scroll events only, so either order reads the same.
-    const clientHeight = viewport.clientHeight;
-    const layoutClamp =
-      Math.abs(clientHeight - lastScrollSampleHeight) > measureEpsilon &&
-      Math.abs(nextScrollTop - nativeMaxScrollTop()) <=
-        Math.max(1, measureEpsilon);
-    lastScrollSampleHeight = clientHeight;
+    // the scroll range, and the engine clamps the position downward to the
+    // new maximum, dispatching that scroll before or after the resize is
+    // observed. Avoid reading `clientHeight` / `scrollHeight` (which flush
+    // pending layout in Gecko) during active interior scrolls where a
+    // growing-viewport clamp cannot affect phase start or edge protection.
+    let layoutClamp = false;
+    let loadableEdge: ScrollBoundary | null | undefined;
+    const needsFirefoxEdgeCheck =
+      strategy === "firefox-wheel" && firefox?.protectedEdge == null;
+    if (moved && !programmaticScroll) {
+      if (scrollPhaseActive && needsFirefoxEdgeCheck) {
+        loadableEdge = loadableBoundaryAtNativeEdge(nextScrollTop);
+      }
+      const mayAffectState =
+        !scrollPhaseActive || (needsFirefoxEdgeCheck && loadableEdge !== null);
+      if (mayAffectState) {
+        const clientHeight = viewport.clientHeight;
+        layoutClamp =
+          Math.abs(clientHeight - lastScrollSampleHeight) > measureEpsilon &&
+          Math.abs(nextScrollTop - nativeMaxScrollTop()) <=
+            Math.max(1, measureEpsilon);
+        lastScrollSampleHeight = clientHeight;
+      }
+    } else if (!scrollPhaseActive) {
+      lastScrollSampleHeight = viewport.clientHeight;
+    }
     const input = moved && !programmaticScroll && !layoutClamp;
-    if (strategy === "firefox-wheel" && input) {
-      firefox?.protect(loadableBoundaryAtNativeEdge());
+    if (needsFirefoxEdgeCheck && input) {
+      firefox?.protect(
+        loadableEdge !== undefined
+          ? loadableEdge
+          : loadableBoundaryAtNativeEdge(nextScrollTop),
+      );
     }
     if (!scrollPhaseActive && input) {
       if (!handleScrollPhaseStart()) return;
@@ -267,9 +299,9 @@ export function createScrollSettleController(
     if (
       wheelPendingNativeScrollEndTop !== null &&
       !programmaticScroll &&
-      !isRubberBandOverscrolled() &&
       Math.abs(nextScrollTop - wheelPendingNativeScrollEndTop) >
-        SETTLE_MOTION_EPSILON_PX
+        SETTLE_MOTION_EPSILON_PX &&
+      !isRubberBandOverscrolled(nextScrollTop)
     ) {
       clearPendingNativeScrollEnd();
       cancelSettleTimer();
@@ -290,12 +322,13 @@ export function createScrollSettleController(
     return touchInputActive || activePointers.size > 0;
   }
 
-  function isRubberBandOverscrolled(): boolean {
-    const scrollTop = viewport.scrollTop;
-    const maxScrollTop = nativeMaxScrollTop();
-    return (
-      scrollTop < -measureEpsilon || scrollTop - maxScrollTop > measureEpsilon
-    );
+  function isRubberBandOverscrolled(scrollTop = viewport.scrollTop): boolean {
+    if (scrollTop < -measureEpsilon) return true;
+    const lowerBound = host.lowerBoundMaxScrollTop?.() ?? null;
+    if (lowerBound !== null && scrollTop - lowerBound <= measureEpsilon) {
+      return false;
+    }
+    return scrollTop - nativeMaxScrollTop() > measureEpsilon;
   }
 
   function cancelSettleFrame(): void {
@@ -315,12 +348,17 @@ export function createScrollSettleController(
   }
 
   function cancelSettleTimer(): void {
+    settleDeadline = 0;
+    settleScheduledAt = 0;
+    settleCallback = null;
     if (!settleTimer) return;
     window.clearTimeout(settleTimer);
     settleTimer = 0;
   }
 
   function cancelWheelInputTimer(): void {
+    wheelIdleDeadline = 0;
+    wheelIdleCallback = null;
     if (!wheelInputTimer) return;
     window.clearTimeout(wheelInputTimer);
     wheelInputTimer = 0;
@@ -350,9 +388,17 @@ export function createScrollSettleController(
    * any; the top is checked first, so a non-scrollable viewport reads as
    * the top.
    */
-  function boundaryAtNativeEdge(): ScrollBoundary | null {
-    const scrollTop = viewport.scrollTop;
+  function boundaryAtNativeEdge(
+    scrollTop = viewport.scrollTop,
+  ): ScrollBoundary | null {
     if (scrollTop <= EDGE_PROXIMITY_EPSILON_PX) return "top";
+    const lowerBound = host.lowerBoundMaxScrollTop?.() ?? null;
+    if (
+      lowerBound !== null &&
+      lowerBound - scrollTop > EDGE_PROXIMITY_EPSILON_PX
+    ) {
+      return null;
+    }
     if (nativeMaxScrollTop() - scrollTop <= EDGE_PROXIMITY_EPSILON_PX) {
       return "bottom";
     }
@@ -361,9 +407,14 @@ export function createScrollSettleController(
 
   /** The edge a wheel tick pushes outward against, if the viewport is on it. */
   function boundaryForOutwardWheel(event: WheelEvent): ScrollBoundary | null {
-    const edge = boundaryAtNativeEdge();
-    if (edge === "top" && event.deltaY < 0) return "top";
-    if (edge === "bottom" && event.deltaY > 0) return "bottom";
+    if (event.deltaY < 0) {
+      return viewport.scrollTop <= EDGE_PROXIMITY_EPSILON_PX ? "top" : null;
+    }
+    if (event.deltaY > 0) {
+      const scrollTop = viewport.scrollTop;
+      if (scrollTop <= EDGE_PROXIMITY_EPSILON_PX) return null;
+      return boundaryAtNativeEdge(scrollTop) === "bottom" ? "bottom" : null;
+    }
     return null;
   }
 
@@ -371,9 +422,16 @@ export function createScrollSettleController(
     return boundaryAtNativeEdge() !== null;
   }
 
-  function loadableBoundaryAtNativeEdge(): ScrollBoundary | null {
-    const edge = boundaryAtNativeEdge();
-    return edge !== null && host.canLoadAtBoundary(edge) ? edge : null;
+  function loadableBoundaryAtNativeEdge(
+    scrollTop?: number,
+  ): ScrollBoundary | null {
+    const canTop = host.canLoadAtBoundary("top");
+    const canBottom = host.canLoadAtBoundary("bottom");
+    if (!canTop && !canBottom) return null;
+    const top = scrollTop ?? viewport.scrollTop;
+    if (top <= EDGE_PROXIMITY_EPSILON_PX) return canTop ? "top" : null;
+    if (!canBottom) return null;
+    return boundaryAtNativeEdge(top) === "bottom" ? "bottom" : null;
   }
 
   function hasProtectedFirefoxEdge(): boolean {
@@ -515,14 +573,57 @@ export function createScrollSettleController(
     });
   }
 
-  function scheduleSettleCooldown(delayMs = SCROLL_SETTLE_COOLDOWN_MS): void {
-    cancelSettleTimer();
+  const onSettleTimerTick = (): void => {
+    settleTimer = 0;
+    settleScheduledAt = 0;
     if (host.isDisposed()) return;
-    settleTimer = window.setTimeout(() => {
-      settleTimer = 0;
-      if (host.isDisposed()) return;
-      maybeFinishScrollPhase();
-    }, delayMs);
+    const remaining = settleDeadline - performance.now();
+    if (remaining >= 1) {
+      const nextDelay = Math.floor(remaining);
+      settleScheduledAt = performance.now() + nextDelay;
+      settleTimer = window.setTimeout(onSettleTimerTick, nextDelay);
+      return;
+    }
+    settleDeadline = 0;
+    const cb = settleCallback;
+    settleCallback = null;
+    cb?.();
+  };
+
+  function armSettleTimer(delayMs: number, cb: () => void): void {
+    cancelSettleFrame();
+    if (host.isDisposed()) {
+      cancelSettleTimer();
+      return;
+    }
+    const now = performance.now();
+    const targetAt = now + delayMs;
+    settleDeadline = targetAt;
+    settleCallback = cb;
+    if (settleTimer !== 0) {
+      if (targetAt + 1 < settleScheduledAt) {
+        window.clearTimeout(settleTimer);
+        settleTimer = 0;
+      } else {
+        return;
+      }
+    }
+    settleScheduledAt = targetAt;
+    settleTimer = window.setTimeout(onSettleTimerTick, delayMs);
+  }
+
+  const onCooldownExpired = (): void => {
+    if (host.isDisposed()) return;
+    maybeFinishScrollPhase();
+  };
+
+  const onWheelFallbackExpired = (): void => {
+    if (host.isDisposed() || !canScheduleWheelScrollEndFallback()) return;
+    markPendingWheelScrollEnd();
+  };
+
+  function scheduleSettleCooldown(delayMs = SCROLL_SETTLE_COOLDOWN_MS): void {
+    armSettleTimer(delayMs, onCooldownExpired);
   }
 
   function setPendingNativeScrollEnd(
@@ -563,12 +664,16 @@ export function createScrollSettleController(
     schedulePendingNativeScrollEnd();
   }
 
+  function clampedNativeScrollTop(): number {
+    const scrollTop = Math.max(0, viewport.scrollTop);
+    const lowerBound = host.lowerBoundMaxScrollTop?.() ?? null;
+    if (lowerBound !== null && scrollTop <= lowerBound) return scrollTop;
+    return Math.min(nativeMaxScrollTop(), scrollTop);
+  }
+
   function markPendingWheelScrollEnd(firefoxEdge = false): void {
     setPendingNativeScrollEnd({
-      scrollTop: Math.max(
-        0,
-        Math.min(nativeMaxScrollTop(), viewport.scrollTop),
-      ),
+      scrollTop: clampedNativeScrollTop(),
       firefoxEdge,
     });
     schedulePendingNativeScrollEnd();
@@ -576,12 +681,7 @@ export function createScrollSettleController(
 
   function scheduleWheelScrollEndFallback(): void {
     if (host.isDisposed() || !canScheduleWheelScrollEndFallback()) return;
-    cancelSettleTimer();
-    settleTimer = window.setTimeout(() => {
-      settleTimer = 0;
-      if (host.isDisposed() || !canScheduleWheelScrollEndFallback()) return;
-      markPendingWheelScrollEnd();
-    }, SCROLL_SETTLE_COOLDOWN_MS);
+    armSettleTimer(SCROLL_SETTLE_COOLDOWN_MS, onWheelFallbackExpired);
   }
 
   /**
@@ -710,81 +810,106 @@ export function createScrollSettleController(
     return true;
   }
 
+  const onWheelIdleTick = (): void => {
+    wheelInputTimer = 0;
+    if (host.isDisposed()) return;
+    const remaining = wheelIdleDeadline - performance.now();
+    if (remaining >= 1) {
+      wheelInputTimer = window.setTimeout(
+        onWheelIdleTick,
+        Math.floor(remaining),
+      );
+      return;
+    }
+    wheelIdleDeadline = 0;
+    wheelInputActive = false;
+    const cb = wheelIdleCallback;
+    wheelIdleCallback = null;
+    cb?.();
+  };
+
   /** Wheel input is live until it has been quiet for the idle window. */
   function armWheelIdle(onIdle: () => void): void {
     wheelInputActive = true;
-    cancelWheelInputTimer();
+    wheelIdleCallback = onIdle;
+    wheelIdleDeadline = performance.now() + WHEEL_INPUT_IDLE_MS;
+    if (wheelInputTimer !== 0) return;
     // Dispose cancels this timer synchronously; it never fires disposed.
-    wheelInputTimer = window.setTimeout(() => {
-      wheelInputTimer = 0;
-      wheelInputActive = false;
-      onIdle();
-    }, WHEEL_INPUT_IDLE_MS);
+    wheelInputTimer = window.setTimeout(onWheelIdleTick, WHEEL_INPUT_IDLE_MS);
   }
+
+  const onChromiumWheelIdle = (): void => {
+    if (!chromium) return;
+    const outwardBoundary = lastChromiumOutwardBoundary;
+    const action = chromium.idle(outwardBoundary);
+    if (action === "edge" && outwardBoundary) {
+      clearPendingNativeScrollEnd();
+      scheduleChromiumEdgeSettleFallback(outwardBoundary);
+    } else if (action === "release") {
+      setPendingNativeScrollEnd();
+    } else {
+      scheduleChromiumStallFallback();
+    }
+    schedulePendingNativeScrollEnd();
+  };
 
   function handleChromiumWheelInput(event: WheelEvent): void {
     if (!chromium) return;
     const outwardBoundary = boundaryForOutwardWheel(event);
+    lastChromiumOutwardBoundary = outwardBoundary;
     cancelChromiumQuietSettleTimer();
     chromium.wheel(outwardBoundary);
     if (outwardBoundary || nativeScrollEndPending)
       clearPendingNativeScrollEnd();
-    armWheelIdle(() => {
-      const action = chromium.idle(outwardBoundary);
-      if (action === "edge" && outwardBoundary) {
-        clearPendingNativeScrollEnd();
-        scheduleChromiumEdgeSettleFallback(outwardBoundary);
-      } else if (action === "release") {
-        setPendingNativeScrollEnd();
-      } else {
-        scheduleChromiumStallFallback();
-      }
-      schedulePendingNativeScrollEnd();
-    });
+    armWheelIdle(onChromiumWheelIdle);
   }
+
+  const onWheelInputIdle = (): void => {
+    const protectedEdge = lastFirefoxProtectedEdge;
+    if (protectedEdge !== null) {
+      // Firefox contract at an overscrolled edge (see the module header):
+      // no settle and no idle notification here, in either branch.
+      if (nativeScrollEndPending) {
+        // A scrollend already fired and wheels followed it — either
+        // trailing momentum-end markers after a real release. Re-arm
+        // confirmation; renewed input would have invalidated the release.
+        schedulePendingNativeScrollEnd();
+        return;
+      }
+      // No scrollend yet: fingers may still be down, and Firefox defers
+      // scrollend until the gesture truly ends — wait for it, with no
+      // timer backstop (see the module header: timer applies mid-hold are
+      // unfixable, they flash and leave a ghost end). A missed scrollend
+      // recovers at the next gesture's settle.
+      return;
+    }
+    if (nativeScrollEndPending) {
+      schedulePendingNativeScrollEnd();
+      return;
+    }
+    if (
+      scrollPhaseActive &&
+      !scrollPhaseMoved &&
+      !hasActiveTouchOrPointerInput() &&
+      !isRubberBandOverscrolled()
+    ) {
+      // Wheel input that never moved the viewport (a tick at a pinned
+      // edge, or one whose scrollend cancellation was withheld above):
+      // the gesture settles when the wheel goes quiet. This must notify
+      // the host: a boundary chunk may have finished preparing while the
+      // phase was active and otherwise remains held indefinitely.
+      finishScrollPhase();
+      return;
+    }
+    scheduleWheelScrollEndFallback();
+  };
 
   /** `protectedEdge` is Firefox's protected edge; always null elsewhere. */
   function handleWheelInputSettle(
     protectedEdge: ScrollBoundary | null = null,
   ): void {
-    armWheelIdle(() => {
-      if (protectedEdge !== null) {
-        // Firefox contract at an overscrolled edge (see the module header):
-        // no settle and no idle notification here, in either branch.
-        if (nativeScrollEndPending) {
-          // A scrollend already fired and wheels followed it — either
-          // trailing momentum-end markers after a real release. Re-arm
-          // confirmation; renewed input would have invalidated the release.
-          schedulePendingNativeScrollEnd();
-          return;
-        }
-        // No scrollend yet: fingers may still be down, and Firefox defers
-        // scrollend until the gesture truly ends — wait for it, with no
-        // timer backstop (see the module header: timer applies mid-hold are
-        // unfixable, they flash and leave a ghost end). A missed scrollend
-        // recovers at the next gesture's settle.
-        return;
-      }
-      if (nativeScrollEndPending) {
-        schedulePendingNativeScrollEnd();
-        return;
-      }
-      if (
-        scrollPhaseActive &&
-        !scrollPhaseMoved &&
-        !hasActiveTouchOrPointerInput() &&
-        !isRubberBandOverscrolled()
-      ) {
-        // Wheel input that never moved the viewport (a tick at a pinned
-        // edge, or one whose scrollend cancellation was withheld above):
-        // the gesture settles when the wheel goes quiet. This must notify
-        // the host: a boundary chunk may have finished preparing while the
-        // phase was active and otherwise remains held indefinitely.
-        finishScrollPhase();
-        return;
-      }
-      scheduleWheelScrollEndFallback();
-    });
+    lastFirefoxProtectedEdge = protectedEdge;
+    armWheelIdle(onWheelInputIdle);
   }
 
   function observeInitialInput(): void {
@@ -803,7 +928,15 @@ export function createScrollSettleController(
       // Record this wheel only afterward so the first tick belongs to it.
       if (!handleScrollPhaseStart()) return;
       firefox?.recordInput(performance.now());
-      const outwardBoundary = boundaryForOutwardWheel(event);
+      const needsOutwardCheck =
+        event.deltaY !== 0 &&
+        (!scrollPhaseMoved ||
+          (firefox !== null &&
+            firefox.protectedEdge === null &&
+            host.canLoadAtBoundary(event.deltaY < 0 ? "top" : "bottom")));
+      const outwardBoundary = needsOutwardCheck
+        ? boundaryForOutwardWheel(event)
+        : null;
       if (
         firefox &&
         outwardBoundary !== null &&

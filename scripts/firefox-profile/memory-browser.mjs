@@ -92,6 +92,7 @@ export async function launchFirefox(directory, { profiler = false } = {}) {
       stdio: "ignore",
       env: {
         ...process.env,
+        MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: "1",
         MOZ_APP_DATA: join(profile, "app-data"),
         MOZ_LOCAL_APP_DATA: join(profile, "local-data"),
       },

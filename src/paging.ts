@@ -1,3 +1,4 @@
+import { KeyTable } from "./key-index";
 import type {
   AnchorRequest,
   Edge,
@@ -72,7 +73,7 @@ export interface PagedWindow<T, C> {
 interface RetainedPage<T, C> {
   items: readonly T[];
   keys: readonly string[];
-  indexByKey: Map<string, number>;
+  indexByKey: KeyTable;
   start: PageBoundary<C>;
   end: PageBoundary<C>;
 }
@@ -91,14 +92,17 @@ export function createPagedWindow<T, C, Row>({
   const indexPage = (page: Page<T, C>): RetainedPage<T, C> => {
     const deduped: T[] = [];
     const keys: string[] = [];
-    const indexByKey = new Map<string, number>();
+    const indexByKey = new KeyTable(keys, page.items.length);
     for (let i = 0; i < page.items.length; i++) {
       const item = page.items[i] as T;
       const key = options.key(item);
-      if (indexByKey.has(key)) continue;
-      indexByKey.set(key, deduped.length);
-      deduped.push(item);
+      const nextIdx = deduped.length;
       keys.push(key);
+      if (!indexByKey.insertUnique(key, nextIdx, keys)) {
+        keys.pop();
+        continue;
+      }
+      deduped.push(item);
     }
     return {
       items: deduped,
@@ -112,12 +116,15 @@ export function createPagedWindow<T, C, Row>({
   const firstPage = indexPage(initial);
   let pages: RetainedPage<T, C>[] = [firstPage];
   let items: readonly T[] = firstPage.items;
-  let itemIndexByKey = new Map<string, number>(firstPage.indexByKey);
+  let itemKeys: readonly string[] = firstPage.keys;
+  let itemIndexByKey: KeyTable = firstPage.indexByKey;
   let disposed = false;
   let request: AbortController | null = null;
   let trimEdge: Edge = "start";
   let trimming = false;
-  let lastRange = "";
+  let lastRangeStart = -1;
+  let lastRangeEnd = -1;
+  let lastRangeCount = -1;
   let sourceRevision = 0;
   const lifetime = new AbortController();
 
@@ -148,64 +155,95 @@ export function createPagedWindow<T, C, Row>({
           if (disposed || signal.aborted) return null;
           const candidate = propose();
           if (!candidate) return null;
-          const protectedKeys = new Set<string>();
-          for (let i = 0; i < protectedItems.length; i++) {
-            for (const key of options.keysOf(protectedItems[i] as Row))
-              protectedKeys.add(key);
+          let totalRawKeys = 0;
+          for (let p = 0; p < candidate.length; p++) {
+            totalRawKeys += (candidate[p] as RetainedPage<T, C>).keys.length;
           }
-          const retained = candidate.slice();
-          const owners = new Map<string, number>();
-          for (let p = 0; p < retained.length; p++) {
-            const pageKeys = (retained[p] as RetainedPage<T, C>).keys;
-            for (let i = 0; i < pageKeys.length; i++) {
-              const key = pageKeys[i] as string;
-              owners.set(key, (owners.get(key) ?? 0) + 1);
-            }
-          }
+          let retained: RetainedPage<T, C>[];
           const evicted: T[] = [];
-          // Keep at least one page, even when a source returns a large page.
-          while (
+          if (
             shouldTrim &&
-            owners.size > options.maxItems &&
-            retained.length > 1
+            totalRawKeys > options.maxItems &&
+            candidate.length > 1
           ) {
-            const page = edge === "start" ? retained[0] : retained.at(-1);
-            if (!page) break;
-            let blocked = false;
-            for (let i = 0; i < page.keys.length; i++) {
-              const key = page.keys[i] as string;
-              if (protectedKeys.has(key) && owners.get(key) === 1) {
-                blocked = true;
-                break;
+            const protectedKeys = new Set<string>();
+            for (let i = 0; i < protectedItems.length; i++) {
+              for (const key of options.keysOf(protectedItems[i] as Row))
+                protectedKeys.add(key);
+            }
+            retained = candidate.slice();
+            const owners = new Map<string, number>();
+            for (let p = 0; p < retained.length; p++) {
+              const pageKeys = (retained[p] as RetainedPage<T, C>).keys;
+              for (let i = 0; i < pageKeys.length; i++) {
+                const key = pageKeys[i] as string;
+                owners.set(key, (owners.get(key) ?? 0) + 1);
               }
             }
-            if (blocked) break;
-            if (edge === "start") retained.shift();
-            else retained.pop();
-            for (let i = 0; i < page.keys.length; i++) {
-              const key = page.keys[i] as string;
-              const remaining = (owners.get(key) ?? 1) - 1;
-              if (remaining) owners.set(key, remaining);
-              else {
-                owners.delete(key);
-                evicted.push(page.items[i] as T);
+            // Keep at least one page, even when a source returns a large page.
+            while (owners.size > options.maxItems && retained.length > 1) {
+              const page = edge === "start" ? retained[0] : retained.at(-1);
+              if (!page) break;
+              let blocked = false;
+              for (let i = 0; i < page.keys.length; i++) {
+                const key = page.keys[i] as string;
+                if (protectedKeys.has(key) && owners.get(key) === 1) {
+                  blocked = true;
+                  break;
+                }
+              }
+              if (blocked) break;
+              if (edge === "start") retained.shift();
+              else retained.pop();
+              for (let i = 0; i < page.keys.length; i++) {
+                const key = page.keys[i] as string;
+                const remaining = (owners.get(key) ?? 1) - 1;
+                if (remaining) owners.set(key, remaining);
+                else {
+                  owners.delete(key);
+                  evicted.push(page.items[i] as T);
+                }
               }
             }
+          } else {
+            retained = candidate;
           }
           if (candidate === pages && retained.length === pages.length)
             return null;
-          const nextItems: T[] = [];
-          const nextIndexByKey = new Map<string, number>();
-          for (let p = 0; p < retained.length; p++) {
-            const page = retained[p] as RetainedPage<T, C>;
-            const pageItems = page.items;
-            const pageKeys = page.keys;
-            for (let i = 0; i < pageItems.length; i++) {
-              const key = pageKeys[i] as string;
-              if (nextIndexByKey.has(key)) continue;
-              nextIndexByKey.set(key, nextItems.length);
-              nextItems.push(pageItems[i] as T);
+          let nextItems: readonly T[];
+          let nextKeys: readonly string[];
+          let nextIndexByKey: KeyTable;
+          if (retained.length === 1) {
+            const sole = retained[0] as RetainedPage<T, C>;
+            nextItems = sole.items;
+            nextKeys = sole.keys;
+            nextIndexByKey = sole.indexByKey;
+          } else {
+            let maxCount = 0;
+            for (let p = 0; p < retained.length; p++) {
+              maxCount += (retained[p] as RetainedPage<T, C>).items.length;
             }
+            const builtItems: T[] = [];
+            const builtKeys: string[] = [];
+            const builtIndex = new KeyTable(builtKeys, maxCount);
+            for (let p = 0; p < retained.length; p++) {
+              const page = retained[p] as RetainedPage<T, C>;
+              const pageItems = page.items;
+              const pageKeys = page.keys;
+              for (let i = 0; i < pageItems.length; i++) {
+                const key = pageKeys[i] as string;
+                const at = builtItems.length;
+                builtKeys.push(key);
+                if (!builtIndex.insertUnique(key, at, builtKeys)) {
+                  builtKeys.pop();
+                  continue;
+                }
+                builtItems.push(pageItems[i] as T);
+              }
+            }
+            nextItems = builtItems;
+            nextKeys = builtKeys;
+            nextIndexByKey = builtIndex;
           }
           const rows = options.project(nextItems);
           return {
@@ -218,11 +256,12 @@ export function createPagedWindow<T, C, Row>({
             onCommit: () => {
               pages = retained;
               items = nextItems;
+              itemKeys = nextKeys;
               itemIndexByKey = nextIndexByKey;
               sourceRevision++;
               // Equal numeric ranges can describe different source pages after
               // a prepend/trim. A committed window permits a fresh retry.
-              lastRange = "";
+              lastRangeStart = -1;
               if (shouldTrim) trimEdge = edge;
               try {
                 options.onChange?.(items, rows);
@@ -377,7 +416,7 @@ export function createPagedWindow<T, C, Row>({
           const candidate = pages.slice();
           let addsNew = false;
           for (let i = 0; i < incoming.keys.length; i++) {
-            if (!itemIndexByKey.has(incoming.keys[i] as string)) {
+            if (itemIndexByKey.get(incoming.keys[i] as string) === undefined) {
               addsNew = true;
               break;
             }
@@ -433,9 +472,15 @@ export function createPagedWindow<T, C, Row>({
     )
       return null;
     const state = options.list.state;
-    const range = `${state.start}:${state.end}:${state.count}`;
-    if (range === lastRange) return null;
-    lastRange = range;
+    if (
+      state.start === lastRangeStart &&
+      state.end === lastRangeEnd &&
+      state.count === lastRangeCount
+    )
+      return null;
+    lastRangeStart = state.start;
+    lastRangeEnd = state.end;
+    lastRangeCount = state.count;
     trimming = true;
     return trim();
   }
@@ -447,14 +492,14 @@ export function createPagedWindow<T, C, Row>({
       return await apply(
         () => {
           if (!request) return pages;
-          lastRange = "";
+          lastRangeStart = -1;
           return null;
         },
         trimEdge,
         lifetime.signal,
       );
     } catch (error) {
-      lastRange = "";
+      lastRangeStart = -1;
       throw error;
     } finally {
       trimming = false;
@@ -479,20 +524,22 @@ export function createPagedWindow<T, C, Row>({
           cachedFresh ??= indexPage(page);
           const fresh = cachedFresh;
           if (!fresh.items.length) return null;
-          const firstKey = itemIndexByKey.keys().next().value;
+          const firstKey = itemKeys[0];
           const lastKey = fresh.keys[fresh.keys.length - 1];
           const overlap =
             lastKey !== undefined ? (itemIndexByKey.get(lastKey) ?? -1) : -1;
           if (
             firstKey !== undefined &&
-            (overlap < 0 || !fresh.indexByKey.has(firstKey))
+            (overlap < 0 || fresh.indexByKey.get(firstKey) === undefined)
           )
             return null;
-          let checked = 0;
-          for (const key of itemIndexByKey.keys()) {
-            if (checked > overlap) break;
-            if (!fresh.indexByKey.has(key)) return null;
-            checked += 1;
+          for (
+            let checked = 0;
+            checked <= overlap && checked < itemKeys.length;
+            checked++
+          ) {
+            if (fresh.indexByKey.get(itemKeys[checked] as string) === undefined)
+              return null;
           }
           // Preserve local state such as expanded text on overlapping posts.
           const headItems = new Array<T>(fresh.items.length);
@@ -505,7 +552,7 @@ export function createPagedWindow<T, C, Row>({
           }
           const head: RetainedPage<T, C> = { ...fresh, items: headItems };
           const tail = pages.filter((old) =>
-            old.keys.some((key) => !fresh.indexByKey.has(key)),
+            old.keys.some((key) => fresh.indexByKey.get(key) === undefined),
           );
           return [head, ...tail];
         },
@@ -527,7 +574,8 @@ export function createPagedWindow<T, C, Row>({
       lifetime.abort();
       pages = [];
       items = [];
-      itemIndexByKey.clear();
+      itemKeys = [];
+      itemIndexByKey = new KeyTable([], 0);
     },
   };
 }

@@ -7,7 +7,7 @@ import {
   Geometry,
   type GeometryViewport,
 } from "./geometry";
-import { KeyIndex } from "./key-index";
+import { KeyIndex, KeyTable } from "./key-index";
 import { type Glide, startNativeGlide, stopNativeScroll } from "./native-glide";
 import { type GeometryWindow, PositionedGeometry } from "./positioned-geometry";
 import { type Edge, ReachController } from "./reach";
@@ -75,6 +75,7 @@ const PARKED_TOP = "-100000px";
 const PARKED_TRANSLATE = "0 -100000px";
 /** How far a mounting slot looks ahead for a connected successor. */
 const INSERTION_SCAN = 64;
+const MAX_POOLED_SLOTS = 128;
 
 const slotKey = (edge: Edge, key: string): string =>
   `${SLOT_PREFIX}${edge}:${key}`;
@@ -160,6 +161,11 @@ interface Row<T> {
   element: HTMLElement;
   /** Clip box; the element itself for positioned cards. */
   slot: HTMLElement;
+  slotStyled: "none" | "hidden" | "mounted";
+  slotHeight: number;
+  slotAnchor: boolean;
+  committedIndex: number;
+  committedEpoch: number;
   height: number;
   /** Measured follow limit within this row; null means no limit yet. */
   followStart: number | null;
@@ -186,6 +192,8 @@ interface Pending<T> {
   /** `declared` holds only updated keys, over the committed entries. */
   patch: boolean;
   positioned: PositionedGeometry | null;
+  positionedMeta?: { ratio: number; origin: number; shift: number };
+  positionedPatch?: { at: number; top: number; height: number };
   anchor: AnchorPolicy;
   target: ExplicitAnchor | null;
   pinKey?: string | null;
@@ -252,7 +260,13 @@ export function createVirtualList<T>(
       : Math.max(MIN_OVERSCAN_PX, viewport.clientHeight);
 
   let passRatio = 0;
-  const currentRatio = (): number => passRatio || pixelRatio();
+  let scope: Task[] | null = null;
+  const currentRatio = (): number => {
+    if (passRatio !== 0) return passRatio;
+    const ratio = pixelRatio();
+    if (scope !== null) passRatio = ratio;
+    return ratio;
+  };
 
   /** I0: whole CSS pixels at integral ratios, the device grid otherwise. */
   function quantize(height: number, ratio = currentRatio()): number {
@@ -284,6 +298,7 @@ export function createVirtualList<T>(
   const mountedRows = new Set<Row<T>>();
   const hiddenRows = new Set<Row<T>>();
   const dirtyRows = new Set<Row<T>>();
+  const brokenRows = new Set<Row<T>>();
   /** Detached at a width change: their heights are of the old width. */
   const staleRows = new Set<Row<T>>();
   let staleTimer = 0;
@@ -293,6 +308,10 @@ export function createVirtualList<T>(
   let committedKeys = geometry.keyIndex.keys;
   let committedPinOffset = 0;
   let positionedNow = false;
+  let committedPositioned: PositionedGeometry | null = null;
+  let positionedRatio = 0;
+  let positionedOriginPx = 0;
+  let positionedShift = 0;
   /** Advances on every commit; reconciliation and publication key on it. */
   let epoch = 0;
   /** Advances when committed keys or staged row instances change. */
@@ -307,6 +326,7 @@ export function createVirtualList<T>(
   // Initial source ownership ends with this copy. Callbacks retain options,
   // so keeping its input array would pin the first snapshot after replacement.
   let lastItems: T[] = initialItems.slice();
+  let lastItemsShared = false;
   let desiredIndex = geometry.keyIndex;
   let desiredLeading = 0;
   let revision = 0;
@@ -335,15 +355,18 @@ export function createVirtualList<T>(
     viewportAnchor = viewport.style.overflowAnchor;
     viewport.style.overflowAnchor = "auto";
   }
+  const webkitCompositing =
+    globalThis.CSS?.supports?.("-webkit-nbsp-mode", "space") === true;
   const canvas = document.createElement("div");
   canvas.style.position = "relative";
   canvas.style.width = "100%";
-  if (!native) canvas.style.overflowAnchor = "none";
+  if (!native) {
+    canvas.style.overflowAnchor = "none";
+    if (!webkitCompositing) canvas.style.contain = "layout style";
+  }
   canvas.dataset.anchoring = native ? "native" : "runtime";
   // One stable compositing surface while rows enter and leave (Safari).
   canvas.style.transform = "translateZ(0)";
-  const webkitCompositing =
-    globalThis.CSS?.supports?.("-webkit-nbsp-mode", "space") === true;
   if (webkitCompositing) canvas.style.transformStyle = "preserve-3d";
   const spacer = (): HTMLElement => {
     const element = document.createElement("div");
@@ -354,6 +377,8 @@ export function createVirtualList<T>(
   /** Native flow: the unmounted rows above and below the window. */
   const topSpacer = native ? spacer() : null;
   const bottomSpacer = native ? spacer() : null;
+  let lastTopSpacerPx = 0;
+  let lastBottomSpacerPx = 0;
   viewport.appendChild(canvas);
   // `overflow: clip` where supported: a clip that is no scroll container.
   const clipProbe = document.createElement("div").style;
@@ -365,11 +390,15 @@ export function createVirtualList<T>(
   let lastObservedTop = viewport.scrollTop;
   /** Native commits defer ancestor sizing until the gesture has settled. */
   let canvasFloorPending = false;
+  let lastCanvasHeightPx = Number.NaN;
+  let lastCanvasMinHeight = "";
   /** A resize during a phase commits at the settle with this stance (I5). */
   let resizeHeld: "pin" | "viewport" | null = null;
 
   /** The exact height memo for the open pass. */
   let heightMemo: number | null = null;
+  let cachedRoundedHeight = -1;
+  let cachedExactHeight = 0;
   /**
    * The viewport's exact inner height. `clientHeight` rounds, and a rounded-up
    * height puts the computed end short of the engine's fractional maximum:
@@ -385,8 +414,15 @@ export function createVirtualList<T>(
   function clientHeight(): number {
     if (heightMemo !== null && scope !== null) return heightMemo;
     const rounded = viewport.clientHeight;
-    const exact = viewport.getBoundingClientRect().height;
-    const height = Math.abs(exact - rounded) < 1 ? exact : rounded;
+    let height: number;
+    if (rounded === cachedRoundedHeight) {
+      height = cachedExactHeight;
+    } else {
+      const exact = viewport.getBoundingClientRect().height;
+      height = Math.abs(exact - rounded) < 1 ? exact : rounded;
+      cachedRoundedHeight = rounded;
+      cachedExactHeight = height;
+    }
     if (scope !== null) heightMemo = height;
     return height;
   }
@@ -402,9 +438,9 @@ export function createVirtualList<T>(
    */
   function syncCanvasHeight(totalSize: number, floor: boolean): void {
     // A native canvas takes its height from its flow, for the same reason.
-    if (!native) {
-      const height = `${totalSize}px`;
-      if (canvas.style.height !== height) canvas.style.height = height;
+    if (!native && lastCanvasHeightPx !== totalSize) {
+      lastCanvasHeightPx = totalSize;
+      canvas.style.height = `${totalSize}px`;
     }
     // The pin's shortfall grows in the same layout as its viewport.
     const pinTop = geometry.pinTop;
@@ -412,9 +448,12 @@ export function createVirtualList<T>(
       pinTop === null || pinTop === 0
         ? ""
         : `calc(100% + ${Math.ceil(pinTop)}px)`;
-    canvasFloorPending = canvas.style.minHeight !== minHeight;
+    canvasFloorPending = lastCanvasMinHeight !== minHeight;
     if (!floor) return;
-    if (canvasFloorPending) canvas.style.minHeight = minHeight;
+    if (canvasFloorPending) {
+      lastCanvasMinHeight = minHeight;
+      canvas.style.minHeight = minHeight;
+    }
     canvasFloorPending = false;
   }
 
@@ -430,9 +469,8 @@ export function createVirtualList<T>(
   // --- The pass (I4) --------------------------------------------------------
   let disposed = false;
   let booting = true;
-  /** The open pass's queue; null outside a pass. */
-  let scope: Task[] | null = null;
   const openScopes: Task[][] = [];
+  const scopePool: Task[][] = [];
   /** Host failures of committed work, surfaced by the outermost pass. */
   const failures: unknown[] = [];
 
@@ -454,9 +492,9 @@ export function createVirtualList<T>(
     const mark = outer === null ? 0 : failures.length;
     if (outer === null) {
       heightMemo = null;
-      passRatio = pixelRatio();
+      passRatio = 0;
     }
-    const own: Task[] = [];
+    const own = scopePool.pop() ?? [];
     scope = own;
     openScopes.push(own);
     try {
@@ -464,14 +502,15 @@ export function createVirtualList<T>(
         work();
       } catch (error) {
         discard(own);
+        if (failures.length === mark) throw error;
         const collected = failures.splice(mark);
-        if (collected.length === 0) throw error;
         throw new AggregateError([error, ...collected], "update failed");
       }
-      const collected = failures.splice(mark);
+      let collected = failures.length > mark ? failures.splice(mark) : null;
       // Nested, its queued work drains once the enclosing pass has finished.
-      if (outer !== null) outer.push(...own);
-      else {
+      if (outer !== null) {
+        if (own.length > 0) outer.push(...own);
+      } else {
         scope = null;
         passRatio = 0;
         while (!disposed && own.length > 0) {
@@ -479,13 +518,18 @@ export function createVirtualList<T>(
           try {
             task.run();
           } catch (error) {
+            collected ??= [];
             collected.push(...flatten(error));
           }
         }
       }
-      throwAll(collected, "committed with failures in host callbacks");
+      if (collected !== null) {
+        throwAll(collected, "committed with failures in host callbacks");
+      }
     } finally {
       openScopes.pop();
+      own.length = 0;
+      scopePool.push(own);
       scope = outer;
       if (outer === null) {
         heightMemo = null;
@@ -512,6 +556,20 @@ export function createVirtualList<T>(
 
   // --- Rows -----------------------------------------------------------------
   const rowOf = new WeakMap<Element, Row<T>>();
+  const slotPool: { slot: HTMLElement; height: number; anchor: boolean }[] = [];
+  let mountBeforeHint: Node | null | undefined;
+  let lanesScratch = new Float64Array(0);
+  let topsScratch = new Float64Array(0);
+
+  function committedIndexOf(row: Row<T>): number {
+    if (row.committedEpoch === structureEpoch) return row.committedIndex;
+    const index = geometry.indexOf(row.key);
+    if (index >= 0 && rows.get(row.key) === row) {
+      row.committedIndex = index;
+      row.committedEpoch = structureEpoch;
+    }
+    return index;
+  }
 
   function createRow(
     key: string,
@@ -519,9 +577,13 @@ export function createVirtualList<T>(
     element: HTMLElement,
     height: number,
     spec?: EdgeSlot,
+    preQuantized = false,
   ): Row<T> {
     const style = element.style;
     let slot = element;
+    let slotStyled: "none" | "hidden" | "mounted" = "none";
+    let slotHeight = -1;
+    let slotAnchor = false;
     if (place) {
       // Positioned cards are their own slot; the host owns width and left.
       style.position = "absolute";
@@ -529,16 +591,24 @@ export function createVirtualList<T>(
       if (spec) {
         style.left = "0";
         style.right = "0";
+      } else if (!style.contain) {
+        style.contain = "layout style";
       }
-      const hint = style.willChange.trim();
-      if (!hint.split(",").some((value) => value.trim() === "transform")) {
-        const automatic =
-          !hint || /^(auto|initial|inherit|unset|revert(-layer)?)$/.test(hint);
-        style.setProperty(
-          "will-change",
-          automatic ? "transform" : `${hint}, transform`,
-          style.getPropertyPriority("will-change"),
-        );
+      const rawHint = style.willChange;
+      if (!rawHint) {
+        style.willChange = "transform";
+      } else if (rawHint !== "transform") {
+        const hint = rawHint.trim();
+        if (!hint.split(",").some((value) => value.trim() === "transform")) {
+          const automatic =
+            !hint ||
+            /^(auto|initial|inherit|unset|revert(-layer)?)$/.test(hint);
+          style.setProperty(
+            "will-change",
+            automatic ? "transform" : `${hint}, transform`,
+            style.getPropertyPriority("will-change"),
+          );
+        }
       }
     } else {
       style.position = "absolute";
@@ -549,9 +619,18 @@ export function createVirtualList<T>(
       // Native anchoring picks the slot, never a node inside the row: a
       // re-render replaces those, and the engine would lose its anchor.
       if (native) style.overflowAnchor = "none";
-      slot = document.createElement("div");
+      const pooled = !spec ? slotPool.pop() : undefined;
+      if (pooled) {
+        slot = pooled.slot;
+        slotStyled = "mounted";
+        slotHeight = pooled.height;
+        slotAnchor = pooled.anchor;
+      } else {
+        slot = document.createElement("div");
+      }
       slot.appendChild(element);
     }
+    const qHeight = preQuantized ? height : quantize(height);
     const row: Row<T> = {
       key,
       item,
@@ -559,7 +638,12 @@ export function createVirtualList<T>(
       broken: false,
       element,
       slot,
-      height: quantize(height),
+      slotStyled,
+      slotHeight,
+      slotAnchor,
+      committedIndex: -1,
+      committedEpoch: -1,
+      height: qHeight,
       followStart: 0,
       offset: Number.NaN,
       place: "detached",
@@ -567,8 +651,8 @@ export function createVirtualList<T>(
       dead: false,
       spec,
     };
-    if (slot === element) style.height = `${row.height}px`;
-    rowOf.set(element, row);
+    if (slot === element) style.height = `${qHeight}px`;
+    if (!declared && !spec) rowOf.set(element, row);
     return row;
   }
 
@@ -582,6 +666,7 @@ export function createVirtualList<T>(
     index: number,
     staged?: ReadonlyMap<string, Row<T>>,
   ): Node | null {
+    if (mountedRows.size === 0 && hiddenRows.size === 0) return bottomSpacer;
     const previous = rowIn(order, index - 1, staged);
     if (previous && connected(previous)) return previous.slot.nextSibling;
     return successor(order, index, connected, staged)?.slot ?? bottomSpacer;
@@ -604,6 +689,12 @@ export function createVirtualList<T>(
     joined: (row: Row<T>) => boolean,
     staged?: ReadonlyMap<string, Row<T>>,
   ): Row<T> | undefined {
+    if (
+      mountedRows.size === 0 &&
+      (joined === mounted || hiddenRows.size === 0)
+    ) {
+      return undefined;
+    }
     const limit = Math.min(order.length, index + 1 + INSERTION_SCAN);
     for (let at = index + 1; at < limit; at++) {
       const row = rowIn(order, at, staged);
@@ -630,10 +721,20 @@ export function createVirtualList<T>(
     // Native flow keeps the slot in flow at zero height and parks the row:
     // revealing it must not change `position`, which suppresses anchoring.
     if (native) {
-      row.slot.style.cssText = `position:relative;overflow:${clip};height:0px;visibility:hidden;overflow-anchor:none`;
+      if (row.slotStyled === "mounted") {
+        const s = row.slot.style;
+        if (row.slotHeight !== 0) s.height = "0px";
+        s.visibility = "hidden";
+        if (row.slotAnchor) s.overflowAnchor = "none";
+      } else {
+        row.slot.style.cssText = `position:relative;overflow:${clip};height:0px;visibility:hidden;overflow-anchor:none`;
+      }
       row.element.style.translate = PARKED_TRANSLATE;
     } else
-      row.slot.style.cssText = `${SLOT_BASE}overflow:${clip};max-height:0;visibility:hidden;top:${PARKED_TOP};overflow-anchor:none`;
+      row.slot.style.cssText = `${SLOT_BASE}overflow:${clip};contain:layout style;max-height:0;visibility:hidden;top:${PARKED_TOP};overflow-anchor:none`;
+    row.slotStyled = "hidden";
+    row.slotHeight = 0;
+    row.slotAnchor = false;
     row.slot.inert = true;
     row.slot.setAttribute("aria-hidden", "true");
     row.offset = Number.NaN;
@@ -661,10 +762,8 @@ export function createVirtualList<T>(
   /** Move a slot to its committed offset (a no-op when unchanged). */
   function placeRow(row: Row<T>, index?: number): void {
     if (native) return; // The flow places it.
-    const offset =
-      index === undefined
-        ? geometry.offsetOf(row.key)
-        : geometry.offsetAt(index);
+    const idx = index === undefined ? committedIndexOf(row) : index;
+    const offset = idx < 0 ? -1 : geometry.offsetAt(idx);
     if (offset < 0 || row.offset === offset) return;
     row.offset = offset;
     if (row.slot === row.element) row.slot.style.translate = `0 ${offset}px`;
@@ -673,28 +772,58 @@ export function createVirtualList<T>(
 
   function mountRow(row: Row<T>): void {
     const hidden = row.place === "hidden";
+    const beforeHint = mountBeforeHint;
+    mountBeforeHint = undefined;
     if (row.slot !== row.element) {
-      row.slot.style.cssText = native
-        ? `position:relative;overflow:${clip};height:${row.height}px${anchors(row) ? "" : ";overflow-anchor:none"}`
-        : `${SLOT_BASE}overflow:${clip};will-change:transform;height:${row.height}px`;
-      row.offset = Number.NaN;
+      const shouldAnchor = native && anchors(row);
+      if (row.slotStyled === "mounted") {
+        if (row.slotHeight !== row.height) {
+          row.slot.style.height = `${row.height}px`;
+          row.slotHeight = row.height;
+        }
+        if (native && row.slotAnchor !== shouldAnchor) {
+          row.slot.style.overflowAnchor = shouldAnchor ? "" : "none";
+          row.slotAnchor = shouldAnchor;
+        }
+      } else if (native && row.slotStyled === "hidden") {
+        const s = row.slot.style;
+        s.visibility = "";
+        if (row.slotHeight !== row.height) s.height = `${row.height}px`;
+        if (shouldAnchor) s.overflowAnchor = "";
+        row.slotStyled = "mounted";
+        row.slotHeight = row.height;
+        row.slotAnchor = shouldAnchor;
+        row.offset = Number.NaN;
+      } else {
+        row.slot.style.cssText = native
+          ? `position:relative;overflow:${clip};height:${row.height}px${shouldAnchor ? "" : ";overflow-anchor:none"}`
+          : `${SLOT_BASE}overflow:${clip};contain:strict;will-change:transform;height:${row.height}px`;
+        row.slotStyled = "mounted";
+        row.slotHeight = row.height;
+        row.slotAnchor = shouldAnchor;
+        row.offset = Number.NaN;
+      }
     }
     if (hidden) unhide(row);
-    const index = geometry.indexOf(row.key);
+    const index = committedIndexOf(row);
     // Placed before it connects: a mount hook never sees a provisional zero.
     placeRow(row, index);
-    if (native) flowInsert(row, index);
-    else if (!hidden)
-      canvas.insertBefore(row.slot, committedPoint(row.key, index));
+    if (native) flowInsert(row, index, beforeHint);
+    else if (!hidden) {
+      canvas.insertBefore(
+        row.slot,
+        beforeHint !== undefined ? beforeHint : committedPoint(row.key, index),
+      );
+    }
     row.place = "mounted";
     mountedRows.add(row);
     // The viewport never keeps a height of the old width.
-    if (staleRows.delete(row)) {
+    if (!declared && staleRows.size > 0 && staleRows.delete(row)) {
       markDirty(row);
       staleMounted = true;
     }
-    observeRow(row);
-    if (!row.spec) hook(() => options.onMount?.(row.element, row.item));
+    if (!declared && !row.spec) observeRow(row);
+    if (!row.spec) invokeRowHook(options.onMount, row.element, row.item);
   }
 
   /** Whether the engine may anchor on this row (never loaders or separators). */
@@ -707,7 +836,11 @@ export function createVirtualList<T>(
    * after its mounted predecessor and before its mounted successor. A slot
    * staged elsewhere moves (a relayout) only when it is out of place.
    */
-  function flowInsert(row: Row<T>, index = geometry.indexOf(row.key)): void {
+  function flowInsert(
+    row: Row<T>,
+    index = committedIndexOf(row),
+    hintBefore?: Node | null,
+  ): void {
     const previous = rowIn(committedKeys, index - 1);
     if (previous && mounted(previous)) {
       const next = previous.slot.nextSibling;
@@ -717,10 +850,17 @@ export function createVirtualList<T>(
         return;
       }
     }
+    if (!row.slot.isConnected && hintBefore !== undefined) {
+      canvas.insertBefore(row.slot, hintBefore);
+      return;
+    }
     const after =
       previous && mounted(previous) ? previous.slot : (topSpacer as Node);
     const before =
-      successor(committedKeys, index, mounted)?.slot ?? (bottomSpacer as Node);
+      hintBefore !== undefined
+        ? (hintBefore ?? (bottomSpacer as Node))
+        : (successor(committedKeys, index, mounted)?.slot ??
+          (bottomSpacer as Node));
     const placed =
       row.slot.isConnected &&
       after.compareDocumentPosition(row.slot) &
@@ -744,12 +884,15 @@ export function createVirtualList<T>(
       bottom =
         geometry.totalSize - geometry.offsetAt(last) - geometry.heightAt(last);
     }
-    const topHeight = `${top}px`;
-    const bottomHeight = `${Math.max(0, bottom)}px`;
-    if (topSpacer.style.height !== topHeight)
-      topSpacer.style.height = topHeight;
-    if (bottomSpacer.style.height !== bottomHeight)
-      bottomSpacer.style.height = bottomHeight;
+    const clampedBottom = Math.max(0, bottom);
+    if (lastTopSpacerPx !== top) {
+      lastTopSpacerPx = top;
+      topSpacer.style.height = `${top}px`;
+    }
+    if (lastBottomSpacerPx !== clampedBottom) {
+      lastBottomSpacerPx = clampedBottom;
+      bottomSpacer.style.height = `${clampedBottom}px`;
+    }
   }
 
   /** The first and last list index of the mounted rows (last -1: none). */
@@ -767,7 +910,7 @@ export function createVirtualList<T>(
     let first = Number.POSITIVE_INFINITY;
     let last = -1;
     for (const row of mountedRows) {
-      const index = geometry.indexOf(row.key);
+      const index = committedIndexOf(row);
       if (index < 0) continue;
       if (index < first) first = index;
       if (index > last) last = index;
@@ -781,9 +924,21 @@ export function createVirtualList<T>(
    * window (and the engine never anchors on one).
    */
   let hookQueue: (() => void)[] | null = null;
-  function hook(callback: () => void): void {
-    if (hookQueue) hookQueue.push(callback);
-    else host(callback);
+  function invokeRowHook(
+    cb: ((element: HTMLElement, item: T) => void) | undefined,
+    element: HTMLElement,
+    item: T,
+  ): void {
+    if (!cb) return;
+    if (hookQueue !== null) {
+      hookQueue.push(() => cb(element, item));
+      return;
+    }
+    try {
+      cb(element, item);
+    } catch (error) {
+      failures.push(...flatten(error));
+    }
   }
   function holdHooks<R>(work: () => R): R {
     if (!native || hookQueue !== null) return work();
@@ -800,8 +955,8 @@ export function createVirtualList<T>(
   function unmountRow(row: Row<T>): void {
     row.place = "detached";
     mountedRows.delete(row);
-    rowObserver.unobserve(row.element);
-    if (!row.spec) hook(() => options.onUnmount?.(row.element, row.item));
+    if (!row.spec && !declared) rowObserver.unobserve(row.element);
+    if (!row.spec) invokeRowHook(options.onUnmount, row.element, row.item);
     row.slot.remove();
     row.offset = Number.NaN;
   }
@@ -811,14 +966,29 @@ export function createVirtualList<T>(
     if (row.dead) return;
     row.dead = true;
     // Retained host elements must not keep retired row data through this index.
-    if (rowOf.get(row.element) === row) rowOf.delete(row.element);
+    if (!declared && !row.spec && rowOf.get(row.element) === row)
+      rowOf.delete(row.element);
     if (row.place === "mounted") unmountRow(row);
-    detachRow(row);
-    dirtyRows.delete(row);
-    staleRows.delete(row);
-    row.slot.remove();
-    row.element.remove();
-    if (!row.spec) hook(() => options.onDestroy?.(row.element, row.item));
+    else if (row.place === "hidden") detachRow(row);
+    if (dirtyRows.size > 0) dirtyRows.delete(row);
+    if (brokenRows.size > 0) brokenRows.delete(row);
+    if (staleRows.size > 0) staleRows.delete(row);
+    if (row.slot !== row.element) {
+      row.element.remove();
+      if (
+        !disposed &&
+        !row.spec &&
+        row.slotStyled === "mounted" &&
+        slotPool.length < MAX_POOLED_SLOTS
+      ) {
+        slotPool.push({
+          slot: row.slot,
+          height: row.slotHeight,
+          anchor: row.slotAnchor,
+        });
+      }
+    }
+    if (!row.spec) invokeRowHook(options.onDestroy, row.element, row.item);
   }
 
   function markDirty(row: Row<T>): void {
@@ -905,11 +1075,15 @@ export function createVirtualList<T>(
     row.shown = item;
     try {
       const element = render(item, row.element);
-      row.broken = false;
+      if (row.broken) {
+        row.broken = false;
+        brokenRows.delete(row);
+      }
       if (element !== row.element) row.shown = shown;
       return element;
     } catch (error) {
       row.broken = true;
+      brokenRows.add(row);
       throw error;
     }
   }
@@ -923,8 +1097,10 @@ export function createVirtualList<T>(
     if (
       height !== row.height &&
       (row.place === "mounted" || row.slot === row.element)
-    )
+    ) {
       row.slot.style.height = `${height}px`;
+      row.slotHeight = height;
+    }
     row.height = height;
     geometry.measure(row.key, height);
   }
@@ -1047,6 +1223,7 @@ export function createVirtualList<T>(
 
   const viewportObserver = new ResizeObserver(() => {
     if (disposed) return;
+    cachedRoundedHeight = -1;
     const width = viewport.clientWidth;
     const widthChanged = Math.abs(width - viewportWidth) > EPSILON_PX;
     viewportWidth = width;
@@ -1144,11 +1321,12 @@ export function createVirtualList<T>(
   ) {
     const leadingSlot = startKey !== undefined ? 1 : 0;
     const trailingSlot = endKey !== undefined ? 1 : 0;
-    const keys = new Array<string>(items.length + leadingSlot + trailingSlot);
-    if (startKey !== undefined) keys[0] = startKey;
-    if (endKey !== undefined) keys[items.length + leadingSlot] = endKey;
+    const totalLen = items.length + leadingSlot + trailingSlot;
     const heights =
       withHeights && declared ? new Float64Array(items.length) : null;
+    const ratio = heights !== null ? currentRatio() : 1;
+    const integralStack = !place && Number.isInteger(ratio);
+    const invRatio = integralStack ? 1 : 1 / ratio;
     const prior = desiredIndex;
     const priorKeys = prior.keys;
     const priorLeading = desiredLeading;
@@ -1158,6 +1336,22 @@ export function createVirtualList<T>(
         ? 1
         : 0;
     const priorContentLen = priorKeys.length - priorLeading - priorTrailing;
+    const canMatchExact =
+      items.length === priorContentLen &&
+      leadingSlot === priorLeading &&
+      trailingSlot === priorTrailing &&
+      (!leadingSlot || startKey === priorKeys[0]) &&
+      (!trailingSlot || endKey === priorKeys[priorKeys.length - 1]);
+    const allocateKeys = (copyPrefix: number): string[] => {
+      const next = new Array<string>(totalLen);
+      if (startKey !== undefined) next[0] = startKey;
+      if (endKey !== undefined) next[items.length + leadingSlot] = endKey;
+      for (let k = 0; k < copyPrefix; k++) {
+        next[k + leadingSlot] = priorKeys[k + leadingSlot] as string;
+      }
+      return next;
+    };
+    let keys: string[] | null = canMatchExact ? null : allocateKeys(0);
     const canExtendPrior =
       priorContentLen > 0 &&
       priorTrailing === 0 &&
@@ -1165,8 +1359,8 @@ export function createVirtualList<T>(
       (!leadingSlot || startKey === priorKeys[0]);
     /** Appended tail validation when extending `prior` in place. */
     let seen: Set<string> | null = null;
-    /** Full owned index map built directly on boot or non-append divergence. */
-    let positions: Map<string, number> | null = null;
+    /** Full owned index table built directly on boot or non-append divergence. */
+    let positions: KeyTable | null = null;
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as T;
       const key = keyOf(item);
@@ -1177,9 +1371,9 @@ export function createVirtualList<T>(
             `item key "${key}" uses the reserved edge-slot prefix`,
           );
         const pos = i + leadingSlot;
-        const size = positions.size;
-        positions.set(key, pos);
-        if (positions.size === size) throw new Error(`duplicate key "${key}"`);
+        (keys as string[])[pos] = key;
+        if (!positions.insertUnique(key, pos))
+          throw new Error(`duplicate key "${key}"`);
       } else if (seen !== null) {
         if (isSlotKey(key))
           throw new Error(
@@ -1194,11 +1388,16 @@ export function createVirtualList<T>(
           seen.add(key).size === size
         )
           throw new Error(`duplicate key "${key}"`);
+        (keys as string[])[i + leadingSlot] = key;
       } else if (i >= priorContentLen || priorKeys[i + priorLeading] !== key) {
         if (isSlotKey(key))
           throw new Error(
             `item key "${key}" uses the reserved edge-slot prefix`,
           );
+        if (keys === null) keys = allocateKeys(i);
+        const targetKeys = keys;
+        const pos = i + leadingSlot;
+        targetKeys[pos] = key;
         if (i >= priorContentLen && canExtendPrior) {
           seen = new Set();
           const before = prior.get(key);
@@ -1210,36 +1409,43 @@ export function createVirtualList<T>(
             throw new Error(`duplicate key "${key}"`);
           seen.add(key);
         } else {
-          positions = new Map<string, number>();
-          if (startKey !== undefined) positions.set(startKey, 0);
+          positions = new KeyTable(targetKeys, totalLen);
+          if (startKey !== undefined) positions.insertUnique(startKey, 0);
           for (let k = 0; k < i; k++)
-            positions.set(keys[k + leadingSlot] as string, k + leadingSlot);
-          const pos = i + leadingSlot;
-          const size = positions.size;
-          positions.set(key, pos);
-          if (positions.size === size)
+            positions.insertUnique(
+              targetKeys[k + leadingSlot] as string,
+              k + leadingSlot,
+            );
+          if (!positions.insertUnique(key, pos))
             throw new Error(`duplicate key "${key}"`);
         }
+      } else if (keys !== null) {
+        keys[i + leadingSlot] = key;
       }
-      keys[i + leadingSlot] = key;
-      if (heights) heights[i] = declaredHeight(item);
+      if (heights !== null) {
+        const raw = heightOf?.(item);
+        if (raw === undefined || !Number.isFinite(raw) || raw <= 0)
+          throw new RangeError(
+            `item height must be finite and > 0, got ${raw}`,
+          );
+        heights[i] = integralStack
+          ? Math.max(1, Math.ceil(raw - HEIGHT_NOISE))
+          : Math.max(
+              invRatio,
+              Math.ceil(raw * ratio - HEIGHT_NOISE) * invRatio,
+            );
+      }
     }
     if (positions !== null && endKey !== undefined) {
-      positions.set(endKey, items.length + leadingSlot);
+      positions.insertUnique(endKey, items.length + leadingSlot);
     }
-    const exactPrior =
-      positions === null &&
-      seen === null &&
-      items.length === priorContentLen &&
-      leadingSlot === priorLeading &&
-      trailingSlot === priorTrailing &&
-      (!leadingSlot || startKey === priorKeys[0]) &&
-      (!trailingSlot || endKey === priorKeys[priorKeys.length - 1]);
+    const exactPrior = keys === null;
     return {
-      keys: exactPrior ? priorKeys : keys,
+      keys: exactPrior ? priorKeys : (keys as string[]),
       heights,
       positions,
       ownedKeys: !exactPrior,
+      extendedPrior: seen !== null ? prior : null,
     };
   }
 
@@ -1248,8 +1454,9 @@ export function createVirtualList<T>(
     keys: readonly string[],
     requested: AnchorRequest | undefined,
     previous: Pending<T> | null,
-    positions: Map<string, number> | null = null,
+    positions: KeyTable | null = null,
     ownedKeys = false,
+    extendedPrior: KeyIndex | null = null,
   ): Pending<T> {
     const named = typeof requested === "object" ? requested : null;
     let index: KeyIndex;
@@ -1257,6 +1464,8 @@ export function createVirtualList<T>(
       index = geometry.keyIndex;
     } else if (keys === desiredIndex.keys) {
       index = desiredIndex;
+    } else if (extendedPrior !== null) {
+      index = extendedPrior.extendTrusted(keys, ownedKeys);
     } else if (geometry.keyIndex.matches(keys)) {
       index = geometry.keyIndex;
     } else if (positions !== null) {
@@ -1267,6 +1476,8 @@ export function createVirtualList<T>(
       index =
         desiredIndex.extend(keys, ownedKeys) ??
         geometry.keyIndex.extend(keys, ownedKeys) ??
+        desiredIndex.truncate(keys, ownedKeys) ??
+        geometry.keyIndex.truncate(keys, ownedKeys) ??
         new KeyIndex(keys, undefined, ownedKeys);
     }
     return {
@@ -1309,8 +1520,63 @@ export function createVirtualList<T>(
     }
   }
 
+  function scratchLanes(totalCount: number): Float64Array {
+    if (totalCount > 16_384) return new Float64Array(totalCount);
+    if (lanesScratch.length < totalCount) {
+      lanesScratch = new Float64Array(Math.max(totalCount, 256));
+    }
+    return lanesScratch.length === totalCount
+      ? lanesScratch
+      : lanesScratch.subarray(0, totalCount);
+  }
+
+  function finalizePositionedColumns(
+    tops: Float64Array,
+    heightsBuf: Float64Array,
+    lanes: Float64Array,
+    count: number,
+    placedCount: number,
+    rawOrigin: number,
+    ratio: number,
+    start: EdgeSlot | null,
+    end: EdgeSlot | null,
+    target?: Pending<T>,
+  ): PositionedGeometry | null {
+    if (placedCount === 0) return null;
+    if (placedCount !== count)
+      throw new Error("a positioned snapshot must place every item or none");
+    const origin = positionedOrigin(rawOrigin, ratio);
+    const leading = start ? quantize(start.height) : 0;
+    const shift = leading - origin;
+    let bottom = leading;
+    const leadingSlot = start ? 1 : 0;
+    const endPlaced = leadingSlot + placedCount;
+    if (shift !== 0 || end) {
+      for (let at = leadingSlot; at < endPlaced; at++) {
+        const top = (tops[at] as number) + shift;
+        tops[at] = top;
+        const itemBottom = top + (heightsBuf[at] as number);
+        if (itemBottom > bottom) bottom = itemBottom;
+      }
+    }
+    if (start) {
+      tops[0] = 0;
+      heightsBuf[0] = leading;
+      lanes[0] = 0;
+    }
+    if (end) {
+      const last = tops.length - 1;
+      tops[last] = bottom;
+      heightsBuf[last] = quantize(end.height);
+      lanes[last] = 0;
+    }
+    if (target) target.positionedMeta = { ratio, origin, shift };
+    return PositionedGeometry.fromColumns(tops, heightsBuf, lanes);
+  }
+
   function preparePositioned(
     entries: DeclaredItems<T> | null,
+    target?: Pending<T>,
   ): PositionedGeometry | null {
     const count = entries?.size ?? 0;
     if (!place || count === 0 || !entries) return null;
@@ -1318,11 +1584,10 @@ export function createVirtualList<T>(
     const start = edgeSlots.start;
     const end = edgeSlots.end;
     const leadingSlot = start ? 1 : 0;
-    const trailingSlot = end ? 1 : 0;
-    const totalCount = count + leadingSlot + trailingSlot;
+    const totalCount = count + leadingSlot + (end ? 1 : 0);
     const tops = new Float64Array(totalCount);
     const heightsBuf = new Float64Array(totalCount);
-    const lanes = new Float64Array(totalCount);
+    const lanes = scratchLanes(totalCount);
     let placedCount = 0;
     let origin = Number.POSITIVE_INFINITY;
     const cols = entries.columns();
@@ -1359,32 +1624,18 @@ export function createVirtualList<T>(
         placedCount += 1;
       });
     }
-    if (placedCount === 0) return null;
-    if (placedCount !== count)
-      throw new Error("a positioned snapshot must place every item or none");
-    origin = positionedOrigin(origin, ratio);
-    const leading = start ? quantize(start.height) : 0;
-    const shift = leading - origin;
-    let bottom = leading;
-    const endPlaced = leadingSlot + placedCount;
-    for (let at = leadingSlot; at < endPlaced; at++) {
-      const top = (tops[at] as number) + shift;
-      tops[at] = top;
-      const itemBottom = top + (heightsBuf[at] as number);
-      if (itemBottom > bottom) bottom = itemBottom;
-    }
-    if (start) {
-      tops[0] = 0;
-      heightsBuf[0] = leading;
-      lanes[0] = 0;
-    }
-    if (end) {
-      const last = totalCount - 1;
-      tops[last] = bottom;
-      heightsBuf[last] = quantize(end.height);
-      lanes[last] = 0;
-    }
-    return PositionedGeometry.fromColumns(tops, heightsBuf, lanes);
+    return finalizePositionedColumns(
+      tops,
+      heightsBuf,
+      lanes,
+      count,
+      placedCount,
+      origin,
+      ratio,
+      start,
+      end,
+      target,
+    );
   }
 
   /**
@@ -1527,12 +1778,15 @@ export function createVirtualList<T>(
           if (restored === row.element) {
             row.shown = row.item;
             row.broken = false;
+            brokenRows.delete(row);
           } else {
             row.broken = true;
+            brokenRows.add(row);
             host(() => options.onDestroy?.(restored, row.item));
           }
         } catch {
           row.broken = true;
+          brokenRows.add(row);
         }
         markDirty(row);
       }
@@ -1558,6 +1812,7 @@ export function createVirtualList<T>(
     items: readonly T[],
     requested: AnchorRequest | undefined,
     jobRows?: Map<string, Row<T>>,
+    ownedItems = false,
   ): Pending<T> | null {
     const previous = pending;
     const start = edgeSlots.start;
@@ -1565,17 +1820,24 @@ export function createVirtualList<T>(
     const leading = start ? 1 : 0;
     const startKey = start ? slotKey("start", start.key) : undefined;
     const endKey = end ? slotKey("end", end.key) : undefined;
-    const { keys, heights, positions, ownedKeys } = indexItems(
+    const { keys, heights, positions, ownedKeys, extendedPrior } = indexItems(
       items,
       true,
       startKey,
       endKey,
     );
-    const p = newPending(keys, requested, previous, positions, ownedKeys);
+    const p = newPending(
+      keys,
+      requested,
+      previous,
+      positions,
+      ownedKeys,
+      extendedPrior,
+    );
     p.declared = heights
-      ? new DeclaredItems(p.index, leading, items, heights)
+      ? new DeclaredItems(p.index, leading, items, heights, ownedItems)
       : null;
-    p.positioned = preparePositioned(p.declared);
+    p.positioned = preparePositioned(p.declared, p);
     selectPin(p, items);
     let stageKeys: readonly string[] = p.keys;
     if (declared) {
@@ -1605,6 +1867,29 @@ export function createVirtualList<T>(
         ordered.push(toStage[i]?.[1] as string);
       if (end) ordered.push(p.keys[p.keys.length - 1] as string);
       stageKeys = ordered;
+    } else if (
+      previous === null &&
+      !jobRows?.size &&
+      brokenRows.size === 0 &&
+      items !== lastItems &&
+      p.keys === committedKeys &&
+      desiredIndex === geometry.keyIndex &&
+      items.length === lastItems.length &&
+      rows.size === committedKeys.length
+    ) {
+      const ordered: string[] = [];
+      if (start && rows.get(p.keys[0] as string)?.spec !== start) {
+        ordered.push(p.keys[0] as string);
+      }
+      for (let i = 0; i < items.length; i++) {
+        if (items[i] !== lastItems[i]) {
+          ordered.push(p.keys[i + leading] as string);
+        }
+      }
+      if (end && rows.get(p.keys[p.keys.length - 1] as string)?.spec !== end) {
+        ordered.push(p.keys[p.keys.length - 1] as string);
+      }
+      stageKeys = ordered;
     }
     const ok = prepare(
       p,
@@ -1628,7 +1913,7 @@ export function createVirtualList<T>(
     if (anchorIndex < 0) return true;
     const anchorKey = geometry.keyAt(anchorIndex) as string;
     for (const row of dirtyRows) {
-      if (geometry.indexOf(row.key) < anchorIndex) return false;
+      if (committedIndexOf(row) < anchorIndex) return false;
     }
     if (p.keys === committedKeys) {
       for (const key of p.staged.keys()) {
@@ -1799,7 +2084,23 @@ export function createVirtualList<T>(
       for (const row of doomed) destroyRow(row);
       if (disposed) return;
       if (p) {
-        if (keysChanged) {
+        const snapshotColumns =
+          keysChanged && p.declared && !p.patch ? p.declared.columns() : null;
+        if (snapshotColumns && p.declared) {
+          const shareHeights =
+            snapshotColumns.leading === 0 &&
+            snapshotColumns.heights.length === p.index.keys.length;
+          if (shareHeights) p.declared.markHeightsShared();
+          geometry.setKeysWithDeclared(
+            p.index,
+            snapshotColumns.heights,
+            snapshotColumns.leading,
+            p.target,
+            Boolean(place && p.positioned !== null),
+            shareHeights,
+          );
+          committedKeys = p.keys;
+        } else if (keysChanged) {
           geometry.setKeys(p.index, p.target);
           committedKeys = p.keys;
         }
@@ -1818,11 +2119,21 @@ export function createVirtualList<T>(
           // A snapshot lands its heights by position, in one pass, and
           // replaces its columns: removed keys drop out.
           declaredItems = p.declared;
-          declaredItems.land(geometry);
+          if (!snapshotColumns) declaredItems.land(geometry);
+          const order = geometry.keyIndex;
           for (const row of rows.values()) {
-            if (row.spec || declaredItems.itemOf(row.key) !== row.item)
+            if (row.spec) continue;
+            const idx = committedIndexOf(row);
+            if (
+              idx < 0 ||
+              declaredItems.itemAtIndex(idx, order, row.key) !== row.item
+            )
               continue;
-            const height = declaredItems.heightOf(row.key) as number;
+            const height = declaredItems.heightAtIndex(
+              idx,
+              order,
+              row.key,
+            ) as number;
             if (height !== row.height) commitHeight(row, height);
           }
         }
@@ -1830,8 +2141,26 @@ export function createVirtualList<T>(
           if (!row.dirty) commitHeight(row, row.height);
         }
         if (place) {
-          geometry.setPositioned(p.positioned);
-          positionedNow = p.positioned !== null;
+          if (p.positionedPatch && committedPositioned) {
+            committedPositioned.applyUpdateInPlace(
+              p.positionedPatch.at,
+              p.positionedPatch.top,
+              p.positionedPatch.height,
+            );
+          } else {
+            geometry.setPositioned(p.positioned);
+            positionedNow = p.positioned !== null;
+            committedPositioned = p.positioned;
+            if (p.positioned && p.positionedMeta) {
+              positionedRatio = p.positionedMeta.ratio;
+              positionedOriginPx = p.positionedMeta.origin;
+              positionedShift = p.positionedMeta.shift;
+            } else {
+              positionedRatio = 0;
+              positionedOriginPx = 0;
+              positionedShift = 0;
+            }
+          }
         }
       }
       for (let i = 0; i < measured.length; i++) {
@@ -1944,7 +2273,7 @@ export function createVirtualList<T>(
           const everything = nativeFree();
           const ready: Row<T>[] = [];
           for (const row of dirtyRows) {
-            if (everything || geometry.indexOf(row.key) >= anchorIndex)
+            if (everything || committedIndexOf(row) >= anchorIndex)
               ready.push(row);
           }
           if (ready.length === 0) break;
@@ -1989,7 +2318,7 @@ export function createVirtualList<T>(
     else for (const row of mountedRows) placeRow(row);
   }
 
-  let lastReconcile = {
+  const lastReconcile = {
     top: Number.NaN,
     height: Number.NaN,
     epoch: -1,
@@ -2036,12 +2365,11 @@ export function createVirtualList<T>(
     const kept = unchanged && stacked ? previous : undefined;
     lastRange = range;
     heldRetirements = false;
-    lastReconcile = {
-      top: vp.scrollTop,
-      height: vp.height,
-      epoch: -1,
-      structure: -1,
-    };
+    lastReconcile.top = vp.scrollTop;
+    lastReconcile.height = vp.height;
+    lastReconcile.epoch = -1;
+    lastReconcile.structure = -1;
+    if (!native) return mountWindow(vp, range, delta, kept);
     // Native flow: rebuild the window and its spacers before any hook runs.
     return holdHooks(() => {
       try {
@@ -2072,25 +2400,39 @@ export function createVirtualList<T>(
 
   /** The row at `index`, rendering a declared one; null if it can't render. */
   function materialize(index: number): Row<T> | null {
-    const key = geometry.keyAt(index);
+    const key = committedKeys[index];
     if (key === undefined) return null;
     const existing = rows.get(key);
-    if (existing) return existing;
-    const entry = declaredItems.get(key);
-    if (!entry) return null;
+    if (existing) {
+      existing.committedIndex = index;
+      existing.committedEpoch = structureEpoch;
+      return existing;
+    }
+    const order = geometry.keyIndex;
+    const height = declaredItems.heightAtIndex(index, order, key);
+    if (height === undefined) return null;
+    const item = declaredItems.itemAtIndex(index, order, key) as T;
     let element: HTMLElement;
     try {
-      element = render(entry.item);
+      element = render(item);
     } catch (error) {
       // Geometry stands; this row retries at the next reconciliation.
       failures.push(error);
       return null;
     }
     if (disposed) {
-      host(() => options.onDestroy?.(element, entry.item));
+      if (options.onDestroy) {
+        try {
+          options.onDestroy(element, item);
+        } catch (error) {
+          failures.push(...flatten(error));
+        }
+      }
       return null;
     }
-    const row = createRow(key, entry.item, element, entry.height);
+    const row = createRow(key, item, element, height, undefined, true);
+    row.committedIndex = index;
+    row.committedEpoch = structureEpoch;
     rows.set(key, row);
     return row;
   }
@@ -2102,7 +2444,7 @@ export function createVirtualList<T>(
     kept: GeometryWindow | undefined,
   ): GeometryWindow {
     const retire = (row: Row<T>): void => {
-      if (holdLanding && geometry.indexOf(row.key) >= 0) {
+      if (holdLanding && committedIndexOf(row) >= 0) {
         heldRetirements = true;
         return;
       }
@@ -2131,7 +2473,7 @@ export function createVirtualList<T>(
       const visible = range.indices ? new Set(range.indices) : null;
       const leaving: [number, Row<T>][] = [];
       for (const row of mountedRows) {
-        const index = geometry.indexOf(row.key);
+        const index = committedIndexOf(row);
         if (
           visible
             ? !visible.has(index)
@@ -2146,10 +2488,19 @@ export function createVirtualList<T>(
     let complete = true;
     const entering = delta?.entering ?? range.indices;
     const length = entering?.length ?? range.end - range.start;
+    const firstKeptRow =
+      kept && kept.start < range.end && range.start < kept.start
+        ? rows.get(committedKeys[kept.start] ?? "")
+        : undefined;
+    let nextBeforeKeptSlot =
+      firstKeptRow && firstKeptRow.place === "mounted" && hiddenRows.size === 0
+        ? firstKeptRow.slot
+        : undefined;
     for (let n = 0; n < length; n++) {
       let index = entering?.[n] ?? range.start + n;
       // An unchanged stack already owns the overlap: skip it.
       if (kept && index >= kept.start && index < kept.end) {
+        nextBeforeKeptSlot = undefined;
         n += kept.end - index;
         if (n >= length) break;
         index = range.start + n;
@@ -2161,7 +2512,13 @@ export function createVirtualList<T>(
         if (declaredItems.has(geometry.keyAt(index) ?? "")) complete = false;
         continue;
       }
-      if (row.place !== "mounted") mountRow(row);
+      if (row.place !== "mounted") {
+        if (nextBeforeKeptSlot !== undefined && kept && index < kept.start) {
+          mountBeforeHint = nextBeforeKeptSlot;
+          nextBeforeKeptSlot = undefined;
+        }
+        mountRow(row);
+      }
     }
     if (sweep) sweepHidden();
     if (complete) {
@@ -2245,7 +2602,13 @@ export function createVirtualList<T>(
         held,
       };
       lastState = next;
-      host(() => options.onState?.(next, vp));
+      if (options.onState) {
+        try {
+          options.onState(next, vp);
+        } catch (error) {
+          failures.push(...flatten(error));
+        }
+      }
       if (disposed) return;
     }
     if (
@@ -2253,10 +2616,22 @@ export function createVirtualList<T>(
       lastPublishedViewport.height !== vp.height
     ) {
       lastPublishedViewport = vp;
-      host(() => options.onViewport?.(vp));
+      if (options.onViewport) {
+        try {
+          options.onViewport(vp);
+        } catch (error) {
+          failures.push(...flatten(error));
+        }
+      }
       if (disposed) return;
     }
-    host(() => reach.update(vp.scrollTop, maxTop));
+    if (options.onReachStart || options.onReachEnd) {
+      try {
+        reach.update(vp.scrollTop, maxTop);
+      } catch (error) {
+        failures.push(...flatten(error));
+      }
+    }
   }
 
   function reconcileAndPublish(vp: GeometryViewport = viewportState()): void {
@@ -2379,6 +2754,23 @@ export function createVirtualList<T>(
     isDisposed: () => disposed,
     canLoadAtBoundary: (boundary) =>
       reach.canLoad(boundary === "top" ? "start" : "end"),
+    lowerBoundMaxScrollTop: () => {
+      if (cachedRoundedHeight < 0 || resizeHeld !== null) return null;
+      if (!native) {
+        if (!Number.isFinite(lastCanvasHeightPx)) return null;
+        const bound = lastCanvasHeightPx - cachedExactHeight - 32;
+        return bound > 4 ? bound : null;
+      }
+      if (
+        dirtyRows.size > 0 ||
+        staleRows.size > 0 ||
+        lastReconcile.epoch !== epoch
+      ) {
+        return null;
+      }
+      const bound = geometry.totalSize - cachedExactHeight - 32;
+      return bound > 4 ? bound : null;
+    },
     // Genuine input owns the viewport from here.
     cancelActiveSmoothScroll: () =>
       pass(() => {
@@ -2498,7 +2890,11 @@ export function createVirtualList<T>(
   }
 
   // --- Data -----------------------------------------------------------------
-  function adoptItems(snapshot: T[], index: KeyIndex): void {
+  function adoptItems(
+    snapshot: T[],
+    index: KeyIndex,
+    sharedWithDeclared = false,
+  ): void {
     if (index !== desiredIndex) {
       const leading = isSlotKey(index.keys[0] ?? "") ? 1 : 0;
       // An edge slot coming or going leaves the host's order as it was.
@@ -2518,6 +2914,7 @@ export function createVirtualList<T>(
       desiredLeading = leading;
     }
     lastItems = snapshot;
+    lastItemsShared = sharedWithDeclared && declared;
   }
 
   function applyItems(
@@ -2537,13 +2934,13 @@ export function createVirtualList<T>(
       if (slots) Object.assign(edgeSlots, slots);
       let p: Pending<T> | null;
       try {
-        p = stageSnapshot(snapshot, anchor, jobRows);
+        p = stageSnapshot(snapshot, anchor, jobRows, true);
       } catch (error) {
         if (previousSlots) Object.assign(edgeSlots, previousSlots);
         throw error;
       }
       if (!p || disposed) return;
-      adoptItems(snapshot, p.index);
+      adoptItems(snapshot, p.index, true);
       apply(p);
     });
   }
@@ -2575,7 +2972,118 @@ export function createVirtualList<T>(
     if (keyOf(item) !== key)
       throw new Error("updateItem cannot change an item's key");
     if (place) {
-      // A positioned layout re-places every item.
+      let fastHandled = false;
+      pass(() => {
+        if (pending !== null || !idle() || committedPositioned === null) {
+          return;
+        }
+        fastHandled = true;
+        const height = declaredHeight(item);
+        const ratio = currentRatio();
+        const start = edgeSlots.start;
+        const end = edgeSlots.end;
+        const leadingSlot = start ? 1 : 0;
+        const count = lastItems.length;
+        const totalCount = count + leadingSlot + (end ? 1 : 0);
+        let rawTops: Float64Array;
+        let usesTopsScratch = false;
+        if (totalCount <= 16_384) {
+          if (topsScratch.length < totalCount) {
+            topsScratch = new Float64Array(Math.max(totalCount, 256));
+          }
+          rawTops =
+            topsScratch.length === totalCount
+              ? topsScratch
+              : topsScratch.subarray(0, totalCount);
+          usesTopsScratch = true;
+        } else {
+          rawTops = new Float64Array(totalCount);
+        }
+        const lanes = scratchLanes(totalCount);
+        let placedCount = 0;
+        let rawOrigin = Number.POSITIVE_INFINITY;
+        for (let i = 0; i < count; i++) {
+          const placed = place(i === index ? item : (lastItems[i] as T));
+          if (placed === null) continue;
+          if (!Number.isFinite(placed.top))
+            throw new RangeError("item top must be finite");
+          const top = toDevicePixel(placed.top, ratio);
+          if (top < rawOrigin) rawOrigin = top;
+          const at = leadingSlot + placedCount;
+          rawTops[at] = top;
+          lanes[at] =
+            typeof placed.lane === "number" ? placed.lane : Number.NaN;
+          placedCount += 1;
+        }
+        const p = newPending(committedKeys, anchor, null);
+        p.declared = new DeclaredItems<T>();
+        p.declared.set(key, { item, height });
+        p.patch = true;
+        if (placedCount === count && count > 0) {
+          const origin = positionedOrigin(rawOrigin, ratio);
+          const leading = start ? quantize(start.height) : 0;
+          const shift = leading - origin;
+          const nextTop = (rawTops[position] as number) + shift;
+          const laneNum = lanes[position] as number;
+          if (
+            end === null &&
+            ratio === positionedRatio &&
+            origin === positionedOriginPx &&
+            shift === positionedShift &&
+            committedPositioned.canUpdateInPlace(
+              position,
+              nextTop,
+              height,
+              laneNum,
+            ) &&
+            committedPositioned.matchesExcept(position, rawTops, shift, lanes)
+          ) {
+            p.positionedPatch = { at: position, top: nextTop, height };
+          } else {
+            const tops = usesTopsScratch ? rawTops.slice() : rawTops;
+            const heightsBuf = new Float64Array(totalCount);
+            for (let k = leadingSlot; k < leadingSlot + count; k++) {
+              heightsBuf[k] = k === position ? height : geometry.heightAt(k);
+            }
+            p.positioned = finalizePositionedColumns(
+              tops,
+              heightsBuf,
+              lanes,
+              count,
+              placedCount,
+              rawOrigin,
+              ratio,
+              start,
+              end,
+              p,
+            );
+          }
+        } else {
+          p.positioned = finalizePositionedColumns(
+            usesTopsScratch ? rawTops.slice() : rawTops,
+            new Float64Array(totalCount),
+            lanes,
+            count,
+            placedCount,
+            rawOrigin,
+            ratio,
+            start,
+            end,
+            p,
+          );
+        }
+        selectPin(p, lastItems, { index, item });
+        if (!prepare(p, [key], () => item, null, false)) return;
+        if (lastItemsShared) {
+          lastItems = lastItems.slice();
+          lastItemsShared = false;
+        }
+        lastItems[index] = item;
+        revision += 1;
+        apply(p, key);
+      });
+      if (fastHandled) return;
+      // Held snapshot or unplaced list: stage through full snapshot replacement.
       const next = lastItems.slice();
       next[index] = item;
       applyItems(next, anchor, false);
@@ -2594,6 +3102,10 @@ export function createVirtualList<T>(
       }
       selectPin(p, lastItems, { index, item });
       if (!prepare(p, [key], () => item, previous, false)) return;
+      if (lastItemsShared) {
+        lastItems = lastItems.slice();
+        lastItemsShared = false;
+      }
       lastItems[index] = item;
       revision += 1;
       if (previous) {
@@ -2667,7 +3179,7 @@ export function createVirtualList<T>(
         protectedKeys: Set<string>;
         /** The snapshot's key order, to place staged rows in list order. */
         order: readonly string[];
-        index: Map<string, number>;
+        index: KeyIndex;
         fresh: [string, T][];
         cursor: number;
         rows: Map<string, Row<T>>;
@@ -2969,7 +3481,10 @@ export function createVirtualList<T>(
               j.source = context.items;
             }
             if (!j && !declared && pending === null) {
-              const { keys, positions } = indexItems(snapshot, false);
+              const { keys, positions, ownedKeys } = indexItems(
+                snapshot,
+                false,
+              );
               const fresh: [string, T][] = [];
               for (let i = 0; i < keys.length; i++) {
                 const key = keys[i] as string;
@@ -2980,11 +3495,14 @@ export function createVirtualList<T>(
                 fresh.length > JOB_MIN_ROWS ||
                 (options.stage && fresh.length > 0)
               ) {
-                const indexMap = positions ?? new Map<string, number>();
-                if (!positions) {
-                  for (let i = 0; i < keys.length; i++)
-                    indexMap.set(keys[i] as string, i);
-                }
+                const indexMap =
+                  positions !== null
+                    ? KeyIndex.fromOwned(keys, positions)
+                    : keys === desiredIndex.keys || desiredIndex.matches(keys)
+                      ? desiredIndex
+                      : (desiredIndex.extend(keys, ownedKeys) ??
+                        desiredIndex.truncate(keys, ownedKeys) ??
+                        new KeyIndex(keys, undefined, ownedKeys));
                 job = {
                   next: {
                     ...next,
@@ -3190,9 +3708,9 @@ export function createVirtualList<T>(
         const snapshot = lastItems.filter((item) =>
           destinationKeys.has(keyOf(item)),
         );
-        const p = stageSnapshot(snapshot, "viewport");
+        const p = stageSnapshot(snapshot, "viewport", undefined, true);
         if (!p || disposed) return;
-        adoptItems(snapshot, p.index);
+        adoptItems(snapshot, p.index, true);
         commit(p, { keepFollow: true });
       });
       return true;
@@ -3462,8 +3980,14 @@ export function createVirtualList<T>(
       ...(committing?.staged.values() ?? []),
     ];
     rows.clear();
+    brokenRows.clear();
+    slotPool.length = 0;
+    lanesScratch = new Float64Array(0);
+    topsScratch = new Float64Array(0);
     declaredItems.clear();
+    committedPositioned = null;
     lastItems = [];
+    lastItemsShared = false;
     pending = null;
     committing = null;
     for (const row of doomed) destroyRow(row);
@@ -3475,9 +3999,11 @@ export function createVirtualList<T>(
       const p = stageSnapshot(
         lastItems,
         options.boot === "start" ? "none" : "end",
+        undefined,
+        true,
       );
       if (!p) return;
-      adoptItems(lastItems, p.index);
+      adoptItems(lastItems, p.index, true);
       commit(p);
     });
   } catch (error) {

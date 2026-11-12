@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
 import childProcess from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, mock, test } from "node:test";
-import { launchSafari } from "./memory-browser.mjs";
+import { launchFirefox, launchSafari } from "./memory-browser.mjs";
 
 afterEach(() => {
   mock.restoreAll();
@@ -79,4 +82,30 @@ test("Safari launch failure never terminates a process that failed isolation val
   await assert.rejects(launchSafari(), /Safari must be isolated/);
   assert.equal(peer.signalCode, "SIGTERM");
   assert.deepEqual(terminated, []);
+});
+
+test("Firefox launch enables system-page remote access for about:memory", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "vl-ff-mem-check-"));
+  let spawnedArgs = [];
+  let spawnedEnv = {};
+  mock.method(childProcess, "spawn", (_file, args, options) => {
+    spawnedArgs = args;
+    spawnedEnv = options?.env ?? {};
+    const child = new EventEmitter();
+    Object.assign(child, {
+      pid: 999,
+      exitCode: 1,
+      signalCode: null,
+      kill: () => true,
+    });
+    return child;
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(launchFirefox(dir), /Firefox exited during startup/);
+    assert.ok(spawnedArgs.includes("--remote-allow-system-access"));
+    assert.equal(spawnedEnv.MOZ_REMOTE_ALLOW_SYSTEM_ACCESS, "1");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

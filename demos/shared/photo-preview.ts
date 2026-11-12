@@ -138,10 +138,18 @@ interface PhotoPressState {
   startY: number;
 }
 
-interface PhotoBinding {
-  events: AbortController;
-  attributes: Map<string, string | null>;
-  classes: Map<string, boolean>;
+interface PhotoBinding<T extends PhotoPreviewItem> {
+  photo: T;
+  suppressClick: boolean;
+  role: string | null;
+  tabindex: string | null;
+  ariaLabel: string | null;
+  dataPhotoId: string | null;
+  draggable: string | null;
+  hadPhotoPreviewCard: boolean;
+  hadNativeImageMenu: boolean;
+  hadPhotoPressed: boolean;
+  hadPhotoViewSource: boolean;
   hadClassAttribute: boolean;
 }
 
@@ -234,7 +242,7 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     (options.nativeImageMenu === "preview-on-ios" && !isIOSLike());
   let activePhotoView: ActivePhotoView<T> | null = null;
   let disposed = false;
-  const bindings = new Map<HTMLElement, PhotoBinding>();
+  const bindings = new Map<HTMLElement, PhotoBinding<T>>();
   const openingPhotoCards = new WeakSet<HTMLElement>();
   const photoPressStates = new WeakMap<HTMLElement, PhotoPressState>();
 
@@ -1550,146 +1558,169 @@ export function createPhotoPreview<T extends PhotoPreviewItem>(
     cleanupPhotoView(view, currentSource);
   }
 
+  function onCardPointerDown(event: PointerEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding) return;
+    if (!event.isPrimary || event.button !== 0 || activePhotoView) return;
+    if (nativeSourceMenu && event.ctrlKey) return;
+    binding.suppressClick = false;
+    // Let the browser distinguish a tap from its native image long-press.
+    // Scaling under the finger competes with the iOS callout animation;
+    // a confirmed tap's click still gets press feedback before opening.
+    if (nativeSourceMenu && event.pointerType === "touch") {
+      releasePhotoPress(card);
+      return;
+    }
+    startPhotoPress(card, event);
+  }
+
+  function onCardPointerMove(event: PointerEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding) return;
+    const pressState = photoPressStates.get(card);
+    if (!pressState || pressState.pointerId !== event.pointerId) return;
+    if (pointerMovedPastTapTolerance(pressState, event)) {
+      binding.suppressClick = true;
+      releasePhotoPress(card);
+    }
+  }
+
+  function onCardPointerUp(event: PointerEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding) return;
+    const pressState = photoPressStates.get(card);
+    if (!event.isPrimary || !pressState) return;
+    if (isPhotoTapRelease(card, pressState, event)) {
+      void openPhotoViewWithPressFeedback(binding.photo, card);
+    } else {
+      binding.suppressClick = true;
+      releasePhotoPress(card);
+    }
+  }
+
+  function onCardPointerCancel(event: PointerEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding) return;
+    binding.suppressClick = true;
+    releasePhotoPress(card);
+  }
+
+  function onCardContextMenu(event: MouseEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding) return;
+    binding.suppressClick = true;
+    releasePhotoPress(card);
+    if (nativeSourceMenu) {
+      return;
+    }
+    event.preventDefault();
+  }
+
+  function onCardDragStart(event: DragEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding || nativeSourceMenu) return;
+    event.preventDefault();
+    binding.suppressClick = true;
+    releasePhotoPress(card);
+  }
+
+  function onCardClick(event: MouseEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding) return;
+    if (event.button !== 0 || (nativeSourceMenu && event.ctrlKey)) return;
+    if (binding.suppressClick) {
+      binding.suppressClick = false;
+      return;
+    }
+    if (openingPhotoCards.has(card) || photoPressStates.has(card)) return;
+    void openPhotoViewWithPressFeedback(binding.photo, card);
+  }
+
+  function onCardKeyDown(event: KeyboardEvent): void {
+    const card = event.currentTarget as HTMLElement;
+    const binding = bindings.get(card);
+    if (!binding) return;
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    void openPhotoViewWithPressFeedback(binding.photo, card);
+  }
+
+  function restoreAttribute(
+    card: HTMLElement,
+    name: string,
+    value: string | null,
+  ): void {
+    if (value === null) card.removeAttribute(name);
+    else card.setAttribute(name, value);
+  }
+
   function bind(card: HTMLElement, photo: T): void {
     if (disposed || bindings.has(card)) return;
-    const events = new AbortController();
+    const classList = card.classList;
     bindings.set(card, {
-      events,
-      attributes: new Map(
-        ["role", "tabindex", "aria-label", "data-photo-id", "draggable"].map(
-          (name) => [name, card.getAttribute(name)],
-        ),
-      ),
-      classes: new Map(
-        [
-          "photo-preview-card",
-          "native-image-menu",
-          "is-photo-pressed",
-          "is-photo-view-source",
-        ].map((name) => [name, card.classList.contains(name)]),
-      ),
+      photo,
+      suppressClick: false,
+      role: card.getAttribute("role"),
+      tabindex: card.getAttribute("tabindex"),
+      ariaLabel: card.getAttribute("aria-label"),
+      dataPhotoId: card.getAttribute("data-photo-id"),
+      draggable: card.getAttribute("draggable"),
+      hadPhotoPreviewCard: classList.contains("photo-preview-card"),
+      hadNativeImageMenu: classList.contains("native-image-menu"),
+      hadPhotoPressed: classList.contains("is-photo-pressed"),
+      hadPhotoViewSource: classList.contains("is-photo-view-source"),
       hadClassAttribute: card.hasAttribute("class"),
     });
-    let suppressClick = false;
-    card.classList.add("photo-preview-card");
-    card.classList.toggle("native-image-menu", nativeSourceMenu);
+    classList.add("photo-preview-card");
+    if (nativeSourceMenu) classList.add("native-image-menu");
+    else classList.remove("native-image-menu");
     if (!nativeSourceMenu && card instanceof HTMLImageElement)
       card.draggable = false;
     card.dataset.photoId = String(photo.id);
     card.setAttribute("role", "button");
     card.setAttribute("tabindex", "0");
     card.setAttribute("aria-label", `View photo ${photo.id}`);
-    card.addEventListener(
-      "pointerdown",
-      (event) => {
-        if (!event.isPrimary || event.button !== 0 || activePhotoView) return;
-        if (nativeSourceMenu && event.ctrlKey) return;
-        suppressClick = false;
-        // Let the browser distinguish a tap from its native image long-press.
-        // Scaling under the finger competes with the iOS callout animation;
-        // a confirmed tap's click still gets press feedback before opening.
-        if (nativeSourceMenu && event.pointerType === "touch") {
-          releasePhotoPress(card);
-          return;
-        }
-        startPhotoPress(card, event);
-      },
-      { signal: events.signal },
-    );
-    card.addEventListener(
-      "pointermove",
-      (event) => {
-        const pressState = photoPressStates.get(card);
-        if (!pressState || pressState.pointerId !== event.pointerId) return;
-        if (pointerMovedPastTapTolerance(pressState, event)) {
-          suppressClick = true;
-          releasePhotoPress(card);
-        }
-      },
-      { signal: events.signal },
-    );
-    card.addEventListener(
-      "pointerup",
-      (event) => {
-        const pressState = photoPressStates.get(card);
-        if (!event.isPrimary || !pressState) return;
-        if (isPhotoTapRelease(card, pressState, event)) {
-          void openPhotoViewWithPressFeedback(photo, card);
-        } else {
-          suppressClick = true;
-          releasePhotoPress(card);
-        }
-      },
-      { signal: events.signal },
-    );
-    card.addEventListener(
-      "pointercancel",
-      () => {
-        suppressClick = true;
-        releasePhotoPress(card);
-      },
-      { signal: events.signal },
-    );
-    card.addEventListener(
-      "contextmenu",
-      (event) => {
-        suppressClick = true;
-        releasePhotoPress(card);
-        if (nativeSourceMenu) {
-          return;
-        }
-        event.preventDefault();
-      },
-      { signal: events.signal },
-    );
-    card.addEventListener(
-      "dragstart",
-      (event) => {
-        if (nativeSourceMenu) return;
-        event.preventDefault();
-        suppressClick = true;
-        releasePhotoPress(card);
-      },
-      { signal: events.signal },
-    );
-    card.addEventListener(
-      "click",
-      (event) => {
-        if (event.button !== 0 || (nativeSourceMenu && event.ctrlKey)) return;
-        if (suppressClick) {
-          suppressClick = false;
-          return;
-        }
-        if (openingPhotoCards.has(card) || photoPressStates.has(card)) return;
-        void openPhotoViewWithPressFeedback(photo, card);
-      },
-      { signal: events.signal },
-    );
-    card.addEventListener(
-      "keydown",
-      (event) => {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        void openPhotoViewWithPressFeedback(photo, card);
-      },
-      { signal: events.signal },
-    );
+    card.addEventListener("pointerdown", onCardPointerDown);
+    card.addEventListener("pointermove", onCardPointerMove);
+    card.addEventListener("pointerup", onCardPointerUp);
+    card.addEventListener("pointercancel", onCardPointerCancel);
+    card.addEventListener("contextmenu", onCardContextMenu);
+    card.addEventListener("dragstart", onCardDragStart);
+    card.addEventListener("click", onCardClick);
+    card.addEventListener("keydown", onCardKeyDown);
   }
 
   function unbind(card: HTMLElement): void {
     const binding = bindings.get(card);
     if (!binding) return;
-    binding.events.abort();
+    card.removeEventListener("pointerdown", onCardPointerDown);
+    card.removeEventListener("pointermove", onCardPointerMove);
+    card.removeEventListener("pointerup", onCardPointerUp);
+    card.removeEventListener("pointercancel", onCardPointerCancel);
+    card.removeEventListener("contextmenu", onCardContextMenu);
+    card.removeEventListener("dragstart", onCardDragStart);
+    card.removeEventListener("click", onCardClick);
+    card.removeEventListener("keydown", onCardKeyDown);
     clearPhotoPressState(card);
-    if (card.classList.contains("is-photo-view-source"))
-      revealPhotoSource(card);
-    for (const [name, value] of binding.attributes) {
-      if (value === null) card.removeAttribute(name);
-      else card.setAttribute(name, value);
-    }
-    for (const [name, present] of binding.classes)
-      card.classList.toggle(name, present);
-    if (!binding.hadClassAttribute && card.classList.length === 0)
+    const classList = card.classList;
+    if (classList.contains("is-photo-view-source")) revealPhotoSource(card);
+    restoreAttribute(card, "role", binding.role);
+    restoreAttribute(card, "tabindex", binding.tabindex);
+    restoreAttribute(card, "aria-label", binding.ariaLabel);
+    restoreAttribute(card, "data-photo-id", binding.dataPhotoId);
+    restoreAttribute(card, "draggable", binding.draggable);
+    classList.toggle("photo-preview-card", binding.hadPhotoPreviewCard);
+    classList.toggle("native-image-menu", binding.hadNativeImageMenu);
+    classList.toggle("is-photo-pressed", binding.hadPhotoPressed);
+    classList.toggle("is-photo-view-source", binding.hadPhotoViewSource);
+    if (!binding.hadClassAttribute && classList.length === 0)
       card.removeAttribute("class");
     bindings.delete(card);
   }

@@ -430,10 +430,10 @@ export function instrumentScrollIsolation(source: string): string {
     source = source.replace(needle, replacement);
   };
   replace("  const overscanPx =", "  let overscanPx =");
-  replace(
-    "  let lastReconcile =",
-    "  let isolationHeld = false;\n  let lastReconcile =",
-  );
+  const reconcileDecl = source.includes("  const lastReconcile =")
+    ? "  const lastReconcile ="
+    : "  let lastReconcile =";
+  replace(reconcileDecl, `  let isolationHeld = false;\n${reconcileDecl}`);
   replace(
     "  function reconcileWindow(vp: GeometryViewport): GeometryWindow {",
     "  function reconcileWindow(vp: GeometryViewport): GeometryWindow {\n    if (isolationHeld) return lastRange;",
@@ -456,7 +456,7 @@ export function instrumentScrollIsolation(source: string): string {
       if (declared || range.indices || range.end - range.start > 64)
         throw new Error('Diagnostic region exceeds the 64-row measured-list limit');
       overscanPx = extra;
-      lastReconcile = { top: NaN, height: NaN, epoch: -1 };
+      Object.assign(lastReconcile, { top: NaN, height: NaN, epoch: -1, structure: -1 });
       pass(() => { reconcileWindow(vp); commitMounted(); });
       isolationHeld = true;
     },
@@ -473,7 +473,7 @@ export function instrumentScrollIsolation(source: string): string {
     resume: () => {
       isolationHeld = false;
       overscanPx = isolationOverscan;
-      lastReconcile = { top: NaN, height: NaN, epoch: -1 };
+      Object.assign(lastReconcile, { top: NaN, height: NaN, epoch: -1, structure: -1 });
       if (!disposed) pass(onScrolled);
     },
   });

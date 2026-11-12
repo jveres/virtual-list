@@ -6,11 +6,42 @@ type MeasuredText = {
   apply: (bounds: TextBounds) => void;
   width: number;
   height: number;
-  observer?: ResizeObserver;
+  mounted: boolean;
   frame?: number;
 };
 
 const measured = new WeakMap<HTMLElement, MeasuredText>();
+const observedContent = new WeakMap<Element, MeasuredText>();
+let sharedProbe: HTMLDivElement | null = null;
+let sharedProbeWidth = -1;
+let sharedObserver: ResizeObserver | null = null;
+
+function getSharedObserver(): ResizeObserver {
+  if (sharedObserver) return sharedObserver;
+  sharedObserver = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      const text = observedContent.get(entry.target);
+      if (!text?.mounted) continue;
+      const size = entry.borderBoxSize?.[0];
+      if (text.frame !== undefined) cancelAnimationFrame(text.frame);
+      text.frame = undefined;
+      if (
+        size &&
+        Math.abs(size.inlineSize - text.width) < 0.1 &&
+        Math.abs(size.blockSize - text.height) < 0.1
+      )
+        continue;
+      // ResizeObserver delivery must not mutate an observed ancestor's size in
+      // the same delivery (WebKit reports an undelivered-notifications loop).
+      // Defer, using the delivered size rather than flushing layout again.
+      text.frame = requestAnimationFrame(() => {
+        text.frame = undefined;
+        if (text.mounted) run(text, size);
+      });
+    }
+  });
+  return sharedObserver;
+}
 
 function run(text: MeasuredText, size?: ResizeObserverSize): void {
   if (!text.content.isConnected) return;
@@ -35,18 +66,29 @@ export function prepareMeasuredText(
   width: number,
   probeContainer: HTMLElement = document.body,
 ): void {
-  const text: MeasuredText = { content, apply, width: 0, height: 0 };
-  const probe = document.createElement("div");
-  Object.assign(probe.style, {
-    position: "fixed",
-    top: "0",
-    left: "0",
-    width: `${width}px`,
-    visibility: "hidden",
-    pointerEvents: "none",
-  });
-  probe.append(row);
-  probeContainer.append(probe);
+  const previous = measured.get(row);
+  if (previous?.mounted) unmountMeasuredText(row);
+  const text: MeasuredText = {
+    content,
+    apply,
+    width: 0,
+    height: 0,
+    mounted: false,
+  };
+  let probe = sharedProbe;
+  if (!probe || probe.ownerDocument !== probeContainer.ownerDocument) {
+    probe = probeContainer.ownerDocument.createElement("div");
+    probe.style.cssText =
+      "position:fixed;top:0;left:0;visibility:hidden;pointer-events:none;";
+    sharedProbe = probe;
+    sharedProbeWidth = -1;
+  }
+  if (sharedProbeWidth !== width) {
+    probe.style.width = `${width}px`;
+    sharedProbeWidth = width;
+  }
+  probe.appendChild(row);
+  probeContainer.appendChild(probe);
   try {
     run(text);
   } finally {
@@ -65,35 +107,24 @@ export function syncMeasuredText(row: HTMLElement): void {
 export function mountMeasuredText(row: HTMLElement): void {
   const text = measured.get(row);
   if (!text) return;
-  text.observer?.disconnect();
+  if (text.mounted) getSharedObserver().unobserve(text.content);
+  text.mounted = true;
+  observedContent.set(text.content, text);
   // Retained rows keep their prepared size. Initial notifications on mount or
   // remount need no layout reads or writes when that size is unchanged.
-  text.observer = new ResizeObserver((entries) => {
-    const size = entries[0]?.borderBoxSize[0];
-    if (text.frame !== undefined) cancelAnimationFrame(text.frame);
-    text.frame = undefined;
-    if (
-      size &&
-      Math.abs(size.inlineSize - text.width) < 0.1 &&
-      Math.abs(size.blockSize - text.height) < 0.1
-    )
-      return;
-    // ResizeObserver delivery must not mutate an observed ancestor's size in
-    // the same delivery (WebKit reports an undelivered-notifications loop).
-    // Defer, using the delivered size rather than flushing layout again.
-    text.frame = requestAnimationFrame(() => {
-      text.frame = undefined;
-      run(text, size);
-    });
-  });
-  text.observer.observe(text.content, { box: "border-box" });
+  getSharedObserver().observe(text.content, { box: "border-box" });
 }
 
 export function unmountMeasuredText(row: HTMLElement): void {
   const text = measured.get(row);
   if (!text) return;
-  text.observer?.disconnect();
-  text.observer = undefined;
+  if (text.mounted) {
+    text.mounted = false;
+    sharedObserver?.unobserve(text.content);
+    if (observedContent.get(text.content) === text) {
+      observedContent.delete(text.content);
+    }
+  }
   if (text.frame !== undefined) cancelAnimationFrame(text.frame);
   text.frame = undefined;
 }

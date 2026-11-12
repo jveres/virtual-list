@@ -96,9 +96,24 @@ export function createStickyHeaders(
   let hiddenActive: HTMLElement | null = null;
   let hiddenIncoming: HTMLElement | null = null;
   let lastScroll: number | undefined;
+  let lastOverlayHeight = -1;
+  let lastActiveOffset = 0;
+  let lastIncomingOffset = 0;
 
   const headerTop = (ordinal: number): number => tops[ordinal] ?? 0;
   const headerHeight = (ordinal: number): number => heights[ordinal] ?? 0;
+
+  const setOverlayHeight = (height: number): void => {
+    if (lastOverlayHeight === height) return;
+    lastOverlayHeight = height;
+    overlay.style.height = `${height}px`;
+  };
+
+  const setActiveOffset = (offset: number): void => {
+    if (lastActiveOffset === offset) return;
+    lastActiveOffset = offset;
+    active.style.transform = offset === 0 ? "" : `translateY(${offset}px)`;
+  };
 
   const fillSlot = (slot: HTMLElement, ordinal: number): void => {
     renderHeader(slot, ordinals[ordinal] ?? ordinal);
@@ -110,8 +125,8 @@ export function createStickyHeaders(
     fillSlot(active, ordinal);
     if (disposed || !enabled) return;
     activeGroup = ordinal;
-    overlay.style.height = `${headerHeight(ordinal)}px`;
-    active.style.transform = "";
+    setOverlayHeight(headerHeight(ordinal));
+    setActiveOffset(0);
   };
 
   const setIncoming = (ordinal: number, top: number): void => {
@@ -120,8 +135,12 @@ export function createStickyHeaders(
       if (disposed || !enabled) return;
       incomingGroup = ordinal;
       incoming.style.display = "";
+      lastIncomingOffset = Number.NaN;
     }
-    incoming.style.transform = `translateY(${top}px)`;
+    if (lastIncomingOffset !== top) {
+      lastIncomingOffset = top;
+      incoming.style.transform = `translateY(${top}px)`;
+    }
   };
 
   const clearIncoming = (): void => {
@@ -129,7 +148,10 @@ export function createStickyHeaders(
     incomingGroup = -1;
     incoming.replaceChildren();
     incoming.style.display = "none";
-    incoming.style.transform = "";
+    if (lastIncomingOffset !== 0) {
+      lastIncomingOffset = 0;
+      incoming.style.transform = "";
+    }
   };
 
   const restoreInline = (): void => {
@@ -215,17 +237,17 @@ export function createStickyHeaders(
     const top =
       nxt < groupCount ? headerTop(nxt) - scroll : Number.POSITIVE_INFINITY;
     if (top > 0 && top < headerHeight(lo)) {
-      active.style.transform = `translateY(${top - headerHeight(lo)}px)`;
+      setActiveOffset(top - headerHeight(lo));
       // Clip the outgoing pill at the viewport top, but keep the entire
       // incoming pill visible while its in-flow copy is hidden. A fixed
       // one-header clip would make that pill disappear below the top band.
-      overlay.style.height = `${Math.max(headerHeight(lo), top + headerHeight(nxt))}px`;
+      setOverlayHeight(Math.max(headerHeight(lo), top + headerHeight(nxt)));
       setIncoming(nxt, top);
       if (disposed || !enabled) return;
       hideInlineFor(lo, nxt);
     } else {
-      active.style.transform = "";
-      overlay.style.height = `${headerHeight(lo)}px`;
+      setActiveOffset(0);
+      setOverlayHeight(headerHeight(lo));
       clearIncoming();
       hideInlineFor(lo);
     }

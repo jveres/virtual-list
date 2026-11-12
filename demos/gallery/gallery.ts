@@ -224,19 +224,35 @@ function sourceOf(p: Photo): string {
   return `https://picsum.photos/seed/vl-${p.id}/${SOURCE_WIDTH}/${Math.round(SOURCE_WIDTH / p.aspect)}`;
 }
 
+function forEachPhotoImage(
+  element: HTMLElement,
+  visit: (img: HTMLImageElement) => void,
+): void {
+  const first = element.firstElementChild;
+  if (first instanceof HTMLImageElement) {
+    visit(first);
+    return;
+  }
+  const children = element.children;
+  for (let i = 0; i < children.length; i++) {
+    const img = children[i]?.firstElementChild;
+    if (img instanceof HTMLImageElement) visit(img);
+  }
+}
+
 function queueImages(element: HTMLElement): void {
-  for (const img of element.querySelectorAll<HTMLImageElement>("img.photo")) {
+  forEachPhotoImage(element, (img) => {
     pendingImages.add(img);
     retiredImages.delete(img);
-  }
+  });
   scheduleImageFlush();
 }
 
 function dropImages(element: HTMLElement): void {
-  for (const img of element.querySelectorAll<HTMLImageElement>("img.photo")) {
+  forEachPhotoImage(element, (img) => {
     pendingImages.delete(img);
     retiredImages.add(img);
-  }
+  });
   scheduleImageFlush();
 }
 
@@ -250,9 +266,10 @@ function flushImages(): void {
   }
   // onState supplies the viewport already read by the runtime. Priorities
   // use committed positions, never a layout read after DOM mutations.
-  const batch = Array.from(pendingImages)
-    .filter((img) => img.isConnected)
-    .map((img) => ({ img, src: img.dataset.src as string }));
+  const batch: { img: HTMLImageElement; src: string }[] = [];
+  for (const img of pendingImages) {
+    if (img.isConnected) batch.push({ img, src: img.dataset.src as string });
+  }
   pendingImages.clear();
   const removed = Array.from(retiredImages);
   retiredImages.clear();
@@ -260,7 +277,9 @@ function flushImages(): void {
     images.update({ add: batch, remove: removed });
   else images.reprioritize();
   for (const image of removed) imageReveal.remove(image);
-  for (const { img } of batch) imageReveal.add(img);
+  for (let i = 0; i < batch.length; i++) {
+    imageReveal.add((batch[i] as { img: HTMLImageElement }).img);
+  }
 }
 
 // --- Rendering ---------------------------------------------------------------
@@ -340,7 +359,21 @@ function syncTiles(
 }
 
 function renderRow(row: JustifiedRow, existing?: HTMLElement): HTMLElement {
-  const el = existing ?? document.createElement("div");
+  if (!existing) {
+    const el = document.createElement("div");
+    el.className = "photo-row";
+    el.style.height = `${row.height + GAP}px`;
+    const rowPhotos = row.photos;
+    for (let i = 0; i < rowPhotos.length; i++) {
+      const p = rowPhotos[i] as (typeof rowPhotos)[number];
+      const tile = tileElement(p, String(p.id));
+      tile.style.width = `${p.width}px`;
+      tile.style.height = `${row.height}px`;
+      el.appendChild(placeImage(tile, row.key, 0, row.height));
+    }
+    return el;
+  }
+  const el = existing;
   const held = existingTiles(el);
   el.className = "photo-row";
   el.style.height = `${row.height + GAP}px`;
@@ -656,9 +689,14 @@ const list: VirtualList<GalleryItem> = createVirtualList<GalleryItem>(
     onMount: queueImages,
     onUnmount: dropImages,
     onDestroy: (element) => {
-      if (element.classList.contains("tile")) photoPreview.unbind(element);
-      for (const tile of element.querySelectorAll<HTMLElement>(".tile"))
-        photoPreview.unbind(tile);
+      if (element.classList.contains("tile")) {
+        photoPreview.unbind(element);
+        return;
+      }
+      const children = element.children;
+      for (let i = 0; i < children.length; i++) {
+        photoPreview.unbind(children[i] as HTMLElement);
+      }
     },
     onState: (_state, viewport) => {
       imageViewport = viewport;

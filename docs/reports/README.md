@@ -7,6 +7,26 @@ Use the [consumer guide](../streaming-consumer.md) and
 [API reference](../integration-api.md) for integration, and the
 [release record](../streaming-integration-plan.md) for the `v0.2.0` scope.
 
+## November 11 2x scrolling and resource-usage optimization
+
+The [2x scrolling and resource-usage optimization](runtime-performance-2x-2026-11-11.md)
+rearchitects hot scrolling paths and core data structures on top of `8bbef7c`
+(`v0.8.0`): `KeyTable` replaces `Map<string, number>` with a single
+open-addressed `Int32Array`, `ScrollSettle` and `virtual-list` eliminate all
+interior scroll layout reads (`scrollHeight`, `clientHeight`,
+`getBoundingClientRect`), `DeclaredItems` and `Geometry` share height buffers
+copy-on-write with lazy Fenwick rebuilds, and `PositionedGeometry` adds
+`Int32Array` lanes, a max-bottom segment tree, and in-place single-card updates.
+In installed Firefox 159.0.1 on `LU28R55`, steady-scroll DOM geometry reads drop
+by 56.5% (`2.30x`), wheel-handler `p50` latency drops by 51.9–52.5% (`2.1x`),
+gallery sync reflow and `RefreshDriverTick` `p50` drop by 64.7–68.3%
+(`2.8–3.2x`), 100,000-row natural list window memory drops by 51.9% (`2.08x`,
+`Map` heap `47.19 MiB → 0 B`), `mixed-natural` `Map` heap drops by 91.9%
+(`12.4x`), 100,000-card positioned `updateItem` improves by `8.01x`, and
+interleaved Firefox A/B benchmarks improve unchanged `setItems` by 85.8%
+(`7.0x`), positioned updates by 67.6–68.4% (`3.1x`), and declared boots by 52.4%
+(`2.1x`).
+
 ## November 10 runtime and companion hot-path audit
 
 The [runtime and companion hot-path audit](runtime-hot-path-audit-2026-11-10.md)
