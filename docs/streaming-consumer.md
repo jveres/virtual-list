@@ -269,7 +269,7 @@ your own visual button styling. The
 installed-Safari composer and scoped-typography checks. Its tested scenarios
 are integration evidence, not implicit guarantees for every renderer or style.
 
-Syntax highlighting uses `@pierre/highlights` through `markdown-viewer` v0.10.0.
+Syntax highlighting uses `@pierre/highlights` through `markdown-viewer` v0.11.0.
 The renderer loads one shared WASM module on demand. Await
 `loadLanguages(["typescript"])` before a synchronous static render. The live
 example also preloads its language before creating the list. Live viewers can

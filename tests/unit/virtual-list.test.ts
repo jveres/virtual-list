@@ -60,7 +60,7 @@ describe("canvas compositing", () => {
       const h = mount(range(0, 40), { boot: "start" });
       try {
         expect(h.canvas().style.transformStyle).toBe(expected);
-        expect(h.canvas().style.transform).toBe("translateZ(0)");
+        expect(h.canvas().style.transform).toBe("translateZ(0px)");
 
         h.userScroll(2000);
 
@@ -1617,7 +1617,7 @@ describe("positioned declared items", () => {
     expect(h.list.positionOf("m20")?.top).toBe(1500);
     expect(h.viewport.scrollTop).toBe(1500);
     expect(h.list.elementOf("m20")).toBe(tile);
-    expect(tile?.style.translate).toBe("0 1500px");
+    expect(tile?.style.translate).toBe("0px 1500px");
     expect(tile?.textContent).toBe("reflowed");
     h.list.dispose();
   });
@@ -1639,7 +1639,7 @@ describe("positioned declared items", () => {
 
     expect(h.viewport.scrollTop).toBe(2000);
     expect(h.list.elementOf("m60")).toBe(tile);
-    expect(tile.style.translate).toBe("0 2000px");
+    expect(tile.style.translate).toBe("0px 2000px");
     expect(tile.style.transform).toBe("scale(0.975)");
     expect(tile.style.transition).toBe("transform 150ms");
     expect(h.list.positionOf("m60")?.top).toBe(h.viewport.scrollTop);
@@ -7029,7 +7029,9 @@ describe("mount hooks", () => {
               connected: true,
               placement:
                 mode === "positioned"
-                  ? `0 ${id * ROW_H}px`
+                  ? id === 0
+                    ? "0px"
+                    : `0px ${id * ROW_H}px`
                   : `translateY(${id * ROW_H}px)`,
             })),
           );

@@ -1,5 +1,5 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+  "$schema": "https://biomejs.dev/schemas/2.6.7/schema.json",
   "vcs": {
     "enabled": true,
     "clientKind": "git",
@@ -29,9 +29,23 @@
       "a11y": {
         "useSemanticElements": "off"
       },
+      "complexity": {
+        "useMathMinMax": "off"
+      },
+      "performance": {
+        "useDomNodeTextContent": "off"
+      },
       "style": {
         "noNonNullAssertion": "off"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["**/*.md"],
+      "formatter": {
+        "enabled": false
+      }
+    }
+  ]
 }

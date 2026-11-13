@@ -20,6 +20,19 @@ keep the reader still when content above the viewport changes (the
 `anchoring` option). The [architecture](docs/architecture.md) explains this
 design and why it replaced the earlier runtime.
 
+See it running on GitHub Pages:
+
+- [All `virtual-list` demos & consumer examples](https://jveres.github.io/virtual-list/)
+- [Streaming chat](https://jveres.github.io/virtual-list/demos/streaming/index.html):
+  pin-to-top send flow, smooth end-follow streaming Markdown, bounded scrollback,
+  message versions, and sticky day headers.
+- [Gallery](https://jveres.github.io/virtual-list/demos/gallery/index.html),
+  [Feed](https://jveres.github.io/virtual-list/demos/feed/index.html),
+  [Newspaper](https://jveres.github.io/virtual-list/demos/newspaper/index.html),
+  [Chat history (10k messages)](https://jveres.github.io/virtual-list/demos/chat-history/index.html),
+  [Dynamic-height lab](https://jveres.github.io/virtual-list/demos/dynamic-height/index.html), and
+  [Scroll-settle lab](https://jveres.github.io/virtual-list/demos/scroll-settle/index.html).
+
 The contract, its invariants (I0–I6), and the design decisions live in
 [`docs/core-contract.md`](docs/core-contract.md). This file covers running, using,
 and testing the code.

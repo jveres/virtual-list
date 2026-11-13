@@ -70,8 +70,9 @@
 /* File controls are direct children of message-content. Keep this check out
    of the changing Markdown subtree during streaming. */
 .message.assistant:has(> .message-actions):not(
-  :has(> .message-content > .message-generated-files)
-) .markdown {
+    :has(> .message-content > .message-generated-files)
+  )
+  .markdown {
   padding-bottom: 0;
 }
 

@@ -558,7 +558,7 @@
 /* With no tree to overlay, the message is the panel's content: in flow
  * below the header, without zoom controls or an empty canvas. */
 .conversation-tree-panel[data-empty]
-:is(.conversation-tree-controls, .conversation-tree-scroll) {
+  :is(.conversation-tree-controls, .conversation-tree-scroll) {
   display: none;
 }
 .conversation-tree-panel[data-empty] .conversation-tree-status {
