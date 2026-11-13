@@ -1,6 +1,6 @@
 name: Pages
 
-# Publishes the virtual-list demos and consumer examples to GitHub Pages at /<repo>/.
+# Publishes the virtual-list demos to GitHub Pages at /<repo>/.
 # Requires Settings → Pages → Source: GitHub Actions.
 on:
   push:
@@ -36,6 +36,8 @@ jobs:
 
       # Project pages are served from /<repo>/, so assets must resolve under that path.
       - name: Build the demos
+        env:
+          PAGES_BUILD: "1"
         run: pnpm exec vite build --outDir dist --base "/${{ github.event.repository.name }}/"
 
       - uses: actions/upload-pages-artifact@v3

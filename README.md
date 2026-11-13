@@ -22,7 +22,7 @@ design and why it replaced the earlier runtime.
 
 See it running on GitHub Pages:
 
-- [All `virtual-list` demos & consumer examples](https://jveres.github.io/virtual-list/)
+- [All `virtual-list` demos](https://jveres.github.io/virtual-list/)
 - [Streaming chat](https://jveres.github.io/virtual-list/demos/streaming/index.html):
   pin-to-top send flow, smooth end-follow streaming Markdown, bounded scrollback,
   message versions, and sticky day headers.
